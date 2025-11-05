@@ -132,12 +132,17 @@ src/leech/           # Main package source
 ├── cli.py           # Command-line interface (argparse-based)
 ├── data_prep.py     # BAM/POD5 reading, LeechRead, chunk extraction
 ├── features.py      # MoveTable, dwell times, signal levels, normalization
-├── models.py        # Model utilities (loading/saving)
-├── training.py      # Training loop (to be implemented)
-├── inference.py     # Inference engine (to be implemented)
-└── util.py          # Helper functions
+├── dataset.py       # PyTorch Dataset classes for loading chunks
+├── training.py      # Training loop with Trainer class
+├── evaluation.py    # Model evaluation and testing
+├── inference.py     # Inference engine for predictions
+├── gridsearch.py    # Grid search for chunk context optimization
+├── util.py          # Helper functions (model loading, metrics)
+└── models/          # Model architectures
+    ├── __init__.py  # Model registry and get_model()
+    ├── conv_lstm_dwell.py  # ConvLSTMDwell architecture
+    └── conv_lstm_base.py   # ConvLSTMBase architecture
 
-models/              # Model architectures (Python files, not config)
 tests/               # pytest tests
 ```
 
@@ -191,15 +196,16 @@ The Snakemake workflow has been moved to a separate repository. The leech librar
 
 ## Current Status
 
-The codebase has:
+The codebase is feature-complete:
 - ✓ Feature extraction fully implemented
-- ✓ Model architectures defined
-- ✓ CLI interface scaffolded
+- ✓ Model architectures defined (ConvLSTMDwell, ConvLSTMBase)
+- ✓ CLI interface fully implemented
+- ✓ Training loop with Trainer class
+- ✓ Grid search for chunk context optimization
+- ✓ Testing/evaluation with comprehensive metrics
+- ✓ Inference engine with BAM output
+- ✓ Chunk serialization (save_chunks/load_chunks in data_prep.py)
+- ✓ Model loading utilities (load_model_from_checkpoint in util.py)
 - ✓ Comprehensive tests for features.py
-- ✓ Snakemake workflow template
 
-Still TODO (as indicated in cli.py):
-- Training loop implementation (cli.py:196-198)
-- Testing/evaluation implementation (cli.py:201-208)
-- Inference implementation (cli.py:211-218)
-- Chunk serialization format (cli.py:186-188)
+All core functionality is implemented and ready for use.
