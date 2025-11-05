@@ -1,7 +1,7 @@
 """
 Data preparation: reading POD5 and BAM files, extracting chunks for training.
 
-Adapted from Remora but modernized with Polars and type hints.
+Adapted from Remora but modernized with NumPy arrays and type hints.
 """
 
 from collections.abc import Iterator
