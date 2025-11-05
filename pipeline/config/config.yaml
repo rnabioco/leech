@@ -1,0 +1,168 @@
+# Leech Pipeline Configuration
+# ============================
+
+# Output directories
+chunks_dir: "results/chunks"
+models_dir: "results/models"
+inference_dir: "results/inference"
+metrics_dir: "results/metrics"
+
+# ============================================================================
+# Sample Configuration
+# ============================================================================
+# Each sample should have:
+#   - pod5: path to POD5 file
+#   - bam: path to aligned BAM file with mv tags
+#   - label: "charged" or "uncharged" (for charged vs uncharged classification)
+#   - amino_acid: amino acid label (for pairwise classification, e.g., "Ala", "Gly")
+
+samples:
+  # Example charged samples
+  sample_charged_ala_rep1:
+    pod5: "data/charged/ala/rep1.pod5"
+    bam: "data/charged/ala/rep1.bam"
+    label: "charged"
+    amino_acid: "Ala"
+
+  sample_charged_ala_rep2:
+    pod5: "data/charged/ala/rep2.pod5"
+    bam: "data/charged/ala/rep2.bam"
+    label: "charged"
+    amino_acid: "Ala"
+
+  sample_charged_gly_rep1:
+    pod5: "data/charged/gly/rep1.pod5"
+    bam: "data/charged/gly/rep1.bam"
+    label: "charged"
+    amino_acid: "Gly"
+
+  # Example uncharged samples
+  sample_uncharged_ala_rep1:
+    pod5: "data/uncharged/ala/rep1.pod5"
+    bam: "data/uncharged/ala/rep1.bam"
+    label: "uncharged"
+    amino_acid: "Ala"
+
+  sample_uncharged_gly_rep1:
+    pod5: "data/uncharged/gly/rep1.pod5"
+    bam: "data/uncharged/gly/rep1.bam"
+    label: "uncharged"
+    amino_acid: "Gly"
+
+# Amino acids for pairwise classification
+# All pairs will be generated automatically: choose(amino_acids, 2)
+amino_acids:
+  - "Ala"
+  - "Gly"
+  - "Val"
+  - "Leu"
+  - "Ile"
+  - "Pro"
+  - "Phe"
+  - "Trp"
+  - "Met"
+  - "Ser"
+  - "Thr"
+  - "Cys"
+  - "Asn"
+  - "Gln"
+  - "Tyr"
+  - "Lys"
+  - "Arg"
+  - "His"
+  - "Asp"
+  - "Glu"
+
+# ============================================================================
+# Data Preparation Parameters
+# ============================================================================
+motif: "CCA"              # tRNA 3' end motif
+motif_offset: 2           # Focus on the last "A" (0-indexed)
+kmer_len: 5               # K-mer context length
+chunk_context: [200, 200] # Signal context (left, right) in samples
+train_split: 0.7          # Training set fraction
+val_split: 0.15           # Validation set fraction (test = 1 - train - val)
+
+# ============================================================================
+# Model Configuration
+# ============================================================================
+# Default model for single-model runs
+model: "ConvLSTMDwell"    # Model architecture: ConvLSTMDwell, ConvLSTMBase, etc.
+
+# Model comparison: Train and evaluate multiple architectures
+# Set compare_models: true to enable multi-architecture comparison
+compare_models: false
+
+# Models to compare (used when compare_models: true)
+# Available models:
+#   - ConvLSTMBase: Baseline (signal + sequence only)
+#   - ConvLSTMDwell: Full model with dwell features
+#   - TransformerDwell: Transformer with self-attention (Priority 1)
+#   - ConvOnly: Pure CNN baseline (Priority 1)
+#   - TCNDwell: Temporal Convolutional Network (Priority 2)
+#   - ResNetDwell: Residual Network (Priority 2)
+models_to_compare:
+  - "ConvLSTMBase"       # Baseline without dwell
+  - "ConvLSTMDwell"      # Original with dwell
+  - "TransformerDwell"   # Priority 1
+  - "ConvOnly"           # Priority 1
+  - "TCNDwell"           # Priority 2
+  - "ResNetDwell"        # Priority 2
+
+# Training hyperparameters (used if use_grid_search: false)
+epochs: 50
+batch_size: 128
+learning_rate: 0.001
+early_stopping_patience: 5
+
+# Inference parameters
+infer_batch_size: 256
+
+# ============================================================================
+# Grid Search Configuration
+# ============================================================================
+use_grid_search: false    # Set to true to use grid search before training
+
+# Grid search parameters
+# These define the hyperparameter search space
+grid_search:
+  learning_rate: [0.0001, 0.001, 0.01]
+  batch_size: [64, 128, 256]
+  hidden_size: [128, 256, 512]
+  num_layers: [1, 2, 3]
+  dropout: [0.1, 0.2, 0.3]
+
+grid_search_epochs: 20    # Epochs per grid search trial (shorter than full training)
+
+# ============================================================================
+# Cluster-specific settings
+# ============================================================================
+# These are used by the cluster profiles (profiles/slurm or profiles/lsf)
+# and can be overridden per-rule
+
+cluster:
+  # Default partition/queue
+  default_partition: "gpu"    # SLURM partition
+  default_queue: "gpuqueue"   # LSF queue
+
+  # Account/project for billing
+  account: "your_account"
+
+  # GPU settings
+  gpu_partition: "gpu"
+  gpu_queue: "gpuqueue"
+  gpu_type: "a100"           # For SLURM: "a100", "v100", "rtx8000", etc.
+  gpu_model: "a100"          # For LSF: model for -R "select[gpu_model==...]"
+
+  # Time limits (minutes)
+  default_time: 120
+  training_time: 480         # 8 hours
+  grid_search_time: 1440     # 24 hours
+
+  # Memory defaults (MB)
+  default_mem: 8000
+  training_mem: 16000
+
+  # Job submission settings
+  max_jobs: 100              # Maximum concurrent jobs
+  latency_wait: 60           # Seconds to wait for output files
