@@ -2,29 +2,30 @@
 Data preparation rules for extracting training chunks.
 """
 
+
 rule prepare_chunks:
     """Extract training chunks from POD5/BAM files."""
     input:
-        pod5 = lambda wildcards: config["samples"][wildcards.sample]["pod5"],
-        bam = lambda wildcards: config["samples"][wildcards.sample]["bam"],
+        pod5=lambda wildcards: config["samples"][wildcards.sample]["pod5"],
+        bam=lambda wildcards: config["samples"][wildcards.sample]["bam"],
     output:
-        train = CHUNKS_DIR + "/{sample}/train.json",
-        val = CHUNKS_DIR + "/{sample}/val.json",
-        test = CHUNKS_DIR + "/{sample}/test.json",
+        train=CHUNKS_DIR + "/{sample}/train.json",
+        val=CHUNKS_DIR + "/{sample}/val.json",
+        test=CHUNKS_DIR + "/{sample}/test.json",
     params:
-        output_dir = CHUNKS_DIR + "/{sample}",
-        motif = config.get("motif", "CCA"),
-        motif_offset = config.get("motif_offset", 2),
-        kmer_len = config.get("kmer_len", 5),
-        chunk_context = config.get("chunk_context", [200, 200]),
-        train_split = config.get("train_split", 0.7),
-        val_split = config.get("val_split", 0.15),
+        output_dir=CHUNKS_DIR + "/{sample}",
+        motif=config.get("motif", "CCA"),
+        motif_offset=config.get("motif_offset", 2),
+        kmer_len=config.get("kmer_len", 5),
+        chunk_context=config.get("chunk_context", [200, 200]),
+        train_split=config.get("train_split", 0.7),
+        val_split=config.get("val_split", 0.15),
     threads: 4
     resources:
-        mem_mb = 8000,
-        runtime = 120,
+        mem_mb=8000,
+        runtime=120,
     log:
-        CHUNKS_DIR + "/{sample}/prepare.log"
+        CHUNKS_DIR + "/{sample}/prepare.log",
     shell:
         """
         uv run leech prepare \
