@@ -38,6 +38,7 @@ include: "rules/grid_search.smk"
 include: "rules/train.smk"
 include: "rules/inference.smk"
 include: "rules/evaluate.smk"
+include: "rules/compare_models.smk"
 
 
 # ============================================================================
@@ -46,6 +47,15 @@ include: "rules/evaluate.smk"
 
 rule all:
     """Default target: run all analyses."""
+    input:
+        # Choose based on compare_models setting
+        METRICS_DIR + "/comparison/charged_vs_uncharged_architecture_comparison.tsv" if COMPARE_MODELS else METRICS_DIR + "/charged_vs_uncharged_summary.tsv",
+        METRICS_DIR + "/comparison/pairwise_architecture_comparison.tsv" if COMPARE_MODELS and AA_PAIRS else (METRICS_DIR + "/pairwise_summary.tsv" if AA_PAIRS else [])
+
+
+# Single model mode (compare_models: false)
+rule all_single_model:
+    """Run single model analysis (default model from config)."""
     input:
         # Charged vs uncharged
         expand(METRICS_DIR + "/charged_vs_uncharged/{sample}_metrics.json",
@@ -58,6 +68,17 @@ rule all:
         METRICS_DIR + "/pairwise_summary.tsv" if AA_PAIRS else []
 
 
+# Multi-architecture comparison mode (compare_models: true)
+rule all_compare_models:
+    """Run multi-architecture comparison."""
+    input:
+        # Architecture comparison results
+        METRICS_DIR + "/comparison/charged_vs_uncharged_architecture_comparison.tsv",
+        METRICS_DIR + "/comparison/charged_vs_uncharged_architecture_summary.txt",
+        METRICS_DIR + "/comparison/pairwise_architecture_comparison.tsv" if AA_PAIRS else [],
+        METRICS_DIR + "/comparison/pairwise_architecture_summary.txt" if AA_PAIRS else []
+
+
 rule all_prepare:
     """Prepare all training chunks."""
     input:
@@ -66,19 +87,37 @@ rule all_prepare:
 
 
 rule all_grid_search:
-    """Run all grid searches."""
+    """Run all grid searches (single model mode)."""
     input:
         MODELS_DIR + "/grid_search/charged_vs_uncharged/best_params.json",
         expand(MODELS_DIR + "/grid_search/pairwise/{pair}/best_params.json",
                pair=AA_PAIRS) if AA_PAIRS else []
 
 
+rule all_grid_search_comparison:
+    """Run grid searches for all architectures (comparison mode)."""
+    input:
+        expand(MODELS_DIR + "/grid_search/charged_vs_uncharged/{arch}/best_params.json",
+               arch=MODEL_ARCHITECTURES),
+        expand(MODELS_DIR + "/grid_search/pairwise/{pair}/{arch}/best_params.json",
+               pair=AA_PAIRS, arch=MODEL_ARCHITECTURES) if AA_PAIRS else []
+
+
 rule all_train:
-    """Train all models."""
+    """Train all models (single model mode)."""
     input:
         MODELS_DIR + "/charged_vs_uncharged/model_best.pt",
         expand(MODELS_DIR + "/pairwise/{pair}/model_best.pt",
                pair=AA_PAIRS) if AA_PAIRS else []
+
+
+rule all_train_comparison:
+    """Train all architectures (comparison mode)."""
+    input:
+        expand(MODELS_DIR + "/comparison/charged_vs_uncharged/{arch}/model_best.pt",
+               arch=MODEL_ARCHITECTURES),
+        expand(MODELS_DIR + "/comparison/pairwise/{pair}/{arch}/model_best.pt",
+               pair=AA_PAIRS, arch=MODEL_ARCHITECTURES) if AA_PAIRS else []
 
 
 rule all_infer:

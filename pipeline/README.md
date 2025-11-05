@@ -21,9 +21,11 @@ pipeline/
 │   │   ├── grid_search.smk      # Hyperparameter tuning
 │   │   ├── train.smk            # Model training
 │   │   ├── inference.smk        # Model inference
-│   │   └── evaluate.smk         # Evaluation and summarization
+│   │   ├── evaluate.smk         # Evaluation and summarization
+│   │   └── compare_models.smk   # Multi-architecture comparison
 │   └── scripts/
-│       └── summarize_metrics.py # Aggregate metrics across samples
+│       ├── summarize_metrics.py    # Aggregate metrics across samples
+│       └── compare_architectures.py # Compare model architectures
 ├── profiles/                    # Cluster execution profiles
 │   ├── slurm/
 │   │   ├── config.yaml          # SLURM configuration
@@ -79,6 +81,7 @@ snakemake --cores 8
 
 ### 3. Run Specific Targets
 
+**Single Model Mode** (when `compare_models: false`):
 ```bash
 # Prepare data only
 snakemake --profile profiles/slurm all_prepare
@@ -92,7 +95,27 @@ snakemake --profile profiles/slurm all_train
 # Run inference only
 snakemake --profile profiles/slurm all_infer
 
-# Everything (default)
+# Single model analysis
+snakemake --profile profiles/slurm all_single_model
+```
+
+**Model Comparison Mode** (when `compare_models: true`):
+```bash
+# Prepare data (same as single mode)
+snakemake --profile profiles/slurm all_prepare
+
+# Grid search for all architectures
+snakemake --profile profiles/slurm all_grid_search_comparison
+
+# Train all architectures
+snakemake --profile profiles/slurm all_train_comparison
+
+# Full architecture comparison
+snakemake --profile profiles/slurm all_compare_models
+```
+
+**Default target** (automatically chooses based on config):
+```bash
 snakemake --profile profiles/slurm all
 ```
 
@@ -132,6 +155,54 @@ batch_size: 128
 learning_rate: 0.001
 early_stopping_patience: 5
 ```
+
+### Model Architecture Comparison
+
+The pipeline supports comparing multiple model architectures on the same data:
+
+```yaml
+# Enable multi-architecture comparison
+compare_models: true
+
+# Specify which models to compare
+models_to_compare:
+  - "ConvLSTMBase"       # Baseline (no dwell features)
+  - "ConvLSTMDwell"      # Original with dwell features
+  - "TransformerDwell"   # Transformer with self-attention (Priority 1)
+  - "ConvOnly"           # Pure CNN baseline (Priority 1)
+  - "TCNDwell"           # Temporal Convolutional Network (Priority 2)
+  - "ResNetDwell"        # Residual Network (Priority 2)
+```
+
+**Available Architectures:**
+- **ConvLSTMBase**: Baseline model (signal + sequence only, no dwell features)
+- **ConvLSTMDwell**: Full model with dwell time features
+- **TransformerDwell**: Transformer-based with multi-head self-attention
+- **ConvOnly**: Pure CNN with multi-scale convolutions
+- **TCNDwell**: Temporal Convolutional Network with dilated convolutions
+- **ResNetDwell**: Deep residual network with skip connections
+
+When `compare_models: true`, the pipeline will:
+1. Train each architecture separately on the same train/val splits
+2. Evaluate each architecture on the same test set
+3. Generate comparison tables and summary reports
+
+**Run Comparison:**
+```bash
+# Train all architectures
+snakemake --profile profiles/slurm all_train_comparison
+
+# Run full comparison pipeline
+snakemake --profile profiles/slurm all_compare_models
+
+# Or just use default 'all' target
+snakemake --profile profiles/slurm
+```
+
+**Comparison Outputs:**
+- `results/metrics/comparison/charged_vs_uncharged_architecture_comparison.tsv`: Table comparing all models
+- `results/metrics/comparison/charged_vs_uncharged_architecture_summary.txt`: Human-readable summary with rankings
+- Similar files for pairwise amino acid classification
 
 ### Grid Search
 

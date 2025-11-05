@@ -18,6 +18,13 @@ MODELS_DIR = config.get("models_dir", "results/models")
 INFER_DIR = config.get("inference_dir", "results/inference")
 METRICS_DIR = config.get("metrics_dir", "results/metrics")
 
+# Model architectures
+COMPARE_MODELS = config.get("compare_models", False)
+if COMPARE_MODELS:
+    MODEL_ARCHITECTURES = config.get("models_to_compare", ["ConvLSTMDwell"])
+else:
+    MODEL_ARCHITECTURES = [config.get("model", "ConvLSTMDwell")]
+
 
 def get_charged_samples():
     """Get samples labeled as charged or uncharged."""

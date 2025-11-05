@@ -86,7 +86,28 @@ val_split: 0.15           # Validation set fraction (test = 1 - train - val)
 # ============================================================================
 # Model Configuration
 # ============================================================================
+# Default model for single-model runs
 model: "ConvLSTMDwell"    # Model architecture: ConvLSTMDwell, ConvLSTMBase, etc.
+
+# Model comparison: Train and evaluate multiple architectures
+# Set compare_models: true to enable multi-architecture comparison
+compare_models: false
+
+# Models to compare (used when compare_models: true)
+# Available models:
+#   - ConvLSTMBase: Baseline (signal + sequence only)
+#   - ConvLSTMDwell: Full model with dwell features
+#   - TransformerDwell: Transformer with self-attention (Priority 1)
+#   - ConvOnly: Pure CNN baseline (Priority 1)
+#   - TCNDwell: Temporal Convolutional Network (Priority 2)
+#   - ResNetDwell: Residual Network (Priority 2)
+models_to_compare:
+  - "ConvLSTMBase"       # Baseline without dwell
+  - "ConvLSTMDwell"      # Original with dwell
+  - "TransformerDwell"   # Priority 1
+  - "ConvOnly"           # Priority 1
+  - "TCNDwell"           # Priority 2
+  - "ResNetDwell"        # Priority 2
 
 # Training hyperparameters (used if use_grid_search: false)
 epochs: 50
