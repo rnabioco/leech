@@ -79,7 +79,9 @@ def run_inference(
     model.eval()
 
     # Process reads
-    for leech_read in tqdm(iter_bam_with_pod5(bam_path, pod5_path, min_mapq=min_mapq), desc="Inference"):
+    for leech_read in tqdm(
+        iter_bam_with_pod5(bam_path, pod5_path, min_mapq=min_mapq), desc="Inference"
+    ):
         total_reads += 1
 
         # Get corresponding alignment from input BAM

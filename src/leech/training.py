@@ -195,9 +195,7 @@ class Trainer:
                 self.history["val_acc"].append(val_acc)
                 self.history["val_auc"].append(val_auc)
 
-                print(
-                    f"Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f} | Val AUC: {val_auc:.4f}"
-                )
+                print(f"Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f} | Val AUC: {val_auc:.4f}")
 
                 # Save best model
                 if val_acc > self.best_val_acc:

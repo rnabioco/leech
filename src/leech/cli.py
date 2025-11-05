@@ -117,9 +117,7 @@ def add_grid_search_parser(subparsers):
     parser = subparsers.add_parser(
         "grid-search", help="Run grid search over chunk contexts for model optimization"
     )
-    parser.add_argument(
-        "--train-data", required=True, type=Path, help="Training dataset (.npz)"
-    )
+    parser.add_argument("--train-data", required=True, type=Path, help="Training dataset (.npz)")
     parser.add_argument("--val-data", type=Path, default=None, help="Validation dataset (.npz)")
     parser.add_argument(
         "--model",

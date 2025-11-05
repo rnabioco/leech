@@ -199,9 +199,7 @@ class ConvOnly(nn.Module):
         feat_max = self.global_max_pool(feat_feat).squeeze(-1)
 
         # Concatenate all features
-        merged = torch.cat(
-            [signal_avg, signal_max, seq_avg, seq_max, feat_avg, feat_max], dim=1
-        )
+        merged = torch.cat([signal_avg, signal_max, seq_avg, seq_max, feat_avg, feat_max], dim=1)
 
         # Classifier
         logits = self.classifier(merged)  # (batch, 1)

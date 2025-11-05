@@ -63,22 +63,19 @@ def aggregate_metrics(df):
     """
     # Identify numeric metric columns (exclude metadata)
     meta_cols = ["architecture", "sample"]
-    metric_cols = [c for c in df.columns
-                   if c not in meta_cols and pd.api.types.is_numeric_dtype(df[c])]
+    metric_cols = [
+        c for c in df.columns if c not in meta_cols and pd.api.types.is_numeric_dtype(df[c])
+    ]
 
     # Aggregate statistics
-    agg_funcs = {
-        col: ["mean", "std", "min", "max"]
-        for col in metric_cols
-    }
+    agg_funcs = {col: ["mean", "std", "min", "max"] for col in metric_cols}
     agg_funcs["sample"] = "count"  # Count number of samples
 
     aggregated = df.groupby("architecture").agg(agg_funcs)
 
     # Flatten column names
     aggregated.columns = [
-        f"{col}_{stat}" if stat != "count" else "n_samples"
-        for col, stat in aggregated.columns
+        f"{col}_{stat}" if stat != "count" else "n_samples" for col, stat in aggregated.columns
     ]
 
     return aggregated.reset_index()
@@ -157,8 +154,9 @@ def create_summary_text(df_agg, comparison):
             best_value = df_agg.loc[best_idx, mean_col]
             best_std = df_agg.loc[best_idx, f"{base_metric}_std"]
 
-            lines.append(f"  {base_metric.upper()}: {best_arch} "
-                        f"({best_value:.4f} ± {best_std:.4f})")
+            lines.append(
+                f"  {base_metric.upper()}: {best_arch} ({best_value:.4f} ± {best_std:.4f})"
+            )
 
     lines.append("")
 
@@ -172,8 +170,7 @@ def create_summary_text(df_agg, comparison):
             f1_std = row.f1_std if hasattr(row, "f1_std") else None
 
             if f1_mean is not None and f1_std is not None:
-                lines.append(f"  {rank}. {row.architecture}: "
-                            f"F1 = {f1_mean:.4f} ± {f1_std:.4f}")
+                lines.append(f"  {rank}. {row.architecture}: F1 = {f1_mean:.4f} ± {f1_std:.4f}")
             else:
                 lines.append(f"  {rank}. {row.architecture}")
     else:
