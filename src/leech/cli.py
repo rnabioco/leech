@@ -57,7 +57,14 @@ def add_train_parser(subparsers):
         "--model",
         type=str,
         default="ConvLSTMDwell",
-        choices=["ConvLSTMDwell", "ConvLSTMBase"],
+        choices=[
+            "ConvLSTMDwell",
+            "ConvLSTMBase",
+            "TransformerDwell",
+            "ConvOnly",
+            "TCNDwell",
+            "ResNetDwell",
+        ],
         help="Model architecture",
     )
     parser.add_argument(
@@ -118,7 +125,14 @@ def add_grid_search_parser(subparsers):
         "--model",
         type=str,
         default="ConvLSTMDwell",
-        choices=["ConvLSTMDwell", "ConvLSTMBase"],
+        choices=[
+            "ConvLSTMDwell",
+            "ConvLSTMBase",
+            "TransformerDwell",
+            "ConvOnly",
+            "TCNDwell",
+            "ResNetDwell",
+        ],
         help="Model architecture",
     )
     parser.add_argument(
