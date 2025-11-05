@@ -205,3 +205,38 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Project-specific: leech
+# Snakemake
+.snakemake/
+*.snakemake.log
+
+# Nanopore data files
+*.pod5
+*.fast5
+*.bam
+*.bam.bai
+*.sam
+*.fasta
+*.fastq
+*.fa
+*.fq
+*.fastq.gz
+*.fq.gz
+
+# Model artifacts
+*.pt
+*.pth
+*.onnx
+*.pkl
+*.pickle
+
+# Training outputs
+models/
+results/
+logs/
+data/chunks/
+data/splits/
+
+# Experiment configs (optional - uncomment if you want to keep these in git)
+# workflow/config/*.yaml
