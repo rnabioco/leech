@@ -215,22 +215,43 @@ def run_train(args):
 
 def run_test(args):
     """Execute model testing."""
+    from leech.evaluation import evaluate_model
+
     print(f"Testing model: {args.model}")
     print(f"Test data: {args.test_data}")
     print(f"Output: {args.output}")
 
-    # TODO: Implement testing
-    print("Testing not yet implemented - coming next!")
+    # Run evaluation
+    metrics = evaluate_model(
+        model_path=args.model,
+        test_data_path=args.test_data,
+        output_path=args.output,
+        device=args.device,
+    )
+
+    print("\nTesting complete!")
+    print(f"Results saved to {args.output}")
 
 
 def run_infer(args):
     """Execute inference."""
+    from leech.inference import run_inference
+
     print(f"Running inference with model: {args.model}")
     print(f"Input: {args.pod5}, {args.bam}")
     print(f"Output: {args.output}")
 
-    # TODO: Implement inference
-    print("Inference not yet implemented - coming next!")
+    # Run inference
+    run_inference(
+        model_path=args.model,
+        pod5_path=args.pod5,
+        bam_path=args.bam,
+        output_path=args.output,
+        device=args.device,
+    )
+
+    print("\nInference complete!")
+    print(f"Predictions saved to {args.output}")
 
 
 def run_grid_search(args):
