@@ -14,6 +14,8 @@ Rationale:
 - Good generalization through residual learning
 """
 
+from typing import Union
+
 import torch
 import torch.nn as nn
 
@@ -56,6 +58,7 @@ class ResidualBlock1D(nn.Module):
         self.bn2 = nn.BatchNorm1d(out_channels)
 
         # Skip connection
+        self.skip: Union[nn.Sequential, nn.Identity]
         if stride != 1 or in_channels != out_channels:
             self.skip = nn.Sequential(
                 nn.Conv1d(in_channels, out_channels, kernel_size=1, stride=stride),
@@ -85,9 +88,9 @@ class ResidualBlock1D(nn.Module):
 
         # Add skip connection
         out += self.skip(identity)
-        out = self.relu(out)
+        result: torch.Tensor = self.relu(out)  # type: ignore[assignment]
 
-        return out
+        return result
 
 
 class ResNet1D(nn.Module):
@@ -146,8 +149,8 @@ class ResNet1D(nn.Module):
             Output tensor (batch, final_channels, reduced_length)
         """
         out = self.conv1(x)
-        out = self.res_blocks(out)
-        return out
+        result: torch.Tensor = self.res_blocks(out)  # type: ignore[assignment]
+        return result
 
 
 class ResNetDwell(nn.Module):
@@ -278,7 +281,7 @@ class ResNetDwell(nn.Module):
         merged = torch.cat([signal_avg, signal_max, seq_avg, seq_max, feat_avg, feat_max], dim=1)
 
         # Classifier
-        logits = self.classifier(merged)  # (batch, 1)
+        logits: torch.Tensor = self.classifier(merged)  # type: ignore[assignment]  # (batch, 1)
 
         return logits
 
