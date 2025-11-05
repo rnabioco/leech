@@ -171,9 +171,7 @@ def run_grid_point(
         # Extract best metrics
         best_val_acc = max(history["val_acc"]) if history["val_acc"] else 0.0
         best_val_auc = max(history["val_auc"]) if history["val_auc"] else 0.0
-        best_epoch = (
-            int(np.argmax(history["val_acc"]) + 1) if history["val_acc"] else epochs
-        )
+        best_epoch = int(np.argmax(history["val_acc"]) + 1) if history["val_acc"] else epochs
 
         result = {
             "left_context": left_context,

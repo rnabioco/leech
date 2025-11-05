@@ -110,7 +110,7 @@ if __name__ == "__main__":
 
         # If this isn't our last attempt, wait before retrying
         if attempt < max_retries - 1:
-            time.sleep(2 ** attempt)  # 1s, 2s, 4s
+            time.sleep(2**attempt)  # 1s, 2s, 4s
 
     # After all retries, return the last status
     print(status)

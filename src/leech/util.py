@@ -65,7 +65,11 @@ def load_model_from_checkpoint(
 
     # Create model
     model = get_model(
-        model_name, signal_len=signal_len, kmer_len=kmer_len, num_features=num_features, **model_kwargs
+        model_name,
+        signal_len=signal_len,
+        kmer_len=kmer_len,
+        num_features=num_features,
+        **model_kwargs,
     )
 
     # Load checkpoint

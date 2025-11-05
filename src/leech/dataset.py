@@ -81,9 +81,7 @@ class LeechDataset(Dataset):
         # Process sequence - one-hot encode
         sequence = chunk["sequence"]
         if len(sequence) != self.kmer_len:
-            raise ValueError(
-                f"Expected k-mer length {self.kmer_len}, got {len(sequence)}"
-            )
+            raise ValueError(f"Expected k-mer length {self.kmer_len}, got {len(sequence)}")
         sequence_tensor = encode_kmer(sequence)
 
         # Process features (for ConvLSTMDwell)
