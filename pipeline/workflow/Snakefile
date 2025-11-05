@@ -24,14 +24,13 @@ Usage:
 
 from pathlib import Path
 
+
 # Load configuration
 configfile: "../config/config.yaml"
 
 
 # Include common variables and functions
 include: "rules/common.smk"
-
-
 # Include modular rule files
 include: "rules/prepare.smk"
 include: "rules/grid_search.smk"
@@ -45,12 +44,17 @@ include: "rules/compare_models.smk"
 # Target rules
 # ============================================================================
 
+
 rule all:
     """Default target: run all analyses."""
     input:
         # Choose based on compare_models setting
-        METRICS_DIR + "/comparison/charged_vs_uncharged_architecture_comparison.tsv" if COMPARE_MODELS else METRICS_DIR + "/charged_vs_uncharged_summary.tsv",
-        METRICS_DIR + "/comparison/pairwise_architecture_comparison.tsv" if COMPARE_MODELS and AA_PAIRS else (METRICS_DIR + "/pairwise_summary.tsv" if AA_PAIRS else [])
+        METRICS_DIR + "/comparison/charged_vs_uncharged_architecture_comparison.tsv"
+        if COMPARE_MODELS
+        else METRICS_DIR + "/charged_vs_uncharged_summary.tsv",
+        METRICS_DIR + "/comparison/pairwise_architecture_comparison.tsv"
+        if COMPARE_MODELS and AA_PAIRS
+        else (METRICS_DIR + "/pairwise_summary.tsv" if AA_PAIRS else []),
 
 
 # Single model mode (compare_models: false)
@@ -58,14 +62,20 @@ rule all_single_model:
     """Run single model analysis (default model from config)."""
     input:
         # Charged vs uncharged
-        expand(METRICS_DIR + "/charged_vs_uncharged/{sample}_metrics.json",
-               sample=SAMPLES),
+        expand(
+            METRICS_DIR + "/charged_vs_uncharged/{sample}_metrics.json", sample=SAMPLES
+        ),
         # Pairwise amino acid classifiers
-        expand(METRICS_DIR + "/pairwise/{pair}/{sample}_metrics.json",
-               pair=AA_PAIRS, sample=SAMPLES) if AA_PAIRS else [],
+        expand(
+            METRICS_DIR + "/pairwise/{pair}/{sample}_metrics.json",
+            pair=AA_PAIRS,
+            sample=SAMPLES,
+        )
+        if AA_PAIRS
+        else [],
         # Summary reports
         METRICS_DIR + "/charged_vs_uncharged_summary.tsv",
-        METRICS_DIR + "/pairwise_summary.tsv" if AA_PAIRS else []
+        METRICS_DIR + "/pairwise_summary.tsv" if AA_PAIRS else [],
 
 
 # Multi-architecture comparison mode (compare_models: true)
@@ -75,55 +85,87 @@ rule all_compare_models:
         # Architecture comparison results
         METRICS_DIR + "/comparison/charged_vs_uncharged_architecture_comparison.tsv",
         METRICS_DIR + "/comparison/charged_vs_uncharged_architecture_summary.txt",
-        METRICS_DIR + "/comparison/pairwise_architecture_comparison.tsv" if AA_PAIRS else [],
-        METRICS_DIR + "/comparison/pairwise_architecture_summary.txt" if AA_PAIRS else []
+        METRICS_DIR + "/comparison/pairwise_architecture_comparison.tsv"
+        if AA_PAIRS
+        else [],
+        METRICS_DIR + "/comparison/pairwise_architecture_summary.txt"
+        if AA_PAIRS
+        else [],
 
 
 rule all_prepare:
     """Prepare all training chunks."""
     input:
-        expand(CHUNKS_DIR + "/{sample}/{split}.json",
-               sample=SAMPLES, split=["train", "val", "test"])
+        expand(
+            CHUNKS_DIR + "/{sample}/{split}.json",
+            sample=SAMPLES,
+            split=["train", "val", "test"],
+        ),
 
 
 rule all_grid_search:
     """Run all grid searches (single model mode)."""
     input:
         MODELS_DIR + "/grid_search/charged_vs_uncharged/best_params.json",
-        expand(MODELS_DIR + "/grid_search/pairwise/{pair}/best_params.json",
-               pair=AA_PAIRS) if AA_PAIRS else []
+        expand(
+            MODELS_DIR + "/grid_search/pairwise/{pair}/best_params.json", pair=AA_PAIRS
+        )
+        if AA_PAIRS
+        else [],
 
 
 rule all_grid_search_comparison:
     """Run grid searches for all architectures (comparison mode)."""
     input:
-        expand(MODELS_DIR + "/grid_search/charged_vs_uncharged/{arch}/best_params.json",
-               arch=MODEL_ARCHITECTURES),
-        expand(MODELS_DIR + "/grid_search/pairwise/{pair}/{arch}/best_params.json",
-               pair=AA_PAIRS, arch=MODEL_ARCHITECTURES) if AA_PAIRS else []
+        expand(
+            MODELS_DIR + "/grid_search/charged_vs_uncharged/{arch}/best_params.json",
+            arch=MODEL_ARCHITECTURES,
+        ),
+        expand(
+            MODELS_DIR + "/grid_search/pairwise/{pair}/{arch}/best_params.json",
+            pair=AA_PAIRS,
+            arch=MODEL_ARCHITECTURES,
+        )
+        if AA_PAIRS
+        else [],
 
 
 rule all_train:
     """Train all models (single model mode)."""
     input:
         MODELS_DIR + "/charged_vs_uncharged/model_best.pt",
-        expand(MODELS_DIR + "/pairwise/{pair}/model_best.pt",
-               pair=AA_PAIRS) if AA_PAIRS else []
+        expand(MODELS_DIR + "/pairwise/{pair}/model_best.pt", pair=AA_PAIRS)
+        if AA_PAIRS
+        else [],
 
 
 rule all_train_comparison:
     """Train all architectures (comparison mode)."""
     input:
-        expand(MODELS_DIR + "/comparison/charged_vs_uncharged/{arch}/model_best.pt",
-               arch=MODEL_ARCHITECTURES),
-        expand(MODELS_DIR + "/comparison/pairwise/{pair}/{arch}/model_best.pt",
-               pair=AA_PAIRS, arch=MODEL_ARCHITECTURES) if AA_PAIRS else []
+        expand(
+            MODELS_DIR + "/comparison/charged_vs_uncharged/{arch}/model_best.pt",
+            arch=MODEL_ARCHITECTURES,
+        ),
+        expand(
+            MODELS_DIR + "/comparison/pairwise/{pair}/{arch}/model_best.pt",
+            pair=AA_PAIRS,
+            arch=MODEL_ARCHITECTURES,
+        )
+        if AA_PAIRS
+        else [],
 
 
 rule all_infer:
     """Run all inference."""
     input:
-        expand(INFER_DIR + "/charged_vs_uncharged/{sample}_predictions.bam",
-               sample=SAMPLES),
-        expand(INFER_DIR + "/pairwise/{pair}/{sample}_predictions.bam",
-               pair=AA_PAIRS, sample=SAMPLES) if AA_PAIRS else []
+        expand(
+            INFER_DIR + "/charged_vs_uncharged/{sample}_predictions.bam",
+            sample=SAMPLES,
+        ),
+        expand(
+            INFER_DIR + "/pairwise/{pair}/{sample}_predictions.bam",
+            pair=AA_PAIRS,
+            sample=SAMPLES,
+        )
+        if AA_PAIRS
+        else [],
