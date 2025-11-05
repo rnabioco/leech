@@ -14,8 +14,6 @@ Rationale:
 - Good generalization through residual learning
 """
 
-from typing import Union
-
 import torch
 import torch.nn as nn
 
@@ -58,7 +56,7 @@ class ResidualBlock1D(nn.Module):
         self.bn2 = nn.BatchNorm1d(out_channels)
 
         # Skip connection
-        self.skip: Union[nn.Sequential, nn.Identity]
+        self.skip: nn.Sequential | nn.Identity
         if stride != 1 or in_channels != out_channels:
             self.skip = nn.Sequential(
                 nn.Conv1d(in_channels, out_channels, kernel_size=1, stride=stride),
