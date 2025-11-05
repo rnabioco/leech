@@ -5,8 +5,9 @@ Based on concepts from Remora but rewritten for modern dependencies and
 explicit dwell time integration.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 import numpy as np
 import pysam

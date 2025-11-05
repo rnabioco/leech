@@ -93,8 +93,9 @@ def prepare_chunks_with_context(
             base_idx: int,
             signal_context: tuple[int, int] = (left_context, right_context),
             kmer_context: int = kmer_context,
+            _original_get_chunk=original_get_chunk,
         ):
-            return original_get_chunk(
+            return _original_get_chunk(
                 base_idx, signal_context=signal_context, kmer_context=kmer_context
             )
 
