@@ -63,7 +63,7 @@ class LeechRead:
         base_idx: int,
         signal_context: tuple[int, int] = (200, 200),
         kmer_context: int = 5,
-    ) -> dict[str, np.ndarray] | None:
+    ) -> dict[str, np.ndarray | str | int | None] | None:
         """
         Extract a training chunk centered on a specific base.
 
@@ -148,7 +148,7 @@ def iter_bam_with_pod5(
     pod5_path: Path,
     reference_fasta: Path | None = None,
     min_mapq: int = 0,
-    require_tags: list[str] = None,
+    require_tags: list[str] | None = None,
 ) -> Iterator[LeechRead]:
     """
     Iterate over aligned reads, loading signal from POD5.
@@ -182,8 +182,14 @@ def iter_bam_with_pod5(
             # Extract move table
             move_table = extract_move_table(aln)
 
+            # Check for required query fields
+            read_id = aln.query_name
+            read_seq = aln.query_sequence
+            if read_id is None or read_seq is None:
+                continue
+
             # Read signal from POD5
-            raw_signal, pod5_metadata = read_pod5_signal(pod5_path, aln.query_name)
+            raw_signal, pod5_metadata = read_pod5_signal(pod5_path, read_id)
 
             # Normalize signal
             norm_signal, norm_params = normalize_signal(raw_signal, method="median_mad")
@@ -208,8 +214,8 @@ def iter_bam_with_pod5(
             }
 
             yield LeechRead(
-                read_id=aln.query_name,
-                sequence=aln.query_sequence,
+                read_id=read_id,
+                sequence=read_seq,
                 signal=norm_signal,
                 seq_to_sig_map=seq_to_sig_map,
                 dwells=dwells,
@@ -230,7 +236,7 @@ def extract_training_chunks(
     motif: str | None = None,
     motif_offset: int = 0,
     label: int = 0,
-) -> list[dict[str, np.ndarray]]:
+) -> list[dict[str, np.ndarray | str | int | None]]:
     """
     Extract all training chunks from a read, optionally filtered by motif.
 
@@ -250,7 +256,7 @@ def extract_training_chunks(
 
     # Find focus bases (either all or motif matches)
     if motif is None:
-        focus_bases = range(5, leech_read.num_bases - 5)  # Avoid edges
+        focus_bases = list(range(5, leech_read.num_bases - 5))  # Avoid edges
     else:
         # Find motif occurrences
         focus_bases = []

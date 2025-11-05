@@ -6,6 +6,7 @@ explicit dwell time integration.
 """
 
 from dataclasses import dataclass
+from typing import Any, Callable
 
 import numpy as np
 import pysam
@@ -75,7 +76,7 @@ def extract_move_table(alignment: pysam.AlignedSegment) -> MoveTable:
         raise ValueError(f"Read {alignment.query_name} missing 'ns' tag")
 
     # Parse move table: first element is stride, rest is the move array
-    mv_tag = alignment.get_tag("mv")
+    mv_tag: Any = alignment.get_tag("mv")
     stride = int(mv_tag[0])
     moves = np.array(mv_tag[1:], dtype=np.int8)
 
@@ -83,10 +84,14 @@ def extract_move_table(alignment: pysam.AlignedSegment) -> MoveTable:
     num_samples = int(alignment.get_tag("ns"))
     trim_offset = int(alignment.get_tag("ts")) if alignment.has_tag("ts") else 0
 
+    read_id = alignment.query_name
+    if read_id is None:
+        raise ValueError("Alignment has no query_name")
+
     return MoveTable(
         stride=stride,
         moves=moves,
-        read_id=alignment.query_name,
+        read_id=read_id,
         num_samples=num_samples,
         trim_offset=trim_offset,
     )
@@ -132,19 +137,20 @@ def compute_signal_levels(
     num_bases = len(seq_to_sig_map) - 1
     levels = np.zeros(num_bases, dtype=np.float32)
 
-    stat_func = {
+    stat_funcs: dict[str, Callable[[np.ndarray], Any]] = {
         "mean": np.mean,
         "median": np.median,
         "std": np.std,
         "min": np.min,
         "max": np.max,
-    }[stat]
+    }
+    stat_func = stat_funcs[stat]
 
     for i in range(num_bases):
         start_idx = seq_to_sig_map[i]
         end_idx = seq_to_sig_map[i + 1]
         base_signal = signal[start_idx:end_idx]
-        levels[i] = stat_func(base_signal) if len(base_signal) > 0 else 0.0
+        levels[i] = float(stat_func(base_signal)) if len(base_signal) > 0 else 0.0
 
     return levels
 

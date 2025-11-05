@@ -68,9 +68,9 @@ def evaluate_model(
 
     # Run evaluation
     print("\nRunning evaluation...")
-    all_labels = []
-    all_probs = []
-    all_preds = []
+    all_labels: list[float] = []
+    all_probs: list[float] = []
+    all_preds: list[int] = []
 
     model.eval()
     with torch.no_grad():
@@ -96,16 +96,16 @@ def evaluate_model(
             all_preds.extend(preds.flatten())
 
     # Compute metrics
-    all_labels = np.array(all_labels)
-    all_probs = np.array(all_probs)
-    all_preds = np.array(all_preds)
+    all_labels_arr = np.array(all_labels)
+    all_probs_arr = np.array(all_probs)
+    all_preds_arr = np.array(all_preds)
 
-    metrics = compute_metrics(all_labels, all_preds, all_probs)
+    metrics = compute_metrics(all_labels_arr, all_preds_arr, all_probs_arr)
 
     # Add metadata
     metrics["model_path"] = str(model_path)
     metrics["test_data_path"] = str(test_data_path)
-    metrics["num_samples"] = len(all_labels)
+    metrics["num_samples"] = len(all_labels_arr)
     metrics["model_type"] = model_type
 
     # Print and save

@@ -89,12 +89,16 @@ def prepare_chunks_with_context(
         # Temporarily modify get_chunk to use custom context
         original_get_chunk = read.get_chunk
 
-        def custom_get_chunk(base_idx, _get_chunk=original_get_chunk):
-            return _get_chunk(
-                base_idx, signal_context=(left_context, right_context), kmer_context=kmer_context
+        def custom_get_chunk(
+            base_idx: int,
+            signal_context: tuple[int, int] = (left_context, right_context),
+            kmer_context: int = kmer_context,
+        ):
+            return original_get_chunk(
+                base_idx, signal_context=signal_context, kmer_context=kmer_context
             )
 
-        read.get_chunk = custom_get_chunk
+        read.get_chunk = custom_get_chunk  # type: ignore[method-assign]
 
         # Extract chunks
         read_chunks = extract_training_chunks(

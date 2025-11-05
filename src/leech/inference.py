@@ -98,7 +98,7 @@ def run_inference(
         # Find positions to predict
         if motif is None:
             # Predict all positions (avoid edges)
-            positions = range(kmer_context, leech_read.num_bases - kmer_context)
+            positions = list(range(kmer_context, leech_read.num_bases - kmer_context))
         else:
             # Find motif positions
             positions = []
@@ -179,17 +179,25 @@ def load_predictions_from_bam(bam_path: Path) -> dict:
     Returns:
         Dictionary mapping read_id -> list of (position, probability) tuples
     """
-    predictions = {}
+    predictions: dict[str, list[tuple]] = {}
 
     with pysam.AlignmentFile(str(bam_path), "rb") as bam:
         for aln in bam:
             if aln.has_tag("MP") and aln.has_tag("ML"):
-                positions = aln.get_tag("MP")
-                ml_scores = aln.get_tag("ML")
+                positions_raw = aln.get_tag("MP")
+                ml_scores_raw = aln.get_tag("ML")
+
+                # Ensure we have array types
+                if not isinstance(positions_raw, (list, np.ndarray)):
+                    continue
+                if not isinstance(ml_scores_raw, (list, np.ndarray)):
+                    continue
 
                 # Convert ML scores back to probabilities
-                probs = [score / 255.0 for score in ml_scores]
+                probs = [float(score) / 255.0 for score in ml_scores_raw]
 
-                predictions[aln.query_name] = list(zip(positions, probs, strict=False))
+                read_name = aln.query_name
+                if read_name is not None:
+                    predictions[read_name] = list(zip(positions_raw, probs, strict=False))
 
     return predictions

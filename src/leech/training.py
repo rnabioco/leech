@@ -59,7 +59,7 @@ class Trainer:
         self.best_epoch = 0
 
         # History
-        self.history = {
+        self.history: dict[str, list[float]] = {
             "train_loss": [],
             "train_acc": [],
             "val_loss": [],
@@ -79,8 +79,8 @@ class Trainer:
         """
         self.model.train()
         total_loss = 0.0
-        all_preds = []
-        all_labels = []
+        all_preds: list[float] = []
+        all_labels: list[float] = []
 
         for batch in tqdm(self.train_loader, desc="Training", leave=False):
             # Move to device
@@ -131,8 +131,8 @@ class Trainer:
 
         self.model.eval()
         total_loss = 0.0
-        all_preds = []
-        all_labels = []
+        all_preds: list[float] = []
+        all_labels: list[float] = []
 
         with torch.no_grad():
             for batch in tqdm(self.val_loader, desc="Validation", leave=False):
