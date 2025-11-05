@@ -4,18 +4,37 @@ Model architectures for leech.
 Available models:
 - ConvLSTMBase: Baseline model (signal + sequence only)
 - ConvLSTMDwell: Full model with dwell time features
+- TransformerDwell: Transformer-based model with self-attention (Priority 1)
+- ConvOnly: Pure CNN baseline with multi-scale convolutions (Priority 1)
+- TCNDwell: Temporal Convolutional Network with dilated convolutions (Priority 2)
+- ResNetDwell: Residual Network with skip connections (Priority 2)
 """
 
 from leech.models.conv_lstm_base import ConvLSTMBase
 from leech.models.conv_lstm_dwell import ConvLSTMDwell
+from leech.models.transformer_dwell import TransformerDwell
+from leech.models.conv_only import ConvOnly
+from leech.models.tcn_dwell import TCNDwell
+from leech.models.resnet_dwell import ResNetDwell
 
-__all__ = ["ConvLSTMBase", "ConvLSTMDwell"]
+__all__ = [
+    "ConvLSTMBase",
+    "ConvLSTMDwell",
+    "TransformerDwell",
+    "ConvOnly",
+    "TCNDwell",
+    "ResNetDwell",
+]
 
 
 # Model registry for dynamic loading
 MODEL_REGISTRY = {
     "ConvLSTMBase": ConvLSTMBase,
     "ConvLSTMDwell": ConvLSTMDwell,
+    "TransformerDwell": TransformerDwell,
+    "ConvOnly": ConvOnly,
+    "TCNDwell": TCNDwell,
+    "ResNetDwell": ResNetDwell,
 }
 
 
