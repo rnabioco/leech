@@ -89,8 +89,8 @@ def prepare_chunks_with_context(
         # Temporarily modify get_chunk to use custom context
         original_get_chunk = read.get_chunk
 
-        def custom_get_chunk(base_idx):
-            return original_get_chunk(
+        def custom_get_chunk(base_idx, _get_chunk=original_get_chunk):
+            return _get_chunk(
                 base_idx, signal_context=(left_context, right_context), kmer_context=kmer_context
             )
 
@@ -280,7 +280,7 @@ def run_grid_search(config: GridSearchConfig) -> Path:
     successful_results = [r for r in results if r.get("status") == "success"]
     if successful_results:
         best_result = max(successful_results, key=lambda x: x.get("best_val_acc", 0))
-        print(f"\nBest configuration:")
+        print("\nBest configuration:")
         print(f"  Left context: {best_result['left_context']}")
         print(f"  Right context: {best_result['right_context']}")
         print(f"  Validation accuracy: {best_result['best_val_acc']:.4f}")
