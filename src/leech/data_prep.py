@@ -317,3 +317,97 @@ def one_hot_encode_sequence(seq: str, kmer_len: int = 1) -> np.ndarray:
                     encoding[k * 4 + base, pos] = 1.0
 
     return encoding
+
+
+def save_chunks(chunks: list[dict], output_path: Path) -> None:
+    """
+    Save training chunks to compressed numpy format.
+
+    Args:
+        chunks: List of chunk dictionaries from extract_training_chunks
+        output_path: Output file path (.npz)
+
+    Format:
+        Saves as .npz with arrays:
+        - signals: (N, signal_len) raw signal chunks
+        - sequences: (N,) string array of k-mer sequences
+        - dwells: (N, kmer_len) dwell times
+        - features: (N, num_features, kmer_len) feature arrays
+        - labels: (N,) integer labels
+        - read_ids: (N,) string array of read IDs
+        - base_indices: (N,) base indices
+    """
+    if not chunks:
+        raise ValueError("No chunks to save")
+
+    # Collect arrays
+    signals = []
+    sequences = []
+    dwells = []
+    features = []
+    labels = []
+    read_ids = []
+    base_indices = []
+
+    for chunk in chunks:
+        signals.append(chunk["signal"])
+        sequences.append(chunk["sequence"])
+        dwells.append(chunk["dwell"])
+        features.append(chunk["features"])
+        labels.append(chunk["label"] if chunk["label"] is not None else -1)
+        read_ids.append(chunk["read_id"])
+        base_indices.append(chunk["base_idx"])
+
+    # Convert to arrays
+    # Signals may have variable length, so we'll save them as object array
+    signals_arr = np.array(signals, dtype=object)
+    sequences_arr = np.array(sequences, dtype=str)
+    dwells_arr = np.array(dwells, dtype=object)
+    features_arr = np.array(features, dtype=object)
+    labels_arr = np.array(labels, dtype=np.int64)
+    read_ids_arr = np.array(read_ids, dtype=str)
+    base_indices_arr = np.array(base_indices, dtype=np.int64)
+
+    # Save
+    np.savez_compressed(
+        output_path,
+        signals=signals_arr,
+        sequences=sequences_arr,
+        dwells=dwells_arr,
+        features=features_arr,
+        labels=labels_arr,
+        read_ids=read_ids_arr,
+        base_indices=base_indices_arr,
+    )
+
+    print(f"Saved {len(chunks)} chunks to {output_path}")
+
+
+def load_chunks(input_path: Path) -> list[dict]:
+    """
+    Load training chunks from compressed numpy format.
+
+    Args:
+        input_path: Path to .npz file
+
+    Returns:
+        List of chunk dictionaries compatible with extract_training_chunks output
+    """
+    data = np.load(input_path, allow_pickle=True)
+
+    chunks = []
+    n_chunks = len(data["labels"])
+
+    for i in range(n_chunks):
+        chunk = {
+            "signal": data["signals"][i],
+            "sequence": str(data["sequences"][i]),
+            "dwell": data["dwells"][i],
+            "features": data["features"][i],
+            "label": int(data["labels"][i]) if data["labels"][i] >= 0 else None,
+            "read_id": str(data["read_ids"][i]),
+            "base_idx": int(data["base_indices"][i]),
+        }
+        chunks.append(chunk)
+
+    return chunks

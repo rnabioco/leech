@@ -105,10 +105,60 @@ def add_infer_parser(subparsers):
     parser.set_defaults(func=run_infer)
 
 
+def add_grid_search_parser(subparsers):
+    """Add 'grid-search' command for chunk context optimization."""
+    parser = subparsers.add_parser(
+        "grid-search", help="Run grid search over chunk contexts for model optimization"
+    )
+    parser.add_argument(
+        "--train-data", required=True, type=Path, help="Training dataset (.npz)"
+    )
+    parser.add_argument("--val-data", type=Path, default=None, help="Validation dataset (.npz)")
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="ConvLSTMDwell",
+        choices=["ConvLSTMDwell", "ConvLSTMBase"],
+        help="Model architecture",
+    )
+    parser.add_argument(
+        "--output-dir", "-o", required=True, type=Path, help="Output directory for grid results"
+    )
+    parser.add_argument(
+        "--context-grid",
+        type=str,
+        required=True,
+        help="Comma-separated context values to test (e.g., '200,500,1000,2000,5000')",
+    )
+    parser.add_argument(
+        "--left-contexts",
+        type=str,
+        default=None,
+        help="Override left contexts (comma-separated). If not provided, uses --context-grid",
+    )
+    parser.add_argument(
+        "--right-contexts",
+        type=str,
+        default=None,
+        help="Override right contexts (comma-separated). If not provided, uses --context-grid",
+    )
+    parser.add_argument(
+        "--kmer-context", type=int, default=5, help="K-mer context for sequence encoding"
+    )
+    parser.add_argument("--epochs", type=int, default=50, help="Number of training epochs")
+    parser.add_argument("--batch-size", type=int, default=128, help="Batch size")
+    parser.add_argument("--learning-rate", type=float, default=0.001, help="Learning rate")
+    parser.add_argument(
+        "--device", type=str, default="cuda", choices=["cuda", "cpu"], help="Device for training"
+    )
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
+    parser.set_defaults(func=run_grid_search)
+
+
 def run_prepare(args):
     """Execute data preparation."""
 
-    from leech.data_prep import extract_training_chunks, iter_bam_with_pod5
+    from leech.data_prep import extract_training_chunks, iter_bam_with_pod5, save_chunks
 
     print(f"Preparing data from {args.pod5} and {args.bam}")
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -122,20 +172,45 @@ def run_prepare(args):
 
     print(f"Extracted {len(chunks)} training chunks")
 
-    # Save chunks (implement serialization)
+    # Save chunks
     output_file = args.output_dir / "chunks.npz"
-    # TODO: Implement chunk serialization
+    save_chunks(chunks, output_file)
     print(f"Saved to {output_file}")
 
 
 def run_train(args):
     """Execute model training."""
+    from leech.training import train_model
+
     print(f"Training {args.model} model")
     print(f"Train data: {args.train_data}")
     print(f"Output: {args.output_dir}")
 
-    # TODO: Implement training loop
-    print("Training not yet implemented - coming next!")
+    # Load model config if provided
+    model_kwargs = {}
+    if args.model_config is not None:
+        import json
+
+        with open(args.model_config) as f:
+            model_kwargs = json.load(f)
+
+    # Train model
+    history = train_model(
+        train_data_path=args.train_data,
+        val_data_path=args.val_data,
+        model_name=args.model,
+        output_dir=args.output_dir,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        learning_rate=args.learning_rate,
+        device=args.device,
+        seed=args.seed,
+        **model_kwargs,
+    )
+
+    print("\nTraining complete!")
+    print(f"Best validation accuracy: {history.get('val_acc', [0])[-1]:.4f}")
+    print(f"Models saved to {args.output_dir}")
 
 
 def run_test(args):
@@ -158,6 +233,50 @@ def run_infer(args):
     print("Inference not yet implemented - coming next!")
 
 
+def run_grid_search(args):
+    """Execute grid search over chunk contexts."""
+    from leech.gridsearch import GridSearchConfig, run_grid_search
+
+    # Parse context grids
+    if args.left_contexts is not None:
+        left_contexts = [int(x.strip()) for x in args.left_contexts.split(",")]
+    else:
+        left_contexts = [int(x.strip()) for x in args.context_grid.split(",")]
+
+    if args.right_contexts is not None:
+        right_contexts = [int(x.strip()) for x in args.right_contexts.split(",")]
+    else:
+        right_contexts = [int(x.strip()) for x in args.context_grid.split(",")]
+
+    print(f"Starting grid search with {len(left_contexts)} x {len(right_contexts)} grid points")
+    print(f"Left contexts: {left_contexts}")
+    print(f"Right contexts: {right_contexts}")
+
+    # Create config
+    config = GridSearchConfig(
+        train_data_path=args.train_data,
+        val_data_path=args.val_data,
+        model_name=args.model,
+        output_dir=args.output_dir,
+        left_contexts=left_contexts,
+        right_contexts=right_contexts,
+        kmer_context=args.kmer_context,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        learning_rate=args.learning_rate,
+        device=args.device,
+        seed=args.seed,
+    )
+
+    # Run grid search
+    summary_path = run_grid_search(config)
+
+    print(f"\n{'=' * 80}")
+    print("Grid search complete!")
+    print(f"Results saved to: {summary_path}")
+    print(f"{'=' * 80}")
+
+
 def main():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -175,6 +294,7 @@ def main():
     add_train_parser(subparsers)
     add_test_parser(subparsers)
     add_infer_parser(subparsers)
+    add_grid_search_parser(subparsers)
 
     # Parse and execute
     args = parser.parse_args()
