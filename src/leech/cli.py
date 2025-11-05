@@ -234,7 +234,7 @@ def run_test(args):
     print(f"Output: {args.output}")
 
     # Run evaluation
-    metrics = evaluate_model(
+    evaluate_model(
         model_path=args.model,
         test_data_path=args.test_data,
         output_path=args.output,

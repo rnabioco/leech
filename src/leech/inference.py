@@ -52,7 +52,7 @@ def run_inference(
     signal_len = config["signal_len"]
     kmer_len = config["kmer_len"]
     model_type = config["model_name"]
-    num_features = config["num_features"]
+    config["num_features"]
 
     # Calculate context from signal_len (assumes symmetric)
     signal_context = (signal_len // 2, signal_len // 2)
@@ -163,7 +163,7 @@ def run_inference(
     bam_in.close()
     bam_out.close()
 
-    print(f"\nInference complete!")
+    print("\nInference complete!")
     print(f"Reads processed: {total_reads}")
     print(f"Total predictions: {total_predictions}")
     print(f"Output written to: {output_path}")
@@ -190,6 +190,6 @@ def load_predictions_from_bam(bam_path: Path) -> dict:
                 # Convert ML scores back to probabilities
                 probs = [score / 255.0 for score in ml_scores]
 
-                predictions[aln.query_name] = list(zip(positions, probs))
+                predictions[aln.query_name] = list(zip(positions, probs, strict=False))
 
     return predictions

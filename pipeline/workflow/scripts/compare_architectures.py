@@ -9,8 +9,12 @@ This script aggregates metrics across architectures and generates:
 
 import json
 from pathlib import Path
-import pandas as pd
+
 import numpy as np
+import pandas as pd
+
+# Snakemake injects the 'snakemake' object at runtime
+snakemake = snakemake  # type: ignore # noqa: F821
 
 
 def load_architecture_metrics(metrics_dir, architectures):

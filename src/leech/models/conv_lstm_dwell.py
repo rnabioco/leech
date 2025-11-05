@@ -119,7 +119,7 @@ class ConvLSTMDwell(nn.Module):
         Returns:
             Logits for binary classification (batch, 1)
         """
-        batch_size = signal.size(0)
+        signal.size(0)
 
         # Signal branch
         # (batch, signal_len) -> (batch, 1, signal_len)

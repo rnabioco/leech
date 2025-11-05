@@ -8,7 +8,11 @@ creates a tab-separated summary table.
 
 import json
 from pathlib import Path
+
 import pandas as pd
+
+# Snakemake injects the 'snakemake' object at runtime
+snakemake = snakemake  # type: ignore # noqa: F821
 
 
 def load_metrics(metrics_dir):
