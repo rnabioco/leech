@@ -1,0 +1,90 @@
+"""
+Leech Snakemake Pipeline
+========================
+
+Trains models for:
+1. Charged vs uncharged tRNA classification
+2. Pairwise amino acid classification
+
+Supports both SLURM and LSF with GPU acceleration.
+
+Usage:
+    # Dry run
+    snakemake --profile profiles/slurm -n
+
+    # Run with SLURM
+    snakemake --profile profiles/slurm
+
+    # Run with LSF
+    snakemake --profile profiles/lsf
+
+    # Run locally (for testing)
+    snakemake --cores 8
+"""
+
+from pathlib import Path
+
+# Load configuration
+configfile: "../config/config.yaml"
+
+
+# Include common variables and functions
+include: "rules/common.smk"
+
+
+# Include modular rule files
+include: "rules/prepare.smk"
+include: "rules/grid_search.smk"
+include: "rules/train.smk"
+include: "rules/inference.smk"
+include: "rules/evaluate.smk"
+
+
+# ============================================================================
+# Target rules
+# ============================================================================
+
+rule all:
+    """Default target: run all analyses."""
+    input:
+        # Charged vs uncharged
+        expand(METRICS_DIR + "/charged_vs_uncharged/{sample}_metrics.json",
+               sample=SAMPLES),
+        # Pairwise amino acid classifiers
+        expand(METRICS_DIR + "/pairwise/{pair}/{sample}_metrics.json",
+               pair=AA_PAIRS, sample=SAMPLES) if AA_PAIRS else [],
+        # Summary reports
+        METRICS_DIR + "/charged_vs_uncharged_summary.tsv",
+        METRICS_DIR + "/pairwise_summary.tsv" if AA_PAIRS else []
+
+
+rule all_prepare:
+    """Prepare all training chunks."""
+    input:
+        expand(CHUNKS_DIR + "/{sample}/{split}.json",
+               sample=SAMPLES, split=["train", "val", "test"])
+
+
+rule all_grid_search:
+    """Run all grid searches."""
+    input:
+        MODELS_DIR + "/grid_search/charged_vs_uncharged/best_params.json",
+        expand(MODELS_DIR + "/grid_search/pairwise/{pair}/best_params.json",
+               pair=AA_PAIRS) if AA_PAIRS else []
+
+
+rule all_train:
+    """Train all models."""
+    input:
+        MODELS_DIR + "/charged_vs_uncharged/model_best.pt",
+        expand(MODELS_DIR + "/pairwise/{pair}/model_best.pt",
+               pair=AA_PAIRS) if AA_PAIRS else []
+
+
+rule all_infer:
+    """Run all inference."""
+    input:
+        expand(INFER_DIR + "/charged_vs_uncharged/{sample}_predictions.bam",
+               sample=SAMPLES),
+        expand(INFER_DIR + "/pairwise/{pair}/{sample}_predictions.bam",
+               pair=AA_PAIRS, sample=SAMPLES) if AA_PAIRS else []

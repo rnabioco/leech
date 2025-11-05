@@ -1,0 +1,73 @@
+# LSF Cluster Profile for Leech Pipeline
+# ========================================
+
+# Cluster execution
+cluster: "bsub"
+cluster-status: "profiles/lsf/lsf_status.py"
+cluster-cancel: "bkill"
+
+# Job submission
+jobs: 100
+latency-wait: 60
+
+# Rerun settings
+restart-times: 3
+max-jobs-per-second: 10
+
+# Default resources for rules without explicit resources
+default-resources:
+  - queue="gpuqueue"
+  - mem_mb=8000
+  - runtime=120
+  - gpu=0
+
+# Resource mapping from Snakemake resources to LSF directives
+set-resources:
+  # Grid search rules need more time and GPU
+  - grid_search_charged_vs_uncharged:runtime=1440
+  - grid_search_charged_vs_uncharged:gpu=1
+  - grid_search_charged_vs_uncharged:mem_mb=16000
+
+  - grid_search_pairwise_aa:runtime=1440
+  - grid_search_pairwise_aa:gpu=1
+  - grid_search_pairwise_aa:mem_mb=16000
+
+  # Training rules
+  - train_charged_vs_uncharged:runtime=480
+  - train_charged_vs_uncharged:gpu=1
+  - train_charged_vs_uncharged:mem_mb=16000
+
+  - train_pairwise_aa:runtime=480
+  - train_pairwise_aa:gpu=1
+  - train_pairwise_aa:mem_mb=16000
+
+  # Inference rules
+  - infer_charged_vs_uncharged:runtime=240
+  - infer_charged_vs_uncharged:gpu=1
+  - infer_charged_vs_uncharged:mem_mb=8000
+
+  - infer_pairwise_aa:runtime=240
+  - infer_pairwise_aa:gpu=1
+  - infer_pairwise_aa:mem_mb=8000
+
+  # Test/evaluation rules
+  - test_charged_vs_uncharged:runtime=60
+  - test_charged_vs_uncharged:gpu=1
+  - test_charged_vs_uncharged:mem_mb=4000
+
+  - test_pairwise_aa:runtime=60
+  - test_pairwise_aa:gpu=1
+  - test_pairwise_aa:mem_mb=4000
+
+# LSF submission script template
+# Variables available:
+# - {resources.mem_mb}: memory in MB
+# - {resources.runtime}: time in minutes
+# - {resources.gpu}: number of GPUs
+# - {resources.gpu_mem_mb}: GPU memory in MB
+# - {threads}: number of threads/CPUs
+# - {rule}: rule name
+# - {jobid}: job ID
+# - {log}: log file path
+
+jobscript: "profiles/lsf/lsf_submit.sh"
