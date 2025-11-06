@@ -314,7 +314,7 @@ def main():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
         prog="leech",
-        description="Learning Enhanced Aminoacylation Classification from Hanopore signals",
+        description="Enhanced classification from nanopore signals",
     )
     parser.add_argument("--version", action="version", version="%(prog)s 0.1.0")
 
