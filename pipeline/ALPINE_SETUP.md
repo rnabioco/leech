@@ -1,6 +1,8 @@
 # Running Leech Pipeline on Alpine Cluster
 
-This guide explains how to run the Leech Snakemake pipeline on CU Boulder's Alpine cluster.
+This guide explains how to run the Leech Snakemake pipeline on CU Boulder's Alpine cluster with SLURM scheduler.
+
+> **Note**: This guide is for Alpine (SLURM). For Bodhi (LSF), see [BODHI_SETUP.md](BODHI_SETUP.md).
 
 ## Alpine Cluster Overview
 
@@ -57,17 +59,21 @@ Alpine has three primary storage locations with different characteristics:
 
 This pipeline is designed to work in a **mixed cluster environment**:
 
-### Bodhi Cluster (Local)
+### Bodhi Cluster (Local, LSF)
+- **Scheduler**: LSF (Load Sharing Facility)
 - **Storage**: Essentially unlimited home directory space
 - **Structure**: Everything runs from `/home/$USER`
 - **Flexibility**: No strict quotas or I/O restrictions
 - **Configuration**: Simple - can use relative paths from home
+- **Guide**: See [BODHI_SETUP.md](BODHI_SETUP.md)
 
-### Alpine Cluster (CU Boulder)
+### Alpine Cluster (CU Boulder, SLURM)
+- **Scheduler**: SLURM (Simple Linux Utility for Resource Management)
 - **Storage**: Strict quotas and separation of concerns
 - **Structure**: Split between `/home`, `/projects`, and `/scratch/alpine`
 - **Restrictions**: Intensive I/O MUST use `/scratch/alpine`
 - **Configuration**: Requires careful path management
+- **Guide**: This document
 
 ### Configuration Strategy
 

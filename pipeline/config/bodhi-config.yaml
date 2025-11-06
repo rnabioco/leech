@@ -126,22 +126,36 @@ grid_search_epochs: 20
 # Cluster Settings - Bodhi
 # ============================================================================
 cluster:
-  # Bodhi has less restrictive resource management
-  account: ""  # Not typically required on Bodhi
+  # Bodhi LSF Configuration
+  # Adjust these based on your Bodhi cluster setup
 
-  default_partition: "general"  # Adjust based on your Bodhi setup
-  gpu_partition: "gpu"
+  # LSF Queues (check with: bqueues)
+  default_queue: "general"     # Default queue for CPU jobs
+  gpu_queue: "gpuqueue"        # Queue for GPU jobs
+  test_queue: "test"           # Quick test queue (if available)
 
-  default_qos: "normal"
+  # GPU Configuration
+  gpu_model: "a100"            # GPU model: a100, v100, h100, etc.
 
-  # Resource limits
-  default_time: 120
-  training_time: 480
-  grid_search_time: 1440
-  testing_time: 60
+  # Project/group (if required for accounting)
+  project: ""                  # LSF project code (if needed)
 
-  default_mem: 8000
-  training_mem: 16000
+  # Resource limits (in minutes)
+  default_time: 120            # 2 hours
+  training_time: 480           # 8 hours
+  grid_search_time: 1440       # 24 hours
+  testing_time: 60             # 1 hour
 
-  max_jobs: 100
-  latency_wait: 60
+  # Memory defaults (MB)
+  default_mem: 8000            # 8GB
+  training_mem: 16000          # 16GB
+
+  # Job submission settings
+  max_jobs: 100                # Maximum concurrent jobs
+  latency_wait: 60             # Seconds to wait for output files
+
+  # Notes:
+  # - LSF uses queues instead of partitions (SLURM terminology)
+  # - Check available queues with: bqueues
+  # - Check GPU availability with: bhosts -gpu
+  # - Monitor jobs with: bjobs
