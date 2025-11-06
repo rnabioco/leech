@@ -141,28 +141,51 @@ grid_search_epochs: 20    # Epochs per grid search trial (shorter than full trai
 # and can be overridden per-rule
 
 cluster:
-  # Default partition/queue
-  default_partition: "gpu"    # SLURM partition
-  default_queue: "gpuqueue"   # LSF queue
+  # ===== Alpine Cluster Settings (CU Boulder) =====
+  # Documentation: https://curc.readthedocs.io/en/latest/clusters/alpine/
 
-  # Account/project for billing
-  account: "your_account"
+  # Account/project for billing (REQUIRED for Alpine)
+  # Replace with your Alpine allocation account
+  account: ""  # e.g., "ucb-general", "your_allocation_name"
 
-  # GPU settings
-  gpu_partition: "gpu"
-  gpu_queue: "gpuqueue"
-  gpu_type: "a100"           # For SLURM: "a100", "v100", "rtx8000", etc.
-  gpu_model: "a100"          # For LSF: model for -R "select[gpu_model==...]"
+  # SLURM Partitions on Alpine:
+  # - amilan: CPU-only nodes (default, no GPUs)
+  # - aa100: NVIDIA A100 GPU nodes (40GB, 80GB variants)
+  # - ami100: AMD MI100 GPU nodes
+  # - atesting_a100: Testing partition for A100 GPUs (short jobs)
+  # - atesting_mi100: Testing partition for MI100 GPUs (short jobs)
+  default_partition: "amilan"
+  gpu_partition: "aa100"      # Default GPU partition for training/inference
+
+  # Quality of Service (QoS) settings:
+  # - normal: Standard jobs (up to 24 hours)
+  # - long: Extended jobs (24+ hours, limited availability)
+  # - testing: Short test jobs on testing partitions
+  default_qos: "normal"
+  testing_qos: "testing"
+
+  # Alpine GPU node specifications:
+  # - aa100 nodes: 64 cores, 42 tasks per node recommended
+  # - ami100 nodes: 64 cores, 16 tasks per node recommended
+  # - Each A100 node has 3 GPUs (40GB or 80GB VRAM)
+  default_ntasks: 42          # For aa100 partition
 
   # Time limits (minutes)
   default_time: 120
-  training_time: 480         # 8 hours
-  grid_search_time: 1440     # 24 hours
+  training_time: 480          # 8 hours
+  grid_search_time: 1440      # 24 hours
+  testing_time: 60            # 1 hour for testing partition
 
   # Memory defaults (MB)
   default_mem: 8000
   training_mem: 16000
 
   # Job submission settings
-  max_jobs: 100              # Maximum concurrent jobs
-  latency_wait: 60           # Seconds to wait for output files
+  max_jobs: 100               # Maximum concurrent jobs
+  latency_wait: 60            # Seconds to wait for output files
+
+  # ===== LSF Cluster Settings (for non-Alpine clusters) =====
+  # These are used if you're running on an LSF cluster instead
+  default_queue: "gpuqueue"   # LSF queue
+  gpu_queue: "gpuqueue"
+  gpu_model: "a100"           # For LSF: model for -R "select[gpu_model==...]"
