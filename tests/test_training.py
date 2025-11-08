@@ -82,7 +82,10 @@ class TestTrainer:
         """Test validation when no validation loader provided."""
         trainer = Trainer(
             model=sample_model,
-            model_type="ConvLSTMDwell", train_loader=sample_dataloader, val_loader=None, device="cpu"
+            model_type="ConvLSTMDwell",
+            train_loader=sample_dataloader,
+            val_loader=None,
+            device="cpu",
         )
 
         loss, acc, auc = trainer.validate()
@@ -402,7 +405,9 @@ class TestTrainingEdgeCases:
 
         dummy_loader = DataLoader(DummyDataset(), batch_size=2, collate_fn=collate_fn)
 
-        trainer = Trainer(model=model, model_type="ConvLSTMDwell", train_loader=dummy_loader, device="cpu")
+        trainer = Trainer(
+            model=model, model_type="ConvLSTMDwell", train_loader=dummy_loader, device="cpu"
+        )
 
         # History should be empty initially
         assert len(trainer.history["train_loss"]) == 0

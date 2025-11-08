@@ -46,9 +46,19 @@ class SignalBranch(nn.Module):
         self.conv_layers = nn.Sequential(
             nn.Conv1d(1, conv_channels[0], kernel_size=kernel_size, padding=kernel_size // 2),
             nn.ReLU(),
-            nn.Conv1d(conv_channels[0], conv_channels[1], kernel_size=kernel_size, padding=kernel_size // 2),
+            nn.Conv1d(
+                conv_channels[0],
+                conv_channels[1],
+                kernel_size=kernel_size,
+                padding=kernel_size // 2,
+            ),
             nn.ReLU(),
-            nn.Conv1d(conv_channels[1], conv_channels[2], kernel_size=kernel_size, padding=kernel_size // 2),
+            nn.Conv1d(
+                conv_channels[1],
+                conv_channels[2],
+                kernel_size=kernel_size,
+                padding=kernel_size // 2,
+            ),
             nn.ReLU(),
         )
 
@@ -97,9 +107,19 @@ class SequenceBranch(nn.Module):
         self.conv_layers = nn.Sequential(
             nn.Conv1d(4, conv_channels[0], kernel_size=kernel_size, padding=kernel_size // 2),
             nn.ReLU(),
-            nn.Conv1d(conv_channels[0], conv_channels[1], kernel_size=kernel_size, padding=kernel_size // 2),
+            nn.Conv1d(
+                conv_channels[0],
+                conv_channels[1],
+                kernel_size=kernel_size,
+                padding=kernel_size // 2,
+            ),
             nn.ReLU(),
-            nn.Conv1d(conv_channels[1], conv_channels[2], kernel_size=kernel_size, padding=kernel_size // 2),
+            nn.Conv1d(
+                conv_channels[1],
+                conv_channels[2],
+                kernel_size=kernel_size,
+                padding=kernel_size // 2,
+            ),
             nn.ReLU(),
         )
 
@@ -146,11 +166,23 @@ class FeatureBranch(nn.Module):
             conv_channels = DEFAULT_CONV_CHANNELS
 
         self.conv_layers = nn.Sequential(
-            nn.Conv1d(num_features, conv_channels[0], kernel_size=kernel_size, padding=kernel_size // 2),
+            nn.Conv1d(
+                num_features, conv_channels[0], kernel_size=kernel_size, padding=kernel_size // 2
+            ),
             nn.ReLU(),
-            nn.Conv1d(conv_channels[0], conv_channels[1], kernel_size=kernel_size, padding=kernel_size // 2),
+            nn.Conv1d(
+                conv_channels[0],
+                conv_channels[1],
+                kernel_size=kernel_size,
+                padding=kernel_size // 2,
+            ),
             nn.ReLU(),
-            nn.Conv1d(conv_channels[1], conv_channels[2], kernel_size=kernel_size, padding=kernel_size // 2),
+            nn.Conv1d(
+                conv_channels[1],
+                conv_channels[2],
+                kernel_size=kernel_size,
+                padding=kernel_size // 2,
+            ),
             nn.ReLU(),
         )
 

@@ -33,13 +33,23 @@ MODEL_CHOICES = [
 
 def add_training_args(parser):
     """Add common training arguments to parser."""
-    parser.add_argument("--epochs", type=int, default=DEFAULT_EPOCHS, help="Number of training epochs")
-    parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE, help="Batch size")
-    parser.add_argument("--learning-rate", type=float, default=DEFAULT_LEARNING_RATE, help="Learning rate")
     parser.add_argument(
-        "--device", type=str, default=DEFAULT_DEVICE, choices=["cuda", "cpu"], help="Device for training"
+        "--epochs", type=int, default=DEFAULT_EPOCHS, help="Number of training epochs"
     )
-    parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="Random seed for reproducibility")
+    parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE, help="Batch size")
+    parser.add_argument(
+        "--learning-rate", type=float, default=DEFAULT_LEARNING_RATE, help="Learning rate"
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default=DEFAULT_DEVICE,
+        choices=["cuda", "cpu"],
+        help="Device for training",
+    )
+    parser.add_argument(
+        "--seed", type=int, default=DEFAULT_SEED, help="Random seed for reproducibility"
+    )
     return parser
 
 
@@ -120,7 +130,11 @@ def add_test_parser(subparsers):
         "--output", "-o", required=True, type=Path, help="Output metrics file (JSON)"
     )
     parser.add_argument(
-        "--device", type=str, default=DEFAULT_DEVICE, choices=["cuda", "cpu"], help="Device for inference"
+        "--device",
+        type=str,
+        default=DEFAULT_DEVICE,
+        choices=["cuda", "cpu"],
+        help="Device for inference",
     )
     parser.set_defaults(func=run_test)
 
@@ -135,7 +149,11 @@ def add_infer_parser(subparsers):
         "--output", "-o", required=True, type=Path, help="Output BAM with predictions"
     )
     parser.add_argument(
-        "--device", type=str, default=DEFAULT_DEVICE, choices=["cuda", "cpu"], help="Device for inference"
+        "--device",
+        type=str,
+        default=DEFAULT_DEVICE,
+        choices=["cuda", "cpu"],
+        help="Device for inference",
     )
     parser.set_defaults(func=run_infer)
 
@@ -290,7 +308,9 @@ def run_grid_search(args):
     else:
         right_contexts = [int(x.strip()) for x in args.context_grid.split(",")]
 
-    logger.info(f"Starting grid search with {len(left_contexts)} x {len(right_contexts)} grid points")
+    logger.info(
+        f"Starting grid search with {len(left_contexts)} x {len(right_contexts)} grid points"
+    )
     logger.info(f"Left contexts: {left_contexts}")
     logger.info(f"Right contexts: {right_contexts}")
 
