@@ -129,17 +129,18 @@ base_calling_model: "rna004_130bps_sup@v5.2.0"
 # The model will be invoked as: {base_calling_model},{modifications}
 # Leave empty or null to disable modification detection
 #
-# Available RNA modifications (for rna004_130bps_hac/sup@v5.2.0):
-#   - m5C: 5-methylcytosine
+# Available RNA modifications (for rna004_130bps_sup@v5.2.0):
+#   - m5C_2OmeC: 5-methylcytosine and 2'-O-methylcytosine
 #   - m6A_DRACH: N6-methyladenosine in DRACH motif
-#   - inosine_m6A: Inosine and m6A
-#   - pseU: Pseudouridine
+#   - inosine_m6A_2OmeA: Inosine, m6A, and 2'-O-methyladenosine
+#   - pseU_2OmeU: Pseudouridine and 2'-O-methyluridine
+#   - 2OmeG: 2'-O-methylguanosine
 #
 # Examples:
-#   modifications: ""                    # No modifications (default)
-#   modifications: "m6A_DRACH"           # Single modification
-#   modifications: "m6A_DRACH,pseU"      # Multiple modifications
-#   modifications: "m5C,m6A_DRACH,inosine_m6A,pseU"  # All RNA mods
+#   modifications: ""                                          # No modifications (default)
+#   modifications: "m6A_DRACH"                                 # Single modification
+#   modifications: "m6A_DRACH,pseU_2OmeU"                      # Multiple modifications
+#   modifications: "m5C_2OmeC,m6A_DRACH,inosine_m6A_2OmeA,pseU_2OmeU,2OmeG"  # All RNA mods
 modifications: ""
 
 # Dorado options

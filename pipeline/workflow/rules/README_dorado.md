@@ -47,8 +47,9 @@ dorado_bin: "dorado"  # or "/path/to/dorado"
 base_calling_model: "rna004_130bps_sup@v5.2.0"
 
 # Modified base detection (comma-separated list)
-# Available RNA mods: m5C, m6A_DRACH, inosine_m6A, pseU
-modifications: ""  # or "m6A_DRACH,pseU" for example
+# Available RNA mods for rna004_130bps_sup@v5.2.0:
+#   m5C_2OmeC, m6A_DRACH, inosine_m6A_2OmeA, pseU_2OmeU, 2OmeG
+modifications: ""  # or "m6A_DRACH,pseU_2OmeU" for example
 
 # Dorado options (--emit-moves is REQUIRED for leech)
 dorado_opts: "--emit-moves"
@@ -106,9 +107,37 @@ snakemake --profile profiles/slurm all_train
 - **samtools**: For alignment workflow
 - **minimap2**: For alignment workflow
 
+## RNA Modifications
+
+The pipeline supports detection of RNA modifications during basecalling. Available modifications for `rna004_130bps_sup@v5.2.0`:
+
+| Modification Code | Description |
+|------------------|-------------|
+| `m5C_2OmeC` | 5-methylcytosine and 2'-O-methylcytosine |
+| `m6A_DRACH` | N6-methyladenosine in DRACH motif context |
+| `inosine_m6A_2OmeA` | Inosine, N6-methyladenosine, and 2'-O-methyladenosine |
+| `pseU_2OmeU` | Pseudouridine and 2'-O-methyluridine |
+| `2OmeG` | 2'-O-methylguanosine |
+
+To enable modification calling, set the `modifications` parameter in config.yaml:
+
+```yaml
+# Single modification
+modifications: "m6A_DRACH"
+
+# Multiple modifications (comma-separated, no spaces)
+modifications: "m6A_DRACH,pseU_2OmeU"
+
+# All modifications
+modifications: "m5C_2OmeC,m6A_DRACH,inosine_m6A_2OmeA,pseU_2OmeU,2OmeG"
+```
+
+**Note**: Modification calling increases basecalling time and computational requirements.
+
 ## Important Notes
 
 1. **Move tables required**: The `--emit-moves` flag is REQUIRED for leech to extract dwell time features
 2. **GPU recommended**: Dorado basecalling is much faster with GPU acceleration
 3. **Storage**: POD5 and BAM files can be large; ensure adequate storage space
 4. **Model selection**: Choose appropriate model based on flowcell and kit (see dorado documentation)
+5. **Scratch directory**: Using scratch storage significantly improves I/O performance for large files
