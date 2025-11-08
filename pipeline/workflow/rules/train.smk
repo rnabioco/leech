@@ -29,6 +29,7 @@ rule train_charged_vs_uncharged:
             if config.get("use_grid_search", False)
             else ""
         ),
+        slurm_extra="--gres=gpu:1",
     threads: 4
     resources:
         mem_mb=16000,
@@ -85,6 +86,7 @@ rule train_pairwise_aa:
             if config.get("use_grid_search", False)
             else ""
         ),
+        slurm_extra="--gres=gpu:1",
     threads: 4
     resources:
         mem_mb=16000,

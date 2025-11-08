@@ -1,0 +1,161 @@
+# Leech Pipeline Configuration - BODHI CLUSTER
+# =============================================
+# Optimized for local Bodhi cluster with unlimited home directory storage
+
+# ============================================================================
+# Output Directories
+# ============================================================================
+# Bodhi: Everything can run from home directory (unlimited storage)
+chunks_dir: "results/chunks"
+models_dir: "results/models"
+inference_dir: "results/inference"
+metrics_dir: "results/metrics"
+
+# Alternative: Use absolute paths in home directory
+# chunks_dir: "/home/$USER/leech/results/chunks"
+# models_dir: "/home/$USER/leech/results/models"
+# inference_dir: "/home/$USER/leech/results/inference"
+# metrics_dir: "/home/$USER/leech/results/metrics"
+
+# ============================================================================
+# Sample Configuration
+# ============================================================================
+samples:
+  # Bodhi cluster: Data stored in home directory
+  sample_charged_ala_rep1:
+    pod5: "data/charged/ala/rep1.pod5"
+    bam: "data/charged/ala/rep1.bam"
+    label: "charged"
+    amino_acid: "Ala"
+
+  sample_charged_ala_rep2:
+    pod5: "data/charged/ala/rep2.pod5"
+    bam: "data/charged/ala/rep2.bam"
+    label: "charged"
+    amino_acid: "Ala"
+
+  sample_charged_gly_rep1:
+    pod5: "data/charged/gly/rep1.pod5"
+    bam: "data/charged/gly/rep1.bam"
+    label: "charged"
+    amino_acid: "Gly"
+
+  sample_uncharged_ala_rep1:
+    pod5: "data/uncharged/ala/rep1.pod5"
+    bam: "data/uncharged/ala/rep1.bam"
+    label: "uncharged"
+    amino_acid: "Ala"
+
+  sample_uncharged_gly_rep1:
+    pod5: "data/uncharged/gly/rep1.pod5"
+    bam: "data/uncharged/gly/rep1.bam"
+    label: "uncharged"
+    amino_acid: "Gly"
+
+# Amino acids for pairwise classification
+amino_acids:
+  - "Ala"
+  - "Gly"
+  - "Val"
+  - "Leu"
+  - "Ile"
+  - "Pro"
+  - "Phe"
+  - "Trp"
+  - "Met"
+  - "Ser"
+  - "Thr"
+  - "Cys"
+  - "Asn"
+  - "Gln"
+  - "Tyr"
+  - "Lys"
+  - "Arg"
+  - "His"
+  - "Asp"
+  - "Glu"
+
+# ============================================================================
+# Data Preparation Parameters
+# ============================================================================
+motif: "CCA"
+motif_offset: 2
+kmer_len: 5
+chunk_context: [200, 200]
+train_split: 0.7
+val_split: 0.15
+
+# ============================================================================
+# Model Configuration
+# ============================================================================
+model: "ConvLSTMDwell"
+compare_models: false
+
+models_to_compare:
+  - "ConvLSTMBase"
+  - "ConvLSTMDwell"
+  - "TransformerDwell"
+  - "ConvOnly"
+  - "TCNDwell"
+  - "ResNetDwell"
+
+# Training hyperparameters
+epochs: 50
+batch_size: 128
+learning_rate: 0.001
+early_stopping_patience: 5
+
+# Inference parameters
+infer_batch_size: 256
+
+# ============================================================================
+# Grid Search Configuration
+# ============================================================================
+use_grid_search: false
+
+grid_search:
+  learning_rate: [0.0001, 0.001, 0.01]
+  batch_size: [64, 128, 256]
+  hidden_size: [128, 256, 512]
+  num_layers: [1, 2, 3]
+  dropout: [0.1, 0.2, 0.3]
+
+grid_search_epochs: 20
+
+# ============================================================================
+# Cluster Settings - Bodhi
+# ============================================================================
+cluster:
+  # Bodhi LSF Configuration
+  # Adjust these based on your Bodhi cluster setup
+
+  # LSF Queues (check with: bqueues)
+  default_queue: "general"     # Default queue for CPU jobs
+  gpu_queue: "gpuqueue"        # Queue for GPU jobs
+  test_queue: "test"           # Quick test queue (if available)
+
+  # GPU Configuration
+  gpu_model: "a100"            # GPU model: a100, v100, h100, etc.
+
+  # Project/group (if required for accounting)
+  project: ""                  # LSF project code (if needed)
+
+  # Resource limits (in minutes)
+  default_time: 120            # 2 hours
+  training_time: 480           # 8 hours
+  grid_search_time: 1440       # 24 hours
+  testing_time: 60             # 1 hour
+
+  # Memory defaults (MB)
+  default_mem: 8000            # 8GB
+  training_mem: 16000          # 16GB
+
+  # Job submission settings
+  max_jobs: 100                # Maximum concurrent jobs
+  latency_wait: 60             # Seconds to wait for output files
+
+  # Notes:
+  # - LSF uses queues instead of partitions (SLURM terminology)
+  # - Check available queues with: bqueues
+  # - Check GPU availability with: bhosts -gpu
+  # - Monitor jobs with: bjobs

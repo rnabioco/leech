@@ -20,6 +20,7 @@ rule prepare_chunks:
         chunk_context=config.get("chunk_context", [200, 200]),
         train_split=config.get("train_split", 0.7),
         val_split=config.get("val_split", 0.15),
+        slurm_extra="",  # No GPU needed for data preparation
     threads: 4
     resources:
         mem_mb=8000,

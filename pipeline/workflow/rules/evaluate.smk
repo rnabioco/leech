@@ -10,6 +10,8 @@ rule test_charged_vs_uncharged:
         test=CHUNKS_DIR + "/{sample}/test.json",
     output:
         metrics=METRICS_DIR + "/charged_vs_uncharged/{sample}_metrics.json",
+    params:
+        slurm_extra="--gres=gpu:1",
     threads: 2
     resources:
         mem_mb=4000,
@@ -35,6 +37,8 @@ rule test_pairwise_aa:
         test=CHUNKS_DIR + "/{sample}/test.json",
     output:
         metrics=METRICS_DIR + "/pairwise/{pair}/{sample}_metrics.json",
+    params:
+        slurm_extra="--gres=gpu:1",
     threads: 2
     resources:
         mem_mb=4000,

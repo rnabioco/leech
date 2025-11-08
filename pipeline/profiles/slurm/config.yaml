@@ -1,8 +1,26 @@
-# SLURM Cluster Profile for Leech Pipeline
-# =========================================
+# SLURM Cluster Profile for Leech Pipeline (Alpine Cluster)
+# ===========================================================
+# Configured for CU Boulder Alpine cluster
+# https://curc.readthedocs.io/en/latest/clusters/alpine/
 
-# Cluster execution
-cluster: "sbatch"
+# Cluster execution with GPU support via --gres
+# Alpine GPU partitions: aa100 (NVIDIA A100), ami100 (AMD MI100)
+# Alpine testing partitions: atesting_a100, atesting_mi100
+cluster:
+  mkdir -p logs/{rule} &&
+  sbatch
+    --partition={resources.partition}
+    --qos={resources.qos}
+    --nodes=1
+    --ntasks={resources.ntasks}
+    --cpus-per-task={threads}
+    --mem={resources.mem_mb}M
+    --time={resources.runtime}
+    --job-name={rule}_{wildcards}
+    --output={log}
+    --error={log}
+    {params.slurm_extra}
+
 cluster-status: "profiles/slurm/slurm_status.py"
 cluster-cancel: "scancel"
 
@@ -16,55 +34,91 @@ max-jobs-per-second: 10
 
 # Default resources for rules without explicit resources
 default-resources:
-  - partition="gpu"
+  - partition="amilan"
+  - qos="normal"
+  - ntasks=1
   - mem_mb=8000
   - runtime=120
   - gpu=0
+  - account=""
+  - slurm_extra=""
 
 # Resource mapping from Snakemake resources to SLURM directives
+# Alpine-specific settings:
+# - GPU partitions: aa100 (NVIDIA A100), ami100 (AMD MI100)
+# - Testing partitions: atesting_a100, atesting_mi100 (for short test jobs)
+# - CPU partition: amilan (default, no GPUs)
+# - QoS: normal, long (>24h)
 set-resources:
-  # Grid search rules need more time and GPU
+  # Grid search rules need more time and GPU (use A100 partition)
   - grid_search_charged_vs_uncharged:runtime=1440
   - grid_search_charged_vs_uncharged:gpu=1
   - grid_search_charged_vs_uncharged:mem_mb=16000
+  - grid_search_charged_vs_uncharged:partition="aa100"
+  - grid_search_charged_vs_uncharged:qos="normal"
+  - grid_search_charged_vs_uncharged:ntasks=42
 
   - grid_search_pairwise_aa:runtime=1440
   - grid_search_pairwise_aa:gpu=1
   - grid_search_pairwise_aa:mem_mb=16000
+  - grid_search_pairwise_aa:partition="aa100"
+  - grid_search_pairwise_aa:qos="normal"
+  - grid_search_pairwise_aa:ntasks=42
 
-  # Training rules
+  # Training rules (use A100 partition)
   - train_charged_vs_uncharged:runtime=480
   - train_charged_vs_uncharged:gpu=1
   - train_charged_vs_uncharged:mem_mb=16000
+  - train_charged_vs_uncharged:partition="aa100"
+  - train_charged_vs_uncharged:qos="normal"
+  - train_charged_vs_uncharged:ntasks=42
 
   - train_pairwise_aa:runtime=480
   - train_pairwise_aa:gpu=1
   - train_pairwise_aa:mem_mb=16000
+  - train_pairwise_aa:partition="aa100"
+  - train_pairwise_aa:qos="normal"
+  - train_pairwise_aa:ntasks=42
 
-  # Inference rules
+  # Inference rules (use A100 partition)
   - infer_charged_vs_uncharged:runtime=240
   - infer_charged_vs_uncharged:gpu=1
   - infer_charged_vs_uncharged:mem_mb=8000
+  - infer_charged_vs_uncharged:partition="aa100"
+  - infer_charged_vs_uncharged:qos="normal"
+  - infer_charged_vs_uncharged:ntasks=42
 
   - infer_pairwise_aa:runtime=240
   - infer_pairwise_aa:gpu=1
   - infer_pairwise_aa:mem_mb=8000
+  - infer_pairwise_aa:partition="aa100"
+  - infer_pairwise_aa:qos="normal"
+  - infer_pairwise_aa:ntasks=42
 
-  # Test/evaluation rules
+  # Test/evaluation rules (use testing partition for short jobs)
   - test_charged_vs_uncharged:runtime=60
   - test_charged_vs_uncharged:gpu=1
   - test_charged_vs_uncharged:mem_mb=4000
+  - test_charged_vs_uncharged:partition="atesting_a100"
+  - test_charged_vs_uncharged:qos="testing"
+  - test_charged_vs_uncharged:ntasks=42
 
   - test_pairwise_aa:runtime=60
   - test_pairwise_aa:gpu=1
   - test_pairwise_aa:mem_mb=4000
+  - test_pairwise_aa:partition="atesting_a100"
+  - test_pairwise_aa:qos="testing"
+  - test_pairwise_aa:ntasks=42
 
 # SLURM submission script template
 # Variables available:
 # - {resources.mem_mb}: memory in MB
 # - {resources.runtime}: time in minutes
 # - {resources.gpu}: number of GPUs
-# - {resources.gpu_mem_mb}: GPU memory in MB
+# - {resources.partition}: SLURM partition (aa100, ami100, amilan, atesting_a100, etc.)
+# - {resources.qos}: Quality of Service (normal, long, testing)
+# - {resources.ntasks}: number of tasks (typically 42 for aa100 GPU nodes)
+# - {resources.account}: account for billing
 # - {threads}: number of threads/CPUs
 # - {rule}: rule name
 # - {jobid}: job ID
