@@ -23,6 +23,7 @@ from leech.constants import (
     DEFAULT_NUM_FEATURES,
     DEFAULT_SIGNAL_LEN,
 )
+from leech.models.components import BaseModel
 
 
 class ResidualBlock1D(nn.Module):
@@ -158,7 +159,7 @@ class ResNet1D(nn.Module):
         return result
 
 
-class ResNetDwell(nn.Module):
+class ResNetDwell(BaseModel):
     """
     ResNet model with signal, sequence, and dwell feature branches.
 
@@ -290,19 +291,4 @@ class ResNetDwell(nn.Module):
 
         return logits
 
-    def predict_proba(
-        self, signal: torch.Tensor, sequence: torch.Tensor, features: torch.Tensor
-    ) -> torch.Tensor:
-        """
-        Get probability predictions.
-
-        Args:
-            signal: Raw signal (batch, signal_len)
-            sequence: One-hot encoded sequence (batch, 4, kmer_len)
-            features: Dwell + signal level features (batch, num_features, kmer_len)
-
-        Returns:
-            Probabilities (batch, 1)
-        """
-        logits = self.forward(signal, sequence, features)
-        return torch.sigmoid(logits)
+    # predict_proba() is inherited from BaseModel

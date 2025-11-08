@@ -25,6 +25,7 @@ from leech.constants import (
     DEFAULT_SIGNAL_KERNEL,
     DEFAULT_SIGNAL_LEN,
 )
+from leech.models.components import BaseModel
 
 
 class PositionalEncoding(nn.Module):
@@ -64,7 +65,7 @@ class PositionalEncoding(nn.Module):
         return out
 
 
-class TransformerDwell(nn.Module):
+class TransformerDwell(BaseModel):
     """
     Transformer-based model with signal, sequence, and dwell feature branches.
 
@@ -102,7 +103,9 @@ class TransformerDwell(nn.Module):
         self.signal_conv = nn.Sequential(
             nn.Conv1d(1, 64, kernel_size=DEFAULT_SIGNAL_KERNEL, padding=DEFAULT_SIGNAL_KERNEL // 2),
             nn.ReLU(),
-            nn.Conv1d(64, d_model, kernel_size=DEFAULT_SIGNAL_KERNEL, padding=DEFAULT_SIGNAL_KERNEL // 2),
+            nn.Conv1d(
+                64, d_model, kernel_size=DEFAULT_SIGNAL_KERNEL, padding=DEFAULT_SIGNAL_KERNEL // 2
+            ),
             nn.ReLU(),
         )
         self.signal_pool = nn.AdaptiveAvgPool1d(kmer_len)  # Match sequence length
@@ -212,19 +215,4 @@ class TransformerDwell(nn.Module):
 
         return logits
 
-    def predict_proba(
-        self, signal: torch.Tensor, sequence: torch.Tensor, features: torch.Tensor
-    ) -> torch.Tensor:
-        """
-        Get probability predictions.
-
-        Args:
-            signal: Raw signal (batch, signal_len)
-            sequence: One-hot encoded sequence (batch, 4, kmer_len)
-            features: Dwell + signal level features (batch, num_features, kmer_len)
-
-        Returns:
-            Probabilities (batch, 1)
-        """
-        logits = self.forward(signal, sequence, features)
-        return torch.sigmoid(logits)
+    # predict_proba() is inherited from BaseModel

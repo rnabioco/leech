@@ -17,13 +17,12 @@ from leech.constants import (
     DEFAULT_KMER_LEN,
     DEFAULT_LSTM_HIDDEN,
     DEFAULT_LSTM_LAYERS,
-    DEFAULT_SEQ_KERNEL,
-    DEFAULT_SIGNAL_KERNEL,
     DEFAULT_SIGNAL_LEN,
 )
+from leech.models.components import BaseModel, SequenceBranch, SignalBranch
 
 
-class ConvLSTMBase(nn.Module):
+class ConvLSTMBase(BaseModel):
     """
     Baseline model with signal and sequence branches only.
 
@@ -52,27 +51,11 @@ class ConvLSTMBase(nn.Module):
         self.kmer_len = kmer_len
         self.lstm_hidden = lstm_hidden
 
-        # Signal branch: Conv1d layers
-        # Input: (batch, 1, signal_len)
-        self.signal_conv = nn.Sequential(
-            nn.Conv1d(1, conv_channels[0], kernel_size=DEFAULT_SIGNAL_KERNEL, padding=DEFAULT_SIGNAL_KERNEL // 2),
-            nn.ReLU(),
-            nn.Conv1d(conv_channels[0], conv_channels[1], kernel_size=DEFAULT_SIGNAL_KERNEL, padding=DEFAULT_SIGNAL_KERNEL // 2),
-            nn.ReLU(),
-            nn.Conv1d(conv_channels[1], conv_channels[2], kernel_size=DEFAULT_SIGNAL_KERNEL, padding=DEFAULT_SIGNAL_KERNEL // 2),
-            nn.ReLU(),
-        )
+        # Signal branch: Shared component for signal processing
+        self.signal_branch = SignalBranch(conv_channels=conv_channels)
 
-        # Sequence branch: Conv1d on one-hot encoded k-mers
-        # Input: (batch, 4, kmer_len) - 4 nucleotides (A, C, G, T)
-        self.seq_conv = nn.Sequential(
-            nn.Conv1d(4, conv_channels[0], kernel_size=DEFAULT_SEQ_KERNEL, padding=DEFAULT_SEQ_KERNEL // 2),
-            nn.ReLU(),
-            nn.Conv1d(conv_channels[0], conv_channels[1], kernel_size=DEFAULT_SEQ_KERNEL, padding=DEFAULT_SEQ_KERNEL // 2),
-            nn.ReLU(),
-            nn.Conv1d(conv_channels[1], conv_channels[2], kernel_size=DEFAULT_SEQ_KERNEL, padding=DEFAULT_SEQ_KERNEL // 2),
-            nn.ReLU(),
-        )
+        # Sequence branch: Shared component for sequence processing
+        self.sequence_branch = SequenceBranch(conv_channels=conv_channels)
 
         # Adaptive pooling to match dimensions
         # Signal branch output: (batch, 256, signal_len)
@@ -114,14 +97,12 @@ class ConvLSTMBase(nn.Module):
         """
         signal.size(0)
 
-        # Signal branch
-        # (batch, signal_len) -> (batch, 1, signal_len)
-        signal_in = signal.unsqueeze(1)
-        signal_feat = self.signal_conv(signal_in)  # (batch, 256, signal_len)
+        # Signal branch (handles unsqueeze internally)
+        signal_feat = self.signal_branch(signal)  # (batch, 256, signal_len)
         signal_feat = self.signal_pool(signal_feat)  # (batch, 256, kmer_len)
 
         # Sequence branch
-        seq_feat = self.seq_conv(sequence)  # (batch, 256, kmer_len)
+        seq_feat = self.sequence_branch(sequence)  # (batch, 256, kmer_len)
 
         # Merge branches
         # (batch, 256, kmer_len) + (batch, 256, kmer_len) -> (batch, 512, kmer_len)
@@ -142,19 +123,7 @@ class ConvLSTMBase(nn.Module):
 
         return logits
 
-    def predict_proba(self, signal: torch.Tensor, sequence: torch.Tensor) -> torch.Tensor:
-        """
-        Get probability predictions.
-
-        Args:
-            signal: Raw signal (batch, signal_len)
-            sequence: One-hot encoded sequence (batch, 4, kmer_len)
-
-        Returns:
-            Probabilities (batch, 1)
-        """
-        logits = self.forward(signal, sequence)
-        return torch.sigmoid(logits)
+    # predict_proba() is inherited from BaseModel
 
 
 # encode_kmer() has been moved to leech.data_prep for centralized access

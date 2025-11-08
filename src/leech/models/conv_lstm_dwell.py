@@ -15,18 +15,16 @@ from leech.constants import (
     DEFAULT_CONV_CHANNELS,
     DEFAULT_DROPOUT,
     DEFAULT_FC_HIDDEN,
-    DEFAULT_FEATURE_KERNEL,
     DEFAULT_KMER_LEN,
     DEFAULT_LSTM_HIDDEN,
     DEFAULT_LSTM_LAYERS,
     DEFAULT_NUM_FEATURES,
-    DEFAULT_SEQ_KERNEL,
-    DEFAULT_SIGNAL_KERNEL,
     DEFAULT_SIGNAL_LEN,
 )
+from leech.models.components import BaseModel, FeatureBranch, SequenceBranch, SignalBranch
 
 
-class ConvLSTMDwell(nn.Module):
+class ConvLSTMDwell(BaseModel):
     """
     Full model with signal, sequence, and dwell feature branches.
 
@@ -58,38 +56,14 @@ class ConvLSTMDwell(nn.Module):
         self.num_features = num_features
         self.lstm_hidden = lstm_hidden
 
-        # Signal branch: Conv1d layers
-        # Input: (batch, 1, signal_len)
-        self.signal_conv = nn.Sequential(
-            nn.Conv1d(1, conv_channels[0], kernel_size=DEFAULT_SIGNAL_KERNEL, padding=DEFAULT_SIGNAL_KERNEL // 2),
-            nn.ReLU(),
-            nn.Conv1d(conv_channels[0], conv_channels[1], kernel_size=DEFAULT_SIGNAL_KERNEL, padding=DEFAULT_SIGNAL_KERNEL // 2),
-            nn.ReLU(),
-            nn.Conv1d(conv_channels[1], conv_channels[2], kernel_size=DEFAULT_SIGNAL_KERNEL, padding=DEFAULT_SIGNAL_KERNEL // 2),
-            nn.ReLU(),
-        )
+        # Signal branch: Shared component for signal processing
+        self.signal_branch = SignalBranch(conv_channels=conv_channels)
 
-        # Sequence branch: Conv1d on one-hot encoded k-mers
-        # Input: (batch, 4, kmer_len) - 4 nucleotides (A, C, G, T)
-        self.seq_conv = nn.Sequential(
-            nn.Conv1d(4, conv_channels[0], kernel_size=DEFAULT_SEQ_KERNEL, padding=DEFAULT_SEQ_KERNEL // 2),
-            nn.ReLU(),
-            nn.Conv1d(conv_channels[0], conv_channels[1], kernel_size=DEFAULT_SEQ_KERNEL, padding=DEFAULT_SEQ_KERNEL // 2),
-            nn.ReLU(),
-            nn.Conv1d(conv_channels[1], conv_channels[2], kernel_size=DEFAULT_SEQ_KERNEL, padding=DEFAULT_SEQ_KERNEL // 2),
-            nn.ReLU(),
-        )
+        # Sequence branch: Shared component for sequence processing
+        self.sequence_branch = SequenceBranch(conv_channels=conv_channels)
 
-        # Feature branch: Conv1d on dwell+level features
-        # Input: (batch, num_features, kmer_len)
-        self.feature_conv = nn.Sequential(
-            nn.Conv1d(num_features, conv_channels[0], kernel_size=DEFAULT_FEATURE_KERNEL, padding=DEFAULT_FEATURE_KERNEL // 2),
-            nn.ReLU(),
-            nn.Conv1d(conv_channels[0], conv_channels[1], kernel_size=DEFAULT_FEATURE_KERNEL, padding=DEFAULT_FEATURE_KERNEL // 2),
-            nn.ReLU(),
-            nn.Conv1d(conv_channels[1], conv_channels[2], kernel_size=DEFAULT_FEATURE_KERNEL, padding=DEFAULT_FEATURE_KERNEL // 2),
-            nn.ReLU(),
-        )
+        # Feature branch: Shared component for feature processing
+        self.feature_branch = FeatureBranch(num_features=num_features, conv_channels=conv_channels)
 
         # Adaptive pooling to match dimensions
         # Signal branch output: (batch, 256, signal_len)
@@ -135,17 +109,15 @@ class ConvLSTMDwell(nn.Module):
         """
         signal.size(0)
 
-        # Signal branch
-        # (batch, signal_len) -> (batch, 1, signal_len)
-        signal_in = signal.unsqueeze(1)
-        signal_feat = self.signal_conv(signal_in)  # (batch, 256, signal_len)
+        # Signal branch (handles unsqueeze internally)
+        signal_feat = self.signal_branch(signal)  # (batch, 256, signal_len)
         signal_feat = self.signal_pool(signal_feat)  # (batch, 256, kmer_len)
 
         # Sequence branch
-        seq_feat = self.seq_conv(sequence)  # (batch, 256, kmer_len)
+        seq_feat = self.sequence_branch(sequence)  # (batch, 256, kmer_len)
 
         # Feature branch
-        feat_feat = self.feature_conv(features)  # (batch, 256, kmer_len)
+        feat_feat = self.feature_branch(features)  # (batch, 256, kmer_len)
 
         # Merge all three branches
         # (batch, 256, kmer_len) x 3 -> (batch, 768, kmer_len)
@@ -166,19 +138,4 @@ class ConvLSTMDwell(nn.Module):
 
         return logits
 
-    def predict_proba(
-        self, signal: torch.Tensor, sequence: torch.Tensor, features: torch.Tensor
-    ) -> torch.Tensor:
-        """
-        Get probability predictions.
-
-        Args:
-            signal: Raw signal (batch, signal_len)
-            sequence: One-hot encoded sequence (batch, 4, kmer_len)
-            features: Dwell + signal level features (batch, num_features, kmer_len)
-
-        Returns:
-            Probabilities (batch, 1)
-        """
-        logits = self.forward(signal, sequence, features)
-        return torch.sigmoid(logits)
+    # predict_proba() is inherited from BaseModel
