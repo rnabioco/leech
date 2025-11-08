@@ -8,6 +8,7 @@ to find optimal model performance, as described in the leech training strategy.
 import csv
 import itertools
 import json
+import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +17,8 @@ import numpy as np
 
 from leech.data_prep import extract_training_chunks, iter_bam_with_pod5, save_chunks
 from leech.training import train_model
+
+logger = logging.getLogger("leech.gridsearch")
 
 
 @dataclass
@@ -109,7 +112,7 @@ def prepare_chunks_with_context(
 
     # Save
     save_chunks(chunks, output_path)
-    print(f"Prepared {len(chunks)} chunks with context ({left_context}, {right_context})")
+    logger.info(f"Prepared {len(chunks)} chunks with context ({left_context}, {right_context})")
 
 
 def run_grid_point(
@@ -148,11 +151,11 @@ def run_grid_point(
     """
     signal_len = left_context + right_context
 
-    print(f"\n{'=' * 80}")
-    print(f"Training grid point: left={left_context}, right={right_context}")
-    print(f"Signal length: {signal_len}")
-    print(f"Output: {output_dir}")
-    print(f"{'=' * 80}\n")
+    logger.info(f"\n{'=' * 80}")
+    logger.info(f"Training grid point: left={left_context}, right={right_context}")
+    logger.info(f"Signal length: {signal_len}")
+    logger.info(f"Output: {output_dir}")
+    logger.info(f"{'=' * 80}\n")
 
     start_time = time.time()
 
@@ -194,7 +197,7 @@ def run_grid_point(
         }
 
     except Exception as e:
-        print(f"ERROR: Training failed for grid point: {e}")
+        logger.exception(f"Training failed for grid point: {e}")
         result = {
             "left_context": left_context,
             "right_context": right_context,
@@ -216,15 +219,15 @@ def run_grid_search(config: GridSearchConfig) -> Path:
     Returns:
         Path to grid search summary CSV
     """
-    print("=" * 80)
-    print("Starting Grid Search")
-    print("=" * 80)
-    print(f"Model: {config.model_name}")
-    print(f"Left contexts: {config.left_contexts}")
-    print(f"Right contexts: {config.right_contexts}")
-    print(f"Total grid points: {len(config.left_contexts) * len(config.right_contexts)}")
-    print(f"Output directory: {config.output_dir}")
-    print("=" * 80)
+    logger.info("=" * 80)
+    logger.info("Starting Grid Search")
+    logger.info("=" * 80)
+    logger.info(f"Model: {config.model_name}")
+    logger.info(f"Left contexts: {config.left_contexts}")
+    logger.info(f"Right contexts: {config.right_contexts}")
+    logger.info(f"Total grid points: {len(config.left_contexts) * len(config.right_contexts)}")
+    logger.info(f"Output directory: {config.output_dir}")
+    logger.info("=" * 80)
 
     config.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -250,7 +253,7 @@ def run_grid_search(config: GridSearchConfig) -> Path:
 
     # Run each grid point
     for i, (left, right) in enumerate(grid_points, 1):
-        print(f"\n\nGrid point {i}/{len(grid_points)}")
+        logger.info(f"\n\nGrid point {i}/{len(grid_points)}")
 
         # Create output directory for this grid point
         grid_output_dir = config.output_dir / f"left_{left}_right_{right}"
@@ -278,20 +281,20 @@ def run_grid_search(config: GridSearchConfig) -> Path:
         save_grid_summary(results, summary_path)
 
     # Print summary
-    print("\n" + "=" * 80)
-    print("Grid Search Complete!")
-    print("=" * 80)
+    logger.info("\n" + "=" * 80)
+    logger.info("Grid Search Complete!")
+    logger.info("=" * 80)
 
     successful_results = [r for r in results if r.get("status") == "success"]
     if successful_results:
         best_result = max(successful_results, key=lambda x: x.get("best_val_acc", 0))
-        print("\nBest configuration:")
-        print(f"  Left context: {best_result['left_context']}")
-        print(f"  Right context: {best_result['right_context']}")
-        print(f"  Validation accuracy: {best_result['best_val_acc']:.4f}")
-        print(f"  Model: {best_result['model_path']}")
+        logger.info("\nBest configuration:")
+        logger.info(f"  Left context: {best_result['left_context']}")
+        logger.info(f"  Right context: {best_result['right_context']}")
+        logger.info(f"  Validation accuracy: {best_result['best_val_acc']:.4f}")
+        logger.info(f"  Model: {best_result['model_path']}")
 
-    print(f"\nResults saved to: {summary_path}")
+    logger.info(f"\nResults saved to: {summary_path}")
 
     return summary_path
 

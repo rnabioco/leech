@@ -5,6 +5,7 @@ Includes model loading/saving helpers, metrics computation, and logging utilitie
 """
 
 import json
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -20,6 +21,8 @@ from sklearn.metrics import (
 )
 
 from leech.models import get_model
+
+logger = logging.getLogger("leech.util")
 
 
 def load_model_from_checkpoint(
@@ -54,21 +57,36 @@ def load_model_from_checkpoint(
     model_name = config["model_name"]
     signal_len = config["signal_len"]
     kmer_len = config["kmer_len"]
-    num_features = config["num_features"]
 
-    # Extract any additional model kwargs
+    # Training-specific parameters that should NOT be passed to models
+    training_params = {
+        "epochs",
+        "batch_size",
+        "learning_rate",
+        "device",
+        "seed",
+        "val_split",
+        "patience",
+        "min_delta",
+        "save_dir",
+        "log_dir",
+        "num_workers",
+        "pin_memory",
+        "prefetch_factor",
+    }
+
+    # Extract model-specific kwargs (filter out training params)
     model_kwargs = {
         k: v
         for k, v in config.items()
-        if k not in ["model_name", "signal_len", "kmer_len", "num_features"]
+        if k not in ["model_name", "signal_len", "kmer_len"] and k not in training_params
     }
 
-    # Create model
+    # Create model (num_features will be in model_kwargs if present in config)
     model = get_model(
         model_name,
         signal_len=signal_len,
         kmer_len=kmer_len,
-        num_features=num_features,
         **model_kwargs,
     )
 
@@ -102,7 +120,19 @@ def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray, y_prob: np.ndarray) 
         - f1: F1 score
         - auc: ROC AUC score
         - confusion_matrix: 2x2 confusion matrix as list
+
+    Raises:
+        ValueError: If input arrays are empty or have mismatched lengths
     """
+    # Validate inputs
+    if len(y_true) == 0 or len(y_pred) == 0 or len(y_prob) == 0:
+        raise ValueError("Cannot compute metrics on empty arrays")
+
+    if len(y_true) != len(y_pred) or len(y_true) != len(y_prob):
+        raise ValueError(
+            f"Array length mismatch: y_true={len(y_true)}, y_pred={len(y_pred)}, y_prob={len(y_prob)}"
+        )
+
     metrics = {
         "accuracy": float(accuracy_score(y_true, y_pred)),
         "precision": float(precision_score(y_true, y_pred, zero_division=0)),
@@ -136,7 +166,7 @@ def save_metrics(metrics: dict, output_path: Path) -> None:
     with open(output_path, "w") as f:
         json.dump(metrics, f, indent=2)
 
-    print(f"Metrics saved to {output_path}")
+    logger.info(f"Metrics saved to {output_path}")
 
 
 def print_metrics(metrics: dict) -> None:
@@ -146,21 +176,21 @@ def print_metrics(metrics: dict) -> None:
     Args:
         metrics: Dictionary of metrics
     """
-    print("\n" + "=" * 60)
-    print("EVALUATION METRICS")
-    print("=" * 60)
-    print(f"Accuracy:  {metrics['accuracy']:.4f}")
-    print(f"Precision: {metrics['precision']:.4f}")
-    print(f"Recall:    {metrics['recall']:.4f}")
-    print(f"F1 Score:  {metrics['f1']:.4f}")
-    print(f"ROC AUC:   {metrics['auc']:.4f}")
+    logger.info("\n" + "=" * 60)
+    logger.info("EVALUATION METRICS")
+    logger.info("=" * 60)
+    logger.info(f"Accuracy:  {metrics['accuracy']:.4f}")
+    logger.info(f"Precision: {metrics['precision']:.4f}")
+    logger.info(f"Recall:    {metrics['recall']:.4f}")
+    logger.info(f"F1 Score:  {metrics['f1']:.4f}")
+    logger.info(f"ROC AUC:   {metrics['auc']:.4f}")
 
     if "confusion_matrix" in metrics:
         cm = metrics["confusion_matrix"]
-        print("\nConfusion Matrix:")
-        print("                Predicted")
-        print("              Neg    Pos")
-        print(f"Actual  Neg  {cm[0][0]:5d}  {cm[0][1]:5d}")
-        print(f"        Pos  {cm[1][0]:5d}  {cm[1][1]:5d}")
+        logger.info("\nConfusion Matrix:")
+        logger.info("                Predicted")
+        logger.info("              Neg    Pos")
+        logger.info(f"Actual  Neg  {cm[0][0]:5d}  {cm[0][1]:5d}")
+        logger.info(f"        Pos  {cm[1][0]:5d}  {cm[1][1]:5d}")
 
-    print("=" * 60 + "\n")
+    logger.info("=" * 60 + "\n")

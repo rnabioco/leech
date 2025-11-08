@@ -17,6 +17,14 @@ Rationale:
 import torch
 import torch.nn as nn
 
+from leech.constants import (
+    DEFAULT_DROPOUT,
+    DEFAULT_KMER_LEN,
+    DEFAULT_NUM_FEATURES,
+    DEFAULT_SIGNAL_LEN,
+)
+from leech.models.components import BaseModel
+
 
 class ResidualBlock1D(nn.Module):
     """
@@ -36,7 +44,7 @@ class ResidualBlock1D(nn.Module):
         out_channels: int,
         kernel_size: int = 3,
         stride: int = 1,
-        dropout: float = 0.1,
+        dropout: float = DEFAULT_DROPOUT,
     ):
         super().__init__()
 
@@ -109,7 +117,7 @@ class ResNet1D(nn.Module):
         base_channels: int = 64,
         num_blocks: int = 4,
         kernel_size: int = 3,
-        dropout: float = 0.1,
+        dropout: float = DEFAULT_DROPOUT,
     ):
         super().__init__()
 
@@ -151,7 +159,7 @@ class ResNet1D(nn.Module):
         return result
 
 
-class ResNetDwell(nn.Module):
+class ResNetDwell(BaseModel):
     """
     ResNet model with signal, sequence, and dwell feature branches.
 
@@ -171,11 +179,11 @@ class ResNetDwell(nn.Module):
 
     def __init__(
         self,
-        signal_len: int = 400,
-        kmer_len: int = 11,
-        num_features: int = 5,  # e.g., dwell + mean + median + std + range
+        signal_len: int = DEFAULT_SIGNAL_LEN,
+        kmer_len: int = DEFAULT_KMER_LEN,
+        num_features: int = DEFAULT_NUM_FEATURES,
         base_channels: int = 64,
-        dropout: float = 0.1,
+        dropout: float = DEFAULT_DROPOUT,
     ):
         super().__init__()
 
@@ -214,13 +222,11 @@ class ResNetDwell(nn.Module):
         self.global_avg_pool = nn.AdaptiveAvgPool1d(1)
         self.global_max_pool = nn.AdaptiveMaxPool1d(1)
 
-        # Calculate final channel sizes for each branch
-        # Signal: base_channels * 2^(8//2 - 1) = base_channels * 8
-        signal_final_ch = base_channels * (2 ** (8 // 2 - 1))
-        # Sequence: (base_channels//2) * 2^(4//2 - 1) = (base_channels//2) * 2
-        seq_final_ch = (base_channels // 2) * (2 ** (4 // 2 - 1))
-        # Feature: (base_channels//4) * 2^(3//2 - 1) = base_channels//4
-        feat_final_ch = base_channels // 4
+        # Get final channel sizes from each ResNet branch
+        # Each ResNet1D tracks its final_channels attribute
+        signal_final_ch = self.signal_resnet.final_channels
+        seq_final_ch = self.seq_resnet.final_channels
+        feat_final_ch = self.feature_resnet.final_channels
 
         # Total features: (avg + max) * 3 branches
         total_features = (signal_final_ch + seq_final_ch + feat_final_ch) * 2
@@ -283,19 +289,4 @@ class ResNetDwell(nn.Module):
 
         return logits
 
-    def predict_proba(
-        self, signal: torch.Tensor, sequence: torch.Tensor, features: torch.Tensor
-    ) -> torch.Tensor:
-        """
-        Get probability predictions.
-
-        Args:
-            signal: Raw signal (batch, signal_len)
-            sequence: One-hot encoded sequence (batch, 4, kmer_len)
-            features: Dwell + signal level features (batch, num_features, kmer_len)
-
-        Returns:
-            Probabilities (batch, 1)
-        """
-        logits = self.forward(signal, sequence, features)
-        return torch.sigmoid(logits)
+    # predict_proba() is inherited from BaseModel

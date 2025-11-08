@@ -3,6 +3,7 @@ Training loop and utilities for leech models.
 """
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,9 @@ from tqdm import tqdm
 
 from leech.dataset import LeechDataset, collate_fn
 from leech.models import get_model
+from leech.models.inference_wrapper import ModelInferenceWrapper
+
+logger = logging.getLogger("leech.training")
 
 
 class Trainer:
@@ -27,6 +31,7 @@ class Trainer:
     def __init__(
         self,
         model: nn.Module,
+        model_type: str,
         train_loader: DataLoader,
         val_loader: DataLoader | None = None,
         device: str = "cuda",
@@ -38,13 +43,17 @@ class Trainer:
 
         Args:
             model: PyTorch model to train
+            model_type: Model architecture name (e.g., "ConvLSTMDwell")
             train_loader: Training data loader
             val_loader: Validation data loader (optional)
             device: Device for training ("cuda" or "cpu")
             learning_rate: Learning rate for optimizer
             output_dir: Directory for saving models and logs
         """
-        self.model = model.to(device)
+        # Wrap model with inference wrapper for unified forward pass
+        self.model_wrapper = ModelInferenceWrapper(model, model_type)
+        self.model = self.model_wrapper.model  # Keep reference to underlying model
+        self.model.to(device)
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.device = device
@@ -83,21 +92,12 @@ class Trainer:
         all_labels: list[float] = []
 
         for batch in tqdm(self.train_loader, desc="Training", leave=False):
-            # Move to device
-            signal = batch["signal"].to(self.device)
-            sequence = batch["sequence"].to(self.device)
+            # Move labels to device
             labels = batch["label"].to(self.device)
 
-            # Forward pass
+            # Forward pass (wrapper handles moving tensors and calling model correctly)
             self.optimizer.zero_grad()
-
-            if "features" in batch:
-                # ConvLSTMDwell
-                features = batch["features"].to(self.device)
-                logits = self.model(signal, sequence, features)
-            else:
-                # ConvLSTMBase
-                logits = self.model(signal, sequence)
+            logits = self.model_wrapper.forward_batch(batch, self.device)
 
             # Compute loss
             loss = self.criterion(logits, labels)
@@ -136,17 +136,11 @@ class Trainer:
 
         with torch.no_grad():
             for batch in tqdm(self.val_loader, desc="Validation", leave=False):
-                # Move to device
-                signal = batch["signal"].to(self.device)
-                sequence = batch["sequence"].to(self.device)
+                # Move labels to device
                 labels = batch["label"].to(self.device)
 
-                # Forward pass
-                if "features" in batch:
-                    features = batch["features"].to(self.device)
-                    logits = self.model(signal, sequence, features)
-                else:
-                    logits = self.model(signal, sequence)
+                # Forward pass (wrapper handles moving tensors and calling model correctly)
+                logits = self.model_wrapper.forward_batch(batch, self.device)
 
                 # Compute loss
                 loss = self.criterion(logits, labels)
@@ -179,14 +173,14 @@ class Trainer:
         patience_counter = 0
 
         for epoch in range(1, epochs + 1):
-            print(f"\nEpoch {epoch}/{epochs}")
+            logger.info(f"Epoch {epoch}/{epochs}")
 
             # Train
             train_loss, train_acc = self.train_epoch()
             self.history["train_loss"].append(train_loss)
             self.history["train_acc"].append(train_acc)
 
-            print(f"Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f}")
+            logger.info(f"Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f}")
 
             # Validate
             if self.val_loader is not None:
@@ -195,7 +189,9 @@ class Trainer:
                 self.history["val_acc"].append(val_acc)
                 self.history["val_auc"].append(val_auc)
 
-                print(f"Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f} | Val AUC: {val_auc:.4f}")
+                logger.info(
+                    f"Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f} | Val AUC: {val_auc:.4f}"
+                )
 
                 # Save best model
                 if val_acc > self.best_val_acc:
@@ -205,13 +201,13 @@ class Trainer:
 
                     if self.output_dir:
                         self.save_checkpoint("model_best.pt")
-                        print(f"Saved best model (val_acc: {val_acc:.4f})")
+                        logger.info(f"Saved best model (val_acc: {val_acc:.4f})")
                 else:
                     patience_counter += 1
 
                 # Early stopping
                 if patience_counter >= early_stopping_patience:
-                    print(f"\nEarly stopping at epoch {epoch}")
+                    logger.info(f"Early stopping at epoch {epoch}")
                     break
 
         # Save final model
@@ -246,7 +242,10 @@ class Trainer:
         with open(history_path, "w") as f:
             json.dump(self.history, f, indent=2)
 
-        # Save summary
+        # Save summary (only if training occurred)
+        if len(self.history["train_loss"]) == 0:
+            return
+
         summary = {
             "best_val_acc": self.best_val_acc,
             "best_epoch": self.best_epoch,
@@ -254,7 +253,7 @@ class Trainer:
             "final_train_acc": self.history["train_acc"][-1],
         }
 
-        if self.val_loader is not None:
+        if self.val_loader is not None and len(self.history["val_loss"]) > 0:
             summary.update(
                 {
                     "final_val_loss": self.history["val_loss"][-1],
@@ -333,13 +332,16 @@ def train_model(
     num_features = first_batch.get("features", torch.zeros(1, 1, kmer_len)).shape[1]
 
     # Create model
-    model = get_model(
-        model_name,
-        signal_len=signal_len,
-        kmer_len=kmer_len,
-        num_features=num_features,
+    # Only pass num_features to models that need it (not ConvLSTMBase)
+    model_init_kwargs = {
+        "signal_len": signal_len,
+        "kmer_len": kmer_len,
         **model_kwargs,
-    )
+    }
+    if model_name != "ConvLSTMBase":
+        model_init_kwargs["num_features"] = num_features
+
+    model = get_model(model_name, **model_init_kwargs)
 
     # Save config
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -362,6 +364,7 @@ def train_model(
     # Create trainer
     trainer = Trainer(
         model=model,
+        model_type=model_name,
         train_loader=train_loader,
         val_loader=val_loader,
         device=device,
