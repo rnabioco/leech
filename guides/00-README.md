@@ -4,7 +4,7 @@ Comprehensive analysis and implementation guides for the Leech project.
 
 ---
 
-## 🚀 **START HERE** → [`START_HERE_IMPLEMENTATION_GUIDE.md`](START_HERE_IMPLEMENTATION_GUIDE.md)
+## 🚀 **START HERE** → [`01-START_HERE_IMPLEMENTATION_GUIDE.md`](01-START_HERE_IMPLEMENTATION_GUIDE.md)
 
 **The main implementation guide with step-by-step instructions.**
 
@@ -19,7 +19,7 @@ Comprehensive analysis and implementation guides for the Leech project.
 
 ## Core Analysis Documents
 
-### 1. [`REMORA_ANALYSIS.md`](REMORA_ANALYSIS.md)
+### 1. [`03-REMORA_ANALYSIS.md`](03-REMORA_ANALYSIS.md)
 **Deep dive into Remora's architecture and how Leech extends it.**
 
 Topics:
@@ -28,7 +28,7 @@ Topics:
 - Novel contribution: explicit dwell time features
 - Implementation verification and comparison
 
-### 2. [`AA_DISCRIMINATION_PRIMARY_TASK.md`](AA_DISCRIMINATION_PRIMARY_TASK.md)
+### 2. [`04-AA_DISCRIMINATION_PRIMARY_TASK.md`](04-AA_DISCRIMINATION_PRIMARY_TASK.md)
 **Clarification: The primary goal is 20-way AA classification, not charged vs uncharged.**
 
 Key insights:
@@ -37,7 +37,7 @@ Key insights:
 - Dwell time is CRITICAL for AA discrimination (+15-20% improvement)
 - Transfer learning strategy from synthetic → biological tRNAs
 
-### 3. [`TRNA_CONDITIONAL_CLASSIFICATION.md`](TRNA_CONDITIONAL_CLASSIFICATION.md)
+### 3. [`02-TRNA_CONDITIONAL_CLASSIFICATION.md`](02-TRNA_CONDITIONAL_CLASSIFICATION.md)
 **CRITICAL: tRNA-AA pairing is highly specific, not all-vs-all.**
 
 Biological reality:
@@ -55,7 +55,7 @@ Implementation strategies:
 
 ## Supporting Analysis Documents
 
-### 4. [`MODEL_PREDICTIONS.md`](MODEL_PREDICTIONS.md)
+### 4. [`05-MODEL_PREDICTIONS.md`](05-MODEL_PREDICTIONS.md)
 **Predictions for which model architectures will perform best.**
 
 Expected performance:
@@ -69,7 +69,7 @@ Includes:
 - Architecture refinements (attention, multi-scale, normalization)
 - Failure mode analysis
 
-### 5. [`DWELL_FEATURE_STRATEGIES.md`](DWELL_FEATURE_STRATEGIES.md)
+### 5. [`06-DWELL_FEATURE_STRATEGIES.md`](06-DWELL_FEATURE_STRATEGIES.md)
 **Analysis of learnable vs fixed window approaches for dwell features.**
 
 Key question: Can optimal window size be learned during training?
@@ -81,7 +81,7 @@ Answer: YES! Three approaches:
 
 Recommendation: Skip grid search, let network learn optimal "window" via conv layers.
 
-### 6. [`AMINO_ACID_HETEROGENEITY.md`](AMINO_ACID_HETEROGENEITY.md)
+### 6. [`07-AMINO_ACID_HETEROGENEITY.md`](07-AMINO_ACID_HETEROGENEITY.md)
 **Addressing concern: Different AAs may need different temporal patterns.**
 
 Question: How does AA diversity affect classification?
@@ -98,21 +98,21 @@ Answer: It's a FEATURE, not a bug!
 
 ### If you're new, read in this order:
 
-1. **START_HERE_IMPLEMENTATION_GUIDE.md** ← Begin here!
-2. **TRNA_CONDITIONAL_CLASSIFICATION.md** ← Understand the biological insight
-3. **REMORA_ANALYSIS.md** ← Background on temporal alignment
-4. **AA_DISCRIMINATION_PRIMARY_TASK.md** ← Clarifies the actual problem
+1. **01-START_HERE_IMPLEMENTATION_GUIDE.md** ← Begin here!
+2. **02-TRNA_CONDITIONAL_CLASSIFICATION.md** ← Understand the biological insight
+3. **03-REMORA_ANALYSIS.md** ← Background on temporal alignment
+4. **04-AA_DISCRIMINATION_PRIMARY_TASK.md** ← Clarifies the actual problem
 5. Other guides as needed for specific topics
 
 ### If you want to understand the thought process:
 
-1. **REMORA_ANALYSIS.md** - Initial analysis of Remora
-2. **MODEL_PREDICTIONS.md** - Predictions for 20-way classification
-3. **DWELL_FEATURE_STRATEGIES.md** - Window size considerations
-4. **AMINO_ACID_HETEROGENEITY.md** - AA diversity concerns
-5. **AA_DISCRIMINATION_PRIMARY_TASK.md** - Clarification of primary task
-6. **TRNA_CONDITIONAL_CLASSIFICATION.md** - Biological insight changes strategy
-7. **START_HERE_IMPLEMENTATION_GUIDE.md** - Final recommendation
+1. **03-REMORA_ANALYSIS.md** - Initial analysis of Remora
+2. **05-MODEL_PREDICTIONS.md** - Predictions for 20-way classification
+3. **06-DWELL_FEATURE_STRATEGIES.md** - Window size considerations
+4. **07-AMINO_ACID_HETEROGENEITY.md** - AA diversity concerns
+5. **04-AA_DISCRIMINATION_PRIMARY_TASK.md** - Clarification of primary task
+6. **02-TRNA_CONDITIONAL_CLASSIFICATION.md** - Biological insight changes strategy
+7. **01-START_HERE_IMPLEMENTATION_GUIDE.md** - Final recommendation
 
 ---
 
@@ -176,7 +176,7 @@ These guides reflect analysis as of 2025-11-06. As the project evolves:
 
 1. Update guides to reflect new findings
 2. Move outdated approaches to an `archive/` subdirectory
-3. Keep START_HERE_IMPLEMENTATION_GUIDE.md as the canonical reference
+3. Keep 01-START_HERE_IMPLEMENTATION_GUIDE.md as the canonical reference
 4. Add new guides for new topics (biological augmentation, fine-tuning, etc.)
 
 ---
@@ -184,8 +184,8 @@ These guides reflect analysis as of 2025-11-06. As the project evolves:
 ## Questions?
 
 If something is unclear:
-1. Check START_HERE_IMPLEMENTATION_GUIDE.md first
+1. Check 01-START_HERE_IMPLEMENTATION_GUIDE.md first
 2. Look for relevant section in topic-specific guides
-3. Refer back to REMORA_ANALYSIS.md for foundational concepts
+3. Refer back to 03-REMORA_ANALYSIS.md for foundational concepts
 
 **Bottom line: Start with tRNA-conditional classification (START_HERE guide), achieve 96%+ accuracy, validate with mutant ThrRS data. This is the path forward!** 🚀
