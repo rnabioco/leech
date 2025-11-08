@@ -166,20 +166,26 @@ class TestSaveLoadMetrics:
 class TestPrintMetrics:
     """Test print_metrics function."""
 
-    def test_print_metrics_no_error(self, sample_predictions, capsys):
+    def test_print_metrics_no_error(self, sample_predictions, caplog):
         """Test that print_metrics doesn't raise errors."""
+        import logging
+
+        caplog.set_level(logging.INFO)
         y_true, y_pred, y_prob = sample_predictions
         metrics = compute_metrics(y_true, y_pred, y_prob)
 
         print_metrics(metrics)
 
-        captured = capsys.readouterr()
-        assert "EVALUATION METRICS" in captured.out
-        assert "Accuracy" in captured.out
-        assert "Confusion Matrix" in captured.out
+        log_text = caplog.text
+        assert "EVALUATION METRICS" in log_text
+        assert "Accuracy" in log_text
+        assert "Confusion Matrix" in log_text
 
-    def test_print_metrics_without_confusion_matrix(self, capsys):
+    def test_print_metrics_without_confusion_matrix(self, caplog):
         """Test printing metrics without confusion matrix."""
+        import logging
+
+        caplog.set_level(logging.INFO)
         metrics = {
             "accuracy": 0.95,
             "precision": 0.92,
@@ -190,10 +196,10 @@ class TestPrintMetrics:
 
         print_metrics(metrics)
 
-        captured = capsys.readouterr()
-        assert "EVALUATION METRICS" in captured.out
-        # Confusion matrix section should not appear
-        assert captured.out.count("Confusion Matrix") <= 1
+        log_text = caplog.text
+        assert "EVALUATION METRICS" in log_text
+        # Confusion matrix section should not appear if not in metrics
+        assert "Confusion Matrix" not in log_text
 
 
 class TestLoadModelFromCheckpoint:

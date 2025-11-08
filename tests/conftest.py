@@ -29,10 +29,29 @@ def sample_sequence():
 
 @pytest.fixture
 def sample_move_table():
-    """Generate a sample MoveTable."""
+    """Generate a sample MoveTable.
+
+    Creates a move table for 20 bases with:
+    - stride = 5 (basecaller samples every 5 signal points)
+    - Total signal samples = 1000
+    - First base starts at signal position 250 (allowing 200 left context)
+    - Each base gets ~30 signal samples on average (600 samples / 20 bases)
+    """
     stride = 5
-    # 20 bases with some repeated signal samples
-    moves = np.array([1, 1, 0, 1, 1, 0, 0, 1, 1, 1, 0, 1, 1, 0, 1, 1, 1, 0, 0, 1], dtype=np.int8)
+    # Create 20 moves (one per base) spread across the signal
+    # We want moves to start at position 50 (50*5=250 signal position)
+    # and be evenly distributed with ~6 stride intervals per base (30 samples)
+    moves = []
+    for _ in range(20):  # 20 bases
+        moves.append(1)  # Move to new base
+        for _ in range(5):  # Stay on base for 5 more positions (6 total * 5 = 30 samples)
+            moves.append(0)
+
+    # Prepend zeros to shift start position to allow for left context
+    # We want first base at signal ~250, so add 50 positions of zeros (50*5=250)
+    moves = [0] * 50 + moves
+    moves = np.array(moves, dtype=np.int8)
+
     return MoveTable(
         stride=stride,
         moves=moves,
@@ -48,7 +67,7 @@ def sample_leech_read(sample_signal, sample_sequence, sample_move_table):
     seq_to_sig_map = sample_move_table.to_seq_to_sig_map()
     dwells = np.diff(seq_to_sig_map)
 
-    # Create simple dwell and signal features
+    # Create dwell and signal features (5 total to match model_config)
     dwell_features = {
         "dwell": dwells.astype(np.float32),
         "dwell_log": np.log(dwells + 1e-6).astype(np.float32),
@@ -57,6 +76,7 @@ def sample_leech_read(sample_signal, sample_sequence, sample_move_table):
     num_bases = len(dwells)
     signal_features = {
         "level_mean": np.random.randn(num_bases).astype(np.float32),
+        "level_median": np.random.randn(num_bases).astype(np.float32),
         "level_std": np.abs(np.random.randn(num_bases)).astype(np.float32),
     }
 
@@ -75,19 +95,24 @@ def sample_leech_read(sample_signal, sample_sequence, sample_move_table):
 
 @pytest.fixture
 def sample_chunks(sample_leech_read):
-    """Generate sample training chunks."""
+    """Generate sample training chunks.
+
+    Creates chunks with signal_context=(200, 200) and kmer_context=5
+    to match the standard testing configuration (signal_len=400, kmer_len=11).
+    """
     chunks = []
 
     # Create a few chunks manually, being careful about boundaries
     num_bases = len(sample_leech_read.dwells)
-    start_idx = 5
-    end_idx = min(15, num_bases - 6)  # Leave room for kmer_context
+    kmer_context = 5  # This creates sequences of length 11 (2*5 + 1)
+    start_idx = kmer_context
+    end_idx = min(15, num_bases - kmer_context)  # Leave room for kmer_context
 
     for base_idx in range(start_idx, end_idx):
         chunk = sample_leech_read.get_chunk(
             base_idx,
-            signal_context=(50, 50),
-            kmer_context=2,  # Smaller context
+            signal_context=(200, 200),  # Standard context
+            kmer_context=kmer_context,
         )
         if chunk is not None:
             chunk["read_id"] = sample_leech_read.read_id

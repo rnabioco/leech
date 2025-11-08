@@ -172,9 +172,9 @@ class TestConvLSTMDwell:
     def test_three_branch_architecture(self, model_config):
         """Test that all three branches (signal, sequence, features) are used."""
         model = ConvLSTMDwell(**model_config)
-        assert hasattr(model, "signal_conv")
-        assert hasattr(model, "seq_conv")
-        assert hasattr(model, "feature_conv")
+        assert hasattr(model, "signal_branch")
+        assert hasattr(model, "sequence_branch")
+        assert hasattr(model, "feature_branch")
 
 
 class TestTransformerDwell:
@@ -290,7 +290,8 @@ class TestTCNDwell:
             signal_len=model_config["signal_len"],
             kmer_len=model_config["kmer_len"],
             num_features=model_config["num_features"],
-            num_channels=[8, 16],  # Smaller for testing
+            hidden_channels=16,  # Smaller for testing
+            num_layers=4,  # Smaller for testing
             kernel_size=3,
             dropout=model_config["dropout"],
         )
@@ -302,7 +303,8 @@ class TestTCNDwell:
             signal_len=model_config["signal_len"],
             kmer_len=model_config["kmer_len"],
             num_features=model_config["num_features"],
-            num_channels=[8, 16],
+            hidden_channels=16,
+            num_layers=4,
             kernel_size=3,
         )
         model.eval()
@@ -329,7 +331,6 @@ class TestResNetDwell:
             kmer_len=model_config["kmer_len"],
             num_features=model_config["num_features"],
             base_channels=8,  # Smaller for testing
-            num_blocks=2,
             dropout=model_config["dropout"],
         )
         assert model.signal_len == model_config["signal_len"]
@@ -341,7 +342,6 @@ class TestResNetDwell:
             kmer_len=model_config["kmer_len"],
             num_features=model_config["num_features"],
             base_channels=8,
-            num_blocks=2,
         )
         model.eval()
 
@@ -363,9 +363,11 @@ class TestResNetDwell:
             kmer_len=model_config["kmer_len"],
             num_features=model_config["num_features"],
             base_channels=8,
-            num_blocks=2,
         )
-        assert len(model.signal_blocks) == 2  # num_blocks
+        # Check that branches exist
+        assert hasattr(model, "signal_resnet")
+        assert hasattr(model, "seq_resnet")
+        assert hasattr(model, "feature_resnet")
 
 
 class TestModelComparisons:
@@ -384,22 +386,27 @@ class TestModelComparisons:
     )
     def test_all_models_forward(self, model_name, requires_features):
         """Test that all models can do forward pass."""
-        # Smaller config for faster testing
+        # Base config for all models
         config = {
             "signal_len": 100,
             "kmer_len": 11,
-            "num_features": 5,
         }
 
         # Model-specific configs
-        if model_name in ["ConvLSTMBase", "ConvLSTMDwell"]:
+        if model_name == "ConvLSTMBase":
             config.update({"conv_channels": [4, 16, 32], "lstm_hidden": 16})
+        elif model_name == "ConvLSTMDwell":
+            config.update({"num_features": 5, "conv_channels": [4, 16, 32], "lstm_hidden": 16})
         elif model_name == "TransformerDwell":
-            config.update({"d_model": 32, "nhead": 4, "num_layers": 1})
-        elif model_name in ["ConvOnly", "ResNetDwell"]:
-            config.update({"base_channels": 4, "num_blocks": 1})
+            config.update({"num_features": 5, "d_model": 32, "nhead": 4, "num_layers": 1})
+        elif model_name == "ConvOnly":
+            config.update({"num_features": 5, "base_channels": 4})
+        elif model_name == "ResNetDwell":
+            config.update({"num_features": 5, "base_channels": 4})
         elif model_name == "TCNDwell":
-            config.update({"num_channels": [8, 16], "kernel_size": 3})
+            config.update(
+                {"num_features": 5, "hidden_channels": 16, "num_layers": 2, "kernel_size": 3}
+            )
 
         model = get_model(model_name, **config)
         model.eval()
@@ -407,7 +414,10 @@ class TestModelComparisons:
         batch_size = 2
         signal = torch.randn(batch_size, config["signal_len"])
         sequence = torch.randn(batch_size, 4, config["kmer_len"])
-        features = torch.randn(batch_size, config["num_features"], config["kmer_len"])
+        if requires_features:
+            features = torch.randn(batch_size, config["num_features"], config["kmer_len"])
+        else:
+            features = None
 
         with torch.no_grad():
             if requires_features:
@@ -421,22 +431,42 @@ class TestModelComparisons:
 
     def test_model_parameter_counts(self):
         """Test that models have reasonable parameter counts."""
-        config = {
+        base_config = {
             "signal_len": 400,
             "kmer_len": 11,
-            "num_features": 5,
         }
 
         for model_name in MODEL_REGISTRY.keys():
             # Model-specific configs
-            if model_name in ["ConvLSTMBase", "ConvLSTMDwell"]:
-                model_config = {**config, "conv_channels": [4, 16, 64], "lstm_hidden": 32}
+            if model_name == "ConvLSTMBase":
+                model_config = {**base_config, "conv_channels": [4, 16, 64], "lstm_hidden": 32}
+            elif model_name == "ConvLSTMDwell":
+                model_config = {
+                    **base_config,
+                    "num_features": 5,
+                    "conv_channels": [4, 16, 64],
+                    "lstm_hidden": 32,
+                }
             elif model_name == "TransformerDwell":
-                model_config = {**config, "d_model": 64, "nhead": 4, "num_layers": 2}
-            elif model_name in ["ConvOnly", "ResNetDwell"]:
-                model_config = {**config, "base_channels": 8, "num_blocks": 2}
+                model_config = {
+                    **base_config,
+                    "num_features": 5,
+                    "d_model": 64,
+                    "nhead": 4,
+                    "num_layers": 2,
+                }
+            elif model_name == "ConvOnly":
+                model_config = {**base_config, "num_features": 5, "base_channels": 8}
+            elif model_name == "ResNetDwell":
+                model_config = {**base_config, "num_features": 5, "base_channels": 8}
             elif model_name == "TCNDwell":
-                model_config = {**config, "num_channels": [16, 32], "kernel_size": 3}
+                model_config = {
+                    **base_config,
+                    "num_features": 5,
+                    "hidden_channels": 32,
+                    "num_layers": 3,
+                    "kernel_size": 3,
+                }
 
             model = get_model(model_name, **model_config)
             param_count = sum(p.numel() for p in model.parameters())

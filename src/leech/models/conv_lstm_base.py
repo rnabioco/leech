@@ -10,8 +10,19 @@ Architecture:
 import torch
 import torch.nn as nn
 
+from leech.constants import (
+    DEFAULT_CONV_CHANNELS,
+    DEFAULT_DROPOUT,
+    DEFAULT_FC_HIDDEN,
+    DEFAULT_KMER_LEN,
+    DEFAULT_LSTM_HIDDEN,
+    DEFAULT_LSTM_LAYERS,
+    DEFAULT_SIGNAL_LEN,
+)
+from leech.models.components import BaseModel, SequenceBranch, SignalBranch
 
-class ConvLSTMBase(nn.Module):
+
+class ConvLSTMBase(BaseModel):
     """
     Baseline model with signal and sequence branches only.
 
@@ -25,42 +36,26 @@ class ConvLSTMBase(nn.Module):
 
     def __init__(
         self,
-        signal_len: int = 400,
-        kmer_len: int = 11,
+        signal_len: int = DEFAULT_SIGNAL_LEN,
+        kmer_len: int = DEFAULT_KMER_LEN,
         conv_channels: list[int] | None = None,
-        lstm_hidden: int = 96,
-        dropout: float = 0.1,
+        lstm_hidden: int = DEFAULT_LSTM_HIDDEN,
+        dropout: float = DEFAULT_DROPOUT,
     ):
         super().__init__()
 
         if conv_channels is None:
-            conv_channels = [4, 16, 256]
+            conv_channels = DEFAULT_CONV_CHANNELS
 
         self.signal_len = signal_len
         self.kmer_len = kmer_len
         self.lstm_hidden = lstm_hidden
 
-        # Signal branch: Conv1d layers
-        # Input: (batch, 1, signal_len)
-        self.signal_conv = nn.Sequential(
-            nn.Conv1d(1, conv_channels[0], kernel_size=5, padding=2),
-            nn.ReLU(),
-            nn.Conv1d(conv_channels[0], conv_channels[1], kernel_size=5, padding=2),
-            nn.ReLU(),
-            nn.Conv1d(conv_channels[1], conv_channels[2], kernel_size=5, padding=2),
-            nn.ReLU(),
-        )
+        # Signal branch: Shared component for signal processing
+        self.signal_branch = SignalBranch(conv_channels=conv_channels)
 
-        # Sequence branch: Conv1d on one-hot encoded k-mers
-        # Input: (batch, 4, kmer_len) - 4 nucleotides (A, C, G, T)
-        self.seq_conv = nn.Sequential(
-            nn.Conv1d(4, conv_channels[0], kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.Conv1d(conv_channels[0], conv_channels[1], kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.Conv1d(conv_channels[1], conv_channels[2], kernel_size=3, padding=1),
-            nn.ReLU(),
-        )
+        # Sequence branch: Shared component for sequence processing
+        self.sequence_branch = SequenceBranch(conv_channels=conv_channels)
 
         # Adaptive pooling to match dimensions
         # Signal branch output: (batch, 256, signal_len)
@@ -73,7 +68,7 @@ class ConvLSTMBase(nn.Module):
         self.lstm = nn.LSTM(
             input_size=conv_channels[2] * 2,  # Concatenated features
             hidden_size=lstm_hidden,
-            num_layers=2,
+            num_layers=DEFAULT_LSTM_LAYERS,
             batch_first=True,
             bidirectional=True,
             dropout=dropout if dropout > 0 else 0,
@@ -83,10 +78,10 @@ class ConvLSTMBase(nn.Module):
         # Take center position from BiLSTM output
         self.fc = nn.Sequential(
             nn.Dropout(dropout),
-            nn.Linear(lstm_hidden * 2, 64),  # *2 for bidirectional
+            nn.Linear(lstm_hidden * 2, DEFAULT_FC_HIDDEN),  # *2 for bidirectional
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(64, 1),  # Binary classification
+            nn.Linear(DEFAULT_FC_HIDDEN, 1),  # Binary classification
         )
 
     def forward(self, signal: torch.Tensor, sequence: torch.Tensor) -> torch.Tensor:
@@ -102,14 +97,12 @@ class ConvLSTMBase(nn.Module):
         """
         signal.size(0)
 
-        # Signal branch
-        # (batch, signal_len) -> (batch, 1, signal_len)
-        signal_in = signal.unsqueeze(1)
-        signal_feat = self.signal_conv(signal_in)  # (batch, 256, signal_len)
+        # Signal branch (handles unsqueeze internally)
+        signal_feat = self.signal_branch(signal)  # (batch, 256, signal_len)
         signal_feat = self.signal_pool(signal_feat)  # (batch, 256, kmer_len)
 
         # Sequence branch
-        seq_feat = self.seq_conv(sequence)  # (batch, 256, kmer_len)
+        seq_feat = self.sequence_branch(sequence)  # (batch, 256, kmer_len)
 
         # Merge branches
         # (batch, 256, kmer_len) + (batch, 256, kmer_len) -> (batch, 512, kmer_len)
@@ -130,38 +123,9 @@ class ConvLSTMBase(nn.Module):
 
         return logits
 
-    def predict_proba(self, signal: torch.Tensor, sequence: torch.Tensor) -> torch.Tensor:
-        """
-        Get probability predictions.
-
-        Args:
-            signal: Raw signal (batch, signal_len)
-            sequence: One-hot encoded sequence (batch, 4, kmer_len)
-
-        Returns:
-            Probabilities (batch, 1)
-        """
-        logits = self.forward(signal, sequence)
-        return torch.sigmoid(logits)
+    # predict_proba() is inherited from BaseModel
 
 
-def encode_kmer(sequence: str) -> torch.Tensor:
-    """
-    One-hot encode a DNA sequence.
-
-    Args:
-        sequence: DNA sequence string (A, C, G, T)
-
-    Returns:
-        One-hot encoded tensor (4, len(sequence))
-    """
-    base_to_idx = {"A": 0, "C": 1, "G": 2, "T": 3}
-    seq_len = len(sequence)
-    encoded = torch.zeros(4, seq_len, dtype=torch.float32)
-
-    for i, base in enumerate(sequence.upper()):
-        if base in base_to_idx:
-            encoded[base_to_idx[base], i] = 1.0
-        # If base not in dict (e.g., N), leave as zeros
-
-    return encoded
+# encode_kmer() has been moved to leech.data_prep for centralized access
+# Import it from there if needed:
+# from leech.data_prep import encode_kmer

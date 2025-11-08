@@ -5,6 +5,7 @@ Reads POD5 and BAM files, extracts features, runs model predictions,
 and writes modification probabilities to output BAM files.
 """
 
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -12,9 +13,11 @@ import pysam
 import torch
 from tqdm import tqdm
 
-from leech.data_prep import iter_bam_with_pod5
-from leech.models.conv_lstm_base import encode_kmer
+from leech.data_prep import encode_kmer, iter_bam_with_pod5
+from leech.models.inference_wrapper import ModelInferenceWrapper
 from leech.util import load_model_from_checkpoint
+
+logger = logging.getLogger("leech.inference")
 
 
 def run_inference(
@@ -44,7 +47,7 @@ def run_inference(
         motif_offset: Offset within motif for prediction
         batch_size: Batch size for inference
     """
-    print(f"Loading model from {model_path}")
+    logger.info(f"Loading model from {model_path}")
 
     # Load model and config
     model, config = load_model_from_checkpoint(model_path, device=device)
@@ -54,14 +57,17 @@ def run_inference(
     model_type = config["model_name"]
     config["num_features"]
 
+    # Wrap model for unified forward pass
+    model_wrapper = ModelInferenceWrapper(model, model_type)
+
     # Calculate context from signal_len (assumes symmetric)
     signal_context = (signal_len // 2, signal_len // 2)
     kmer_context = kmer_len // 2
 
-    print(f"Model: {model_type}")
-    print(f"Signal length: {signal_len}")
-    print(f"K-mer length: {kmer_len}")
-    print(f"Signal context: {signal_context}")
+    logger.info(f"Model: {model_type}")
+    logger.info(f"Signal length: {signal_len}")
+    logger.info(f"K-mer length: {kmer_len}")
+    logger.info(f"Signal context: {signal_context}")
 
     # Open input BAM
     bam_in = pysam.AlignmentFile(str(bam_path), "rb")
@@ -70,8 +76,8 @@ def run_inference(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     bam_out = pysam.AlignmentFile(str(output_path), "wb", template=bam_in)
 
-    print(f"\nProcessing reads from {bam_path}")
-    print(f"Output: {output_path}")
+    logger.info(f"\nProcessing reads from {bam_path}")
+    logger.info(f"Output: {output_path}")
 
     total_reads = 0
     total_predictions = 0
@@ -126,15 +132,20 @@ def run_inference(
             signal = signal.unsqueeze(0)
             sequence = sequence.unsqueeze(0)
 
-            # Get features if needed
-            with torch.no_grad():
-                if model_type == "ConvLSTMDwell":
-                    features = torch.from_numpy(chunk["features"].astype(np.float32)).to(device)
-                    features = features.unsqueeze(0)
-                    logits = model(signal, sequence, features)
-                else:
-                    logits = model(signal, sequence)
+            # Prepare batch dict for wrapper
+            batch = {
+                "signal": signal,
+                "sequence": sequence,
+            }
 
+            # Add features if model requires them
+            if model_wrapper.requires_features:
+                features = torch.from_numpy(chunk["features"].astype(np.float32)).to(device)
+                batch["features"] = features.unsqueeze(0)
+
+            # Run inference
+            with torch.no_grad():
+                logits = model_wrapper.forward_batch(batch, device)
                 prob = torch.sigmoid(logits).item()
 
             predictions.append((base_idx, prob))
@@ -163,10 +174,10 @@ def run_inference(
     bam_in.close()
     bam_out.close()
 
-    print("\nInference complete!")
-    print(f"Reads processed: {total_reads}")
-    print(f"Total predictions: {total_predictions}")
-    print(f"Output written to: {output_path}")
+    logger.info("\nInference complete!")
+    logger.info(f"Reads processed: {total_reads}")
+    logger.info(f"Total predictions: {total_predictions}")
+    logger.info(f"Output written to: {output_path}")
 
 
 def load_predictions_from_bam(bam_path: Path) -> dict:

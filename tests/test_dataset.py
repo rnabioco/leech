@@ -255,19 +255,25 @@ class TestDatasetIntegration:
             temp_chunks_file, signal_len=400, kmer_len=11, model_type="ConvLSTMDwell"
         )
 
-        # Create two loaders with different seeds
+        # Create two loaders with different seeds and collect all indices
         torch.manual_seed(42)
         loader1 = DataLoader(dataset, batch_size=2, shuffle=True, collate_fn=collate_fn)
-        batch1_labels = next(iter(loader1))["label"]
+        indices1 = []
+        for batch in loader1:
+            # Use signal values as a proxy for sample identity (first few values)
+            indices1.append(batch["signal"][:, :5].clone())
 
         torch.manual_seed(123)
         loader2 = DataLoader(dataset, batch_size=2, shuffle=True, collate_fn=collate_fn)
-        batch2_labels = next(iter(loader2))["label"]
+        indices2 = []
+        for batch in loader2:
+            indices2.append(batch["signal"][:, :5].clone())
 
-        # With different seeds, first batches should likely differ
-        # (This is probabilistic, but very unlikely to be the same)
+        # With different seeds and sufficient data, order should differ
         if len(dataset) > 2:
-            assert not torch.equal(batch1_labels, batch2_labels)
+            # Check if at least one batch differs
+            all_equal = all(torch.equal(i1, i2) for i1, i2 in zip(indices1, indices2, strict=True))
+            assert not all_equal, "Shuffling with different seeds should produce different orders"
 
 
 if __name__ == "__main__":

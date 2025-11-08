@@ -4,14 +4,17 @@ Data preparation: reading POD5 and BAM files, extracting chunks for training.
 Adapted from Remora but modernized with NumPy arrays and type hints.
 """
 
+import logging
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 import pysam
+import torch
 from pod5 import DatasetReader
 
+from leech.constants import DEFAULT_KMER_CONTEXT, DEFAULT_SIGNAL_CONTEXT
 from leech.features import (
     compute_dwell_features,
     compute_dwell_times,
@@ -19,6 +22,8 @@ from leech.features import (
     extract_move_table,
     normalize_signal,
 )
+
+logger = logging.getLogger("leech.data_prep")
 
 
 @dataclass
@@ -61,8 +66,8 @@ class LeechRead:
     def get_chunk(
         self,
         base_idx: int,
-        signal_context: tuple[int, int] = (200, 200),
-        kmer_context: int = 5,
+        signal_context: tuple[int, int] = DEFAULT_SIGNAL_CONTEXT,
+        kmer_context: int = DEFAULT_KMER_CONTEXT,
     ) -> dict[str, np.ndarray | str | int | None] | None:
         """
         Extract a training chunk centered on a specific base.
@@ -225,7 +230,7 @@ def iter_bam_with_pod5(
             )
 
         except Exception as e:
-            print(f"Warning: Skipping read {aln.query_name}: {e}")
+            logger.warning(f"Skipping read {aln.query_name}: {e}")
             continue
 
     bam.close()
@@ -297,16 +302,57 @@ def int_to_seq(int_seq: np.ndarray) -> str:
     return "".join(bases[i] if i < 5 else "N" for i in int_seq)
 
 
+def encode_kmer(sequence: str) -> torch.Tensor:
+    """
+    One-hot encode a DNA sequence for model input.
+
+    This is the canonical sequence encoding function used throughout leech.
+    Returns a PyTorch tensor suitable for direct model input.
+
+    Args:
+        sequence: DNA sequence string (A, C, G, T, N)
+
+    Returns:
+        One-hot encoded tensor of shape (4, len(sequence))
+        Bases are encoded as: A=0, C=1, G=2, T=3
+        Unknown bases (e.g., N) are encoded as all zeros
+
+    Example:
+        >>> seq = "ACGT"
+        >>> encoded = encode_kmer(seq)
+        >>> encoded.shape
+        torch.Size([4, 4])
+    """
+    base_to_idx = {"A": 0, "C": 1, "G": 2, "T": 3}
+    seq_len = len(sequence)
+    encoded = torch.zeros(4, seq_len, dtype=torch.float32)
+
+    for i, base in enumerate(sequence.upper()):
+        if base in base_to_idx:
+            encoded[base_to_idx[base], i] = 1.0
+        # If base not in dict (e.g., N), leave as zeros
+
+    return encoded
+
+
 def one_hot_encode_sequence(seq: str, kmer_len: int = 1) -> np.ndarray:
     """
-    One-hot encode a sequence with k-mer context.
+    One-hot encode a sequence with k-mer context (advanced version).
+
+    NOTE: For standard sequence encoding, use encode_kmer() instead.
+    This function is for specialized k-mer context encoding where each
+    position includes information from neighboring bases.
 
     Args:
         seq: DNA sequence
-        kmer_len: K-mer length for encoding
+        kmer_len: K-mer length for encoding (context window)
 
     Returns:
         Array of shape (kmer_len * 4, seq_len) for model input
+        Each position encodes kmer_len neighboring bases
+
+    See Also:
+        encode_kmer: Standard one-hot encoding function (recommended)
     """
     int_seq = seq_to_int(seq)
     seq_len = len(int_seq)
@@ -374,6 +420,9 @@ def save_chunks(chunks: list[dict], output_path: Path) -> None:
     read_ids_arr = np.array(read_ids, dtype=str)
     base_indices_arr = np.array(base_indices, dtype=np.int64)
 
+    # Create parent directories if they don't exist
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
     # Save
     np.savez_compressed(
         output_path,
@@ -386,7 +435,7 @@ def save_chunks(chunks: list[dict], output_path: Path) -> None:
         base_indices=base_indices_arr,
     )
 
-    print(f"Saved {len(chunks)} chunks to {output_path}")
+    logger.info(f"Saved {len(chunks)} chunks to {output_path}")
 
 
 def load_chunks(input_path: Path) -> list[dict]:
