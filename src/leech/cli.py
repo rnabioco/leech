@@ -15,6 +15,40 @@ from leech.constants import (
     DEFAULT_SEED,
 )
 
+# Model choices for CLI
+MODEL_CHOICES = [
+    "ConvLSTMDwell",
+    "ConvLSTMBase",
+    "TransformerDwell",
+    "ConvOnly",
+    "TCNDwell",
+    "ResNetDwell",
+]
+
+
+def add_training_args(parser):
+    """Add common training arguments to parser."""
+    parser.add_argument("--epochs", type=int, default=DEFAULT_EPOCHS, help="Number of training epochs")
+    parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE, help="Batch size")
+    parser.add_argument("--learning-rate", type=float, default=DEFAULT_LEARNING_RATE, help="Learning rate")
+    parser.add_argument(
+        "--device", type=str, default=DEFAULT_DEVICE, choices=["cuda", "cpu"], help="Device for training"
+    )
+    parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="Random seed for reproducibility")
+    return parser
+
+
+def add_model_args(parser):
+    """Add common model arguments to parser."""
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="ConvLSTMDwell",
+        choices=MODEL_CHOICES,
+        help="Model architecture",
+    )
+    return parser
+
 
 def add_prepare_parser(subparsers):
     """Add 'prepare' command for data preparation."""
@@ -61,33 +95,14 @@ def add_train_parser(subparsers):
     parser.add_argument(
         "--val-data", type=Path, default=None, help="Validation dataset config (JSON)"
     )
-    parser.add_argument(
-        "--model",
-        type=str,
-        default="ConvLSTMDwell",
-        choices=[
-            "ConvLSTMDwell",
-            "ConvLSTMBase",
-            "TransformerDwell",
-            "ConvOnly",
-            "TCNDwell",
-            "ResNetDwell",
-        ],
-        help="Model architecture",
-    )
+    add_model_args(parser)
     parser.add_argument(
         "--model-config", type=Path, default=None, help="Model hyperparameters (JSON)"
     )
     parser.add_argument(
         "--output-dir", "-o", required=True, type=Path, help="Output directory for model and logs"
     )
-    parser.add_argument("--epochs", type=int, default=DEFAULT_EPOCHS, help="Number of training epochs")
-    parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE, help="Batch size")
-    parser.add_argument("--learning-rate", type=float, default=DEFAULT_LEARNING_RATE, help="Learning rate")
-    parser.add_argument(
-        "--device", type=str, default=DEFAULT_DEVICE, choices=["cuda", "cpu"], help="Device for training"
-    )
-    parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="Random seed for reproducibility")
+    add_training_args(parser)
     parser.set_defaults(func=run_train)
 
 
@@ -127,20 +142,7 @@ def add_grid_search_parser(subparsers):
     )
     parser.add_argument("--train-data", required=True, type=Path, help="Training dataset (.npz)")
     parser.add_argument("--val-data", type=Path, default=None, help="Validation dataset (.npz)")
-    parser.add_argument(
-        "--model",
-        type=str,
-        default="ConvLSTMDwell",
-        choices=[
-            "ConvLSTMDwell",
-            "ConvLSTMBase",
-            "TransformerDwell",
-            "ConvOnly",
-            "TCNDwell",
-            "ResNetDwell",
-        ],
-        help="Model architecture",
-    )
+    add_model_args(parser)
     parser.add_argument(
         "--output-dir", "-o", required=True, type=Path, help="Output directory for grid results"
     )
@@ -165,13 +167,7 @@ def add_grid_search_parser(subparsers):
     parser.add_argument(
         "--kmer-context", type=int, default=5, help="K-mer context for sequence encoding"
     )
-    parser.add_argument("--epochs", type=int, default=DEFAULT_EPOCHS, help="Number of training epochs")
-    parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE, help="Batch size")
-    parser.add_argument("--learning-rate", type=float, default=DEFAULT_LEARNING_RATE, help="Learning rate")
-    parser.add_argument(
-        "--device", type=str, default=DEFAULT_DEVICE, choices=["cuda", "cpu"], help="Device for training"
-    )
-    parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="Random seed for reproducibility")
+    add_training_args(parser)
     parser.set_defaults(func=run_grid_search)
 
 
