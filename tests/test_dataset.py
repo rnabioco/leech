@@ -272,7 +272,7 @@ class TestDatasetIntegration:
         # With different seeds and sufficient data, order should differ
         if len(dataset) > 2:
             # Check if at least one batch differs
-            all_equal = all(torch.equal(i1, i2) for i1, i2 in zip(indices1, indices2))
+            all_equal = all(torch.equal(i1, i2) for i1, i2 in zip(indices1, indices2, strict=True))
             assert not all_equal, "Shuffling with different seeds should produce different orders"
 
 
