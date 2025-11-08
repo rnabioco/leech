@@ -29,12 +29,11 @@ rule train_charged_vs_uncharged:
             if config.get("use_grid_search", False)
             else ""
         ),
-        slurm_extra="--gres=gpu:1",
     threads: 4
     resources:
         mem_mb=16000,
         runtime=480,
-        gpu=1,
+        gpu=0,  # GPU controlled by cluster profile
         gpu_mem_mb=8000,
     log:
         MODELS_DIR + "/charged_vs_uncharged/train.log",
@@ -86,12 +85,11 @@ rule train_pairwise_aa:
             if config.get("use_grid_search", False)
             else ""
         ),
-        slurm_extra="--gres=gpu:1",
     threads: 4
     resources:
         mem_mb=16000,
         runtime=480,
-        gpu=1,
+        gpu=0,  # GPU controlled by cluster profile
         gpu_mem_mb=8000,
     log:
         MODELS_DIR + "/pairwise/{pair}/train.log",
