@@ -17,6 +17,7 @@ A Python library for training machine learning models on nanopore signal data, w
 - **Dwell time integration**: Extract per-base dwell times from move tables
 - **Signal level features**: Compute signal statistics (mean, median, std, range) per base
 - **PyTorch models**: Conv-LSTM architectures with multi-branch inputs (signal + sequence + dwell features)
+- **Snakemake pipeline**: Production-ready workflow for HPC clusters (SLURM/LSF)
 - **Modern tooling**: Built with uv, ruff, and type hints
 
 ## Installation
@@ -45,7 +46,9 @@ pip install -e .
 
 ## Quick Start
 
-### 1. Prepare training data
+### CLI Usage
+
+#### 1. Prepare training data
 
 Extract features from POD5 and BAM files:
 
@@ -60,7 +63,7 @@ uv run leech prepare \
   --label 1
 ```
 
-### 2. Train model
+#### 2. Train model
 
 ```bash
 uv run leech train \
@@ -70,7 +73,7 @@ uv run leech train \
   --output-dir models/
 ```
 
-### 3. Test model
+#### 3. Test model
 
 ```bash
 uv run leech test \
@@ -79,7 +82,7 @@ uv run leech test \
   --output metrics.json
 ```
 
-### 4. Run inference
+#### 4. Run inference
 
 ```bash
 uv run leech infer \
@@ -87,6 +90,202 @@ uv run leech infer \
   --pod5 new_reads.pod5 \
   --bam new_alignments.bam \
   --output predictions.bam
+```
+
+## Snakemake Pipeline
+
+For production workloads, use the included Snakemake pipeline that handles:
+- **Charged vs Uncharged Classification**: Distinguish between charged and uncharged tRNAs
+- **Pairwise Amino Acid Classification**: Binary classifiers for all pairs of amino acids
+- **Grid Search**: Hyperparameter optimization
+- **Model Comparison**: Compare multiple architectures on the same data
+- **HPC Integration**: SLURM and LSF cluster support
+
+### Pipeline Structure
+
+```
+leech/
+├── config/
+│   ├── config.yaml              # Main configuration file
+│   ├── alpine-config.yaml       # CU Boulder Alpine cluster (SLURM)
+│   └── bodhi-config.yaml        # Local Bodhi cluster (LSF)
+├── workflow/
+│   ├── Snakefile                # Main workflow file
+│   ├── rules/                   # Modular rule files
+│   │   ├── common.smk
+│   │   ├── prepare.smk
+│   │   ├── grid_search.smk
+│   │   ├── train.smk
+│   │   ├── inference.smk
+│   │   ├── evaluate.smk
+│   │   └── compare_models.smk
+│   └── scripts/
+│       ├── summarize_metrics.py
+│       └── compare_architectures.py
+└── profiles/                    # Cluster execution profiles
+    ├── slurm/
+    │   ├── config.yaml
+    │   ├── slurm_submit.sh
+    │   └── slurm_status.py
+    └── lsf/
+        ├── config.yaml
+        ├── lsf_submit.sh
+        └── lsf_status.py
+```
+
+### Running the Pipeline
+
+#### Configure Your Samples
+
+Edit `config/config.yaml`:
+
+```yaml
+samples:
+  sample_charged_ala_rep1:
+    pod5: "data/charged/ala/rep1.pod5"
+    bam: "data/charged/ala/rep1.bam"
+    label: "charged"
+    amino_acid: "Ala"
+
+  sample_uncharged_ala_rep1:
+    pod5: "data/uncharged/ala/rep1.pod5"
+    bam: "data/uncharged/ala/rep1.bam"
+    label: "uncharged"
+    amino_acid: "Ala"
+```
+
+#### Execute on SLURM
+
+```bash
+# Dry run
+snakemake --profile profiles/slurm -n
+
+# Execute
+snakemake --profile profiles/slurm
+```
+
+#### Execute on LSF
+
+```bash
+# Dry run
+snakemake --profile profiles/lsf -n
+
+# Execute
+snakemake --profile profiles/lsf
+```
+
+#### Local Execution (for testing)
+
+```bash
+snakemake --cores 8
+```
+
+### Pipeline Targets
+
+**Single Model Mode** (when `compare_models: false`):
+```bash
+snakemake --profile profiles/slurm all_prepare      # Prepare data only
+snakemake --profile profiles/slurm all_grid_search  # Grid search only
+snakemake --profile profiles/slurm all_train        # Train models only
+snakemake --profile profiles/slurm all_infer        # Run inference only
+snakemake --profile profiles/slurm all_single_model # Single model analysis
+```
+
+**Model Comparison Mode** (when `compare_models: true`):
+```bash
+snakemake --profile profiles/slurm all_prepare                # Prepare data
+snakemake --profile profiles/slurm all_grid_search_comparison # Grid search for all
+snakemake --profile profiles/slurm all_train_comparison       # Train all architectures
+snakemake --profile profiles/slurm all_compare_models         # Full comparison
+```
+
+### Cluster Setup Guides
+
+For detailed cluster-specific setup instructions, see:
+
+- **[Alpine Setup (SLURM)](guides/ALPINE_SETUP.md)**: CU Boulder Alpine cluster with SLURM
+- **[Bodhi Setup (LSF)](guides/BODHI_SETUP.md)**: Local Bodhi cluster with LSF
+
+These guides cover:
+- Storage architecture and quotas
+- Module loading and dependencies
+- Resource allocation
+- Queue/partition configuration
+- Monitoring and troubleshooting
+
+### Pipeline Configuration
+
+Key configuration options in `config/config.yaml`:
+
+```yaml
+# Model architecture
+model: "ConvLSTMDwell"  # or "ConvLSTMBase"
+
+# Training hyperparameters
+epochs: 50
+batch_size: 128
+learning_rate: 0.001
+early_stopping_patience: 5
+
+# Enable multi-architecture comparison
+compare_models: true
+models_to_compare:
+  - "ConvLSTMBase"       # Baseline (no dwell features)
+  - "ConvLSTMDwell"      # Original with dwell features
+  - "TransformerDwell"   # Transformer with self-attention
+  - "ConvOnly"           # Pure CNN baseline
+  - "TCNDwell"           # Temporal Convolutional Network
+  - "ResNetDwell"        # Residual Network
+
+# Enable grid search
+use_grid_search: true
+grid_search:
+  learning_rate: [0.0001, 0.001, 0.01]
+  batch_size: [64, 128, 256]
+  hidden_size: [128, 256, 512]
+  num_layers: [1, 2, 3]
+  dropout: [0.1, 0.2, 0.3]
+
+# Amino acid pairs for pairwise classification
+amino_acids:
+  - "Ala"
+  - "Gly"
+  - "Val"
+  # ... etc
+```
+
+### Pipeline Output
+
+```
+results/
+├── chunks/                      # Prepared training data
+│   └── {sample}/
+│       ├── train.json
+│       ├── val.json
+│       └── test.json
+├── models/
+│   ├── grid_search/             # Grid search results
+│   │   ├── charged_vs_uncharged/
+│   │   └── pairwise/{pair}/
+│   ├── charged_vs_uncharged/    # Trained models
+│   │   ├── model_best.pt
+│   │   ├── model_checkpoint.pt
+│   │   └── training_history.json
+│   └── pairwise/{pair}/
+│       └── ...
+├── inference/                   # Prediction BAM files
+│   ├── charged_vs_uncharged/
+│   │   └── {sample}_predictions.bam
+│   └── pairwise/{pair}/
+│       └── {sample}_predictions.bam
+└── metrics/                     # Evaluation metrics
+    ├── charged_vs_uncharged/
+    │   ├── {sample}_metrics.json
+    │   └── ...
+    ├── pairwise/{pair}/
+    │   └── {sample}_metrics.json
+    ├── charged_vs_uncharged_summary.tsv
+    └── pairwise_summary.tsv
 ```
 
 ## Requirements
@@ -105,6 +304,17 @@ uv run leech infer \
 | `ns` | Number of signal samples |
 | `ts` | Trim offset (optional) |
 
+### Software Dependencies
+
+- **PyTorch**: Neural network training
+- **pod5**: Reading ONT POD5 format
+- **pysam**: BAM file parsing
+- **polars**: Fast dataframe operations
+- **numpy/scipy/scikit-learn**: Numerical operations and ML utilities
+- **pydantic**: Config validation
+- **ruff**: Linting and formatting
+- **Snakemake**: Pipeline orchestration (≥ 7.0)
+
 ## Architecture
 
 ### Data Flow
@@ -120,6 +330,10 @@ POD5 + BAM → Feature Extraction → Training Chunks → Model Training → Pre
 
 - **ConvLSTMDwell**: Multi-branch model with dwell time features (recommended)
 - **ConvLSTMBase**: Baseline model without dwell features (for comparison)
+- **TransformerDwell**: Transformer-based with multi-head self-attention
+- **ConvOnly**: Pure CNN with multi-scale convolutions
+- **TCNDwell**: Temporal Convolutional Network with dilated convolutions
+- **ResNetDwell**: Deep residual network with skip connections
 
 ## Development
 
@@ -148,10 +362,32 @@ leech/
 │   ├── cli.py          # Command-line interface
 │   ├── features.py     # Dwell time & signal feature extraction
 │   ├── data_prep.py    # BAM/POD5 reading and chunking
-│   └── ...
-├── models/             # PyTorch model architectures
+│   ├── dataset.py      # PyTorch Dataset classes
+│   ├── training.py     # Training loop with Trainer class
+│   ├── evaluation.py   # Model evaluation and testing
+│   ├── inference.py    # Inference engine
+│   ├── gridsearch.py   # Grid search for hyperparameters
+│   ├── util.py         # Helper functions
+│   └── models/         # PyTorch model architectures
 ├── tests/              # Test suite
+├── config/             # Pipeline configuration files
+├── workflow/           # Snakemake workflow
+├── profiles/           # Cluster execution profiles
+├── guides/             # Cluster setup guides
 └── pyproject.toml      # Project configuration
+```
+
+### Adding Dependencies
+
+```bash
+# Add a runtime dependency
+uv add package-name
+
+# Add a dev dependency
+uv add --dev package-name
+
+# Update all dependencies
+uv sync --upgrade
 ```
 
 ## Citation
@@ -169,3 +405,4 @@ MIT License - see [LICENSE](LICENSE) file for details.
 
 - [Remora](https://github.com/nanoporetech/remora) - Modified base detection for nanopore sequencing
 - [POD5](https://github.com/nanoporetech/pod5-file-format) - Efficient file format for nanopore signal data
+- [Snakemake](https://snakemake.readthedocs.io/) - Workflow management system
