@@ -7,6 +7,14 @@ Designed for Snakemake integration with clear input/output paths.
 import argparse
 from pathlib import Path
 
+from leech.constants import (
+    DEFAULT_BATCH_SIZE,
+    DEFAULT_DEVICE,
+    DEFAULT_EPOCHS,
+    DEFAULT_LEARNING_RATE,
+    DEFAULT_SEED,
+)
+
 
 def add_prepare_parser(subparsers):
     """Add 'prepare' command for data preparation."""
@@ -73,13 +81,13 @@ def add_train_parser(subparsers):
     parser.add_argument(
         "--output-dir", "-o", required=True, type=Path, help="Output directory for model and logs"
     )
-    parser.add_argument("--epochs", type=int, default=50, help="Number of training epochs")
-    parser.add_argument("--batch-size", type=int, default=128, help="Batch size")
-    parser.add_argument("--learning-rate", type=float, default=0.001, help="Learning rate")
+    parser.add_argument("--epochs", type=int, default=DEFAULT_EPOCHS, help="Number of training epochs")
+    parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE, help="Batch size")
+    parser.add_argument("--learning-rate", type=float, default=DEFAULT_LEARNING_RATE, help="Learning rate")
     parser.add_argument(
-        "--device", type=str, default="cuda", choices=["cuda", "cpu"], help="Device for training"
+        "--device", type=str, default=DEFAULT_DEVICE, choices=["cuda", "cpu"], help="Device for training"
     )
-    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
+    parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="Random seed for reproducibility")
     parser.set_defaults(func=run_train)
 
 
@@ -92,7 +100,7 @@ def add_test_parser(subparsers):
         "--output", "-o", required=True, type=Path, help="Output metrics file (JSON)"
     )
     parser.add_argument(
-        "--device", type=str, default="cuda", choices=["cuda", "cpu"], help="Device for inference"
+        "--device", type=str, default=DEFAULT_DEVICE, choices=["cuda", "cpu"], help="Device for inference"
     )
     parser.set_defaults(func=run_test)
 
@@ -107,7 +115,7 @@ def add_infer_parser(subparsers):
         "--output", "-o", required=True, type=Path, help="Output BAM with predictions"
     )
     parser.add_argument(
-        "--device", type=str, default="cuda", choices=["cuda", "cpu"], help="Device for inference"
+        "--device", type=str, default=DEFAULT_DEVICE, choices=["cuda", "cpu"], help="Device for inference"
     )
     parser.set_defaults(func=run_infer)
 
@@ -157,13 +165,13 @@ def add_grid_search_parser(subparsers):
     parser.add_argument(
         "--kmer-context", type=int, default=5, help="K-mer context for sequence encoding"
     )
-    parser.add_argument("--epochs", type=int, default=50, help="Number of training epochs")
-    parser.add_argument("--batch-size", type=int, default=128, help="Batch size")
-    parser.add_argument("--learning-rate", type=float, default=0.001, help="Learning rate")
+    parser.add_argument("--epochs", type=int, default=DEFAULT_EPOCHS, help="Number of training epochs")
+    parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE, help="Batch size")
+    parser.add_argument("--learning-rate", type=float, default=DEFAULT_LEARNING_RATE, help="Learning rate")
     parser.add_argument(
-        "--device", type=str, default="cuda", choices=["cuda", "cpu"], help="Device for training"
+        "--device", type=str, default=DEFAULT_DEVICE, choices=["cuda", "cpu"], help="Device for training"
     )
-    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
+    parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="Random seed for reproducibility")
     parser.set_defaults(func=run_grid_search)
 
 

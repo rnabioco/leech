@@ -17,6 +17,13 @@ Rationale:
 import torch
 import torch.nn as nn
 
+from leech.constants import (
+    DEFAULT_DROPOUT,
+    DEFAULT_KMER_LEN,
+    DEFAULT_NUM_FEATURES,
+    DEFAULT_SIGNAL_LEN,
+)
+
 
 class ResidualBlock1D(nn.Module):
     """
@@ -36,7 +43,7 @@ class ResidualBlock1D(nn.Module):
         out_channels: int,
         kernel_size: int = 3,
         stride: int = 1,
-        dropout: float = 0.1,
+        dropout: float = DEFAULT_DROPOUT,
     ):
         super().__init__()
 
@@ -109,7 +116,7 @@ class ResNet1D(nn.Module):
         base_channels: int = 64,
         num_blocks: int = 4,
         kernel_size: int = 3,
-        dropout: float = 0.1,
+        dropout: float = DEFAULT_DROPOUT,
     ):
         super().__init__()
 
@@ -171,11 +178,11 @@ class ResNetDwell(nn.Module):
 
     def __init__(
         self,
-        signal_len: int = 400,
-        kmer_len: int = 11,
-        num_features: int = 5,  # e.g., dwell + mean + median + std + range
+        signal_len: int = DEFAULT_SIGNAL_LEN,
+        kmer_len: int = DEFAULT_KMER_LEN,
+        num_features: int = DEFAULT_NUM_FEATURES,
         base_channels: int = 64,
-        dropout: float = 0.1,
+        dropout: float = DEFAULT_DROPOUT,
     ):
         super().__init__()
 

@@ -12,6 +12,7 @@ import numpy as np
 import pysam
 from pod5 import DatasetReader
 
+from leech.constants import DEFAULT_KMER_CONTEXT, DEFAULT_SIGNAL_CONTEXT
 from leech.features import (
     compute_dwell_features,
     compute_dwell_times,
@@ -61,8 +62,8 @@ class LeechRead:
     def get_chunk(
         self,
         base_idx: int,
-        signal_context: tuple[int, int] = (200, 200),
-        kmer_context: int = 5,
+        signal_context: tuple[int, int] = DEFAULT_SIGNAL_CONTEXT,
+        kmer_context: int = DEFAULT_KMER_CONTEXT,
     ) -> dict[str, np.ndarray | str | int | None] | None:
         """
         Extract a training chunk centered on a specific base.

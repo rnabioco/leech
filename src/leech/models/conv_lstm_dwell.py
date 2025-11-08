@@ -11,6 +11,20 @@ Architecture:
 import torch
 import torch.nn as nn
 
+from leech.constants import (
+    DEFAULT_CONV_CHANNELS,
+    DEFAULT_DROPOUT,
+    DEFAULT_FC_HIDDEN,
+    DEFAULT_FEATURE_KERNEL,
+    DEFAULT_KMER_LEN,
+    DEFAULT_LSTM_HIDDEN,
+    DEFAULT_LSTM_LAYERS,
+    DEFAULT_NUM_FEATURES,
+    DEFAULT_SEQ_KERNEL,
+    DEFAULT_SIGNAL_KERNEL,
+    DEFAULT_SIGNAL_LEN,
+)
+
 
 class ConvLSTMDwell(nn.Module):
     """
@@ -27,17 +41,17 @@ class ConvLSTMDwell(nn.Module):
 
     def __init__(
         self,
-        signal_len: int = 400,
-        kmer_len: int = 11,
-        num_features: int = 5,  # e.g., dwell + mean + median + std + range
+        signal_len: int = DEFAULT_SIGNAL_LEN,
+        kmer_len: int = DEFAULT_KMER_LEN,
+        num_features: int = DEFAULT_NUM_FEATURES,
         conv_channels: list[int] | None = None,
-        lstm_hidden: int = 96,
-        dropout: float = 0.1,
+        lstm_hidden: int = DEFAULT_LSTM_HIDDEN,
+        dropout: float = DEFAULT_DROPOUT,
     ):
         super().__init__()
 
         if conv_channels is None:
-            conv_channels = [4, 16, 256]
+            conv_channels = DEFAULT_CONV_CHANNELS
 
         self.signal_len = signal_len
         self.kmer_len = kmer_len
@@ -47,33 +61,33 @@ class ConvLSTMDwell(nn.Module):
         # Signal branch: Conv1d layers
         # Input: (batch, 1, signal_len)
         self.signal_conv = nn.Sequential(
-            nn.Conv1d(1, conv_channels[0], kernel_size=5, padding=2),
+            nn.Conv1d(1, conv_channels[0], kernel_size=DEFAULT_SIGNAL_KERNEL, padding=DEFAULT_SIGNAL_KERNEL // 2),
             nn.ReLU(),
-            nn.Conv1d(conv_channels[0], conv_channels[1], kernel_size=5, padding=2),
+            nn.Conv1d(conv_channels[0], conv_channels[1], kernel_size=DEFAULT_SIGNAL_KERNEL, padding=DEFAULT_SIGNAL_KERNEL // 2),
             nn.ReLU(),
-            nn.Conv1d(conv_channels[1], conv_channels[2], kernel_size=5, padding=2),
+            nn.Conv1d(conv_channels[1], conv_channels[2], kernel_size=DEFAULT_SIGNAL_KERNEL, padding=DEFAULT_SIGNAL_KERNEL // 2),
             nn.ReLU(),
         )
 
         # Sequence branch: Conv1d on one-hot encoded k-mers
         # Input: (batch, 4, kmer_len) - 4 nucleotides (A, C, G, T)
         self.seq_conv = nn.Sequential(
-            nn.Conv1d(4, conv_channels[0], kernel_size=3, padding=1),
+            nn.Conv1d(4, conv_channels[0], kernel_size=DEFAULT_SEQ_KERNEL, padding=DEFAULT_SEQ_KERNEL // 2),
             nn.ReLU(),
-            nn.Conv1d(conv_channels[0], conv_channels[1], kernel_size=3, padding=1),
+            nn.Conv1d(conv_channels[0], conv_channels[1], kernel_size=DEFAULT_SEQ_KERNEL, padding=DEFAULT_SEQ_KERNEL // 2),
             nn.ReLU(),
-            nn.Conv1d(conv_channels[1], conv_channels[2], kernel_size=3, padding=1),
+            nn.Conv1d(conv_channels[1], conv_channels[2], kernel_size=DEFAULT_SEQ_KERNEL, padding=DEFAULT_SEQ_KERNEL // 2),
             nn.ReLU(),
         )
 
         # Feature branch: Conv1d on dwell+level features
         # Input: (batch, num_features, kmer_len)
         self.feature_conv = nn.Sequential(
-            nn.Conv1d(num_features, conv_channels[0], kernel_size=3, padding=1),
+            nn.Conv1d(num_features, conv_channels[0], kernel_size=DEFAULT_FEATURE_KERNEL, padding=DEFAULT_FEATURE_KERNEL // 2),
             nn.ReLU(),
-            nn.Conv1d(conv_channels[0], conv_channels[1], kernel_size=3, padding=1),
+            nn.Conv1d(conv_channels[0], conv_channels[1], kernel_size=DEFAULT_FEATURE_KERNEL, padding=DEFAULT_FEATURE_KERNEL // 2),
             nn.ReLU(),
-            nn.Conv1d(conv_channels[1], conv_channels[2], kernel_size=3, padding=1),
+            nn.Conv1d(conv_channels[1], conv_channels[2], kernel_size=DEFAULT_FEATURE_KERNEL, padding=DEFAULT_FEATURE_KERNEL // 2),
             nn.ReLU(),
         )
 
@@ -89,7 +103,7 @@ class ConvLSTMDwell(nn.Module):
         self.lstm = nn.LSTM(
             input_size=conv_channels[2] * 3,  # Three branches concatenated
             hidden_size=lstm_hidden,
-            num_layers=2,
+            num_layers=DEFAULT_LSTM_LAYERS,
             batch_first=True,
             bidirectional=True,
             dropout=dropout if dropout > 0 else 0,
@@ -99,10 +113,10 @@ class ConvLSTMDwell(nn.Module):
         # Take center position from BiLSTM output
         self.fc = nn.Sequential(
             nn.Dropout(dropout),
-            nn.Linear(lstm_hidden * 2, 64),  # *2 for bidirectional
+            nn.Linear(lstm_hidden * 2, DEFAULT_FC_HIDDEN),  # *2 for bidirectional
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(64, 1),  # Binary classification
+            nn.Linear(DEFAULT_FC_HIDDEN, 1),  # Binary classification
         )
 
     def forward(

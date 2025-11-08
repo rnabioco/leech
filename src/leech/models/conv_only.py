@@ -17,6 +17,13 @@ Rationale:
 import torch
 import torch.nn as nn
 
+from leech.constants import (
+    DEFAULT_DROPOUT,
+    DEFAULT_KMER_LEN,
+    DEFAULT_NUM_FEATURES,
+    DEFAULT_SIGNAL_LEN,
+)
+
 
 class InceptionBlock(nn.Module):
     """
@@ -85,12 +92,12 @@ class ConvOnly(nn.Module):
 
     def __init__(
         self,
-        signal_len: int = 400,
-        kmer_len: int = 11,
-        num_features: int = 5,  # e.g., dwell + mean + median + std + range
+        signal_len: int = DEFAULT_SIGNAL_LEN,
+        kmer_len: int = DEFAULT_KMER_LEN,
+        num_features: int = DEFAULT_NUM_FEATURES,
         base_channels: int = 16,
         num_blocks: int = 3,
-        dropout: float = 0.1,
+        dropout: float = DEFAULT_DROPOUT,
     ):
         super().__init__()
 
