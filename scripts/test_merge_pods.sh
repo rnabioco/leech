@@ -47,7 +47,7 @@ echo "Step 1: Testing DAG construction (dry run)..."
 snakemake --profile cluster/slurm \
   --dry-run \
   --printshellcmds \
-  results/pod5/uncharged_synthetic/uncharged_synthetic.pod5
+  results/pod5/ala_synthetic/ala_synthetic.pod5
 
 echo ""
 echo "Step 2: Submitting POD5 merge job via Slurm executor..."
@@ -56,12 +56,12 @@ echo ""
 
 # Test 2: Run with Slurm executor (submits separate jobs)
 snakemake --profile cluster/slurm \
-  results/pod5/uncharged_synthetic/uncharged_synthetic.pod5
+  results/pod5/ala_synthetic/ala_synthetic.pod5
 
 echo ""
 echo "=========================================="
 echo "Orchestrator completed: $(date)"
-echo "Check output: results/pod5/uncharged_synthetic/"
-echo "Check log: results/pod5/uncharged_synthetic/merge_pods.log"
+echo "Check output: results/pod5/ala_synthetic/"
+echo "Check log: results/pod5/ala_synthetic/update_and_merge_pods.log"
 echo "Check Slurm logs: logs/slurm/"
 echo "=========================================="
