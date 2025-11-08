@@ -278,7 +278,7 @@ class TestRemoraConceptAlignment:
         kmer_end = focus_base + kmer_context + 1
         kmer = sequence[kmer_start:kmer_end]
 
-        assert kmer == "ACGTA"
+        assert kmer == "TACGT"  # sequence[3:8] = "TACGT"
         assert len(kmer) == 5
 
         # Signal for this k-mer (temporal alignment)
@@ -403,8 +403,10 @@ class TestEdgeCasesAndRobustness:
         assert mt.num_bases == 2
         dwells = compute_dwell_times(mt)
 
-        # First base has very long dwell (101 positions * stride)
-        assert dwells[0] == 505  # (101 positions) * 5
+        # moves[0]=1 gives base 0 at signal 0-5 (dwell=5)
+        # moves[101]=1 gives base 1 at signal 5-510 (dwell=505)
+        assert dwells[0] == 5
+        assert dwells[1] == 505
 
 
 if __name__ == "__main__":

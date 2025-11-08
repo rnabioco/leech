@@ -1,8 +1,52 @@
 """
-Feature extraction from nanopore data: dwell times, signal levels, and more.
+Feature extraction from nanopore signal data.
 
-Based on concepts from Remora but rewritten for modern dependencies and
-explicit dwell time integration.
+This module provides core functionality for extracting dwell time and signal level
+features from ONT nanopore data. Features are computed from:
+- BAM move tables (mv tag): Per-base dwell times
+- Raw signal (POD5): Signal statistics per base
+
+The key innovation is explicit dwell time modeling, which improves classification
+of charged vs. uncharged tRNAs in aa-tRNA-seq experiments.
+
+Core Classes:
+    MoveTable: Parsed basecaller move table with sequence-to-signal mapping
+
+Core Functions:
+    extract_move_table(): Parse move table from BAM alignment
+    compute_dwell_times(): Calculate per-base dwell times from move table
+    compute_signal_levels(): Calculate signal statistics (mean, median, std, range)
+    normalize_signal(): Normalize raw signal using median-MAD, z-score, or quantile
+
+Feature Engineering:
+    Dwell features (5 total):
+    - dwell: Raw dwell time (number of signal samples per base)
+    - dwell_log: Log-transformed dwell time
+    - dwell_mean: Mean dwell in sliding window
+    - dwell_std: Std dev of dwell in sliding window
+    - dwell_ratio: Ratio to mean dwell time
+
+    Signal features (4 total):
+    - level_mean: Mean signal level per base
+    - level_median: Median signal level per base
+    - level_std: Std dev of signal per base
+    - level_range: Range (max - min) of signal per base
+
+Example:
+    >>> from leech.features import extract_move_table, compute_dwell_times
+    >>> import pysam
+    >>>
+    >>> # Extract move table from BAM
+    >>> bam = pysam.AlignmentFile("alignments.bam")
+    >>> aln = next(bam)
+    >>> move_table = extract_move_table(aln)
+    >>>
+    >>> # Compute dwell times
+    >>> dwells = compute_dwell_times(move_table)
+    >>> print(f"Mean dwell: {dwells.mean():.2f} samples/base")
+
+Based on concepts from Remora (https://github.com/nanoporetech/remora) but
+rewritten with explicit dwell time integration and modern dependencies.
 """
 
 from collections.abc import Callable
@@ -49,10 +93,11 @@ class MoveTable:
         move_positions = np.where(self.moves == 1)[0]
 
         # Convert move indices to signal indices
-        # Each move index i corresponds to signal position (i + 1) * stride
+        # Move at position i means the base transition occurs after (i+1) stride-length blocks
+        # This is because the move table is indexed from 0 but signals start at 1*stride
         seq_to_sig = (move_positions + 1) * self.stride + self.trim_offset
 
-        # Prepend 0 for the start of the first base
+        # Prepend the start position for the first base
         seq_to_sig = np.concatenate([[self.trim_offset], seq_to_sig])
 
         return seq_to_sig

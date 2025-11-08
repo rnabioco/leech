@@ -18,6 +18,15 @@ import math
 import torch
 import torch.nn as nn
 
+from leech.constants import (
+    DEFAULT_DROPOUT,
+    DEFAULT_KMER_LEN,
+    DEFAULT_NUM_FEATURES,
+    DEFAULT_SIGNAL_KERNEL,
+    DEFAULT_SIGNAL_LEN,
+)
+from leech.models.components import BaseModel
+
 
 class PositionalEncoding(nn.Module):
     """
@@ -29,7 +38,7 @@ class PositionalEncoding(nn.Module):
         dropout: Dropout probability
     """
 
-    def __init__(self, d_model: int, max_len: int = 10000, dropout: float = 0.1):
+    def __init__(self, d_model: int, max_len: int = 10000, dropout: float = DEFAULT_DROPOUT):
         super().__init__()
         self.dropout = nn.Dropout(p=dropout)
 
@@ -56,7 +65,7 @@ class PositionalEncoding(nn.Module):
         return out
 
 
-class TransformerDwell(nn.Module):
+class TransformerDwell(BaseModel):
     """
     Transformer-based model with signal, sequence, and dwell feature branches.
 
@@ -73,14 +82,14 @@ class TransformerDwell(nn.Module):
 
     def __init__(
         self,
-        signal_len: int = 400,
-        kmer_len: int = 11,
-        num_features: int = 5,  # e.g., dwell + mean + median + std + range
+        signal_len: int = DEFAULT_SIGNAL_LEN,
+        kmer_len: int = DEFAULT_KMER_LEN,
+        num_features: int = DEFAULT_NUM_FEATURES,
         d_model: int = 256,
         nhead: int = 8,
         num_layers: int = 4,
         dim_feedforward: int = 1024,
-        dropout: float = 0.1,
+        dropout: float = DEFAULT_DROPOUT,
     ):
         super().__init__()
 
@@ -92,9 +101,11 @@ class TransformerDwell(nn.Module):
         # Signal branch: Conv1d to project signal to d_model dimensions
         # Input: (batch, 1, signal_len)
         self.signal_conv = nn.Sequential(
-            nn.Conv1d(1, 64, kernel_size=5, padding=2),
+            nn.Conv1d(1, 64, kernel_size=DEFAULT_SIGNAL_KERNEL, padding=DEFAULT_SIGNAL_KERNEL // 2),
             nn.ReLU(),
-            nn.Conv1d(64, d_model, kernel_size=5, padding=2),
+            nn.Conv1d(
+                64, d_model, kernel_size=DEFAULT_SIGNAL_KERNEL, padding=DEFAULT_SIGNAL_KERNEL // 2
+            ),
             nn.ReLU(),
         )
         self.signal_pool = nn.AdaptiveAvgPool1d(kmer_len)  # Match sequence length
@@ -204,19 +215,4 @@ class TransformerDwell(nn.Module):
 
         return logits
 
-    def predict_proba(
-        self, signal: torch.Tensor, sequence: torch.Tensor, features: torch.Tensor
-    ) -> torch.Tensor:
-        """
-        Get probability predictions.
-
-        Args:
-            signal: Raw signal (batch, signal_len)
-            sequence: One-hot encoded sequence (batch, 4, kmer_len)
-            features: Dwell + signal level features (batch, num_features, kmer_len)
-
-        Returns:
-            Probabilities (batch, 1)
-        """
-        logits = self.forward(signal, sequence, features)
-        return torch.sigmoid(logits)
+    # predict_proba() is inherited from BaseModel

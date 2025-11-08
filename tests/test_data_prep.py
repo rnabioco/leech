@@ -10,6 +10,7 @@ import torch
 
 from leech.data_prep import (
     LeechRead,
+    encode_kmer,
     extract_training_chunks,
     int_to_seq,
     load_chunks,
@@ -17,7 +18,6 @@ from leech.data_prep import (
     save_chunks,
     seq_to_int,
 )
-from leech.models.conv_lstm_base import encode_kmer
 
 
 class TestLeechRead:

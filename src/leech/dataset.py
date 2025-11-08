@@ -1,5 +1,36 @@
 """
-PyTorch dataset classes for loading training chunks.
+PyTorch Dataset classes for leech training data.
+
+Provides efficient loading and batching of training chunks for PyTorch models.
+Handles both baseline models (signal + sequence) and full models (signal + sequence + features).
+
+Classes:
+    LeechDataset: Main dataset class that loads chunks from .npz files
+
+Functions:
+    collate_fn(): Custom collate function for batching variable-length data
+
+Data Format:
+    Each training chunk is a dictionary with:
+    - signal: Raw signal array (signal_len,)
+    - sequence: DNA sequence string (kmer_len bases)
+    - features: Engineered features (num_features, kmer_len) - optional
+    - label: Binary label (0=uncharged, 1=charged)
+    - read_id: Read identifier
+    - base_idx: Position within read
+
+Example:
+    >>> from leech.dataset import LeechDataset, collate_fn
+    >>> from torch.utils.data import DataLoader
+    >>>
+    >>> # Create dataset
+    >>> dataset = LeechDataset("chunks.npz", model_type="ConvLSTMDwell")
+    >>> print(f"Dataset size: {len(dataset)}")
+    >>>
+    >>> # Create DataLoader
+    >>> loader = DataLoader(dataset, batch_size=128, collate_fn=collate_fn)
+    >>> batch = next(iter(loader))
+    >>> print(batch.keys())  # ['signal', 'sequence', 'features', 'label']
 """
 
 from pathlib import Path
@@ -8,8 +39,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from leech.data_prep import load_chunks
-from leech.models.conv_lstm_base import encode_kmer
+from leech.data_prep import encode_kmer, load_chunks
 
 
 class LeechDataset(Dataset):

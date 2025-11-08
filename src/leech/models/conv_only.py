@@ -17,6 +17,14 @@ Rationale:
 import torch
 import torch.nn as nn
 
+from leech.constants import (
+    DEFAULT_DROPOUT,
+    DEFAULT_KMER_LEN,
+    DEFAULT_NUM_FEATURES,
+    DEFAULT_SIGNAL_LEN,
+)
+from leech.models.components import BaseModel
+
 
 class InceptionBlock(nn.Module):
     """
@@ -70,7 +78,7 @@ class InceptionBlock(nn.Module):
         return torch.cat(branch_outputs + [pool_output], dim=1)
 
 
-class ConvOnly(nn.Module):
+class ConvOnly(BaseModel):
     """
     Pure CNN model with multi-scale convolutions and no recurrent layers.
 
@@ -85,12 +93,12 @@ class ConvOnly(nn.Module):
 
     def __init__(
         self,
-        signal_len: int = 400,
-        kmer_len: int = 11,
-        num_features: int = 5,  # e.g., dwell + mean + median + std + range
+        signal_len: int = DEFAULT_SIGNAL_LEN,
+        kmer_len: int = DEFAULT_KMER_LEN,
+        num_features: int = DEFAULT_NUM_FEATURES,
         base_channels: int = 16,
         num_blocks: int = 3,
-        dropout: float = 0.1,
+        dropout: float = DEFAULT_DROPOUT,
     ):
         super().__init__()
 
@@ -206,19 +214,4 @@ class ConvOnly(nn.Module):
 
         return logits
 
-    def predict_proba(
-        self, signal: torch.Tensor, sequence: torch.Tensor, features: torch.Tensor
-    ) -> torch.Tensor:
-        """
-        Get probability predictions.
-
-        Args:
-            signal: Raw signal (batch, signal_len)
-            sequence: One-hot encoded sequence (batch, 4, kmer_len)
-            features: Dwell + signal level features (batch, num_features, kmer_len)
-
-        Returns:
-            Probabilities (batch, 1)
-        """
-        logits = self.forward(signal, sequence, features)
-        return torch.sigmoid(logits)
+    # predict_proba() is inherited from BaseModel
