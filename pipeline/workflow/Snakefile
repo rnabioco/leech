@@ -32,6 +32,7 @@ configfile: "../config/config.yaml"
 # Include common variables and functions
 include: "rules/common.smk"
 # Include modular rule files
+include: "rules/dorado.smk"
 include: "rules/prepare.smk"
 include: "rules/grid_search.smk"
 include: "rules/train.smk"
@@ -169,3 +170,21 @@ rule all_infer:
         )
         if AA_PAIRS
         else [],
+
+
+rule all_merge_pods:
+    """Merge all raw POD5 files."""
+    input:
+        expand(
+            config.get("pod5_dir", "results/pod5") + "/{sample}/{sample}.pod5",
+            sample=SAMPLES,
+        ),
+
+
+rule all_rebasecall:
+    """Rebasecall all samples with dorado."""
+    input:
+        expand(
+            config.get("rebasecall_dir", "results/bam/rebasecall") + "/{sample}/{sample}.rbc.bam",
+            sample=SAMPLES,
+        ),
