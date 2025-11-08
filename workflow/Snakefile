@@ -46,6 +46,7 @@ if samples_file.exists():
 include: "rules/common.smk"
 # Include modular rule files
 include: "rules/dorado.smk"
+include: "rules/inspect_pod5.smk"
 include: "rules/prepare.smk"
 include: "rules/grid_search.smk"
 include: "rules/train.smk"
@@ -210,3 +211,10 @@ rule all_align:
             config.get("rebasecall_dir", "results/bam/rebasecall") + "/{sample}/{sample}.aligned.bam",
             sample=SAMPLES,
         ),
+
+
+rule all_inspect_pod5:
+    """Inspect all raw POD5 files for corruption/errors."""
+    input:
+        "results/pod5_inspection/pod5_inspection_master_report.tsv",
+        "results/pod5_inspection/pod5_inspection_summary.txt",
