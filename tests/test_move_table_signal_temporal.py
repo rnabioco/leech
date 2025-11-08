@@ -47,11 +47,7 @@ class TestMoveTableTemporalRelationship:
         moves = np.array([1, 1, 0, 1, 0, 0, 0, 1], dtype=np.int8)
 
         mt = MoveTable(
-            stride=stride,
-            moves=moves,
-            read_id="test_temporal",
-            num_samples=1000,
-            trim_offset=0
+            stride=stride, moves=moves, read_id="test_temporal", num_samples=1000, trim_offset=0
         )
 
         # Get temporal mapping
@@ -59,11 +55,11 @@ class TestMoveTableTemporalRelationship:
 
         # Verify temporal positions
         # Position formula: (move_index + 1) * stride + trim_offset
-        assert seq_to_sig[0] == 0     # Base 0 starts at time 0
-        assert seq_to_sig[1] == 5     # Base 1 starts at time 5 (position 0: (0+1)*5)
-        assert seq_to_sig[2] == 10    # Base 2 starts at time 10 (position 1: (1+1)*5)
-        assert seq_to_sig[3] == 20    # Base 3 starts at time 20 (position 3: (3+1)*5)
-        assert seq_to_sig[4] == 40    # End of base 3 at time 40 (position 7: (7+1)*5)
+        assert seq_to_sig[0] == 0  # Base 0 starts at time 0
+        assert seq_to_sig[1] == 5  # Base 1 starts at time 5 (position 0: (0+1)*5)
+        assert seq_to_sig[2] == 10  # Base 2 starts at time 10 (position 1: (1+1)*5)
+        assert seq_to_sig[3] == 20  # Base 3 starts at time 20 (position 3: (3+1)*5)
+        assert seq_to_sig[4] == 40  # End of base 3 at time 40 (position 7: (7+1)*5)
 
     def test_dwell_time_as_temporal_duration(self):
         """
@@ -78,18 +74,14 @@ class TestMoveTableTemporalRelationship:
         moves = np.array([1, 1, 0, 1, 0, 0, 0, 1], dtype=np.int8)
 
         mt = MoveTable(
-            stride=stride,
-            moves=moves,
-            read_id="test_dwell",
-            num_samples=1000,
-            trim_offset=0
+            stride=stride, moves=moves, read_id="test_dwell", num_samples=1000, trim_offset=0
         )
 
         dwells = compute_dwell_times(mt)
 
         # Dwell times = time spent on each base
-        assert dwells[0] == 5   # Base 0: 1 move position = 5 samples
-        assert dwells[1] == 5   # Base 1: 1 move position = 5 samples (0 doesn't count)
+        assert dwells[0] == 5  # Base 0: 1 move position = 5 samples
+        assert dwells[1] == 5  # Base 1: 1 move position = 5 samples (0 doesn't count)
         assert dwells[2] == 10  # Base 2: 2 move positions = 10 samples (1 + 3 zeros)
         assert dwells[3] == 20  # Base 3: 4 move positions = 20 samples
 
@@ -108,17 +100,13 @@ class TestMoveTableTemporalRelationship:
         moves = np.array([1, 1, 0, 1], dtype=np.int8)
 
         mt = MoveTable(
-            stride=stride,
-            moves=moves,
-            read_id="test_signal_align",
-            num_samples=100,
-            trim_offset=0
+            stride=stride, moves=moves, read_id="test_signal_align", num_samples=100, trim_offset=0
         )
 
         # Create synthetic signal with distinct patterns per base
         signal = np.zeros(100, dtype=np.float32)
-        signal[0:5] = 1.0    # Base 0: constant 1.0
-        signal[5:10] = 2.0   # Base 1: constant 2.0
+        signal[0:5] = 1.0  # Base 0: constant 1.0
+        signal[5:10] = 2.0  # Base 1: constant 2.0
         signal[10:20] = 3.0  # Base 2: constant 3.0
 
         seq_to_sig = mt.to_seq_to_sig_map()
@@ -146,16 +134,16 @@ class TestMoveTableTemporalRelationship:
             moves=moves,
             read_id="test_trim",
             num_samples=1000,
-            trim_offset=trim_offset
+            trim_offset=trim_offset,
         )
 
         seq_to_sig = mt.to_seq_to_sig_map()
 
         # All positions should be shifted by trim_offset
-        assert seq_to_sig[0] == 100   # Base 0 starts at trim_offset
-        assert seq_to_sig[1] == 105   # (0+1)*5 + 100
-        assert seq_to_sig[2] == 110   # (1+1)*5 + 100
-        assert seq_to_sig[3] == 120   # (3+1)*5 + 100
+        assert seq_to_sig[0] == 100  # Base 0 starts at trim_offset
+        assert seq_to_sig[1] == 105  # (0+1)*5 + 100
+        assert seq_to_sig[2] == 110  # (1+1)*5 + 100
+        assert seq_to_sig[3] == 120  # (3+1)*5 + 100
 
     def test_temporal_consistency_with_real_stride(self):
         """
@@ -172,7 +160,7 @@ class TestMoveTableTemporalRelationship:
                 moves=moves,
                 read_id=f"test_stride_{stride}",
                 num_samples=1000,
-                trim_offset=0
+                trim_offset=0,
             )
 
             seq_to_sig = mt.to_seq_to_sig_map()
@@ -180,7 +168,7 @@ class TestMoveTableTemporalRelationship:
 
             # Verify temporal consistency
             # Position of 1s: 0, 2, 5
-            expected_positions = [0, stride, 3*stride, 6*stride]
+            expected_positions = [0, stride, 3 * stride, 6 * stride]
             np.testing.assert_array_equal(seq_to_sig, expected_positions)
 
             # Verify dwells sum to total time
@@ -198,14 +186,10 @@ class TestMoveTableTemporalRelationship:
         """
         stride = 5
         # Create a longer sequence: 10 bases
-        moves = np.array([1]*10 + [0]*0, dtype=np.int8)  # Simple: one move per base
+        moves = np.array([1] * 10 + [0] * 0, dtype=np.int8)  # Simple: one move per base
 
         mt = MoveTable(
-            stride=stride,
-            moves=moves,
-            read_id="test_chunk",
-            num_samples=100,
-            trim_offset=0
+            stride=stride, moves=moves, read_id="test_chunk", num_samples=100, trim_offset=0
         )
 
         seq_to_sig = mt.to_seq_to_sig_map()
@@ -225,7 +209,7 @@ class TestMoveTableTemporalRelationship:
 
         # Verify temporal alignment
         assert signal_start == 15  # Base 3 starts at 3*5
-        assert signal_end == 40    # Base 8 starts at 8*5
+        assert signal_end == 40  # Base 8 starts at 8*5
         assert signal_end - signal_start == 25  # 5 bases * 5 samples each
 
         # Dwell times in chunk
@@ -249,14 +233,10 @@ class TestRemoraConceptAlignment:
         3. K-mer context around focus base
         """
         stride = 5
-        moves = np.array([1]*20, dtype=np.int8)  # 20 bases
+        moves = np.array([1] * 20, dtype=np.int8)  # 20 bases
 
         mt = MoveTable(
-            stride=stride,
-            moves=moves,
-            read_id="test_fixed_chunk",
-            num_samples=200,
-            trim_offset=0
+            stride=stride, moves=moves, read_id="test_fixed_chunk", num_samples=200, trim_offset=0
         )
 
         seq_to_sig = mt.to_seq_to_sig_map()
@@ -282,14 +262,10 @@ class TestRemoraConceptAlignment:
         by maintaining seq_to_sig_map throughout.
         """
         stride = 5
-        moves = np.array([1]*10, dtype=np.int8)
+        moves = np.array([1] * 10, dtype=np.int8)
 
         mt = MoveTable(
-            stride=stride,
-            moves=moves,
-            read_id="test_kmer_expand",
-            num_samples=100,
-            trim_offset=0
+            stride=stride, moves=moves, read_id="test_kmer_expand", num_samples=100, trim_offset=0
         )
 
         # Simulate k-mer extraction
@@ -312,7 +288,7 @@ class TestRemoraConceptAlignment:
 
         # Verify the k-mer spans the correct temporal range
         assert sig_for_kmer_start == 15  # Base 3 * 5
-        assert sig_for_kmer_end == 40    # Base 8 * 5
+        assert sig_for_kmer_end == 40  # Base 8 * 5
 
 
 class TestDwellTimeAsNovelFeature:
@@ -362,17 +338,13 @@ class TestDwellTimeAsNovelFeature:
         moves = np.array([1, 1, 0, 1, 0, 0], dtype=np.int8)
 
         mt = MoveTable(
-            stride=stride,
-            moves=moves,
-            read_id="test_complementary",
-            num_samples=100,
-            trim_offset=0
+            stride=stride, moves=moves, read_id="test_complementary", num_samples=100, trim_offset=0
         )
 
         # Create signal with varying levels and dwells
         signal = np.zeros(100, dtype=np.float32)
-        signal[0:5] = 1.0    # Base 0: level=1.0, dwell=5
-        signal[5:10] = 2.0   # Base 1: level=2.0, dwell=5
+        signal[0:5] = 1.0  # Base 0: level=1.0, dwell=5
+        signal[5:10] = 2.0  # Base 1: level=2.0, dwell=5
         signal[10:20] = 1.5  # Base 2: level=1.5, dwell=10
 
         seq_to_sig = mt.to_seq_to_sig_map()
@@ -395,11 +367,7 @@ class TestEdgeCasesAndRobustness:
         moves = np.array([1], dtype=np.int8)
 
         mt = MoveTable(
-            stride=stride,
-            moves=moves,
-            read_id="single_base",
-            num_samples=10,
-            trim_offset=0
+            stride=stride, moves=moves, read_id="single_base", num_samples=10, trim_offset=0
         )
 
         assert mt.num_bases == 1
@@ -414,11 +382,7 @@ class TestEdgeCasesAndRobustness:
         moves = np.array([1, 1, 1, 1, 1], dtype=np.int8)
 
         mt = MoveTable(
-            stride=stride,
-            moves=moves,
-            read_id="consecutive",
-            num_samples=50,
-            trim_offset=0
+            stride=stride, moves=moves, read_id="consecutive", num_samples=50, trim_offset=0
         )
 
         dwells = compute_dwell_times(mt)
@@ -430,14 +394,10 @@ class TestEdgeCasesAndRobustness:
     def test_long_homopolymer(self):
         """Test long homopolymer (many 0s)."""
         stride = 5
-        moves = np.array([1] + [0]*100 + [1], dtype=np.int8)
+        moves = np.array([1] + [0] * 100 + [1], dtype=np.int8)
 
         mt = MoveTable(
-            stride=stride,
-            moves=moves,
-            read_id="homopolymer",
-            num_samples=1000,
-            trim_offset=0
+            stride=stride, moves=moves, read_id="homopolymer", num_samples=1000, trim_offset=0
         )
 
         assert mt.num_bases == 2

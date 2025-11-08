@@ -50,7 +50,7 @@ class TestTrainer:
         """Test Trainer with output directory."""
         output_dir = tmp_path / "trainer_output"
 
-        trainer = Trainer(
+        Trainer(
             model=sample_model,
             train_loader=sample_dataloader,
             device="cpu",
