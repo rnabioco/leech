@@ -43,10 +43,10 @@ echo ""
 mkdir -p logs/slurm
 
 # Target: Complete pipeline for one sample (merge → basecall → align → prepare)
-TARGET="results/chunks/uncharged_synthetic/{train,val,test}.json"
+TARGET="all_prepare"
 
 echo "Running Snakemake with Slurm profile..."
-echo "Target: $TARGET"
+echo "Target: $TARGET (prepares all training chunks)"
 echo ""
 
 # Test 1: Dry run
