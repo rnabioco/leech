@@ -93,10 +93,11 @@ class MoveTable:
         move_positions = np.where(self.moves == 1)[0]
 
         # Convert move indices to signal indices
-        # Each move index i corresponds to signal position (i + 1) * stride
+        # Move at position i means the base transition occurs after (i+1) stride-length blocks
+        # This is because the move table is indexed from 0 but signals start at 1*stride
         seq_to_sig = (move_positions + 1) * self.stride + self.trim_offset
 
-        # Prepend 0 for the start of the first base
+        # Prepend the start position for the first base
         seq_to_sig = np.concatenate([[self.trim_offset], seq_to_sig])
 
         return seq_to_sig

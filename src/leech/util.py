@@ -57,21 +57,36 @@ def load_model_from_checkpoint(
     model_name = config["model_name"]
     signal_len = config["signal_len"]
     kmer_len = config["kmer_len"]
-    num_features = config["num_features"]
 
-    # Extract any additional model kwargs
+    # Training-specific parameters that should NOT be passed to models
+    training_params = {
+        "epochs",
+        "batch_size",
+        "learning_rate",
+        "device",
+        "seed",
+        "val_split",
+        "patience",
+        "min_delta",
+        "save_dir",
+        "log_dir",
+        "num_workers",
+        "pin_memory",
+        "prefetch_factor",
+    }
+
+    # Extract model-specific kwargs (filter out training params)
     model_kwargs = {
         k: v
         for k, v in config.items()
-        if k not in ["model_name", "signal_len", "kmer_len", "num_features"]
+        if k not in ["model_name", "signal_len", "kmer_len"] and k not in training_params
     }
 
-    # Create model
+    # Create model (num_features will be in model_kwargs if present in config)
     model = get_model(
         model_name,
         signal_len=signal_len,
         kmer_len=kmer_len,
-        num_features=num_features,
         **model_kwargs,
     )
 
@@ -105,7 +120,19 @@ def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray, y_prob: np.ndarray) 
         - f1: F1 score
         - auc: ROC AUC score
         - confusion_matrix: 2x2 confusion matrix as list
+
+    Raises:
+        ValueError: If input arrays are empty or have mismatched lengths
     """
+    # Validate inputs
+    if len(y_true) == 0 or len(y_pred) == 0 or len(y_prob) == 0:
+        raise ValueError("Cannot compute metrics on empty arrays")
+
+    if len(y_true) != len(y_pred) or len(y_true) != len(y_prob):
+        raise ValueError(
+            f"Array length mismatch: y_true={len(y_true)}, y_pred={len(y_pred)}, y_prob={len(y_prob)}"
+        )
+
     metrics = {
         "accuracy": float(accuracy_score(y_true, y_pred)),
         "precision": float(precision_score(y_true, y_pred, zero_division=0)),

@@ -222,13 +222,11 @@ class ResNetDwell(BaseModel):
         self.global_avg_pool = nn.AdaptiveAvgPool1d(1)
         self.global_max_pool = nn.AdaptiveMaxPool1d(1)
 
-        # Calculate final channel sizes for each branch
-        # Signal: base_channels * 2^(8//2 - 1) = base_channels * 8
-        signal_final_ch = base_channels * (2 ** (8 // 2 - 1))
-        # Sequence: (base_channels//2) * 2^(4//2 - 1) = (base_channels//2) * 2
-        seq_final_ch = (base_channels // 2) * (2 ** (4 // 2 - 1))
-        # Feature: (base_channels//4) * 2^(3//2 - 1) = base_channels//4
-        feat_final_ch = base_channels // 4
+        # Get final channel sizes from each ResNet branch
+        # Each ResNet1D tracks its final_channels attribute
+        signal_final_ch = self.signal_resnet.final_channels
+        seq_final_ch = self.seq_resnet.final_channels
+        feat_final_ch = self.feature_resnet.final_channels
 
         # Total features: (avg + max) * 3 branches
         total_features = (signal_final_ch + seq_final_ch + feat_final_ch) * 2

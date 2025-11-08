@@ -242,7 +242,10 @@ class Trainer:
         with open(history_path, "w") as f:
             json.dump(self.history, f, indent=2)
 
-        # Save summary
+        # Save summary (only if training occurred)
+        if len(self.history["train_loss"]) == 0:
+            return
+
         summary = {
             "best_val_acc": self.best_val_acc,
             "best_epoch": self.best_epoch,
@@ -250,7 +253,7 @@ class Trainer:
             "final_train_acc": self.history["train_acc"][-1],
         }
 
-        if self.val_loader is not None:
+        if self.val_loader is not None and len(self.history["val_loss"]) > 0:
             summary.update(
                 {
                     "final_val_loss": self.history["val_loss"][-1],
@@ -329,13 +332,16 @@ def train_model(
     num_features = first_batch.get("features", torch.zeros(1, 1, kmer_len)).shape[1]
 
     # Create model
-    model = get_model(
-        model_name,
-        signal_len=signal_len,
-        kmer_len=kmer_len,
-        num_features=num_features,
+    # Only pass num_features to models that need it (not ConvLSTMBase)
+    model_init_kwargs = {
+        "signal_len": signal_len,
+        "kmer_len": kmer_len,
         **model_kwargs,
-    )
+    }
+    if model_name != "ConvLSTMBase":
+        model_init_kwargs["num_features"] = num_features
+
+    model = get_model(model_name, **model_init_kwargs)
 
     # Save config
     output_dir.mkdir(parents=True, exist_ok=True)

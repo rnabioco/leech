@@ -64,11 +64,13 @@ class ModelInferenceWrapper:
         signal = batch["signal"].to(device)
         sequence = batch["sequence"].to(device)
 
+        output: torch.Tensor
         if self.requires_features:
             features = batch["features"].to(device)
-            return self.model(signal, sequence, features)
+            output = self.model(signal, sequence, features)
         else:
-            return self.model(signal, sequence)
+            output = self.model(signal, sequence)
+        return output
 
     def __call__(self, *args, **kwargs) -> torch.Tensor:
         """
@@ -76,7 +78,8 @@ class ModelInferenceWrapper:
 
         This allows the wrapper to be used as a drop-in replacement in most contexts.
         """
-        return self.model(*args, **kwargs)
+        output: torch.Tensor = self.model(*args, **kwargs)
+        return output
 
     def train(self) -> None:
         """Set model to training mode."""

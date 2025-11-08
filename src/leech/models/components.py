@@ -74,7 +74,8 @@ class SignalBranch(nn.Module):
         """
         # Add channel dimension: (batch, signal_len) -> (batch, 1, signal_len)
         signal = signal.unsqueeze(1)
-        return self.conv_layers(signal)
+        output: torch.Tensor = self.conv_layers(signal)
+        return output
 
 
 class SequenceBranch(nn.Module):
@@ -133,7 +134,8 @@ class SequenceBranch(nn.Module):
         Returns:
             Extracted features (batch_size, conv_channels[-1], kmer_len)
         """
-        return self.conv_layers(sequence)
+        output: torch.Tensor = self.conv_layers(sequence)
+        return output
 
 
 class FeatureBranch(nn.Module):
@@ -196,7 +198,8 @@ class FeatureBranch(nn.Module):
         Returns:
             Extracted features (batch_size, conv_channels[-1], kmer_len)
         """
-        return self.conv_layers(features)
+        output: torch.Tensor = self.conv_layers(features)
+        return output
 
 
 class BaseModel(nn.Module):

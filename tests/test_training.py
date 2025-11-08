@@ -365,13 +365,15 @@ class TestTrainModel:
         """Test training with custom hyperparameters."""
         output_dir = tmp_path / "training"
 
+        # Note: signal_len and kmer_len must match the data in temp_chunks_file
+        # (signal_len=400, kmer_len=11 from sample_chunks fixture)
         history = train_model(
             train_data_path=temp_chunks_file,
             val_data_path=None,
             model_name="ConvLSTMDwell",
             output_dir=output_dir,
-            signal_len=200,  # Custom
-            kmer_len=7,  # Custom
+            signal_len=400,  # Must match temp_chunks_file
+            kmer_len=11,  # Must match temp_chunks_file
             epochs=1,
             batch_size=4,  # Custom
             learning_rate=0.01,  # Custom
