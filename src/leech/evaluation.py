@@ -2,6 +2,7 @@
 Model evaluation and testing utilities.
 """
 
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -11,6 +12,8 @@ from tqdm import tqdm
 
 from leech.dataset import LeechDataset, collate_fn
 from leech.util import compute_metrics, load_model_from_checkpoint, print_metrics, save_metrics
+
+logger = logging.getLogger("leech.evaluation")
 
 
 def evaluate_model(
@@ -37,7 +40,7 @@ def evaluate_model(
     Returns:
         Dictionary with evaluation metrics
     """
-    print(f"Loading model from {model_path}")
+    logger.info(f"Loading model from {model_path}")
 
     # Load model and config
     model, config = load_model_from_checkpoint(model_path, device=device)
@@ -50,12 +53,12 @@ def evaluate_model(
 
     model_type = config["model_name"]
 
-    print(f"Model: {model_type}")
-    print(f"Signal length: {signal_len}")
-    print(f"K-mer length: {kmer_len}")
+    logger.info(f"Model: {model_type}")
+    logger.info(f"Signal length: {signal_len}")
+    logger.info(f"K-mer length: {kmer_len}")
 
     # Load test dataset
-    print(f"\nLoading test data from {test_data_path}")
+    logger.info(f"\nLoading test data from {test_data_path}")
     test_dataset = LeechDataset(
         test_data_path, signal_len=signal_len, kmer_len=kmer_len, model_type=model_type
     )
@@ -64,10 +67,10 @@ def evaluate_model(
         test_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn, num_workers=2
     )
 
-    print(f"Test samples: {len(test_dataset)}")
+    logger.info(f"Test samples: {len(test_dataset)}")
 
     # Run evaluation
-    print("\nRunning evaluation...")
+    logger.info("\nRunning evaluation...")
     all_labels: list[float] = []
     all_probs: list[float] = []
     all_preds: list[int] = []

@@ -5,6 +5,7 @@ Reads POD5 and BAM files, extracts features, runs model predictions,
 and writes modification probabilities to output BAM files.
 """
 
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -14,6 +15,8 @@ from tqdm import tqdm
 
 from leech.data_prep import encode_kmer, iter_bam_with_pod5
 from leech.util import load_model_from_checkpoint
+
+logger = logging.getLogger("leech.inference")
 
 
 def run_inference(
@@ -43,7 +46,7 @@ def run_inference(
         motif_offset: Offset within motif for prediction
         batch_size: Batch size for inference
     """
-    print(f"Loading model from {model_path}")
+    logger.info(f"Loading model from {model_path}")
 
     # Load model and config
     model, config = load_model_from_checkpoint(model_path, device=device)
@@ -57,10 +60,10 @@ def run_inference(
     signal_context = (signal_len // 2, signal_len // 2)
     kmer_context = kmer_len // 2
 
-    print(f"Model: {model_type}")
-    print(f"Signal length: {signal_len}")
-    print(f"K-mer length: {kmer_len}")
-    print(f"Signal context: {signal_context}")
+    logger.info(f"Model: {model_type}")
+    logger.info(f"Signal length: {signal_len}")
+    logger.info(f"K-mer length: {kmer_len}")
+    logger.info(f"Signal context: {signal_context}")
 
     # Open input BAM
     bam_in = pysam.AlignmentFile(str(bam_path), "rb")
@@ -69,8 +72,8 @@ def run_inference(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     bam_out = pysam.AlignmentFile(str(output_path), "wb", template=bam_in)
 
-    print(f"\nProcessing reads from {bam_path}")
-    print(f"Output: {output_path}")
+    logger.info(f"\nProcessing reads from {bam_path}")
+    logger.info(f"Output: {output_path}")
 
     total_reads = 0
     total_predictions = 0
@@ -162,10 +165,10 @@ def run_inference(
     bam_in.close()
     bam_out.close()
 
-    print("\nInference complete!")
-    print(f"Reads processed: {total_reads}")
-    print(f"Total predictions: {total_predictions}")
-    print(f"Output written to: {output_path}")
+    logger.info("\nInference complete!")
+    logger.info(f"Reads processed: {total_reads}")
+    logger.info(f"Total predictions: {total_predictions}")
+    logger.info(f"Output written to: {output_path}")
 
 
 def load_predictions_from_bam(bam_path: Path) -> dict:

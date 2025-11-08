@@ -4,6 +4,7 @@ Data preparation: reading POD5 and BAM files, extracting chunks for training.
 Adapted from Remora but modernized with NumPy arrays and type hints.
 """
 
+import logging
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -21,6 +22,8 @@ from leech.features import (
     extract_move_table,
     normalize_signal,
 )
+
+logger = logging.getLogger("leech.data_prep")
 
 
 @dataclass
@@ -227,7 +230,7 @@ def iter_bam_with_pod5(
             )
 
         except Exception as e:
-            print(f"Warning: Skipping read {aln.query_name}: {e}")
+            logger.warning(f"Skipping read {aln.query_name}: {e}")
             continue
 
     bam.close()
@@ -429,7 +432,7 @@ def save_chunks(chunks: list[dict], output_path: Path) -> None:
         base_indices=base_indices_arr,
     )
 
-    print(f"Saved {len(chunks)} chunks to {output_path}")
+    logger.info(f"Saved {len(chunks)} chunks to {output_path}")
 
 
 def load_chunks(input_path: Path) -> list[dict]:

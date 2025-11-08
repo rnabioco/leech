@@ -5,6 +5,7 @@ Includes model loading/saving helpers, metrics computation, and logging utilitie
 """
 
 import json
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -20,6 +21,8 @@ from sklearn.metrics import (
 )
 
 from leech.models import get_model
+
+logger = logging.getLogger("leech.util")
 
 
 def load_model_from_checkpoint(
@@ -136,7 +139,7 @@ def save_metrics(metrics: dict, output_path: Path) -> None:
     with open(output_path, "w") as f:
         json.dump(metrics, f, indent=2)
 
-    print(f"Metrics saved to {output_path}")
+    logger.info(f"Metrics saved to {output_path}")
 
 
 def print_metrics(metrics: dict) -> None:
@@ -146,21 +149,21 @@ def print_metrics(metrics: dict) -> None:
     Args:
         metrics: Dictionary of metrics
     """
-    print("\n" + "=" * 60)
-    print("EVALUATION METRICS")
-    print("=" * 60)
-    print(f"Accuracy:  {metrics['accuracy']:.4f}")
-    print(f"Precision: {metrics['precision']:.4f}")
-    print(f"Recall:    {metrics['recall']:.4f}")
-    print(f"F1 Score:  {metrics['f1']:.4f}")
-    print(f"ROC AUC:   {metrics['auc']:.4f}")
+    logger.info("\n" + "=" * 60)
+    logger.info("EVALUATION METRICS")
+    logger.info("=" * 60)
+    logger.info(f"Accuracy:  {metrics['accuracy']:.4f}")
+    logger.info(f"Precision: {metrics['precision']:.4f}")
+    logger.info(f"Recall:    {metrics['recall']:.4f}")
+    logger.info(f"F1 Score:  {metrics['f1']:.4f}")
+    logger.info(f"ROC AUC:   {metrics['auc']:.4f}")
 
     if "confusion_matrix" in metrics:
         cm = metrics["confusion_matrix"]
-        print("\nConfusion Matrix:")
-        print("                Predicted")
-        print("              Neg    Pos")
-        print(f"Actual  Neg  {cm[0][0]:5d}  {cm[0][1]:5d}")
-        print(f"        Pos  {cm[1][0]:5d}  {cm[1][1]:5d}")
+        logger.info("\nConfusion Matrix:")
+        logger.info("                Predicted")
+        logger.info("              Neg    Pos")
+        logger.info(f"Actual  Neg  {cm[0][0]:5d}  {cm[0][1]:5d}")
+        logger.info(f"        Pos  {cm[1][0]:5d}  {cm[1][1]:5d}")
 
-    print("=" * 60 + "\n")
+    logger.info("=" * 60 + "\n")
