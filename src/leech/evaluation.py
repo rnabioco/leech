@@ -11,6 +11,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from leech.dataset import LeechDataset, collate_fn
+from leech.models.inference_wrapper import ModelInferenceWrapper
 from leech.util import compute_metrics, load_model_from_checkpoint, print_metrics, save_metrics
 
 logger = logging.getLogger("leech.evaluation")
@@ -53,6 +54,9 @@ def evaluate_model(
 
     model_type = config["model_name"]
 
+    # Wrap model for unified forward pass
+    model_wrapper = ModelInferenceWrapper(model, model_type)
+
     logger.info(f"Model: {model_type}")
     logger.info(f"Signal length: {signal_len}")
     logger.info(f"K-mer length: {kmer_len}")
@@ -78,17 +82,11 @@ def evaluate_model(
     model.eval()
     with torch.no_grad():
         for batch in tqdm(test_loader, desc="Evaluating"):
-            # Move to device
-            signal = batch["signal"].to(device)
-            sequence = batch["sequence"].to(device)
+            # Move labels to device
             labels = batch["label"].to(device)
 
-            # Forward pass
-            if "features" in batch:
-                features = batch["features"].to(device)
-                logits = model(signal, sequence, features)
-            else:
-                logits = model(signal, sequence)
+            # Forward pass (wrapper handles moving tensors and calling model correctly)
+            logits = model_wrapper.forward_batch(batch, device)
 
             # Get predictions
             probs = torch.sigmoid(logits).cpu().numpy()

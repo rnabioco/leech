@@ -16,6 +16,7 @@ from tqdm import tqdm
 
 from leech.dataset import LeechDataset, collate_fn
 from leech.models import get_model
+from leech.models.inference_wrapper import ModelInferenceWrapper
 
 logger = logging.getLogger("leech.training")
 
@@ -30,6 +31,7 @@ class Trainer:
     def __init__(
         self,
         model: nn.Module,
+        model_type: str,
         train_loader: DataLoader,
         val_loader: DataLoader | None = None,
         device: str = "cuda",
@@ -41,13 +43,17 @@ class Trainer:
 
         Args:
             model: PyTorch model to train
+            model_type: Model architecture name (e.g., "ConvLSTMDwell")
             train_loader: Training data loader
             val_loader: Validation data loader (optional)
             device: Device for training ("cuda" or "cpu")
             learning_rate: Learning rate for optimizer
             output_dir: Directory for saving models and logs
         """
-        self.model = model.to(device)
+        # Wrap model with inference wrapper for unified forward pass
+        self.model_wrapper = ModelInferenceWrapper(model, model_type)
+        self.model = self.model_wrapper.model  # Keep reference to underlying model
+        self.model.to(device)
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.device = device
@@ -86,21 +92,12 @@ class Trainer:
         all_labels: list[float] = []
 
         for batch in tqdm(self.train_loader, desc="Training", leave=False):
-            # Move to device
-            signal = batch["signal"].to(self.device)
-            sequence = batch["sequence"].to(self.device)
+            # Move labels to device
             labels = batch["label"].to(self.device)
 
-            # Forward pass
+            # Forward pass (wrapper handles moving tensors and calling model correctly)
             self.optimizer.zero_grad()
-
-            if "features" in batch:
-                # ConvLSTMDwell
-                features = batch["features"].to(self.device)
-                logits = self.model(signal, sequence, features)
-            else:
-                # ConvLSTMBase
-                logits = self.model(signal, sequence)
+            logits = self.model_wrapper.forward_batch(batch, self.device)
 
             # Compute loss
             loss = self.criterion(logits, labels)
@@ -139,17 +136,11 @@ class Trainer:
 
         with torch.no_grad():
             for batch in tqdm(self.val_loader, desc="Validation", leave=False):
-                # Move to device
-                signal = batch["signal"].to(self.device)
-                sequence = batch["sequence"].to(self.device)
+                # Move labels to device
                 labels = batch["label"].to(self.device)
 
-                # Forward pass
-                if "features" in batch:
-                    features = batch["features"].to(self.device)
-                    logits = self.model(signal, sequence, features)
-                else:
-                    logits = self.model(signal, sequence)
+                # Forward pass (wrapper handles moving tensors and calling model correctly)
+                logits = self.model_wrapper.forward_batch(batch, self.device)
 
                 # Compute loss
                 loss = self.criterion(logits, labels)
@@ -365,6 +356,7 @@ def train_model(
     # Create trainer
     trainer = Trainer(
         model=model,
+        model_type=model_name,
         train_loader=train_loader,
         val_loader=val_loader,
         device=device,

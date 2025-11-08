@@ -14,6 +14,7 @@ import torch
 from tqdm import tqdm
 
 from leech.data_prep import encode_kmer, iter_bam_with_pod5
+from leech.models.inference_wrapper import ModelInferenceWrapper
 from leech.util import load_model_from_checkpoint
 
 logger = logging.getLogger("leech.inference")
@@ -55,6 +56,9 @@ def run_inference(
     kmer_len = config["kmer_len"]
     model_type = config["model_name"]
     config["num_features"]
+
+    # Wrap model for unified forward pass
+    model_wrapper = ModelInferenceWrapper(model, model_type)
 
     # Calculate context from signal_len (assumes symmetric)
     signal_context = (signal_len // 2, signal_len // 2)
@@ -128,15 +132,20 @@ def run_inference(
             signal = signal.unsqueeze(0)
             sequence = sequence.unsqueeze(0)
 
-            # Get features if needed
-            with torch.no_grad():
-                if model_type == "ConvLSTMDwell":
-                    features = torch.from_numpy(chunk["features"].astype(np.float32)).to(device)
-                    features = features.unsqueeze(0)
-                    logits = model(signal, sequence, features)
-                else:
-                    logits = model(signal, sequence)
+            # Prepare batch dict for wrapper
+            batch = {
+                "signal": signal,
+                "sequence": sequence,
+            }
 
+            # Add features if model requires them
+            if model_wrapper.requires_features:
+                features = torch.from_numpy(chunk["features"].astype(np.float32)).to(device)
+                batch["features"] = features.unsqueeze(0)
+
+            # Run inference
+            with torch.no_grad():
+                logits = model_wrapper.forward_batch(batch, device)
                 prob = torch.sigmoid(logits).item()
 
             predictions.append((base_idx, prob))
