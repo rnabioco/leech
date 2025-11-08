@@ -139,7 +139,7 @@ class TestLeechDataset:
             temp_chunks_file, signal_len=400, kmer_len=11, model_type="ConvLSTMDwell"
         )
 
-        items = [item for item in dataset]
+        items = list(dataset)
         assert len(items) == len(dataset)
 
 

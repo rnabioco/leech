@@ -40,9 +40,7 @@ class TestLeechRead:
 
     def test_get_chunk_valid(self, sample_leech_read):
         """Test getting a valid chunk."""
-        chunk = sample_leech_read.get_chunk(
-            base_idx=10, signal_context=(200, 200), kmer_context=5
-        )
+        chunk = sample_leech_read.get_chunk(base_idx=10, signal_context=(200, 200), kmer_context=5)
 
         assert chunk is not None
         assert "signal" in chunk
@@ -122,9 +120,7 @@ class TestExtractTrainingChunks:
         # Use a motif that exists in the sequence
         motif = sample_leech_read.sequence[7:10]  # 3-base motif
 
-        chunks = extract_training_chunks(
-            sample_leech_read, motif=motif, motif_offset=1, label=0
-        )
+        chunks = extract_training_chunks(sample_leech_read, motif=motif, motif_offset=1, label=0)
 
         # Should find at least one occurrence
         assert len(chunks) >= 1

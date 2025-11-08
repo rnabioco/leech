@@ -4,9 +4,6 @@ Pytest fixtures for leech tests.
 Provides reusable test data and mock objects.
 """
 
-import tempfile
-from pathlib import Path
-
 import numpy as np
 import pytest
 import torch
@@ -88,7 +85,9 @@ def sample_chunks(sample_leech_read):
 
     for base_idx in range(start_idx, end_idx):
         chunk = sample_leech_read.get_chunk(
-            base_idx, signal_context=(50, 50), kmer_context=2  # Smaller context
+            base_idx,
+            signal_context=(50, 50),
+            kmer_context=2,  # Smaller context
         )
         if chunk is not None:
             chunk["read_id"] = sample_leech_read.read_id
