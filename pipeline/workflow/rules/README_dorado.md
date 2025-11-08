@@ -37,11 +37,18 @@ samples:
 ### Dorado Configuration Parameters
 
 ```yaml
+# Scratch directory for intermediate files (improves I/O performance)
+scratch_dir: "/scratch/alpine/jhesselberth@xsede.org"
+
 # Dorado binary path
 dorado_bin: "dorado"  # or "/path/to/dorado"
 
-# Basecalling model
-base_calling_model: "dna_r10.4.1_e8.2_400bps_hac@v4.2.0"
+# Basecalling model (default: RNA SUP for best accuracy)
+base_calling_model: "rna004_130bps_sup@v5.2.0"
+
+# Modified base detection (comma-separated list)
+# Available RNA mods: m5C, m6A_DRACH, inosine_m6A, pseU
+modifications: ""  # or "m6A_DRACH,pseU" for example
 
 # Dorado options (--emit-moves is REQUIRED for leech)
 dorado_opts: "--emit-moves"

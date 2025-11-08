@@ -91,7 +91,14 @@ val_split: 0.15           # Validation set fraction (test = 1 - train - val)
 # ============================================================================
 # Dorado Rebasecalling Configuration
 # ============================================================================
+# Scratch directory for intermediate files (POD5 merging, basecalling)
+# Set to null or "" to use regular output directories
+# Using scratch improves I/O performance for large POD5/BAM files
+scratch_dir: "/scratch/alpine/jhesselberth@xsede.org"
+
 # Output directories for rebasecalling workflow
+# If scratch_dir is set, these will be created within scratch during processing
+# Final outputs will be moved to these locations
 pod5_dir: "results/pod5"
 rebasecall_dir: "results/bam/rebasecall"
 
@@ -105,12 +112,35 @@ dorado_bin: "dorado"
 
 # Dorado basecalling model
 # Available models: https://github.com/nanoporetech/dorado#available-basecalling-models
+#
+# RNA models (recommended for tRNA-seq):
+#   - rna004_130bps_sup@v5.2.0  (super accurate, best quality, DEFAULT)
+#   - rna004_130bps_hac@v5.2.0  (high accurate, faster)
+#   - rna004_130bps_fast@v5.2.0 (fast, lower accuracy)
+#
+# DNA models (for testing):
+#   - dna_r10.4.1_e8.2_400bps_sup@v4.2.0
+#   - dna_r10.4.1_e8.2_400bps_hac@v4.2.0
+#   - dna_r10.4.1_e8.2_400bps_fast@v4.2.0
+base_calling_model: "rna004_130bps_sup@v5.2.0"
+
+# Modified base detection
+# To enable modification calling, specify modifications as a comma-separated list
+# The model will be invoked as: {base_calling_model},{modifications}
+# Leave empty or null to disable modification detection
+#
+# Available RNA modifications (for rna004_130bps_hac/sup@v5.2.0):
+#   - m5C: 5-methylcytosine
+#   - m6A_DRACH: N6-methyladenosine in DRACH motif
+#   - inosine_m6A: Inosine and m6A
+#   - pseU: Pseudouridine
+#
 # Examples:
-#   - dna_r10.4.1_e8.2_400bps_sup@v4.2.0  (super accurate)
-#   - dna_r10.4.1_e8.2_400bps_hac@v4.2.0  (high accurate, default)
-#   - dna_r10.4.1_e8.2_400bps_fast@v4.2.0 (fast)
-#   - rna004_130bps_hac@v3.0.1            (direct RNA)
-base_calling_model: "dna_r10.4.1_e8.2_400bps_hac@v4.2.0"
+#   modifications: ""                    # No modifications (default)
+#   modifications: "m6A_DRACH"           # Single modification
+#   modifications: "m6A_DRACH,pseU"      # Multiple modifications
+#   modifications: "m5C,m6A_DRACH,inosine_m6A,pseU"  # All RNA mods
+modifications: ""
 
 # Dorado options
 # IMPORTANT: --emit-moves is required for leech to extract dwell times
