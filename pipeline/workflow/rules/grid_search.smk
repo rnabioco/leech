@@ -24,6 +24,7 @@ rule grid_search_charged_vs_uncharged:
             },
         ),
         max_epochs=config.get("grid_search_epochs", 20),
+        slurm_extra="--gres=gpu:1",
     threads: 4
     resources:
         mem_mb=16000,
@@ -70,6 +71,7 @@ rule grid_search_pairwise_aa:
             },
         ),
         max_epochs=config.get("grid_search_epochs", 20),
+        slurm_extra="--gres=gpu:1",
     threads: 4
     resources:
         mem_mb=16000,

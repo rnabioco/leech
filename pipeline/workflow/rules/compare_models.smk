@@ -41,6 +41,7 @@ rule train_architecture_charged:
             if config.get("use_grid_search", False)
             else ""
         ),
+        slurm_extra="--gres=gpu:1",
     threads: 4
     resources:
         mem_mb=16000,
@@ -74,6 +75,8 @@ rule test_architecture_charged:
     output:
         metrics=METRICS_DIR
         + "/comparison/charged_vs_uncharged/{architecture}/{sample}_metrics.json",
+    params:
+        slurm_extra="--gres=gpu:1",
     threads: 2
     resources:
         mem_mb=4000,
@@ -155,6 +158,7 @@ rule train_architecture_pairwise:
             if config.get("use_grid_search", False)
             else ""
         ),
+        slurm_extra="--gres=gpu:1",
     threads: 4
     resources:
         mem_mb=16000,
@@ -187,6 +191,8 @@ rule test_architecture_pairwise:
     output:
         metrics=METRICS_DIR
         + "/comparison/pairwise/{pair}/{architecture}/{sample}_metrics.json",
+    params:
+        slurm_extra="--gres=gpu:1",
     threads: 2
     resources:
         mem_mb=4000,
@@ -253,6 +259,7 @@ rule grid_search_architecture_charged:
             },
         ),
         max_epochs=config.get("grid_search_epochs", 20),
+        slurm_extra="--gres=gpu:1",
     threads: 4
     resources:
         mem_mb=16000,
@@ -302,6 +309,7 @@ rule grid_search_architecture_pairwise:
             },
         ),
         max_epochs=config.get("grid_search_epochs", 20),
+        slurm_extra="--gres=gpu:1",
     threads: 4
     resources:
         mem_mb=16000,

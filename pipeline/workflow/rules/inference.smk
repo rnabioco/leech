@@ -14,6 +14,7 @@ rule infer_charged_vs_uncharged:
         bai=INFER_DIR + "/charged_vs_uncharged/{sample}_predictions.bam.bai",
     params:
         batch_size=config.get("infer_batch_size", 256),
+        slurm_extra="--gres=gpu:1",
     threads: 4
     resources:
         mem_mb=8000,
@@ -47,6 +48,7 @@ rule infer_pairwise_aa:
         bai=INFER_DIR + "/pairwise/{pair}/{sample}_predictions.bam.bai",
     params:
         batch_size=config.get("infer_batch_size", 256),
+        slurm_extra="--gres=gpu:1",
     threads: 4
     resources:
         mem_mb=8000,

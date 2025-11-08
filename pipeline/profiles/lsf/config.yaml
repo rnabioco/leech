@@ -1,10 +1,32 @@
-# LSF Cluster Profile for Leech Pipeline
-# ========================================
+# LSF Cluster Profile for Leech Pipeline (Bodhi Cluster)
+# ========================================================
+# Configured for Bodhi cluster using LSF scheduler
+#
+# RECOMMENDED: Use modern executor plugin for better performance:
+#   uv pip install snakemake-executor-plugin-lsf
+#   https://github.com/BEFH/snakemake-executor-plugin-lsf
+#
+# Usage with executor plugin:
+#   snakemake --executor lsf --configfile config/bodhi-config.yaml --default-resources lsf_queue=gpuqueue
+#
+# Usage with traditional approach (legacy):
+#   snakemake --profile profiles/lsf --configfile config/bodhi-config.yaml
 
-# Cluster execution
+# ============================================================================
+# Traditional Cluster Execution (legacy, still supported)
+# ============================================================================
 cluster: "bsub"
 cluster-status: "profiles/lsf/lsf_status.py"
 cluster-cancel: "bkill"
+
+# ============================================================================
+# Executor Plugin Configuration (recommended)
+# ============================================================================
+# When using --executor lsf, these settings are used:
+# executor: lsf
+# default-resources:
+#   - lsf_queue=gpuqueue
+#   - lsf_extra=""
 
 # Job submission
 jobs: 100
@@ -16,10 +38,13 @@ max-jobs-per-second: 10
 
 # Default resources for rules without explicit resources
 default-resources:
-  - queue="gpuqueue"
+  - queue="gpuqueue"        # Traditional LSF queue name
+  - lsf_queue="gpuqueue"    # For executor plugin
+  - lsf_extra=""            # Additional LSF directives for executor plugin
   - mem_mb=8000
   - runtime=120
   - gpu=0
+  - gpu_model="a100"        # GPU model for resource selection
 
 # Resource mapping from Snakemake resources to LSF directives
 set-resources:
