@@ -12,14 +12,16 @@ metrics_dir: "results/metrics"
 # ============================================================================
 # Each sample should have:
 #   - pod5: path to POD5 file (merged POD5 or final POD5)
-#   - bam: path to aligned BAM file with mv tags
+#   - bam: path to aligned BAM file with mv, ns, MM, ML tags
 #   - label: "charged" or "uncharged" (for charged vs uncharged classification)
 #   - amino_acid: amino acid label (for pairwise classification, e.g., "Ala", "Gly")
 #
-# Optional for rebasecalling workflow:
+# For rebasecalling workflow, also specify:
 #   - raw_pod5: single POD5 file or directory containing raw POD5 files
 #   - raw_pod5_list: list of POD5 file paths to merge
-#   - reference: reference genome/transcriptome for alignment (optional)
+#
+# After running the rebasecalling workflow, update each sample's bam path to:
+#   bam: "results/bam/rebasecall/{sample}/{sample}.aligned.bam"
 
 samples:
   # Example charged samples
@@ -101,6 +103,11 @@ scratch_dir: "/scratch/alpine/jhesselberth@xsede.org"
 # Final outputs will be moved to these locations
 pod5_dir: "results/pod5"
 rebasecall_dir: "results/bam/rebasecall"
+
+# Reference genome/transcriptome for alignment
+# Required for aligning rebasecalled reads
+# Example: "references/transcriptome.fasta" or "references/genome.fasta"
+reference: "references/reference.fasta"
 
 # Dorado binary path
 # Set to "dorado" to use system PATH, or specify full path to binary

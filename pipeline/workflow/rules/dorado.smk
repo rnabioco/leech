@@ -180,12 +180,18 @@ rule align_rebasecalled:
     """
     Align rebasecalled reads to reference using minimap2.
 
-    This is an optional step if you want to align the rebasecalled reads
-    to a reference genome/transcriptome before running leech.
+    CRITICAL: This step preserves all tags from the rebasecalled BAM:
+    - mv: Move table (required for leech dwell time features)
+    - ns: Number of samples per base
+    - MM: Modified base positions/types (if modification calling enabled)
+    - ML: Modified base probabilities (if modification calling enabled)
+
+    The -T '*' flag in samtools fastq preserves all auxiliary tags.
+    The -y flag in minimap2 copies tags from input to aligned output.
     """
     input:
         bam=rules.rebasecall.output.bam,
-        reference=lambda wildcards: config["samples"][wildcards.sample].get("reference")
+        reference=config.get("reference", "references/reference.fasta")
     output:
         bam=config.get("rebasecall_dir", "results/bam/rebasecall") + "/{sample}/{sample}.aligned.bam",
         bai=config.get("rebasecall_dir", "results/bam/rebasecall") + "/{sample}/{sample}.aligned.bam.bai"
@@ -197,10 +203,18 @@ rule align_rebasecalled:
         config.get("rebasecall_dir", "results/bam/rebasecall") + "/{sample}/align.log"
     shell:
         """
-        # Convert BAM to FASTQ, align with minimap2, sort and index
+        # Convert BAM to FASTQ preserving all tags (-T '*')
+        # Align with minimap2 copying tags to output (-y)
+        # Sort and index the aligned BAM
         samtools fastq -T '*' {input.bam} | \
         minimap2 -ax map-ont -y {input.reference} - | \
         samtools sort -@ {threads} -o {output.bam} - 2> {log}
 
+        # Index the aligned BAM
         samtools index {output.bam}
+
+        # Verify critical tags are present
+        echo "Verifying critical tags (mv, ns, MM, ML) in aligned BAM..." >> {log}
+        samtools view {output.bam} | head -n 1 | grep -o "mv:B:[^[:space:]]*" >> {log} || echo "WARNING: mv tag not found" >> {log}
+        samtools view {output.bam} | head -n 1 | grep -o "ns:i:[^[:space:]]*" >> {log} || echo "WARNING: ns tag not found" >> {log}
         """
