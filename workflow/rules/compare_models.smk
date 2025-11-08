@@ -41,12 +41,11 @@ rule train_architecture_charged:
             if config.get("use_grid_search", False)
             else ""
         ),
-        slurm_extra="--gres=gpu:1",
     threads: 4
     resources:
         mem_mb=16000,
         runtime=480,
-        gpu=1,
+        gpu=0,  # GPU controlled by cluster profile
         gpu_mem_mb=8000,
     log:
         MODELS_DIR + "/comparison/charged_vs_uncharged/{architecture}/train.log",
@@ -76,12 +75,11 @@ rule test_architecture_charged:
         metrics=METRICS_DIR
         + "/comparison/charged_vs_uncharged/{architecture}/{sample}_metrics.json",
     params:
-        slurm_extra="--gres=gpu:1",
     threads: 2
     resources:
         mem_mb=4000,
         runtime=60,
-        gpu=1,
+        gpu=0,  # GPU controlled by cluster profile
         gpu_mem_mb=4000,
     log:
         METRICS_DIR
@@ -158,12 +156,11 @@ rule train_architecture_pairwise:
             if config.get("use_grid_search", False)
             else ""
         ),
-        slurm_extra="--gres=gpu:1",
     threads: 4
     resources:
         mem_mb=16000,
         runtime=480,
-        gpu=1,
+        gpu=0,  # GPU controlled by cluster profile
         gpu_mem_mb=8000,
     log:
         MODELS_DIR + "/comparison/pairwise/{pair}/{architecture}/train.log",
@@ -192,12 +189,11 @@ rule test_architecture_pairwise:
         metrics=METRICS_DIR
         + "/comparison/pairwise/{pair}/{architecture}/{sample}_metrics.json",
     params:
-        slurm_extra="--gres=gpu:1",
     threads: 2
     resources:
         mem_mb=4000,
         runtime=60,
-        gpu=1,
+        gpu=0,  # GPU controlled by cluster profile
         gpu_mem_mb=4000,
     log:
         METRICS_DIR + "/comparison/pairwise/{pair}/{architecture}/{sample}_test.log",
@@ -259,12 +255,11 @@ rule grid_search_architecture_charged:
             },
         ),
         max_epochs=config.get("grid_search_epochs", 20),
-        slurm_extra="--gres=gpu:1",
     threads: 4
     resources:
         mem_mb=16000,
         runtime=1440,  # 24 hours for grid search
-        gpu=1,
+        gpu=0,  # GPU controlled by cluster profile
         gpu_mem_mb=10000,
     log:
         MODELS_DIR + "/grid_search/charged_vs_uncharged/{architecture}/grid_search.log",
@@ -309,12 +304,11 @@ rule grid_search_architecture_pairwise:
             },
         ),
         max_epochs=config.get("grid_search_epochs", 20),
-        slurm_extra="--gres=gpu:1",
     threads: 4
     resources:
         mem_mb=16000,
         runtime=1440,
-        gpu=1,
+        gpu=0,  # GPU controlled by cluster profile
         gpu_mem_mb=10000,
     log:
         MODELS_DIR + "/grid_search/pairwise/{pair}/{architecture}/grid_search.log",

@@ -223,7 +223,7 @@ merge_pods_time: 120        # minutes
 rebasecall_threads: 4
 rebasecall_mem: 16000       # MB
 rebasecall_time: 480        # minutes (8 hours)
-rebasecall_gpu: 1           # Number of GPUs
+rebasecall_gpu: 0           # GPU allocation controlled by cluster profile via slurm_extra
 
 align_threads: 8
 align_mem: 16000            # MB

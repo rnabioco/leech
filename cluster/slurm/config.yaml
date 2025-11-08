@@ -44,20 +44,20 @@ set-resources:
     runtime: 480              # 8 hours
     mem_mb: 32000             # 32GB
     cpus_per_task: 8
-    gpu: 1                    # Request 1 GPU
-    slurm_extra: "'--gres=gpu:a100:1'"
+    nodes: 1                  # Required for GPU partitions
+    gres: "gpu:1"             # Request 1 GPU (Alpine syntax)
 
   # Re-basecalling - GPU required
-  rebasecall_pod5:
+  rebasecall:
     slurm_partition: "aa100"
     runtime: 480
     mem_mb: 32000
     cpus_per_task: 8
-    gpu: 1
-    slurm_extra: "'--gres=gpu:a100:1'"
+    nodes: 1                  # Required for GPU partitions
+    gres: "gpu:1"             # Request 1 GPU (Alpine syntax)
 
   # BAM alignment - CPU intensive
-  align_reads:
+  align_rebasecalled:
     runtime: 240              # 4 hours
     mem_mb: 16000             # 16GB
     cpus_per_task: 8
@@ -74,8 +74,8 @@ set-resources:
     runtime: 480              # 8 hours
     mem_mb: 32000
     cpus_per_task: 8
-    gpu: 1
-    slurm_extra: "'--gres=gpu:a100:1'"
+    nodes: 1                  # Required for GPU partitions
+    gres: "gpu:1"             # Request 1 GPU (Alpine syntax)
 
   # Grid search - GPU required, very long runtime
   # NOTE: This rule needs QoS="long" for >24 hour jobs
@@ -85,8 +85,8 @@ set-resources:
     runtime: 1440             # 24 hours
     mem_mb: 32000
     cpus_per_task: 8
-    gpu: 1
-    slurm_extra: "'--gres=gpu:a100:1'"
+    nodes: 1                  # Required for GPU partitions
+    gres: "gpu:1"             # Request 1 GPU (Alpine syntax)
 
   # Model testing - lightweight
   test_model:
@@ -100,8 +100,8 @@ set-resources:
     runtime: 240              # 4 hours
     mem_mb: 16000
     cpus_per_task: 4
-    gpu: 1
-    slurm_extra: "'--gres=gpu:a100:1'"
+    nodes: 1                  # Required for GPU partitions
+    gres: "gpu:1"             # Request 1 GPU (Alpine syntax)
 
 # Rerun incomplete jobs
 rerun-incomplete: true
