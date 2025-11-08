@@ -3,6 +3,7 @@ Training loop and utilities for leech models.
 """
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,8 @@ from tqdm import tqdm
 
 from leech.dataset import LeechDataset, collate_fn
 from leech.models import get_model
+
+logger = logging.getLogger("leech.training")
 
 
 class Trainer:
@@ -179,14 +182,14 @@ class Trainer:
         patience_counter = 0
 
         for epoch in range(1, epochs + 1):
-            print(f"\nEpoch {epoch}/{epochs}")
+            logger.info(f"Epoch {epoch}/{epochs}")
 
             # Train
             train_loss, train_acc = self.train_epoch()
             self.history["train_loss"].append(train_loss)
             self.history["train_acc"].append(train_acc)
 
-            print(f"Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f}")
+            logger.info(f"Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f}")
 
             # Validate
             if self.val_loader is not None:
@@ -195,7 +198,7 @@ class Trainer:
                 self.history["val_acc"].append(val_acc)
                 self.history["val_auc"].append(val_auc)
 
-                print(f"Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f} | Val AUC: {val_auc:.4f}")
+                logger.info(f"Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f} | Val AUC: {val_auc:.4f}")
 
                 # Save best model
                 if val_acc > self.best_val_acc:
@@ -205,13 +208,13 @@ class Trainer:
 
                     if self.output_dir:
                         self.save_checkpoint("model_best.pt")
-                        print(f"Saved best model (val_acc: {val_acc:.4f})")
+                        logger.info(f"Saved best model (val_acc: {val_acc:.4f})")
                 else:
                     patience_counter += 1
 
                 # Early stopping
                 if patience_counter >= early_stopping_patience:
-                    print(f"\nEarly stopping at epoch {epoch}")
+                    logger.info(f"Early stopping at epoch {epoch}")
                     break
 
         # Save final model

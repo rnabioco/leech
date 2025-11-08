@@ -5,6 +5,7 @@ Designed for Snakemake integration with clear input/output paths.
 """
 
 import argparse
+import logging
 from pathlib import Path
 
 from leech.constants import (
@@ -14,6 +15,10 @@ from leech.constants import (
     DEFAULT_LEARNING_RATE,
     DEFAULT_SEED,
 )
+from leech.logging_config import setup_logging
+
+# Setup logging for CLI
+logger = logging.getLogger("leech.cli")
 
 # Model choices for CLI
 MODEL_CHOICES = [
@@ -176,7 +181,7 @@ def run_prepare(args):
 
     from leech.data_prep import extract_training_chunks, iter_bam_with_pod5, save_chunks
 
-    print(f"Preparing data from {args.pod5} and {args.bam}")
+    logger.info(f"Preparing data from {args.pod5} and {args.bam}")
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     chunks = []
@@ -186,21 +191,21 @@ def run_prepare(args):
         )
         chunks.extend(read_chunks)
 
-    print(f"Extracted {len(chunks)} training chunks")
+    logger.info(f"Extracted {len(chunks)} training chunks")
 
     # Save chunks
     output_file = args.output_dir / "chunks.npz"
     save_chunks(chunks, output_file)
-    print(f"Saved to {output_file}")
+    logger.info(f"Saved to {output_file}")
 
 
 def run_train(args):
     """Execute model training."""
     from leech.training import train_model
 
-    print(f"Training {args.model} model")
-    print(f"Train data: {args.train_data}")
-    print(f"Output: {args.output_dir}")
+    logger.info(f"Training {args.model} model")
+    logger.info(f"Train data: {args.train_data}")
+    logger.info(f"Output: {args.output_dir}")
 
     # Load model config if provided
     model_kwargs = {}
@@ -224,18 +229,18 @@ def run_train(args):
         **model_kwargs,
     )
 
-    print("\nTraining complete!")
-    print(f"Best validation accuracy: {history.get('val_acc', [0])[-1]:.4f}")
-    print(f"Models saved to {args.output_dir}")
+    logger.info("Training complete!")
+    logger.info(f"Best validation accuracy: {history.get('val_acc', [0])[-1]:.4f}")
+    logger.info(f"Models saved to {args.output_dir}")
 
 
 def run_test(args):
     """Execute model testing."""
     from leech.evaluation import evaluate_model
 
-    print(f"Testing model: {args.model}")
-    print(f"Test data: {args.test_data}")
-    print(f"Output: {args.output}")
+    logger.info(f"Testing model: {args.model}")
+    logger.info(f"Test data: {args.test_data}")
+    logger.info(f"Output: {args.output}")
 
     # Run evaluation
     evaluate_model(
@@ -245,17 +250,17 @@ def run_test(args):
         device=args.device,
     )
 
-    print("\nTesting complete!")
-    print(f"Results saved to {args.output}")
+    logger.info("Testing complete!")
+    logger.info(f"Results saved to {args.output}")
 
 
 def run_infer(args):
     """Execute inference."""
     from leech.inference import run_inference
 
-    print(f"Running inference with model: {args.model}")
-    print(f"Input: {args.pod5}, {args.bam}")
-    print(f"Output: {args.output}")
+    logger.info(f"Running inference with model: {args.model}")
+    logger.info(f"Input: {args.pod5}, {args.bam}")
+    logger.info(f"Output: {args.output}")
 
     # Run inference
     run_inference(
@@ -266,8 +271,8 @@ def run_infer(args):
         device=args.device,
     )
 
-    print("\nInference complete!")
-    print(f"Predictions saved to {args.output}")
+    logger.info("Inference complete!")
+    logger.info(f"Predictions saved to {args.output}")
 
 
 def run_grid_search(args):
@@ -285,9 +290,9 @@ def run_grid_search(args):
     else:
         right_contexts = [int(x.strip()) for x in args.context_grid.split(",")]
 
-    print(f"Starting grid search with {len(left_contexts)} x {len(right_contexts)} grid points")
-    print(f"Left contexts: {left_contexts}")
-    print(f"Right contexts: {right_contexts}")
+    logger.info(f"Starting grid search with {len(left_contexts)} x {len(right_contexts)} grid points")
+    logger.info(f"Left contexts: {left_contexts}")
+    logger.info(f"Right contexts: {right_contexts}")
 
     # Create config
     config = GridSearchConfig(
@@ -308,14 +313,17 @@ def run_grid_search(args):
     # Run grid search
     summary_path = run_grid_search(config)
 
-    print(f"\n{'=' * 80}")
-    print("Grid search complete!")
-    print(f"Results saved to: {summary_path}")
-    print(f"{'=' * 80}")
+    logger.info("=" * 80)
+    logger.info("Grid search complete!")
+    logger.info(f"Results saved to: {summary_path}")
+    logger.info("=" * 80)
 
 
 def main():
     """Main CLI entry point."""
+    # Setup logging
+    setup_logging(level=logging.INFO)
+
     parser = argparse.ArgumentParser(
         prog="leech",
         description="Enhanced classification from nanopore signals",
