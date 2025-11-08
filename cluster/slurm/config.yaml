@@ -1,0 +1,111 @@
+# Snakemake Slurm Executor Profile Configuration
+# ================================================
+# This profile configures Snakemake to submit jobs to the Alpine Slurm cluster
+# Usage: snakemake --profile cluster/slurm --configfile config/alpine-config.yaml
+
+# Executor settings
+executor: slurm
+jobs: 100                      # Maximum concurrent jobs
+latency-wait: 60              # Wait time for output files (seconds)
+
+# Slurm-specific settings
+slurm-logdir: "logs/slurm"    # Directory for Slurm job logs
+slurm-keep-successful-logs: false
+slurm-delete-logfiles-older-than: 10  # Days
+
+# SLURM plugin parameters (note: use hyphens, not underscores)
+slurm-qos: "normal"           # Default QoS for all jobs (required by Alpine)
+
+# Default resources for all rules
+default-resources:
+  slurm_partition: "amilan"   # Default CPU partition
+  slurm_account: "amc-general"  # Alpine allocation account
+  runtime: 120                # Default walltime in minutes (2 hours)
+  mem_mb: 8000                # Default memory in MB (8GB)
+  cpus_per_task: 4            # Default CPUs per task
+
+# Rule-specific resource overrides
+set-resources:
+  # POD5 merging - lightweight I/O task
+  merge_pods:
+    runtime: 60
+    mem_mb: 4000
+    cpus_per_task: 1
+
+  # POD5 inspection - medium I/O task
+  inspect_pod5:
+    runtime: 120
+    mem_mb: 8000
+    cpus_per_task: 4
+
+  # Basecalling with Dorado - GPU required
+  basecall_with_dorado:
+    slurm_partition: "aa100"  # GPU partition
+    runtime: 480              # 8 hours
+    mem_mb: 32000             # 32GB
+    cpus_per_task: 8
+    gpu: 1                    # Request 1 GPU
+    slurm_extra: "'--gres=gpu:a100:1'"
+
+  # Re-basecalling - GPU required
+  rebasecall_pod5:
+    slurm_partition: "aa100"
+    runtime: 480
+    mem_mb: 32000
+    cpus_per_task: 8
+    gpu: 1
+    slurm_extra: "'--gres=gpu:a100:1'"
+
+  # BAM alignment - CPU intensive
+  align_reads:
+    runtime: 240              # 4 hours
+    mem_mb: 16000             # 16GB
+    cpus_per_task: 8
+
+  # Data preparation - medium memory
+  prepare_training_data:
+    runtime: 180              # 3 hours
+    mem_mb: 16000
+    cpus_per_task: 4
+
+  # Model training - GPU required, long runtime
+  train_model:
+    slurm_partition: "aa100"
+    runtime: 480              # 8 hours
+    mem_mb: 32000
+    cpus_per_task: 8
+    gpu: 1
+    slurm_extra: "'--gres=gpu:a100:1'"
+
+  # Grid search - GPU required, very long runtime
+  # NOTE: This rule needs QoS="long" for >24 hour jobs
+  # Override with: snakemake --profile cluster/slurm --slurm-qos=long target
+  grid_search:
+    slurm_partition: "aa100"
+    runtime: 1440             # 24 hours
+    mem_mb: 32000
+    cpus_per_task: 8
+    gpu: 1
+    slurm_extra: "'--gres=gpu:a100:1'"
+
+  # Model testing - lightweight
+  test_model:
+    runtime: 60
+    mem_mb: 8000
+    cpus_per_task: 2
+
+  # Inference - GPU recommended but not required
+  run_inference:
+    slurm_partition: "aa100"
+    runtime: 240              # 4 hours
+    mem_mb: 16000
+    cpus_per_task: 4
+    gpu: 1
+    slurm_extra: "'--gres=gpu:a100:1'"
+
+# Rerun incomplete jobs
+rerun-incomplete: true
+keep-going: true
+
+# Printout settings
+printshellcmds: true
