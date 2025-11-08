@@ -290,7 +290,8 @@ class TestTCNDwell:
             signal_len=model_config["signal_len"],
             kmer_len=model_config["kmer_len"],
             num_features=model_config["num_features"],
-            num_channels=[8, 16],  # Smaller for testing
+            hidden_channels=16,  # Smaller for testing
+            num_layers=4,  # Smaller for testing
             kernel_size=3,
             dropout=model_config["dropout"],
         )
@@ -302,7 +303,8 @@ class TestTCNDwell:
             signal_len=model_config["signal_len"],
             kmer_len=model_config["kmer_len"],
             num_features=model_config["num_features"],
-            num_channels=[8, 16],
+            hidden_channels=16,
+            num_layers=4,
             kernel_size=3,
         )
         model.eval()
@@ -329,7 +331,6 @@ class TestResNetDwell:
             kmer_len=model_config["kmer_len"],
             num_features=model_config["num_features"],
             base_channels=8,  # Smaller for testing
-            num_blocks=2,
             dropout=model_config["dropout"],
         )
         assert model.signal_len == model_config["signal_len"]
@@ -341,7 +342,6 @@ class TestResNetDwell:
             kmer_len=model_config["kmer_len"],
             num_features=model_config["num_features"],
             base_channels=8,
-            num_blocks=2,
         )
         model.eval()
 
@@ -363,9 +363,11 @@ class TestResNetDwell:
             kmer_len=model_config["kmer_len"],
             num_features=model_config["num_features"],
             base_channels=8,
-            num_blocks=2,
         )
-        assert len(model.signal_blocks) == 2  # num_blocks
+        # Check that branches exist
+        assert hasattr(model, "signal_branch")
+        assert hasattr(model, "seq_branch")
+        assert hasattr(model, "feature_branch")
 
 
 class TestModelComparisons:

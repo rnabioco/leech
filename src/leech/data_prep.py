@@ -420,6 +420,9 @@ def save_chunks(chunks: list[dict], output_path: Path) -> None:
     read_ids_arr = np.array(read_ids, dtype=str)
     base_indices_arr = np.array(base_indices, dtype=np.int64)
 
+    # Create parent directories if they don't exist
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
     # Save
     np.savez_compressed(
         output_path,

@@ -35,6 +35,7 @@ class TestTrainer:
         """Test Trainer initialization."""
         trainer = Trainer(
             model=sample_model,
+            model_type="ConvLSTMDwell",
             train_loader=sample_dataloader,
             val_loader=None,
             device="cpu",
@@ -52,6 +53,7 @@ class TestTrainer:
 
         Trainer(
             model=sample_model,
+            model_type="ConvLSTMDwell",
             train_loader=sample_dataloader,
             device="cpu",
             output_dir=output_dir,
@@ -63,6 +65,7 @@ class TestTrainer:
         """Test training for one epoch."""
         trainer = Trainer(
             model=sample_model,
+            model_type="ConvLSTMDwell",
             train_loader=sample_dataloader,
             device="cpu",
             learning_rate=0.001,
@@ -78,7 +81,8 @@ class TestTrainer:
     def test_validate_without_loader(self, sample_model, sample_dataloader):
         """Test validation when no validation loader provided."""
         trainer = Trainer(
-            model=sample_model, train_loader=sample_dataloader, val_loader=None, device="cpu"
+            model=sample_model,
+            model_type="ConvLSTMDwell", train_loader=sample_dataloader, val_loader=None, device="cpu"
         )
 
         loss, acc, auc = trainer.validate()
@@ -91,6 +95,7 @@ class TestTrainer:
         """Test validation with validation loader."""
         trainer = Trainer(
             model=sample_model,
+            model_type="ConvLSTMDwell",
             train_loader=sample_dataloader,
             val_loader=sample_dataloader,  # Use same for simplicity
             device="cpu",
@@ -109,6 +114,7 @@ class TestTrainer:
         """Test training for multiple epochs."""
         trainer = Trainer(
             model=sample_model,
+            model_type="ConvLSTMDwell",
             train_loader=sample_dataloader,
             val_loader=sample_dataloader,
             device="cpu",
@@ -128,6 +134,7 @@ class TestTrainer:
         """Test early stopping mechanism."""
         trainer = Trainer(
             model=sample_model,
+            model_type="ConvLSTMDwell",
             train_loader=sample_dataloader,
             val_loader=sample_dataloader,
             device="cpu",
@@ -143,6 +150,7 @@ class TestTrainer:
         """Test checkpoint saving."""
         trainer = Trainer(
             model=sample_model,
+            model_type="ConvLSTMDwell",
             train_loader=sample_dataloader,
             device="cpu",
             output_dir=tmp_path,
@@ -162,6 +170,7 @@ class TestTrainer:
         """Test history saving."""
         trainer = Trainer(
             model=sample_model,
+            model_type="ConvLSTMDwell",
             train_loader=sample_dataloader,
             val_loader=sample_dataloader,
             device="cpu",
@@ -191,6 +200,7 @@ class TestTrainer:
         """Test that best model is tracked correctly."""
         trainer = Trainer(
             model=sample_model,
+            model_type="ConvLSTMDwell",
             train_loader=sample_dataloader,
             val_loader=sample_dataloader,
             device="cpu",
@@ -392,7 +402,7 @@ class TestTrainingEdgeCases:
 
         dummy_loader = DataLoader(DummyDataset(), batch_size=2, collate_fn=collate_fn)
 
-        trainer = Trainer(model=model, train_loader=dummy_loader, device="cpu")
+        trainer = Trainer(model=model, model_type="ConvLSTMDwell", train_loader=dummy_loader, device="cpu")
 
         # History should be empty initially
         assert len(trainer.history["train_loss"]) == 0
