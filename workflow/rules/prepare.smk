@@ -6,8 +6,8 @@ Data preparation rules for extracting training chunks.
 rule prepare_chunks:
     """Extract training chunks from POD5/BAM files."""
     input:
-        pod5=lambda wildcards: config["samples"][wildcards.sample]["pod5"],
-        bam=lambda wildcards: config["samples"][wildcards.sample]["bam"],
+        pod5=config.get("pod5_dir", "results/pod5") + "/{sample}/{sample}.pod5",
+        bam=config.get("rebasecall_dir", "results/bam/rebasecall") + "/{sample}/{sample}.aligned.bam",
     output:
         train=CHUNKS_DIR + "/{sample}/train.json",
         val=CHUNKS_DIR + "/{sample}/val.json",

@@ -176,7 +176,7 @@ reference: "references/reference.fasta"
 #   - "dorado"                    (use system PATH)
 #   - "/usr/local/bin/dorado"     (specific path)
 #   - "/home/user/software/dorado-0.5.0/bin/dorado"
-dorado_bin: "dorado"
+dorado_bin: "/home/jhesselberth@xsede.org/projects/software/dorado/dorado-1.2.0-linux-x64/bin/dorado"
 
 # Dorado basecalling model
 # Available models: https://github.com/nanoporetech/dorado#available-basecalling-models
