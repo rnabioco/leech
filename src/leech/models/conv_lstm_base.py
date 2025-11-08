@@ -157,23 +157,6 @@ class ConvLSTMBase(nn.Module):
         return torch.sigmoid(logits)
 
 
-def encode_kmer(sequence: str) -> torch.Tensor:
-    """
-    One-hot encode a DNA sequence.
-
-    Args:
-        sequence: DNA sequence string (A, C, G, T)
-
-    Returns:
-        One-hot encoded tensor (4, len(sequence))
-    """
-    base_to_idx = {"A": 0, "C": 1, "G": 2, "T": 3}
-    seq_len = len(sequence)
-    encoded = torch.zeros(4, seq_len, dtype=torch.float32)
-
-    for i, base in enumerate(sequence.upper()):
-        if base in base_to_idx:
-            encoded[base_to_idx[base], i] = 1.0
-        # If base not in dict (e.g., N), leave as zeros
-
-    return encoded
+# encode_kmer() has been moved to leech.data_prep for centralized access
+# Import it from there if needed:
+# from leech.data_prep import encode_kmer

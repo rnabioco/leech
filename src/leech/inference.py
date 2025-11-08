@@ -12,8 +12,7 @@ import pysam
 import torch
 from tqdm import tqdm
 
-from leech.data_prep import iter_bam_with_pod5
-from leech.models.conv_lstm_base import encode_kmer
+from leech.data_prep import encode_kmer, iter_bam_with_pod5
 from leech.util import load_model_from_checkpoint
 
 

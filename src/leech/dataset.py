@@ -8,8 +8,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from leech.data_prep import load_chunks
-from leech.models.conv_lstm_base import encode_kmer
+from leech.data_prep import encode_kmer, load_chunks
 
 
 class LeechDataset(Dataset):
