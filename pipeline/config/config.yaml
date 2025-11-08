@@ -137,11 +137,11 @@ base_calling_model: "rna004_130bps_sup@v5.2.0"
 #   - 2OmeG: 2'-O-methylguanosine
 #
 # Examples:
-#   modifications: ""                                          # No modifications (default)
+#   modifications: ""                                          # No modifications
 #   modifications: "m6A_DRACH"                                 # Single modification
 #   modifications: "m6A_DRACH,pseU_2OmeU"                      # Multiple modifications
-#   modifications: "m5C_2OmeC,m6A_DRACH,inosine_m6A_2OmeA,pseU_2OmeU,2OmeG"  # All RNA mods
-modifications: ""
+#   modifications: "m5C_2OmeC,m6A_DRACH,inosine_m6A_2OmeA,pseU_2OmeU,2OmeG"  # All RNA mods (default)
+modifications: "m5C_2OmeC,m6A_DRACH,inosine_m6A_2OmeA,pseU_2OmeU,2OmeG"
 
 # Dorado options
 # IMPORTANT: --emit-moves is required for leech to extract dwell times
