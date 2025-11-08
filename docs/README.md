@@ -4,7 +4,7 @@ Comprehensive analysis and implementation guides for the Leech project.
 
 ---
 
-## 🚀 **START HERE** → [`01-START_HERE_IMPLEMENTATION_GUIDE.md`](01-START_HERE_IMPLEMENTATION_GUIDE.md)
+## 🚀 **START HERE** → [`01-START_HERE_IMPLEMENTATION_GUIDE.md`](guides/01-START_HERE_IMPLEMENTATION_GUIDE.md)
 
 **The main implementation guide with step-by-step instructions.**
 
@@ -19,7 +19,7 @@ Comprehensive analysis and implementation guides for the Leech project.
 
 ## Core Analysis Documents
 
-### 1. [`03-REMORA_ANALYSIS.md`](03-REMORA_ANALYSIS.md)
+### 1. [`03-REMORA_ANALYSIS.md`](guides/03-REMORA_ANALYSIS.md)
 **Deep dive into Remora's architecture and how Leech extends it.**
 
 Topics:
@@ -28,7 +28,7 @@ Topics:
 - Novel contribution: explicit dwell time features
 - Implementation verification and comparison
 
-### 2. [`04-AA_DISCRIMINATION_PRIMARY_TASK.md`](04-AA_DISCRIMINATION_PRIMARY_TASK.md)
+### 2. [`04-AA_DISCRIMINATION_PRIMARY_TASK.md`](guides/04-AA_DISCRIMINATION_PRIMARY_TASK.md)
 **Clarification: The primary goal is 20-way AA classification, not charged vs uncharged.**
 
 Key insights:
@@ -37,7 +37,7 @@ Key insights:
 - Dwell time is CRITICAL for AA discrimination (+15-20% improvement)
 - Transfer learning strategy from synthetic → biological tRNAs
 
-### 3. [`02-TRNA_CONDITIONAL_CLASSIFICATION.md`](02-TRNA_CONDITIONAL_CLASSIFICATION.md)
+### 3. [`02-TRNA_CONDITIONAL_CLASSIFICATION.md`](guides/02-TRNA_CONDITIONAL_CLASSIFICATION.md)
 **CRITICAL: tRNA-AA pairing is highly specific, not all-vs-all.**
 
 Biological reality:
@@ -55,7 +55,7 @@ Implementation strategies:
 
 ## Supporting Analysis Documents
 
-### 4. [`05-MODEL_PREDICTIONS.md`](05-MODEL_PREDICTIONS.md)
+### 4. [`05-MODEL_PREDICTIONS.md`](guides/05-MODEL_PREDICTIONS.md)
 **Predictions for which model architectures will perform best.**
 
 Expected performance:
@@ -69,7 +69,7 @@ Includes:
 - Architecture refinements (attention, multi-scale, normalization)
 - Failure mode analysis
 
-### 5. [`06-DWELL_FEATURE_STRATEGIES.md`](06-DWELL_FEATURE_STRATEGIES.md)
+### 5. [`06-DWELL_FEATURE_STRATEGIES.md`](guides/06-DWELL_FEATURE_STRATEGIES.md)
 **Analysis of learnable vs fixed window approaches for dwell features.**
 
 Key question: Can optimal window size be learned during training?
@@ -81,7 +81,7 @@ Answer: YES! Three approaches:
 
 Recommendation: Skip grid search, let network learn optimal "window" via conv layers.
 
-### 6. [`07-AMINO_ACID_HETEROGENEITY.md`](07-AMINO_ACID_HETEROGENEITY.md)
+### 6. [`07-AMINO_ACID_HETEROGENEITY.md`](guides/07-AMINO_ACID_HETEROGENEITY.md)
 **Addressing concern: Different AAs may need different temporal patterns.**
 
 Question: How does AA diversity affect classification?
