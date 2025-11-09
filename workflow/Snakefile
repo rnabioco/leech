@@ -28,18 +28,12 @@ from pathlib import Path
 # Load configuration
 configfile: str(Path(workflow.basedir).parent / "config" / "config.yaml")
 
-# Load samples from separate file
-import yaml
-samples_file = Path(workflow.basedir).parent / "config" / "samples.yml"
-if samples_file.exists():
-    with open(samples_file) as f:
-        samples_config = yaml.safe_load(f)
-        if samples_config and "samples" in samples_config:
-            # Map pod5 -> raw_pod5 for dorado workflow compatibility
-            for sample_name, sample_data in samples_config["samples"].items():
-                if "pod5" in sample_data and "raw_pod5" not in sample_data:
-                    sample_data["raw_pod5"] = sample_data.pop("pod5")
-            config["samples"] = samples_config["samples"]
+# Map pod5 -> raw_pod5 for dorado workflow compatibility
+# Samples should be provided via --configfile (e.g., config/samples-alpine.yaml)
+if "samples" in config:
+    for sample_name, sample_data in config["samples"].items():
+        if "pod5" in sample_data and "raw_pod5" not in sample_data:
+            sample_data["raw_pod5"] = sample_data.pop("pod5")
 
 
 # Include common variables and functions
