@@ -69,89 +69,6 @@ def get_raw_pod5_inputs(wildcards):
 # ============================================================================
 
 
-rule update_and_merge_pods:
-    """
-    Update individual POD5 files to v4, then merge them.
-
-    This rule:
-    1. Updates each raw POD5 file to v4 format individually (in scratch)
-    2. Merges the updated v4 POD5 files together (no migration needed)
-
-    Running in scratch directory prevents .tmp_pod5_v3_v4_migration_*
-    directories from being created in the project directory.
-
-    Uses scratch directory if configured for better I/O performance.
-    """
-    input:
-        get_raw_pod5_inputs
-    output:
-        pod5=get_project_path(config.get("pod5_dir", "results/pod5")) + "/{sample}/{sample}.pod5"
-    params:
-        scratch_dir=lambda wildcards: get_scratch_or_output_dir(
-            get_project_path(config.get("pod5_dir", "results/pod5")) + f"/{wildcards.sample}"
-        ),
-        use_scratch=lambda wildcards: config.get("scratch_dir") not in [None, "", "null"]
-    threads: config.get("merge_pods_threads", 12)
-    resources:
-        mem_mb=config.get("merge_pods_mem", 16000),
-        runtime=config.get("merge_pods_time", 120)
-    log:
-        get_project_path(config.get("pod5_dir", "results/pod5")) + "/{sample}/update_and_merge_pods.log"
-    shell:
-        """
-        # Get absolute paths before changing directories
-        LOG_FILE="$(realpath {log})"
-        OUTPUT_FILE="$(realpath -m {output.pod5})"  # -m allows path to not exist yet
-
-        # Determine working directory (scratch or local)
-        if [ "{params.use_scratch}" = "True" ]; then
-            WORK_DIR="{params.scratch_dir}"
-            FINAL_DIR="$(dirname "$OUTPUT_FILE")"
-            mkdir -p "$WORK_DIR" "$FINAL_DIR"
-
-            # Change to scratch directory to ensure temp migration files go there
-            cd "$WORK_DIR"
-        else
-            WORK_DIR="$(dirname "$OUTPUT_FILE")"
-            mkdir -p "$WORK_DIR"
-        fi
-
-        # Create temporary directory for updated POD5 files
-        UPDATE_DIR="$WORK_DIR/updated_individual"
-        mkdir -p "$UPDATE_DIR"
-
-        echo "Step 1: Updating individual POD5 files to v4 format..." | tee "$LOG_FILE"
-
-        # Update each input POD5 file to v4 format
-        # Any .tmp_pod5_v3_v4_migration_* directories will be created in current directory (scratch)
-        pod5 update -f -o "$UPDATE_DIR" {input} 2>&1 | tee -a "$LOG_FILE"
-
-        # Clean up any migration temp directories created during update
-        rm -rf .tmp_pod5_v3_v4_migration_*
-
-        echo "Step 2: Merging updated v4 POD5 files..." | tee -a "$LOG_FILE"
-
-        # Merge the updated v4 POD5 files (no migration needed since they're already v4)
-        if [ "{params.use_scratch}" = "True" ]; then
-            MERGED_FILE="$WORK_DIR/{wildcards.sample}.pod5"
-        else
-            MERGED_FILE="$OUTPUT_FILE"
-        fi
-
-        pod5 merge -t {threads} -f -o "$MERGED_FILE" "$UPDATE_DIR"/*.pod5 2>&1 | tee -a "$LOG_FILE"
-
-        # Clean up temporary updated files
-        rm -rf "$UPDATE_DIR"
-
-        # Move from scratch to final location if needed
-        if [ "{params.use_scratch}" = "True" ]; then
-            mv "$MERGED_FILE" "$OUTPUT_FILE"
-        fi
-
-        echo "Complete: Updated and merged POD5 file created at $OUTPUT_FILE" | tee -a "$LOG_FILE"
-        """
-
-
 rule merge_pods:
     """
     Merge raw POD5 files.
@@ -180,70 +97,39 @@ rule rebasecall:
     """
     Rebasecall POD5 files using dorado basecaller.
 
-    Requires:
-    - Updated v4 POD5 file (from update_and_merge_pods rule)
-    - Dorado model (specified in config)
-
-    Outputs:
-    - BAM file with basecalls and move tables (mv tag)
-
-    The output BAM will have the required mv (move table) and ns (num samples)
-    tags needed for leech feature extraction.
-
-    Uses scratch directory if configured for better I/O performance.
+    Outputs BAM file with basecalls and move tables (mv tag) needed for leech feature extraction.
     """
     input:
-        pod5=rules.update_and_merge_pods.output.pod5
+        rules.merge_pods.output.pod5
     output:
         bam=protected(get_project_path(config.get("rebasecall_dir", "results/bam/rebasecall")) + "/{sample}/{sample}.rbc.bam")
     params:
         dorado_bin=config.get("dorado_bin", "dorado"),
-        base_model=config.get("base_calling_model", "rna004_130bps_sup@v5.2.0"),
-        modifications=config.get("modifications", ""),
-        model=lambda wildcards: (
-            f"{config.get('base_calling_model', 'rna004_130bps_sup@v5.2.0')},"
-            f"{config.get('modifications', '')}"
+        model=config.get("base_calling_model", "rna004_130bps_sup@v5.2.0"),
+        modifications=lambda wildcards: (
+            config.get("modifications", "").replace(",", " ")
             if config.get("modifications", "")
-            else config.get("base_calling_model", "rna004_130bps_sup@v5.2.0")
+            else ""
         ),
-        dorado_opts=config.get("dorado_opts", "--emit-moves"),
-        scratch_dir=lambda wildcards: get_scratch_or_output_dir(
-            get_project_path(config.get("rebasecall_dir", "results/bam/rebasecall")) + f"/{wildcards.sample}"
-        ),
-        use_scratch=lambda wildcards: config.get("scratch_dir") not in [None, "", "null"],
-        cuda_devices=lambda wildcards, resources: os.environ.get("CUDA_VISIBLE_DEVICES", "")
+        dorado_opts=config.get("dorado_opts", "--emit-moves")
     threads: config.get("rebasecall_threads", 4)
     resources:
         mem_mb=config.get("rebasecall_mem", 16000),
         runtime=config.get("rebasecall_time", 480),
-        gpu=config.get("rebasecall_gpu", 1)
+        gpu=0,  # GPU controlled by cluster profile
     log:
         get_project_path(config.get("rebasecall_dir", "results/bam/rebasecall")) + "/{sample}/rebasecall.log"
     shell:
         """
-        # Set CUDA devices if available
-        if [ -n "{params.cuda_devices}" ]; then
-            export CUDA_VISIBLE_DEVICES={params.cuda_devices}
+        if [[ "${{CUDA_VISIBLE_DEVICES:-}}" ]]; then
+            echo "CUDA_VISIBLE_DEVICES $CUDA_VISIBLE_DEVICES"
+            export CUDA_VISIBLE_DEVICES
         fi
 
-        # Determine output location (scratch or final)
-        if [ "{params.use_scratch}" = "True" ]; then
-            OUT_DIR="{params.scratch_dir}"
-            FINAL_DIR="$(dirname {output.bam})"
-            mkdir -p "$OUT_DIR" "$FINAL_DIR"
-            OUT_FILE="$OUT_DIR/{wildcards.sample}.rbc.bam"
+        if [[ -n "{params.modifications}" ]]; then
+            {params.dorado_bin} basecaller {params.model} {input} {params.dorado_opts} --modified-bases {params.modifications} > {output.bam} 2> {log}
         else
-            OUT_DIR="$(dirname {output.bam})"
-            mkdir -p "$OUT_DIR"
-            OUT_FILE="{output.bam}"
-        fi
-
-        # Run dorado basecaller
-        {params.dorado_bin} basecaller {params.dorado_opts} {params.model} {input.pod5} > "$OUT_FILE" 2> {log}
-
-        # Move from scratch to final location if needed
-        if [ "{params.use_scratch}" = "True" ]; then
-            mv "$OUT_FILE" {output.bam}
+            {params.dorado_bin} basecaller {params.model} {input} {params.dorado_opts} > {output.bam} 2> {log}
         fi
         """
 
