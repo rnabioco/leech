@@ -125,7 +125,7 @@ rebasecall_dir: "/scratch/alpine/jhesselberth@xsede.org/leech/bam/rebasecall"
 # Reference genome/transcriptome for alignment
 # Required for aligning rebasecalled reads
 # Example: "references/transcriptome.fasta" or "references/genome.fasta"
-reference: "resources/references/reference.fasta"
+reference: "resources/references/synthetic-trna.fa"
 
 # Dorado binary path
 # Set to "dorado" to use system PATH, or specify full path to binary
@@ -138,6 +138,14 @@ reference: "resources/references/reference.fasta"
 # - Alpine: "$HOME/software/dorado/bin/dorado" or "dorado" if in PATH
 # - Bodhi: "$HOME/projects/software/dorado/bin/dorado"
 dorado_bin: "/home/jhesselberth@xsede.org/projects/software/dorado/dorado-1.2.0-linux-x64/bin/dorado"
+
+# Samtools binary path
+# Set to "samtools" to use system PATH, or specify full path to binary
+samtools_bin: "/home/jhesselberth@xsede.org/projects/software/samtools/samtools"
+
+# Minimap2 binary path
+# Set to "minimap2" to use system PATH, or specify full path to binary
+minimap2_bin: "/home/jhesselberth@xsede.org/projects/software/minimap2/minimap2"
 
 # Dorado basecalling model
 # Available models: https://github.com/nanoporetech/dorado#available-basecalling-models
