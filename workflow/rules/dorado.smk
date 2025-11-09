@@ -146,8 +146,6 @@ rule align_rebasecalled:
 
     The -T '*' flag in samtools fastq preserves all auxiliary tags.
     The -y flag in minimap2 copies tags from input to aligned output.
-
-    Uses scratch directory if configured for better I/O performance during alignment and sorting.
     """
     input:
         bam=rules.rebasecall.output.bam,
@@ -156,12 +154,8 @@ rule align_rebasecalled:
         bam=get_project_path(config.get("rebasecall_dir", "results/bam/rebasecall")) + "/{sample}/{sample}.aligned.bam",
         bai=get_project_path(config.get("rebasecall_dir", "results/bam/rebasecall")) + "/{sample}/{sample}.aligned.bam.bai"
     params:
-        scratch_dir=lambda wildcards: get_scratch_or_output_dir(
-            get_project_path(config.get("rebasecall_dir", "results/bam/rebasecall")) + f"/{wildcards.sample}"
-        ),
-        use_scratch=lambda wildcards: config.get("scratch_dir") not in [None, "", "null"]
-    conda:
-        "../envs/align.yaml"
+        samtools_bin=config.get("samtools_bin", "samtools"),
+        minimap2_bin=config.get("minimap2_bin", "minimap2")
     threads: config.get("align_threads", 8)
     resources:
         mem_mb=config.get("align_mem", 16000),
@@ -170,38 +164,18 @@ rule align_rebasecalled:
         get_project_path(config.get("rebasecall_dir", "results/bam/rebasecall")) + "/{sample}/align.log"
     shell:
         """
-        # Determine output location (scratch or final)
-        if [ "{params.use_scratch}" = "True" ]; then
-            OUT_DIR="{params.scratch_dir}"
-            FINAL_DIR="$(dirname {output.bam})"
-            mkdir -p "$OUT_DIR" "$FINAL_DIR"
-            OUT_BAM="$OUT_DIR/{wildcards.sample}.aligned.bam"
-            OUT_BAI="$OUT_DIR/{wildcards.sample}.aligned.bam.bai"
-        else
-            OUT_DIR="$(dirname {output.bam})"
-            mkdir -p "$OUT_DIR"
-            OUT_BAM="{output.bam}"
-            OUT_BAI="{output.bai}"
-        fi
-
         # Convert BAM to FASTQ preserving all tags (-T '*')
         # Align with minimap2 copying tags to output (-y)
         # Sort and index the aligned BAM
-        samtools fastq -T '*' {input.bam} | \
-        minimap2 -ax map-ont -y {input.reference} - | \
-        samtools sort -@ {threads} -o "$OUT_BAM" - 2> {log}
+        {params.samtools_bin} fastq -T '*' {input.bam} | \
+        {params.minimap2_bin} -ax map-ont -y {input.reference} - | \
+        {params.samtools_bin} sort -@ {threads} -o {output.bam} - 2> {log}
 
         # Index the aligned BAM
-        samtools index "$OUT_BAM"
+        {params.samtools_bin} index {output.bam}
 
         # Verify critical tags are present
         echo "Verifying critical tags (mv, ns, MM, ML) in aligned BAM..." >> {log}
-        samtools view "$OUT_BAM" | head -n 1 | grep -o "mv:B:[^[:space:]]*" >> {log} || echo "WARNING: mv tag not found" >> {log}
-        samtools view "$OUT_BAM" | head -n 1 | grep -o "ns:i:[^[:space:]]*" >> {log} || echo "WARNING: ns tag not found" >> {log}
-
-        # Move from scratch to final location if needed
-        if [ "{params.use_scratch}" = "True" ]; then
-            mv "$OUT_BAM" {output.bam}
-            mv "$OUT_BAI" {output.bai}
-        fi
+        {params.samtools_bin} view {output.bam} | head -n 1 | grep -o "mv:B:[^[:space:]]*" >> {log} || echo "WARNING: mv tag not found" >> {log}
+        {params.samtools_bin} view {output.bam} | head -n 1 | grep -o "ns:i:[^[:space:]]*" >> {log} || echo "WARNING: ns tag not found" >> {log}
         """

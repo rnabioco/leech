@@ -14,6 +14,7 @@ rule infer_charged_vs_uncharged:
         bai=INFER_DIR + "/charged_vs_uncharged/{sample}_predictions.bam.bai",
     params:
         batch_size=config.get("infer_batch_size", 256),
+        samtools_bin=config.get("samtools_bin", "samtools"),
     threads: 4
     resources:
         mem_mb=8000,
@@ -32,7 +33,7 @@ rule infer_charged_vs_uncharged:
             --batch-size {params.batch_size} \
             2>&1 | tee {log}
 
-        samtools index {output.bam}
+        {params.samtools_bin} index {output.bam}
         """
 
 
@@ -47,6 +48,7 @@ rule infer_pairwise_aa:
         bai=INFER_DIR + "/pairwise/{pair}/{sample}_predictions.bam.bai",
     params:
         batch_size=config.get("infer_batch_size", 256),
+        samtools_bin=config.get("samtools_bin", "samtools"),
     threads: 4
     resources:
         mem_mb=8000,
@@ -65,5 +67,5 @@ rule infer_pairwise_aa:
             --batch-size {params.batch_size} \
             2>&1 | tee {log}
 
-        samtools index {output.bam}
+        {params.samtools_bin} index {output.bam}
         """
