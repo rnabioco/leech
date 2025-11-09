@@ -1,111 +1,185 @@
-# Snakemake Slurm Executor Profile Configuration
-# ================================================
-# This profile configures Snakemake to submit jobs to the Alpine Slurm cluster
-# Usage: snakemake --profile cluster/slurm --configfile config/alpine-config.yaml
+# Snakemake SLURM Profile - Production
+# ======================================
+# Alpine cluster production configuration
+# Usage: snakemake --profile cluster/slurm --configfile config/samples-alpine.yaml
 
-# Executor settings
 executor: slurm
-jobs: 100                      # Maximum concurrent jobs
-latency-wait: 60              # Wait time for output files (seconds)
+jobs: 100
+max-jobs-per-second: 10
+latency-wait: 60
+restart-times: 3
+rerun-incomplete: true
+keep-going: true
+printshellcmds: true
 
-# Slurm-specific settings
-slurm-logdir: "logs/slurm"    # Directory for Slurm job logs
+# SLURM settings
+slurm-logdir: logs/slurm
 slurm-keep-successful-logs: false
-slurm-delete-logfiles-older-than: 10  # Days
+slurm-delete-logfiles-older-than: 10
+slurm-qos: normal
 
-# SLURM plugin parameters (note: use hyphens, not underscores)
-slurm-qos: "normal"           # Default QoS for all jobs (required by Alpine)
-
-# Default resources for all rules
+# Default resources
 default-resources:
-  slurm_partition: "amilan"   # Default CPU partition
-  slurm_account: "amc-general"  # Alpine allocation account
-  runtime: 120                # Default walltime in minutes (2 hours)
-  mem_mb: 8000                # Default memory in MB (8GB)
-  cpus_per_task: 4            # Default CPUs per task
+  slurm_partition: amilan
+  slurm_account: amc-general
+  ntasks: 1
+  runtime: 120
+  mem_mb: 8000
+  cpus_per_task: 4
 
-# Rule-specific resource overrides
+# Rule-specific resources
 set-resources:
-  # POD5 merging - lightweight I/O task
-  merge_pods:
-    runtime: 60
-    mem_mb: 4000
-    cpus_per_task: 1
+  # POD5 processing
+  update_and_merge_pods:
+    runtime: 120
+    mem_mb: 16000
+    cpus_per_task: 12
 
-  # POD5 inspection - medium I/O task
+  merge_pods:
+    runtime: 120
+    mem_mb: 16000
+    cpus_per_task: 12
+
   inspect_pod5:
     runtime: 120
     mem_mb: 8000
     cpus_per_task: 4
 
-  # Basecalling with Dorado - GPU required
+  # GPU rules - basecalling
   basecall_with_dorado:
-    slurm_partition: "aa100"  # GPU partition
-    runtime: 480              # 8 hours
-    mem_mb: 32000             # 32GB
-    cpus_per_task: 8
-    nodes: 1                  # Required for GPU partitions
-    gres: "gpu:1"             # Request 1 GPU (Alpine syntax)
-
-  # Re-basecalling - GPU required
-  rebasecall:
-    slurm_partition: "aa100"
+    slurm_partition: aa100
     runtime: 480
     mem_mb: 32000
     cpus_per_task: 8
-    nodes: 1                  # Required for GPU partitions
-    gres: "gpu:1"             # Request 1 GPU (Alpine syntax)
+    nodes: 1
+    ntasks: 1
+    gres: gpu:1
 
-  # BAM alignment - CPU intensive
+  rebasecall:
+    slurm_partition: aa100
+    runtime: 480
+    mem_mb: 32000
+    cpus_per_task: 8
+    nodes: 1
+    ntasks: 1
+    gres: gpu:1
+
+  # Alignment
   align_rebasecalled:
-    runtime: 240              # 4 hours
-    mem_mb: 16000             # 16GB
+    runtime: 240
+    mem_mb: 16000
     cpus_per_task: 8
 
-  # Data preparation - medium memory
+  # Data preparation
   prepare_training_data:
-    runtime: 180              # 3 hours
+    runtime: 180
     mem_mb: 16000
     cpus_per_task: 4
 
-  # Model training - GPU required, long runtime
-  train_model:
-    slurm_partition: "aa100"
-    runtime: 480              # 8 hours
+  # GPU rules - grid search
+  grid_search_charged_vs_uncharged:
+    slurm_partition: aa100
+    runtime: 1440
     mem_mb: 32000
     cpus_per_task: 8
-    nodes: 1                  # Required for GPU partitions
-    gres: "gpu:1"             # Request 1 GPU (Alpine syntax)
+    nodes: 1
+    ntasks: 1
+    gres: gpu:1
 
-  # Grid search - GPU required, very long runtime
-  # NOTE: This rule needs QoS="long" for >24 hour jobs
-  # Override with: snakemake --profile cluster/slurm --slurm-qos=long target
+  grid_search_pairwise_aa:
+    slurm_partition: aa100
+    runtime: 1440
+    mem_mb: 32000
+    cpus_per_task: 8
+    nodes: 1
+    ntasks: 1
+    gres: gpu:1
+
   grid_search:
-    slurm_partition: "aa100"
-    runtime: 1440             # 24 hours
+    slurm_partition: aa100
+    runtime: 1440
     mem_mb: 32000
     cpus_per_task: 8
-    nodes: 1                  # Required for GPU partitions
-    gres: "gpu:1"             # Request 1 GPU (Alpine syntax)
+    nodes: 1
+    ntasks: 1
+    gres: gpu:1
 
-  # Model testing - lightweight
+  # GPU rules - training
+  train_charged_vs_uncharged:
+    slurm_partition: aa100
+    runtime: 480
+    mem_mb: 32000
+    cpus_per_task: 8
+    nodes: 1
+    ntasks: 1
+    gres: gpu:1
+
+  train_pairwise_aa:
+    slurm_partition: aa100
+    runtime: 480
+    mem_mb: 32000
+    cpus_per_task: 8
+    nodes: 1
+    ntasks: 1
+    gres: gpu:1
+
+  train_model:
+    slurm_partition: aa100
+    runtime: 480
+    mem_mb: 32000
+    cpus_per_task: 8
+    nodes: 1
+    ntasks: 1
+    gres: gpu:1
+
+  # GPU rules - inference
+  infer_charged_vs_uncharged:
+    slurm_partition: aa100
+    runtime: 240
+    mem_mb: 16000
+    cpus_per_task: 4
+    nodes: 1
+    ntasks: 1
+    gres: gpu:1
+
+  infer_pairwise_aa:
+    slurm_partition: aa100
+    runtime: 240
+    mem_mb: 16000
+    cpus_per_task: 4
+    nodes: 1
+    ntasks: 1
+    gres: gpu:1
+
+  run_inference:
+    slurm_partition: aa100
+    runtime: 240
+    mem_mb: 16000
+    cpus_per_task: 4
+    nodes: 1
+    ntasks: 1
+    gres: gpu:1
+
+  # Testing/evaluation (use testing partition)
+  test_charged_vs_uncharged:
+    slurm_partition: atesting_a100
+    runtime: 60
+    mem_mb: 4000
+    cpus_per_task: 2
+    nodes: 1
+    ntasks: 1
+    gres: gpu:1
+
+  test_pairwise_aa:
+    slurm_partition: atesting_a100
+    runtime: 60
+    mem_mb: 4000
+    cpus_per_task: 2
+    nodes: 1
+    ntasks: 1
+    gres: gpu:1
+
   test_model:
     runtime: 60
     mem_mb: 8000
     cpus_per_task: 2
-
-  # Inference - GPU recommended but not required
-  run_inference:
-    slurm_partition: "aa100"
-    runtime: 240              # 4 hours
-    mem_mb: 16000
-    cpus_per_task: 4
-    nodes: 1                  # Required for GPU partitions
-    gres: "gpu:1"             # Request 1 GPU (Alpine syntax)
-
-# Rerun incomplete jobs
-rerun-incomplete: true
-keep-going: true
-
-# Printout settings
-printshellcmds: true

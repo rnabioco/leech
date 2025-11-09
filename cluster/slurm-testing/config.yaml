@@ -1,0 +1,194 @@
+# Snakemake SLURM Profile - Testing
+# ===================================
+# Alpine cluster testing configuration (reduced resources, atesting_a100 partition)
+# Usage: snakemake --profile cluster/slurm-testing --configfile config/samples-alpine.yaml
+
+executor: slurm
+jobs: 100
+max-jobs-per-second: 10
+latency-wait: 60
+restart-times: 3
+rerun-incomplete: true
+keep-going: true
+printshellcmds: true
+
+# SLURM settings
+slurm-logdir: logs/slurm
+slurm-keep-successful-logs: false
+slurm-delete-logfiles-older-than: 10
+slurm-qos: testing
+
+# Default resources
+default-resources:
+  slurm_partition: atesting
+  slurm_account: amc-general
+  ntasks: 1
+  runtime: 120
+  mem_mb: 8000
+  cpus_per_task: 4
+
+# Rule-specific resources (ALL GPU rules use atesting_a100)
+set-resources:
+  # POD5 processing (use CPU testing partition)
+  update_and_merge_pods:
+    slurm_partition: atesting
+    runtime: 120
+    mem_mb: 16000
+    cpus_per_task: 12
+
+  merge_pods:
+    slurm_partition: atesting
+    runtime: 120
+    mem_mb: 16000
+    cpus_per_task: 12
+
+  inspect_pod5:
+    slurm_partition: atesting
+    runtime: 120
+    mem_mb: 8000
+    cpus_per_task: 4
+
+  # GPU rules - basecalling (TESTING)
+  basecall_with_dorado:
+    slurm_partition: atesting_a100
+    runtime: 120
+    mem_mb: 8000
+    cpus_per_task: 4
+    nodes: 1
+    ntasks: 1
+    gres: gpu:1
+
+  rebasecall:
+    slurm_partition: atesting_a100
+    runtime: 120
+    mem_mb: 8000
+    cpus_per_task: 4
+    nodes: 1
+    ntasks: 1
+    gres: gpu:1
+
+  # Alignment (use CPU testing partition)
+  align_rebasecalled:
+    slurm_partition: atesting
+    runtime: 240
+    mem_mb: 16000
+    cpus_per_task: 8
+
+  # Data preparation (use CPU testing partition)
+  prepare_training_data:
+    slurm_partition: atesting
+    runtime: 180
+    mem_mb: 16000
+    cpus_per_task: 4
+
+  # GPU rules - grid search (TESTING)
+  grid_search_charged_vs_uncharged:
+    slurm_partition: atesting_a100
+    runtime: 240
+    mem_mb: 8000
+    cpus_per_task: 4
+    nodes: 1
+    ntasks: 1
+    gres: gpu:1
+
+  grid_search_pairwise_aa:
+    slurm_partition: atesting_a100
+    runtime: 240
+    mem_mb: 8000
+    cpus_per_task: 4
+    nodes: 1
+    ntasks: 1
+    gres: gpu:1
+
+  grid_search:
+    slurm_partition: atesting_a100
+    runtime: 240
+    mem_mb: 8000
+    cpus_per_task: 4
+    nodes: 1
+    ntasks: 1
+    gres: gpu:1
+
+  # GPU rules - training (TESTING)
+  train_charged_vs_uncharged:
+    slurm_partition: atesting_a100
+    runtime: 240
+    mem_mb: 8000
+    cpus_per_task: 4
+    nodes: 1
+    ntasks: 1
+    gres: gpu:1
+
+  train_pairwise_aa:
+    slurm_partition: atesting_a100
+    runtime: 240
+    mem_mb: 8000
+    cpus_per_task: 4
+    nodes: 1
+    ntasks: 1
+    gres: gpu:1
+
+  train_model:
+    slurm_partition: atesting_a100
+    runtime: 240
+    mem_mb: 8000
+    cpus_per_task: 4
+    nodes: 1
+    ntasks: 1
+    gres: gpu:1
+
+  # GPU rules - inference (TESTING)
+  infer_charged_vs_uncharged:
+    slurm_partition: atesting_a100
+    runtime: 60
+    mem_mb: 4000
+    cpus_per_task: 2
+    nodes: 1
+    ntasks: 1
+    gres: gpu:1
+
+  infer_pairwise_aa:
+    slurm_partition: atesting_a100
+    runtime: 60
+    mem_mb: 4000
+    cpus_per_task: 2
+    nodes: 1
+    ntasks: 1
+    gres: gpu:1
+
+  run_inference:
+    slurm_partition: atesting_a100
+    runtime: 60
+    mem_mb: 4000
+    cpus_per_task: 2
+    nodes: 1
+    ntasks: 1
+    gres: gpu:1
+
+  # Testing/evaluation (TESTING)
+  test_charged_vs_uncharged:
+    slurm_partition: atesting_a100
+    runtime: 60
+    mem_mb: 4000
+    cpus_per_task: 2
+    nodes: 1
+    ntasks: 1
+    gres: gpu:1
+
+  test_pairwise_aa:
+    slurm_partition: atesting_a100
+    runtime: 60
+    mem_mb: 4000
+    cpus_per_task: 2
+    nodes: 1
+    ntasks: 1
+    gres: gpu:1
+
+  test_model:
+    slurm_partition: atesting_a100
+    runtime: 60
+    mem_mb: 4000
+    cpus_per_task: 2
+    nodes: 1
+    ntasks: 1
+    gres: gpu:1

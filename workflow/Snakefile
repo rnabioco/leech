@@ -56,6 +56,15 @@ include: "rules/compare_models.smk"
 
 
 # ============================================================================
+# Rule ordering
+# ============================================================================
+
+# Prefer merge_pods over update_and_merge_pods
+# merge_pods is simpler and more efficient (pod5 merge already outputs v4 format)
+ruleorder: merge_pods > update_and_merge_pods
+
+
+# ============================================================================
 # Target rules
 # ============================================================================
 

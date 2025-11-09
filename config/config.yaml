@@ -125,7 +125,7 @@ rebasecall_dir: "/scratch/alpine/jhesselberth@xsede.org/leech/bam/rebasecall"
 # Reference genome/transcriptome for alignment
 # Required for aligning rebasecalled reads
 # Example: "references/transcriptome.fasta" or "references/genome.fasta"
-reference: "references/reference.fasta"
+reference: "resources/references/reference.fasta"
 
 # Dorado binary path
 # Set to "dorado" to use system PATH, or specify full path to binary
