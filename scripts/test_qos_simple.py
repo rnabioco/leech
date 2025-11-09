@@ -23,7 +23,7 @@ def check_snakemake_version():
             print(f"⚠️  Warning: Snakemake {version} may have different SLURM resource handling")
         else:
             print(f"✓ Snakemake {version} uses new executor API")
-    except:
+    except (ValueError, IndexError):
         print(f"Could not parse version: {version}")
 
     return version
