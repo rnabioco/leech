@@ -5,6 +5,8 @@ POD5 rebasecalling rules using dorado.
 import os
 from pathlib import Path
 
+# Note: get_project_path() is defined in rules/common.smk which is included before this file
+
 
 # ============================================================================
 # Helper functions
@@ -28,6 +30,7 @@ def get_raw_pod5_inputs(wildcards):
 
     Expects sample config to have either:
     - raw_pod5: single file path or directory containing POD5 files
+    - pod5: single file path or directory containing POD5 files (alias for raw_pod5)
     - raw_pod5_list: list of POD5 file paths
     """
     sample_config = config["samples"][wildcards.sample]
@@ -45,9 +48,19 @@ def get_raw_pod5_inputs(wildcards):
         else:
             # Single file
             return [raw_pod5]
+    elif "pod5" in sample_config:
+        # Support 'pod5' as an alias for 'raw_pod5'
+        raw_pod5 = sample_config["pod5"]
+        if os.path.isdir(raw_pod5):
+            # Directory: find all POD5 files
+            from pathlib import Path
+            return list(Path(raw_pod5).rglob("*.pod5"))
+        else:
+            # Single file
+            return [raw_pod5]
     else:
         raise ValueError(
-            f"Sample {wildcards.sample} must have 'raw_pod5' or 'raw_pod5_list' in config"
+            f"Sample {wildcards.sample} must have 'raw_pod5', 'pod5', or 'raw_pod5_list' in config"
         )
 
 
@@ -72,10 +85,10 @@ rule update_and_merge_pods:
     input:
         get_raw_pod5_inputs
     output:
-        pod5=config.get("pod5_dir", "results/pod5") + "/{sample}/{sample}.pod5"
+        pod5=get_project_path(config.get("pod5_dir", "results/pod5")) + "/{sample}/{sample}.pod5"
     params:
         scratch_dir=lambda wildcards: get_scratch_or_output_dir(
-            config.get("pod5_dir", "results/pod5") + f"/{wildcards.sample}"
+            get_project_path(config.get("pod5_dir", "results/pod5")) + f"/{wildcards.sample}"
         ),
         use_scratch=lambda wildcards: config.get("scratch_dir") not in [None, "", "null"]
     threads: config.get("merge_pods_threads", 12)
@@ -83,7 +96,7 @@ rule update_and_merge_pods:
         mem_mb=config.get("merge_pods_mem", 8000),
         runtime=config.get("merge_pods_time", 120)
     log:
-        config.get("pod5_dir", "results/pod5") + "/{sample}/update_and_merge_pods.log"
+        get_project_path(config.get("pod5_dir", "results/pod5")) + "/{sample}/update_and_merge_pods.log"
     shell:
         """
         # Get absolute paths before changing directories
@@ -158,7 +171,7 @@ rule rebasecall:
     input:
         pod5=rules.update_and_merge_pods.output.pod5
     output:
-        bam=protected(config.get("rebasecall_dir", "results/bam/rebasecall") + "/{sample}/{sample}.rbc.bam")
+        bam=protected(get_project_path(config.get("rebasecall_dir", "results/bam/rebasecall")) + "/{sample}/{sample}.rbc.bam")
     params:
         dorado_bin=config.get("dorado_bin", "dorado"),
         base_model=config.get("base_calling_model", "rna004_130bps_sup@v5.2.0"),
@@ -171,7 +184,7 @@ rule rebasecall:
         ),
         dorado_opts=config.get("dorado_opts", "--emit-moves"),
         scratch_dir=lambda wildcards: get_scratch_or_output_dir(
-            config.get("rebasecall_dir", "results/bam/rebasecall") + f"/{wildcards.sample}"
+            get_project_path(config.get("rebasecall_dir", "results/bam/rebasecall")) + f"/{wildcards.sample}"
         ),
         use_scratch=lambda wildcards: config.get("scratch_dir") not in [None, "", "null"],
         cuda_devices=lambda wildcards, resources: os.environ.get("CUDA_VISIBLE_DEVICES", "")
@@ -181,7 +194,7 @@ rule rebasecall:
         runtime=config.get("rebasecall_time", 480),
         gpu=config.get("rebasecall_gpu", 1)
     log:
-        config.get("rebasecall_dir", "results/bam/rebasecall") + "/{sample}/rebasecall.log"
+        get_project_path(config.get("rebasecall_dir", "results/bam/rebasecall")) + "/{sample}/rebasecall.log"
     shell:
         """
         # Set CUDA devices if available
@@ -223,13 +236,20 @@ rule align_rebasecalled:
 
     The -T '*' flag in samtools fastq preserves all auxiliary tags.
     The -y flag in minimap2 copies tags from input to aligned output.
+
+    Uses scratch directory if configured for better I/O performance during alignment and sorting.
     """
     input:
         bam=rules.rebasecall.output.bam,
         reference=config.get("reference", "references/reference.fasta")
     output:
-        bam=config.get("rebasecall_dir", "results/bam/rebasecall") + "/{sample}/{sample}.aligned.bam",
-        bai=config.get("rebasecall_dir", "results/bam/rebasecall") + "/{sample}/{sample}.aligned.bam.bai"
+        bam=get_project_path(config.get("rebasecall_dir", "results/bam/rebasecall")) + "/{sample}/{sample}.aligned.bam",
+        bai=get_project_path(config.get("rebasecall_dir", "results/bam/rebasecall")) + "/{sample}/{sample}.aligned.bam.bai"
+    params:
+        scratch_dir=lambda wildcards: get_scratch_or_output_dir(
+            get_project_path(config.get("rebasecall_dir", "results/bam/rebasecall")) + f"/{wildcards.sample}"
+        ),
+        use_scratch=lambda wildcards: config.get("scratch_dir") not in [None, "", "null"]
     conda:
         "../envs/align.yaml"
     threads: config.get("align_threads", 8)
@@ -237,21 +257,41 @@ rule align_rebasecalled:
         mem_mb=config.get("align_mem", 16000),
         runtime=config.get("align_time", 240)
     log:
-        config.get("rebasecall_dir", "results/bam/rebasecall") + "/{sample}/align.log"
+        get_project_path(config.get("rebasecall_dir", "results/bam/rebasecall")) + "/{sample}/align.log"
     shell:
         """
+        # Determine output location (scratch or final)
+        if [ "{params.use_scratch}" = "True" ]; then
+            OUT_DIR="{params.scratch_dir}"
+            FINAL_DIR="$(dirname {output.bam})"
+            mkdir -p "$OUT_DIR" "$FINAL_DIR"
+            OUT_BAM="$OUT_DIR/{wildcards.sample}.aligned.bam"
+            OUT_BAI="$OUT_DIR/{wildcards.sample}.aligned.bam.bai"
+        else
+            OUT_DIR="$(dirname {output.bam})"
+            mkdir -p "$OUT_DIR"
+            OUT_BAM="{output.bam}"
+            OUT_BAI="{output.bai}"
+        fi
+
         # Convert BAM to FASTQ preserving all tags (-T '*')
         # Align with minimap2 copying tags to output (-y)
         # Sort and index the aligned BAM
         samtools fastq -T '*' {input.bam} | \
         minimap2 -ax map-ont -y {input.reference} - | \
-        samtools sort -@ {threads} -o {output.bam} - 2> {log}
+        samtools sort -@ {threads} -o "$OUT_BAM" - 2> {log}
 
         # Index the aligned BAM
-        samtools index {output.bam}
+        samtools index "$OUT_BAM"
 
         # Verify critical tags are present
         echo "Verifying critical tags (mv, ns, MM, ML) in aligned BAM..." >> {log}
-        samtools view {output.bam} | head -n 1 | grep -o "mv:B:[^[:space:]]*" >> {log} || echo "WARNING: mv tag not found" >> {log}
-        samtools view {output.bam} | head -n 1 | grep -o "ns:i:[^[:space:]]*" >> {log} || echo "WARNING: ns tag not found" >> {log}
+        samtools view "$OUT_BAM" | head -n 1 | grep -o "mv:B:[^[:space:]]*" >> {log} || echo "WARNING: mv tag not found" >> {log}
+        samtools view "$OUT_BAM" | head -n 1 | grep -o "ns:i:[^[:space:]]*" >> {log} || echo "WARNING: ns tag not found" >> {log}
+
+        # Move from scratch to final location if needed
+        if [ "{params.use_scratch}" = "True" ]; then
+            mv "$OUT_BAM" {output.bam}
+            mv "$OUT_BAI" {output.bai}
+        fi
         """
