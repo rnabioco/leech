@@ -93,7 +93,7 @@ rule update_and_merge_pods:
         use_scratch=lambda wildcards: config.get("scratch_dir") not in [None, "", "null"]
     threads: config.get("merge_pods_threads", 12)
     resources:
-        mem_mb=config.get("merge_pods_mem", 8000),
+        mem_mb=config.get("merge_pods_mem", 16000),
         runtime=config.get("merge_pods_time", 120)
     log:
         get_project_path(config.get("pod5_dir", "results/pod5")) + "/{sample}/update_and_merge_pods.log"
@@ -149,6 +149,30 @@ rule update_and_merge_pods:
         fi
 
         echo "Complete: Updated and merged POD5 file created at $OUTPUT_FILE" | tee -a "$LOG_FILE"
+        """
+
+
+rule merge_pods:
+    """
+    Merge raw POD5 files.
+
+    The pod5 merge command automatically handles v3→v4 migration,
+    so no separate update step is needed.
+    """
+    input:
+        get_raw_pod5_inputs
+    output:
+        pod5=get_project_path(config.get("pod5_dir", "results/pod5")) + "/{sample}/{sample}.pod5"
+    threads: config.get("merge_pods_threads", 12)
+    resources:
+        mem_mb=config.get("merge_pods_mem", 16000),
+        runtime=config.get("merge_pods_time", 120)
+    log:
+        get_project_path(config.get("pod5_dir", "results/pod5")) + "/{sample}/merge_pods.log"
+    shell:
+        """
+        pod5 merge -t {threads} -f -o {output.pod5} {input} &> {log}
+        rm -rf .tmp_pod5_v3_v4_migration_*
         """
 
 

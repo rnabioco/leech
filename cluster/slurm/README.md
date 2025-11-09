@@ -27,39 +27,52 @@ default-resources:
 
 ## Usage
 
-### Basic Usage
+### Production Runs
 
-Run the pipeline using the Slurm executor profile:
+Run the pipeline using the Slurm executor profile with full resources:
 
 ```bash
-snakemake --profile cluster/slurm
+# Full pipeline with Alpine sample configuration
+snakemake --profile cluster/slurm --configfile config/samples-alpine.yaml
+
+# Specific target
+snakemake --profile cluster/slurm --configfile config/samples-alpine.yaml all_rebasecall
 ```
 
 This will:
 - Submit each rule as a separate Slurm job
-- Use default resources defined in the profile
+- Use production resources (aa100 partition, 32GB memory, etc.)
 - Apply rule-specific resource overrides automatically
 - Write Slurm logs to `logs/slurm/`
 
-### With Pipeline Configuration
+### Testing Runs
 
-Combine with pipeline-specific config files:
+For testing with reduced resources and faster turnaround, use the testing profile:
 
 ```bash
-# For Alpine cluster
-snakemake --profile cluster/slurm --configfile config/alpine-config.yaml
-
-# For Bodhi cluster (if adapted)
-snakemake --profile cluster/slurm --configfile config/bodhi-config.yaml
+# Using testing profile (reduced resources, atesting_a100 partition)
+snakemake --profile cluster/slurm-testing --configfile config/samples-alpine.yaml <target>
 ```
 
-### Test Runs
+**Key differences in testing mode (`cluster/slurm-testing`):**
+- ALL GPU rules use `atesting_a100` partition (not just test_* rules)
+- Reduced memory: 8GB for training (vs 32GB production), 4GB for inference (vs 16GB)
+- Shorter runtimes: 2-4 hours max (vs 8-24 hours)
+- Uses `testing` QoS for faster scheduling
+
+### Test Scripts
 
 The repository includes test scripts that use the Slurm executor:
 
 ```bash
-# Submit the orchestrator job
-sbatch test_merge_pods.sh
+# Test rebasecalling (uses testing config automatically)
+sbatch scripts/test_rebasecall.sh
+
+# Test POD5 merging
+sbatch scripts/test_merge_pods.sh
+
+# Test full pipeline
+sbatch scripts/test_full_pipeline.sh
 ```
 
 The orchestrator job will:

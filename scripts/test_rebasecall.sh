@@ -46,27 +46,29 @@ echo ""
 # Create logs directory
 mkdir -p logs/slurm
 
-# Target: Rebasecall for one sample
-TARGET="results/bam/rebasecall/uncharged_synthetic/uncharged_synthetic.rbc.bam"
+# Target: Rebasecall for one sample (with project name in path)
+TARGET="/scratch/alpine/jhesselberth@xsede.org/leech/synthetic-trna/bam/rebasecall/uncharged_synthetic/uncharged_synthetic.rbc.bam"
 
 echo "Step 1: Testing DAG construction (dry run)..."
-snakemake --profile cluster/slurm \
+snakemake --profile cluster/slurm-testing \
+  --configfile config/samples-alpine.yaml \
+  --cores 1 \
   --dry-run \
   --printshellcmds \
-  $TARGET
+  "$TARGET"
 
 echo ""
 echo "Step 2: Submitting basecalling job via Slurm executor..."
-echo "Note: GPU job will be submitted to aa100 partition automatically"
+echo "Note: GPU job will be submitted to atesting_a100 partition automatically"
 echo ""
 
-# Run with Slurm executor - will submit GPU job to aa100 partition
-snakemake --profile cluster/slurm $TARGET
+# Run with Slurm executor - will submit GPU job to atesting_a100 partition
+snakemake --profile cluster/slurm-testing --configfile config/samples-alpine.yaml --cores 1 "$TARGET"
 
 echo ""
 echo "=========================================="
 echo "Orchestrator completed: $(date)"
-echo "Output: results/bam/rebasecall/uncharged_synthetic/"
-echo "Check log: results/bam/rebasecall/uncharged_synthetic/rebasecall.log"
+echo "Output: /scratch/alpine/jhesselberth@xsede.org/leech/synthetic-trna/bam/rebasecall/uncharged_synthetic/"
+echo "Check log: /scratch/alpine/jhesselberth@xsede.org/leech/synthetic-trna/bam/rebasecall/uncharged_synthetic/rebasecall.log"
 echo "Check Slurm logs: logs/slurm/"
 echo "=========================================="
