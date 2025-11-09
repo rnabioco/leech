@@ -32,8 +32,12 @@ cd "${WORKDIR}"
 echo "=========================================="
 echo "Leech Pipeline Test - Dorado Rebasecalling"
 echo "=========================================="
-echo "Orchestrator Job ID: $SLURM_JOB_ID"
-echo "Node: $SLURM_NODELIST"
+if [[ -n "${SLURM_JOB_ID:-}" ]]; then
+    echo "Orchestrator Job ID: $SLURM_JOB_ID"
+    echo "Node: $SLURM_NODELIST"
+else
+    echo "Running interactively (not in SLURM job)"
+fi
 echo "Started: $(date)"
 echo "Working directory: $(pwd)"
 echo "=========================================="
