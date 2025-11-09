@@ -30,11 +30,6 @@ default-resources:
 # Rule-specific resources
 set-resources:
   # POD5 processing
-  update_and_merge_pods:
-    runtime: 120
-    mem_mb: 16000
-    cpus_per_task: 12
-
   merge_pods:
     runtime: 120
     mem_mb: 16000
@@ -52,8 +47,9 @@ set-resources:
     mem_mb: 32000
     cpus_per_task: 8
     nodes: 1
-    ntasks: 1
-    gres: gpu:1
+    gpu: 0
+    tasks_per_gpu: 0
+    gres: "gpu:1"
 
   rebasecall:
     slurm_partition: aa100
@@ -61,8 +57,9 @@ set-resources:
     mem_mb: 32000
     cpus_per_task: 8
     nodes: 1
-    ntasks: 1
-    gres: gpu:1
+    gpu: 0
+    tasks_per_gpu: 0
+    gres: "gpu:1"
 
   # Alignment
   align_rebasecalled:
@@ -83,8 +80,9 @@ set-resources:
     mem_mb: 32000
     cpus_per_task: 8
     nodes: 1
-    ntasks: 1
-    gres: gpu:1
+    gpu: 0
+    tasks_per_gpu: 0
+    gres: "gpu:1"
 
   grid_search_pairwise_aa:
     slurm_partition: aa100
@@ -92,8 +90,9 @@ set-resources:
     mem_mb: 32000
     cpus_per_task: 8
     nodes: 1
-    ntasks: 1
-    gres: gpu:1
+    gpu: 0
+    tasks_per_gpu: 0
+    gres: "gpu:1"
 
   grid_search:
     slurm_partition: aa100
@@ -101,8 +100,9 @@ set-resources:
     mem_mb: 32000
     cpus_per_task: 8
     nodes: 1
-    ntasks: 1
-    gres: gpu:1
+    gpu: 0
+    tasks_per_gpu: 0
+    gres: "gpu:1"
 
   # GPU rules - training
   train_charged_vs_uncharged:
@@ -111,8 +111,9 @@ set-resources:
     mem_mb: 32000
     cpus_per_task: 8
     nodes: 1
-    ntasks: 1
-    gres: gpu:1
+    gpu: 0
+    tasks_per_gpu: 0
+    gres: "gpu:1"
 
   train_pairwise_aa:
     slurm_partition: aa100
@@ -120,8 +121,9 @@ set-resources:
     mem_mb: 32000
     cpus_per_task: 8
     nodes: 1
-    ntasks: 1
-    gres: gpu:1
+    gpu: 0
+    tasks_per_gpu: 0
+    gres: "gpu:1"
 
   train_model:
     slurm_partition: aa100
@@ -129,8 +131,9 @@ set-resources:
     mem_mb: 32000
     cpus_per_task: 8
     nodes: 1
-    ntasks: 1
-    gres: gpu:1
+    gpu: 0
+    tasks_per_gpu: 0
+    gres: "gpu:1"
 
   # GPU rules - inference
   infer_charged_vs_uncharged:
@@ -139,8 +142,9 @@ set-resources:
     mem_mb: 16000
     cpus_per_task: 4
     nodes: 1
-    ntasks: 1
-    gres: gpu:1
+    gpu: 0
+    tasks_per_gpu: 0
+    gres: "gpu:1"
 
   infer_pairwise_aa:
     slurm_partition: aa100
@@ -148,8 +152,9 @@ set-resources:
     mem_mb: 16000
     cpus_per_task: 4
     nodes: 1
-    ntasks: 1
-    gres: gpu:1
+    gpu: 0
+    tasks_per_gpu: 0
+    gres: "gpu:1"
 
   run_inference:
     slurm_partition: aa100
@@ -157,8 +162,9 @@ set-resources:
     mem_mb: 16000
     cpus_per_task: 4
     nodes: 1
-    ntasks: 1
-    gres: gpu:1
+    gpu: 0
+    tasks_per_gpu: 0
+    gres: "gpu:1"
 
   # Testing/evaluation (use testing partition)
   test_charged_vs_uncharged:
@@ -167,8 +173,9 @@ set-resources:
     mem_mb: 4000
     cpus_per_task: 2
     nodes: 1
-    ntasks: 1
-    gres: gpu:1
+    gpu: 0
+    tasks_per_gpu: 0
+    gres: "gpu:1"
 
   test_pairwise_aa:
     slurm_partition: atesting_a100
@@ -176,8 +183,9 @@ set-resources:
     mem_mb: 4000
     cpus_per_task: 2
     nodes: 1
-    ntasks: 1
-    gres: gpu:1
+    gpu: 0
+    tasks_per_gpu: 0
+    gres: "gpu:1"
 
   test_model:
     runtime: 60

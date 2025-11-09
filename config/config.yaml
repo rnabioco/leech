@@ -137,7 +137,7 @@ reference: "resources/references/reference.fasta"
 # Cluster-specific examples:
 # - Alpine: "$HOME/software/dorado/bin/dorado" or "dorado" if in PATH
 # - Bodhi: "$HOME/projects/software/dorado/bin/dorado"
-dorado_bin: "dorado"
+dorado_bin: "/home/jhesselberth@xsede.org/projects/software/dorado/dorado-1.2.0-linux-x64/bin/dorado"
 
 # Dorado basecalling model
 # Available models: https://github.com/nanoporetech/dorado#available-basecalling-models
