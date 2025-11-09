@@ -7,6 +7,16 @@
 #
 # Note: BAM files are generated/found by the pipeline and do not need to be specified
 
+# ============================================================================
+# Project Name
+# ============================================================================
+# Project name for organizing workflow outputs into project-specific subdirectories.
+# This name will be inserted into all directory paths after "leech":
+#   /scratch/alpine/user/leech/synthetic-trna/pod5/{sample}/
+#   /scratch/alpine/user/leech/synthetic-trna/chunks/{sample}/
+#   etc.
+project_name: "synthetic-trna"
+
 samples:
   # Uncharged sample
   uncharged_synthetic:

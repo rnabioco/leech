@@ -18,6 +18,31 @@ latency-wait: 60
 # Rerun settings
 restart-times: 3
 
+# ============================================================================
+# Alpine-Specific Configuration
+# ============================================================================
+# Alpine cluster storage model:
+# - /home: 2GB quota only (very limited)
+# - /projects: 250GB, backed up, NO intensive I/O
+# - /scratch/alpine: 10TB, high I/O, 90-day auto-purge
+#
+# Strategy:
+# - Temporary high I/O (chunks): /scratch/alpine (auto-purged after 90 days)
+# - Permanent results (models, inference, metrics): /projects (backed up)
+#
+configfile:
+  # Scratch directory for intensive I/O (POD5 merging, basecalling)
+  scratch_dir: "/scratch/alpine/jhesselberth@xsede.org"
+
+  # Output directories - Alpine-specific paths
+  chunks_dir: "/scratch/alpine/jhesselberth@xsede.org/leech/chunks"      # Temporary, high I/O
+  models_dir: "/projects/jhesselberth@xsede.org/leech/models"             # Permanent, backed up
+  inference_dir: "/projects/jhesselberth@xsede.org/leech/inference"       # Permanent results
+  metrics_dir: "/projects/jhesselberth@xsede.org/leech/metrics"           # Permanent results
+
+  # Dorado binary path for Alpine cluster
+  dorado_bin: "/home/jhesselberth@xsede.org/projects/software/dorado/dorado-1.2.0-linux-x64/bin/dorado"
+
 # Default resources for rules without explicit resources
 default-resources:
   - slurm_partition="amilan"
@@ -39,7 +64,6 @@ set-resources:
   - rebasecall:ntasks=1
   - rebasecall:gpu=1
   - rebasecall:nodes=1
-  - rebasecall:cpus_per_gpu=4
   # Grid search rules need more time and GPU (use A100 partition)
   - grid_search_charged_vs_uncharged:runtime=1440
   - grid_search_charged_vs_uncharged:gpu=1

@@ -190,7 +190,7 @@ rule all_merge_pods:
     """Merge all raw POD5 files."""
     input:
         expand(
-            config.get("pod5_dir", "results/pod5") + "/{sample}/{sample}.pod5",
+            get_project_path(config.get("pod5_dir", "results/pod5")) + "/{sample}/{sample}.pod5",
             sample=SAMPLES,
         ),
 
@@ -199,7 +199,7 @@ rule all_rebasecall:
     """Rebasecall all samples with dorado."""
     input:
         expand(
-            config.get("rebasecall_dir", "results/bam/rebasecall") + "/{sample}/{sample}.rbc.bam",
+            get_project_path(config.get("rebasecall_dir", "results/bam/rebasecall")) + "/{sample}/{sample}.rbc.bam",
             sample=SAMPLES,
         ),
 
@@ -208,7 +208,7 @@ rule all_align:
     """Align all rebasecalled samples to reference."""
     input:
         expand(
-            config.get("rebasecall_dir", "results/bam/rebasecall") + "/{sample}/{sample}.aligned.bam",
+            get_project_path(config.get("rebasecall_dir", "results/bam/rebasecall")) + "/{sample}/{sample}.aligned.bam",
             sample=SAMPLES,
         ),
 
