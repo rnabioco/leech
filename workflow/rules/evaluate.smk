@@ -7,7 +7,7 @@ rule test_charged_vs_uncharged:
     """Evaluate model on test set."""
     input:
         model=MODELS_DIR + "/charged_vs_uncharged/model_best.pt",
-        test=CHUNKS_DIR + "/{sample}/test.json",
+        test=CHUNKS_DIR + "/{sample}/test.npz",
     output:
         metrics=METRICS_DIR + "/charged_vs_uncharged/{sample}_metrics.json",
     threads: 2
@@ -32,7 +32,7 @@ rule test_pairwise_aa:
     """Evaluate pairwise amino acid model on test set."""
     input:
         model=MODELS_DIR + "/pairwise/{pair}/model_best.pt",
-        test=CHUNKS_DIR + "/{sample}/test.json",
+        test=CHUNKS_DIR + "/{sample}/test.npz",
     output:
         metrics=METRICS_DIR + "/pairwise/{pair}/{sample}_metrics.json",
     threads: 2

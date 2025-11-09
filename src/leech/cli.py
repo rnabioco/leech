@@ -98,6 +98,15 @@ def add_prepare_parser(subparsers):
         choices=["signal", "signal+dwell", "signal+levels", "signal+dwell+levels"],
         help="Feature set to extract",
     )
+    parser.add_argument(
+        "--train-split", type=float, default=0.7, help="Fraction of data for training"
+    )
+    parser.add_argument(
+        "--val-split", type=float, default=0.15, help="Fraction of data for validation"
+    )
+    parser.add_argument(
+        "--seed", type=int, default=DEFAULT_SEED, help="Random seed for reproducibility"
+    )
     parser.set_defaults(func=run_prepare)
 
 
@@ -196,11 +205,33 @@ def add_grid_search_parser(subparsers):
 
 def run_prepare(args):
     """Execute data preparation."""
+    import random
 
+    import numpy as np
+
+    from leech.constants import generate_random_seed
     from leech.data_prep import extract_training_chunks, iter_bam_with_pod5, save_chunks
 
     logger.info(f"Preparing data from {args.pod5} and {args.bam}")
     args.output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Generate random seed if not provided
+    if args.seed is None:
+        seed = generate_random_seed()
+        logger.info(f"Generated random seed: {seed}")
+    else:
+        seed = args.seed
+        logger.info(f"Using provided seed: {seed}")
+
+    # Save seed for reproducibility
+    seed_file = args.output_dir / "seed.txt"
+    with open(seed_file, "w") as f:
+        f.write(f"{seed}\n")
+    logger.info(f"Saved seed to {seed_file}")
+
+    # Set random seed for reproducibility
+    random.seed(seed)
+    np.random.seed(seed)
 
     chunks = []
     for read in iter_bam_with_pod5(args.bam, args.pod5, min_mapq=args.min_mapq):
@@ -211,10 +242,35 @@ def run_prepare(args):
 
     logger.info(f"Extracted {len(chunks)} training chunks")
 
+    # Shuffle chunks
+    random.shuffle(chunks)
+
+    # Split into train/val/test
+    n_total = len(chunks)
+    n_train = int(n_total * args.train_split)
+    n_val = int(n_total * args.val_split)
+
+    train_chunks = chunks[:n_train]
+    val_chunks = chunks[n_train : n_train + n_val]
+    test_chunks = chunks[n_train + n_val :]
+
+    logger.info(f"Split: {len(train_chunks)} train, {len(val_chunks)} val, {len(test_chunks)} test")
+
     # Save chunks
-    output_file = args.output_dir / "chunks.npz"
-    save_chunks(chunks, output_file)
-    logger.info(f"Saved to {output_file}")
+    if train_chunks:
+        train_file = args.output_dir / "train.npz"
+        save_chunks(train_chunks, train_file)
+        logger.info(f"Saved train to {train_file}")
+
+    if val_chunks:
+        val_file = args.output_dir / "val.npz"
+        save_chunks(val_chunks, val_file)
+        logger.info(f"Saved val to {val_file}")
+
+    if test_chunks:
+        test_file = args.output_dir / "test.npz"
+        save_chunks(test_chunks, test_file)
+        logger.info(f"Saved test to {test_file}")
 
 
 def run_train(args):

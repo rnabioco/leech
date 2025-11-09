@@ -278,7 +278,7 @@ def train_model(
     batch_size: int = 128,
     learning_rate: float = 0.001,
     device: str = "cuda",
-    seed: int = 42,
+    seed: int | None = None,
     **model_kwargs,
 ) -> dict[str, Any]:
     """
@@ -295,12 +295,28 @@ def train_model(
         batch_size: Batch size
         learning_rate: Learning rate
         device: Device for training
-        seed: Random seed
+        seed: Random seed (None = generate random seed)
         **model_kwargs: Additional model parameters
 
     Returns:
         Training history dictionary
     """
+    from leech.constants import generate_random_seed
+
+    # Generate random seed if not provided
+    if seed is None:
+        seed = generate_random_seed()
+        logger.info(f"Generated random seed: {seed}")
+    else:
+        logger.info(f"Using provided seed: {seed}")
+
+    # Save seed to output directory
+    output_dir.mkdir(parents=True, exist_ok=True)
+    seed_file = output_dir / "training_seed.txt"
+    with open(seed_file, "w") as f:
+        f.write(f"{seed}\n")
+    logger.info(f"Saved seed to {seed_file}")
+
     # Set random seed
     torch.manual_seed(seed)
     np.random.seed(seed)

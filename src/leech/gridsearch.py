@@ -54,7 +54,7 @@ class GridSearchConfig:
     batch_size: int = 128
     learning_rate: float = 0.001
     device: str = "cuda"
-    seed: int = 42
+    seed: int | None = None  # None = generate random seed
     motif: str | None = None
     motif_offset: int = 0
 
@@ -219,6 +219,17 @@ def run_grid_search(config: GridSearchConfig) -> Path:
     Returns:
         Path to grid search summary CSV
     """
+    from leech.constants import generate_random_seed
+
+    # Generate random seed if not provided
+    if config.seed is None:
+        seed = generate_random_seed()
+        logger.info(f"Generated random seed: {seed}")
+        config.seed = seed
+    else:
+        seed = config.seed
+        logger.info(f"Using provided seed: {seed}")
+
     logger.info("=" * 80)
     logger.info("Starting Grid Search")
     logger.info("=" * 80)
@@ -227,9 +238,15 @@ def run_grid_search(config: GridSearchConfig) -> Path:
     logger.info(f"Right contexts: {config.right_contexts}")
     logger.info(f"Total grid points: {len(config.left_contexts) * len(config.right_contexts)}")
     logger.info(f"Output directory: {config.output_dir}")
+    logger.info(f"Random seed: {seed}")
     logger.info("=" * 80)
 
     config.output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Save seed to file
+    seed_file = config.output_dir / "grid_search_seed.txt"
+    with open(seed_file, "w") as f:
+        f.write(f"{seed}\n")
 
     # Save grid search config
     config_dict = {
@@ -241,7 +258,7 @@ def run_grid_search(config: GridSearchConfig) -> Path:
         "batch_size": config.batch_size,
         "learning_rate": config.learning_rate,
         "device": config.device,
-        "seed": config.seed,
+        "seed": seed,
     }
 
     with open(config.output_dir / "grid_config.json", "w") as f:

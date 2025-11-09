@@ -136,12 +136,12 @@ def read_pod5_signal(pod5_path: Path, read_id: str) -> tuple[np.ndarray, dict]:
             signal = read.signal
             metadata = {
                 "read_id": str(read.read_id),
-                "channel": read.channel,
-                "well": read.well,
-                "pore_type": read.pore_type,
+                "channel": read.pore.channel,
+                "well": read.pore.well,
+                "pore_type": read.pore.pore_type,
                 "calibration_offset": read.calibration.offset,
                 "calibration_scale": read.calibration.scale,
-                "sample_rate": read.sample_rate,
+                "sample_rate": read.run_info.sample_rate,
             }
             return signal, metadata
 
