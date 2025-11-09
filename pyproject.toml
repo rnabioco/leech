@@ -3,7 +3,7 @@ name = "leech"
 version = "0.1.0"
 description = "Learning Enhanced Aminoacylation Classification from Hanopore signals"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 license = {text = "MIT"}
 authors = [
     {name = "aa-tRNA-seq pipeline team"}
@@ -25,12 +25,10 @@ dependencies = [
     "pysam>=0.22.0",
     "pod5>=0.3.0",
     "tqdm>=4.65.0",
-    "scipy>=1.14.0",
     "scikit-learn>=1.5.0",
-    "polars>=1.0.0", # Modern dataframe library for fast data processing
-    "pydantic>=2.0.0", # For config validation
     "snakefmt>=0.10.3",
-    "snakemake>=7.32.4",
+    "snakemake>=9.0.0",
+    "snakemake-executor-plugin-slurm>=1.9.2",
 ]
 
 [project.optional-dependencies]
