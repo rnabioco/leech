@@ -69,6 +69,7 @@ def generate_random_seed() -> int:
 
     return secrets.randbits(32)
 
+
 # Inference defaults
 DEFAULT_MIN_MAPQ = 0  # Minimum mapping quality for inference
 DEFAULT_MOTIF = "CCA"  # Default motif for tRNA 3' end
