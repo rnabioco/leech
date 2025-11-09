@@ -27,15 +27,17 @@ rule merge_chunks_charged:
             data = np.load(train_file, allow_pickle=True)
             all_train_chunks.append(data)
 
-        # Concatenate all arrays
+            # Concatenate all arrays
         merged_train = {
-            'signals': np.concatenate([d['signals'] for d in all_train_chunks]),
-            'sequences': np.concatenate([d['sequences'] for d in all_train_chunks]),
-            'dwells': np.concatenate([d['dwells'] for d in all_train_chunks]),
-            'features': np.concatenate([d['features'] for d in all_train_chunks]),
-            'labels': np.concatenate([d['labels'] for d in all_train_chunks]),
-            'read_ids': np.concatenate([d['read_ids'] for d in all_train_chunks]),
-            'base_indices': np.concatenate([d['base_indices'] for d in all_train_chunks]),
+            "signals": np.concatenate([d["signals"] for d in all_train_chunks]),
+            "sequences": np.concatenate([d["sequences"] for d in all_train_chunks]),
+            "dwells": np.concatenate([d["dwells"] for d in all_train_chunks]),
+            "features": np.concatenate([d["features"] for d in all_train_chunks]),
+            "labels": np.concatenate([d["labels"] for d in all_train_chunks]),
+            "read_ids": np.concatenate([d["read_ids"] for d in all_train_chunks]),
+            "base_indices": np.concatenate(
+                [d["base_indices"] for d in all_train_chunks]
+            ),
         }
 
         # Merge validation chunks
@@ -45,13 +47,13 @@ rule merge_chunks_charged:
             all_val_chunks.append(data)
 
         merged_val = {
-            'signals': np.concatenate([d['signals'] for d in all_val_chunks]),
-            'sequences': np.concatenate([d['sequences'] for d in all_val_chunks]),
-            'dwells': np.concatenate([d['dwells'] for d in all_val_chunks]),
-            'features': np.concatenate([d['features'] for d in all_val_chunks]),
-            'labels': np.concatenate([d['labels'] for d in all_val_chunks]),
-            'read_ids': np.concatenate([d['read_ids'] for d in all_val_chunks]),
-            'base_indices': np.concatenate([d['base_indices'] for d in all_val_chunks]),
+            "signals": np.concatenate([d["signals"] for d in all_val_chunks]),
+            "sequences": np.concatenate([d["sequences"] for d in all_val_chunks]),
+            "dwells": np.concatenate([d["dwells"] for d in all_val_chunks]),
+            "features": np.concatenate([d["features"] for d in all_val_chunks]),
+            "labels": np.concatenate([d["labels"] for d in all_val_chunks]),
+            "read_ids": np.concatenate([d["read_ids"] for d in all_val_chunks]),
+            "base_indices": np.concatenate([d["base_indices"] for d in all_val_chunks]),
         }
 
         # Save merged chunks
@@ -59,7 +61,7 @@ rule merge_chunks_charged:
         np.savez_compressed(output.train, **merged_train)
         np.savez_compressed(output.val, **merged_val)
 
-        with open(log[0], 'w') as f:
+        with open(log[0], "w") as f:
             f.write(f"Merged {len(input.train)} training files\n")
             f.write(f"Total training chunks: {len(merged_train['labels'])}\n")
             f.write(f"Merged {len(input.val)} validation files\n")
@@ -147,13 +149,15 @@ rule merge_chunks_pairwise:
             all_train_chunks.append(data)
 
         merged_train = {
-            'signals': np.concatenate([d['signals'] for d in all_train_chunks]),
-            'sequences': np.concatenate([d['sequences'] for d in all_train_chunks]),
-            'dwells': np.concatenate([d['dwells'] for d in all_train_chunks]),
-            'features': np.concatenate([d['features'] for d in all_train_chunks]),
-            'labels': np.concatenate([d['labels'] for d in all_train_chunks]),
-            'read_ids': np.concatenate([d['read_ids'] for d in all_train_chunks]),
-            'base_indices': np.concatenate([d['base_indices'] for d in all_train_chunks]),
+            "signals": np.concatenate([d["signals"] for d in all_train_chunks]),
+            "sequences": np.concatenate([d["sequences"] for d in all_train_chunks]),
+            "dwells": np.concatenate([d["dwells"] for d in all_train_chunks]),
+            "features": np.concatenate([d["features"] for d in all_train_chunks]),
+            "labels": np.concatenate([d["labels"] for d in all_train_chunks]),
+            "read_ids": np.concatenate([d["read_ids"] for d in all_train_chunks]),
+            "base_indices": np.concatenate(
+                [d["base_indices"] for d in all_train_chunks]
+            ),
         }
 
         # Merge validation chunks
@@ -163,13 +167,13 @@ rule merge_chunks_pairwise:
             all_val_chunks.append(data)
 
         merged_val = {
-            'signals': np.concatenate([d['signals'] for d in all_val_chunks]),
-            'sequences': np.concatenate([d['sequences'] for d in all_val_chunks]),
-            'dwells': np.concatenate([d['dwells'] for d in all_val_chunks]),
-            'features': np.concatenate([d['features'] for d in all_val_chunks]),
-            'labels': np.concatenate([d['labels'] for d in all_val_chunks]),
-            'read_ids': np.concatenate([d['read_ids'] for d in all_val_chunks]),
-            'base_indices': np.concatenate([d['base_indices'] for d in all_val_chunks]),
+            "signals": np.concatenate([d["signals"] for d in all_val_chunks]),
+            "sequences": np.concatenate([d["sequences"] for d in all_val_chunks]),
+            "dwells": np.concatenate([d["dwells"] for d in all_val_chunks]),
+            "features": np.concatenate([d["features"] for d in all_val_chunks]),
+            "labels": np.concatenate([d["labels"] for d in all_val_chunks]),
+            "read_ids": np.concatenate([d["read_ids"] for d in all_val_chunks]),
+            "base_indices": np.concatenate([d["base_indices"] for d in all_val_chunks]),
         }
 
         # Save merged chunks
@@ -177,8 +181,10 @@ rule merge_chunks_pairwise:
         np.savez_compressed(output.train, **merged_train)
         np.savez_compressed(output.val, **merged_val)
 
-        with open(log[0], 'w') as f:
-            f.write(f"Merged {len(input.train)} training files for pair {wildcards.pair}\n")
+        with open(log[0], "w") as f:
+            f.write(
+                f"Merged {len(input.train)} training files for pair {wildcards.pair}\n"
+            )
             f.write(f"Total training chunks: {len(merged_train['labels'])}\n")
             f.write(f"Merged {len(input.val)} validation files\n")
             f.write(f"Total validation chunks: {len(merged_val['labels'])}\n")

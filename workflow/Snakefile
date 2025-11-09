@@ -28,6 +28,7 @@ from pathlib import Path
 # Load configuration
 configfile: str(Path(workflow.basedir).parent / "config" / "config.yaml")
 
+
 # Map pod5 -> raw_pod5 for dorado workflow compatibility
 # Samples should be provided via --configfile (e.g., config/samples-alpine.yaml)
 if "samples" in config:
@@ -117,14 +118,12 @@ rule all_merge:
     input:
         CHUNKS_DIR + "/merged/charged_vs_uncharged/train.npz",
         CHUNKS_DIR + "/merged/charged_vs_uncharged/val.npz",
-        expand(
-            CHUNKS_DIR + "/merged/pairwise/{pair}/train.npz",
-            pair=AA_PAIRS
-        ) if AA_PAIRS else [],
-        expand(
-            CHUNKS_DIR + "/merged/pairwise/{pair}/val.npz",
-            pair=AA_PAIRS
-        ) if AA_PAIRS else [],
+        expand(CHUNKS_DIR + "/merged/pairwise/{pair}/train.npz", pair=AA_PAIRS)
+        if AA_PAIRS
+        else [],
+        expand(CHUNKS_DIR + "/merged/pairwise/{pair}/val.npz", pair=AA_PAIRS)
+        if AA_PAIRS
+        else [],
 
 
 rule all_grid_search:
@@ -199,7 +198,8 @@ rule all_merge_pods:
     """Merge all raw POD5 files."""
     input:
         expand(
-            get_project_path(config.get("pod5_dir", "results/pod5")) + "/{sample}/{sample}.pod5",
+            get_project_path(config.get("pod5_dir", "results/pod5"))
+            + "/{sample}/{sample}.pod5",
             sample=SAMPLES,
         ),
 
@@ -208,7 +208,8 @@ rule all_rebasecall:
     """Rebasecall all samples with dorado."""
     input:
         expand(
-            get_project_path(config.get("rebasecall_dir", "results/bam/rebasecall")) + "/{sample}/{sample}.rbc.bam",
+            get_project_path(config.get("rebasecall_dir", "results/bam/rebasecall"))
+            + "/{sample}/{sample}.rbc.bam",
             sample=SAMPLES,
         ),
 
@@ -217,7 +218,8 @@ rule all_align:
     """Align all rebasecalled samples to reference."""
     input:
         expand(
-            get_project_path(config.get("rebasecall_dir", "results/bam/rebasecall")) + "/{sample}/{sample}.aligned.bam",
+            get_project_path(config.get("rebasecall_dir", "results/bam/rebasecall"))
+            + "/{sample}/{sample}.aligned.bam",
             sample=SAMPLES,
         ),
 
