@@ -49,7 +49,25 @@ DEFAULT_NUM_FEATURES = 5  # Default number of feature channels (dwell + signal l
 
 # Device defaults
 DEFAULT_DEVICE = "cuda"
-DEFAULT_SEED = 42
+DEFAULT_SEED = None  # Generate random seed by default to avoid "seed=42" cargo-culting
+
+
+def generate_random_seed() -> int:
+    """
+    Generate a cryptographically random seed for reproducible randomness.
+
+    Returns a 32-bit unsigned integer suitable for use with numpy, random, and torch.
+
+    This function should be called when no explicit seed is provided, ensuring
+    each run uses a different seed by default while still being reproducible
+    via the logged seed value.
+
+    Returns:
+        Random integer in range [0, 2^32-1]
+    """
+    import secrets
+
+    return secrets.randbits(32)
 
 # Inference defaults
 DEFAULT_MIN_MAPQ = 0  # Minimum mapping quality for inference

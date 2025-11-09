@@ -37,10 +37,12 @@ project_name: ""
 # - Alpine: See profiles/slurm/config.yaml for /scratch and /projects paths
 # - Bodhi: Use these defaults or override in profiles/lsf/config.yaml
 #
-chunks_dir: "results/chunks"
-models_dir: "results/models"
-inference_dir: "results/inference"
-metrics_dir: "results/metrics"
+# All outputs on scratch for testing (fast I/O, 90-day purge)
+# Move to /projects for permanent storage after testing
+chunks_dir: "/scratch/alpine/jhesselberth@xsede.org/leech/chunks"
+models_dir: "/scratch/alpine/jhesselberth@xsede.org/leech/models"
+inference_dir: "/scratch/alpine/jhesselberth@xsede.org/leech/inference"
+metrics_dir: "/scratch/alpine/jhesselberth@xsede.org/leech/metrics"
 
 # ============================================================================
 # Sample Configuration
