@@ -2,44 +2,28 @@
 # ===========================================================
 # Configured for CU Boulder Alpine cluster
 # https://curc.readthedocs.io/en/latest/clusters/alpine/
+# Updated for Snakemake 9+ executor plugin system
 
-# Cluster execution with GPU support via --gres
-# Alpine GPU partitions: aa100 (NVIDIA A100), ami100 (AMD MI100)
-# Alpine testing partitions: atesting_a100, atesting_mi100
-cluster:
-  mkdir -p logs/{rule} &&
-  sbatch
-    --partition={resources.partition}
-    --qos={resources.qos}
-    --nodes=1
-    --ntasks={resources.ntasks}
-    --cpus-per-task={threads}
-    --mem={resources.mem_mb}M
-    --time={resources.runtime}
-    --job-name={rule}_{wildcards}
-    --output={log}
-    --error={log}
-    {params.slurm_extra}
+# Use SLURM executor plugin
+executor: slurm
 
-cluster-status: "profiles/slurm/slurm_status.py"
-cluster-cancel: "scancel"
+# SLURM-specific settings
+slurm-qos: "normal"
 
-# Job submission
+# Job submission settings
 jobs: 100
+max-jobs-per-second: 10
 latency-wait: 60
 
 # Rerun settings
 restart-times: 3
-max-jobs-per-second: 10
 
 # Default resources for rules without explicit resources
 default-resources:
-  - partition="amilan"
-  - qos="normal"
+  - slurm_partition="amilan"
   - ntasks=1
   - mem_mb=8000
   - runtime=120
-  - gpu=0
   - account=""
   - slurm_extra=""
 
@@ -50,6 +34,12 @@ default-resources:
 # - CPU partition: amilan (default, no GPUs)
 # - QoS: normal, long (>24h)
 set-resources:
+  # Rebasecall rule needs GPU partition
+  - rebasecall:slurm_partition="aa100"
+  - rebasecall:ntasks=1
+  - rebasecall:gpu=1
+  - rebasecall:nodes=1
+  - rebasecall:cpus_per_gpu=4
   # Grid search rules need more time and GPU (use A100 partition)
   - grid_search_charged_vs_uncharged:runtime=1440
   - grid_search_charged_vs_uncharged:gpu=1
@@ -109,19 +99,3 @@ set-resources:
   - test_pairwise_aa:partition="atesting_a100"
   - test_pairwise_aa:qos="testing"
   - test_pairwise_aa:ntasks=42
-
-# SLURM submission script template
-# Variables available:
-# - {resources.mem_mb}: memory in MB
-# - {resources.runtime}: time in minutes
-# - {resources.gpu}: number of GPUs
-# - {resources.partition}: SLURM partition (aa100, ami100, amilan, atesting_a100, etc.)
-# - {resources.qos}: Quality of Service (normal, long, testing)
-# - {resources.ntasks}: number of tasks (typically 42 for aa100 GPU nodes)
-# - {resources.account}: account for billing
-# - {threads}: number of threads/CPUs
-# - {rule}: rule name
-# - {jobid}: job ID
-# - {log}: log file path
-
-jobscript: "profiles/slurm/slurm_submit.sh"
