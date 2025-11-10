@@ -19,6 +19,7 @@ from leech.data_prep import (
     one_hot_encode_sequence,
     save_chunks,
     seq_to_int,
+    split_chunks_by_read,
 )
 
 
@@ -420,6 +421,157 @@ class TestReferenceBasedMotifSearch:
         positions = find_motif_in_reference(ref_seq, motif, ref_start, ref_end)
 
         assert len(positions) == 0
+
+
+class TestSplitChunksByRead:
+    """Test split_chunks_by_read function for preventing data leakage."""
+
+    def test_split_chunks_by_read_no_overlap(self):
+        """Test that no read ID appears in multiple splits."""
+        # Create chunks from multiple reads
+        chunks = []
+        for read_num in range(100):
+            read_id = f"read_{read_num:03d}"
+            # Each read has 5 chunks
+            for chunk_num in range(5):
+                chunks.append({
+                    "read_id": read_id,
+                    "signal": np.random.randn(400),
+                    "sequence": "ACGT" * 3,
+                    "dwell": np.random.randn(11),
+                    "features": np.random.randn(3, 11),
+                    "label": chunk_num % 2,
+                    "base_idx": chunk_num,
+                })
+
+        train, val, test = split_chunks_by_read(chunks, train_frac=0.7, val_frac=0.15, seed=42)
+
+        # Extract read IDs from each split
+        train_reads = {c["read_id"] for c in train}
+        val_reads = {c["read_id"] for c in val}
+        test_reads = {c["read_id"] for c in test}
+
+        # Verify no overlap
+        assert len(train_reads & val_reads) == 0, "Train and val share read IDs"
+        assert len(train_reads & test_reads) == 0, "Train and test share read IDs"
+        assert len(val_reads & test_reads) == 0, "Val and test share read IDs"
+
+    def test_split_chunks_by_read_all_chunks_assigned(self):
+        """Test that all chunks are assigned to exactly one split."""
+        chunks = []
+        for read_num in range(50):
+            read_id = f"read_{read_num:03d}"
+            for chunk_num in range(3):
+                chunks.append({
+                    "read_id": read_id,
+                    "signal": np.random.randn(400),
+                    "sequence": "ACGT" * 3,
+                    "dwell": np.random.randn(11),
+                    "features": np.random.randn(3, 11),
+                    "label": 0,
+                    "base_idx": chunk_num,
+                })
+
+        train, val, test = split_chunks_by_read(chunks, train_frac=0.6, val_frac=0.2, seed=42)
+
+        # Verify all chunks are assigned
+        assert len(train) + len(val) + len(test) == len(chunks)
+
+    def test_split_chunks_by_read_fractions(self):
+        """Test that splits have approximately correct proportions."""
+        chunks = []
+        for read_num in range(100):
+            read_id = f"read_{read_num:03d}"
+            # Single chunk per read for easier proportion checking
+            chunks.append({
+                "read_id": read_id,
+                "signal": np.random.randn(400),
+                "sequence": "ACGT" * 3,
+                "dwell": np.random.randn(11),
+                "features": np.random.randn(3, 11),
+                "label": 0,
+                "base_idx": 0,
+            })
+
+        train, val, test = split_chunks_by_read(chunks, train_frac=0.7, val_frac=0.15, seed=42)
+
+        # With 100 reads: expect ~70 train, ~15 val, ~15 test
+        assert 65 <= len(train) <= 75, f"Train has {len(train)}, expected ~70"
+        assert 10 <= len(val) <= 20, f"Val has {len(val)}, expected ~15"
+        assert 10 <= len(test) <= 20, f"Test has {len(test)}, expected ~15"
+
+    def test_split_chunks_by_read_keeps_read_chunks_together(self):
+        """Test that all chunks from same read go to same split."""
+        chunks = []
+        for read_num in range(30):
+            read_id = f"read_{read_num:03d}"
+            # Each read has 10 chunks
+            for chunk_num in range(10):
+                chunks.append({
+                    "read_id": read_id,
+                    "signal": np.random.randn(400),
+                    "sequence": "ACGT" * 3,
+                    "dwell": np.random.randn(11),
+                    "features": np.random.randn(3, 11),
+                    "label": 0,
+                    "base_idx": chunk_num,
+                })
+
+        train, val, test = split_chunks_by_read(chunks, train_frac=0.6, val_frac=0.2, seed=42)
+
+        # Count chunks per read in each split
+        from collections import Counter
+
+        train_read_counts = Counter(c["read_id"] for c in train)
+        val_read_counts = Counter(c["read_id"] for c in val)
+        test_read_counts = Counter(c["read_id"] for c in test)
+
+        # Every read should have all 10 chunks in one split only
+        for read_id, count in train_read_counts.items():
+            assert count == 10, f"Read {read_id} has {count} chunks in train, expected 10"
+            assert read_id not in val_read_counts
+            assert read_id not in test_read_counts
+
+        for read_id, count in val_read_counts.items():
+            assert count == 10
+            assert read_id not in train_read_counts
+            assert read_id not in test_read_counts
+
+        for read_id, count in test_read_counts.items():
+            assert count == 10
+            assert read_id not in train_read_counts
+            assert read_id not in val_read_counts
+
+    def test_split_chunks_by_read_reproducibility(self):
+        """Test that same seed produces same split."""
+        chunks = []
+        for read_num in range(50):
+            read_id = f"read_{read_num:03d}"
+            chunks.append({
+                "read_id": read_id,
+                "signal": np.random.randn(400),
+                "sequence": "ACGT" * 3,
+                "dwell": np.random.randn(11),
+                "features": np.random.randn(3, 11),
+                "label": 0,
+                "base_idx": 0,
+            })
+
+        # Split twice with same seed
+        train1, val1, test1 = split_chunks_by_read(chunks, train_frac=0.7, val_frac=0.15, seed=123)
+        train2, val2, test2 = split_chunks_by_read(chunks, train_frac=0.7, val_frac=0.15, seed=123)
+
+        # Should be identical
+        train_ids1 = {c["read_id"] for c in train1}
+        train_ids2 = {c["read_id"] for c in train2}
+        assert train_ids1 == train_ids2
+
+    def test_split_chunks_by_read_invalid_fractions(self):
+        """Test that invalid fractions raise ValueError."""
+        chunks = [{"read_id": "read_1", "signal": np.random.randn(400)}]
+
+        with pytest.raises(ValueError, match="must be <= 1.0"):
+            split_chunks_by_read(chunks, train_frac=0.8, val_frac=0.3, seed=42)
 
 
 class TestCIGARMapping:

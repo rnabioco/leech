@@ -271,20 +271,16 @@ def prepare(
 
     console.print(f"[green]Extracted {len(chunks)} training chunks[/green]")
 
-    # Shuffle chunks
-    random.shuffle(chunks)
+    # Split into train/val/test at READ level to prevent data leakage
+    from leech.data_prep import split_chunks_by_read
 
-    # Split into train/val/test
-    n_total = len(chunks)
-    n_train = int(n_total * train_split)
-    n_val = int(n_total * val_split)
-
-    train_chunks = chunks[:n_train]
-    val_chunks = chunks[n_train : n_train + n_val]
-    test_chunks = chunks[n_train + n_val :]
+    train_chunks, val_chunks, test_chunks = split_chunks_by_read(
+        chunks, train_frac=train_split, val_frac=val_split, seed=seed
+    )
 
     # Display split statistics in a table
-    table = Table(title="Data Split", show_header=True, header_style="bold magenta")
+    n_total = len(chunks)
+    table = Table(title="Data Split (Read-Level)", show_header=True, header_style="bold magenta")
     table.add_column("Split", style="cyan")
     table.add_column("Count", justify="right", style="green")
     table.add_column("Percentage", justify="right", style="yellow")

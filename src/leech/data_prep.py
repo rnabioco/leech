@@ -679,6 +679,91 @@ def one_hot_encode_sequence(seq: str, kmer_len: int = 1) -> np.ndarray:
     return encoding
 
 
+def split_chunks_by_read(
+    chunks: list[dict],
+    train_frac: float = 0.7,
+    val_frac: float = 0.15,
+    seed: int | None = None,
+) -> tuple[list[dict], list[dict], list[dict]]:
+    """
+    Split chunks into train/val/test sets at the READ level to prevent data leakage.
+
+    Groups chunks by read_id, then splits the read IDs into train/val/test sets.
+    This ensures that no read appears in multiple splits, preventing the model
+    from seeing similar signals from the same molecule during training and validation.
+
+    Args:
+        chunks: List of chunk dictionaries (must have 'read_id' key)
+        train_frac: Fraction of reads for training
+        val_frac: Fraction of reads for validation
+        seed: Random seed for reproducibility
+
+    Returns:
+        Tuple of (train_chunks, val_chunks, test_chunks)
+
+    Raises:
+        ValueError: If fractions don't sum to <= 1.0
+    """
+    import random
+
+    if train_frac + val_frac > 1.0:
+        raise ValueError(f"train_frac ({train_frac}) + val_frac ({val_frac}) must be <= 1.0")
+
+    # Set seed if provided
+    if seed is not None:
+        random.seed(seed)
+
+    # Group chunks by read_id
+    read_to_chunks: dict[str, list[dict]] = {}
+    for chunk in chunks:
+        read_id = chunk["read_id"]
+        if read_id not in read_to_chunks:
+            read_to_chunks[read_id] = []
+        read_to_chunks[read_id].append(chunk)
+
+    # Get list of unique read IDs and shuffle
+    read_ids = list(read_to_chunks.keys())
+    random.shuffle(read_ids)
+
+    # Split read IDs
+    n_reads = len(read_ids)
+    n_train = int(n_reads * train_frac)
+    n_val = int(n_reads * val_frac)
+
+    train_read_ids = set(read_ids[:n_train])
+    val_read_ids = set(read_ids[n_train : n_train + n_val])
+    test_read_ids = set(read_ids[n_train + n_val :])
+
+    # Assign chunks to splits based on read ID
+    train_chunks = []
+    val_chunks = []
+    test_chunks = []
+
+    for read_id, read_chunks in read_to_chunks.items():
+        if read_id in train_read_ids:
+            train_chunks.extend(read_chunks)
+        elif read_id in val_read_ids:
+            val_chunks.extend(read_chunks)
+        elif read_id in test_read_ids:
+            test_chunks.extend(read_chunks)
+
+    logger.info(f"Split {n_reads} reads into train/val/test")
+    logger.info(
+        f"  Train: {len(train_read_ids)} reads ({len(train_chunks)} chunks, "
+        f"{len(train_chunks) / len(chunks) * 100:.1f}%)"
+    )
+    logger.info(
+        f"  Val: {len(val_read_ids)} reads ({len(val_chunks)} chunks, "
+        f"{len(val_chunks) / len(chunks) * 100:.1f}%)"
+    )
+    logger.info(
+        f"  Test: {len(test_read_ids)} reads ({len(test_chunks)} chunks, "
+        f"{len(test_chunks) / len(chunks) * 100:.1f}%)"
+    )
+
+    return train_chunks, val_chunks, test_chunks
+
+
 def save_chunks(chunks: list[dict], output_path: Path) -> None:
     """
     Save training chunks to compressed numpy format.
