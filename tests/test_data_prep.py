@@ -430,12 +430,13 @@ class TestCIGARMapping:
         # Create mock alignment with CIGAR: 20M
         import pysam
 
-        # Create a mock alignment
+        # Create a properly constructed alignment
         aln = pysam.AlignedSegment()
+        aln.query_sequence = "A" * 20  # 20 bases
         aln.reference_start = 100
-        aln.query_alignment_start = 0
         aln.cigartuples = [(0, 20)]  # 20M (BAM_CMATCH)
         # reference_end is automatically calculated from CIGAR: 100 + 20 = 120
+        # query_alignment_start is automatically 0 (no soft clips)
 
         # Map reference positions 105-110 to query
         result = map_reference_to_query_coords(aln, 105, 110, skip_indels=False)
@@ -452,8 +453,8 @@ class TestCIGARMapping:
 
         # CIGAR: 10M 3I 10M (insertion in the middle)
         aln = pysam.AlignedSegment()
+        aln.query_sequence = "A" * 23  # 10 + 3 + 10 = 23 bases
         aln.reference_start = 100
-        aln.query_alignment_start = 0
         aln.cigartuples = [(0, 10), (1, 3), (0, 10)]  # 10M 3I 10M
         # reference_end = 100 + 10 + 10 = 120 (insertion doesn't consume ref)
 
@@ -469,8 +470,8 @@ class TestCIGARMapping:
 
         # CIGAR: 10M 3D 10M (deletion in the middle)
         aln = pysam.AlignedSegment()
+        aln.query_sequence = "A" * 20  # 10 + 10 = 20 bases (deletion doesn't consume query)
         aln.reference_start = 100
-        aln.query_alignment_start = 0
         aln.cigartuples = [(0, 10), (2, 3), (0, 10)]  # 10M 3D 10M
         # reference_end = 100 + 10 + 3 + 10 = 123 (deletion consumes ref)
 
@@ -486,8 +487,8 @@ class TestCIGARMapping:
 
         # CIGAR: 10M 3I 10M
         aln = pysam.AlignedSegment()
+        aln.query_sequence = "A" * 23  # 10 + 3 + 10 = 23 bases
         aln.reference_start = 100
-        aln.query_alignment_start = 0
         aln.cigartuples = [(0, 10), (1, 3), (0, 10)]  # 10M 3I 10M
         # reference_end = 120
 
@@ -504,8 +505,8 @@ class TestCIGARMapping:
         import pysam
 
         aln = pysam.AlignedSegment()
+        aln.query_sequence = "A" * 20  # 20 bases
         aln.reference_start = 100
-        aln.query_alignment_start = 0
         aln.cigartuples = [(0, 20)]  # 20M
         # reference_end = 120
 
@@ -523,10 +524,11 @@ class TestCIGARMapping:
 
         # CIGAR: 5S 15M 5S (soft clips at both ends)
         aln = pysam.AlignedSegment()
+        aln.query_sequence = "A" * 25  # 5 + 15 + 5 = 25 bases
         aln.reference_start = 100
-        aln.query_alignment_start = 5  # Starts after 5S
         aln.cigartuples = [(4, 5), (0, 15), (4, 5)]  # 5S 15M 5S
         # reference_end = 100 + 15 = 115 (only 15M consumes reference)
+        # query_alignment_start = 5 (automatically computed from 5S)
 
         # Map within the matched region
         result = map_reference_to_query_coords(aln, 105, 110, skip_indels=False)
@@ -534,8 +536,137 @@ class TestCIGARMapping:
         assert result is not None
         query_start, query_end = result
         # Query positions account for soft clip offset
-        assert query_start == 10  # 5 (soft clip) + 5 (105-100)
-        assert query_end == 15  # 5 (soft clip) + 10 (110-100)
+        # CIGAR processes: 5S (query 0->5), then 15M (ref 100-114 maps to query 5-19)
+        # At ref 105 (5 bases into match): query = 5 + 5 = 10
+        # At ref 110 (10 bases into match): query = 5 + 10 = 15
+        assert query_start == 10
+        assert query_end == 15
+
+    def test_map_reference_to_query_insertion_at_boundary(self):
+        """Test insertion exactly at the start boundary of region."""
+        import pysam
+
+        # CIGAR: 10M 3I 10M - insertion at position 110
+        aln = pysam.AlignedSegment()
+        aln.query_sequence = "A" * 23
+        aln.reference_start = 100
+        aln.cigartuples = [(0, 10), (1, 3), (0, 10)]  # 10M 3I 10M
+
+        # Map region that starts right at the insertion point
+        result = map_reference_to_query_coords(aln, 110, 115, skip_indels=True)
+        # Should return None because insertion is at the boundary
+        assert result is None
+
+        # With skip_indels=False, should work
+        result = map_reference_to_query_coords(aln, 110, 115, skip_indels=False)
+        assert result is not None
+
+    def test_map_reference_to_query_deletion_at_boundary(self):
+        """Test deletion exactly at the start boundary of region."""
+        import pysam
+
+        # CIGAR: 10M 3D 10M - deletion at position 110-112
+        aln = pysam.AlignedSegment()
+        aln.query_sequence = "A" * 20
+        aln.reference_start = 100
+        aln.cigartuples = [(0, 10), (2, 3), (0, 10)]  # 10M 3D 10M
+
+        # Map region starting right after deletion
+        result = map_reference_to_query_coords(aln, 113, 118, skip_indels=False)
+        assert result is not None
+
+        # Map region that includes the deletion
+        result = map_reference_to_query_coords(aln, 110, 115, skip_indels=True)
+        assert result is None
+
+    def test_map_reference_to_query_multiple_indels(self):
+        """Test multiple insertions and deletions in the region."""
+        import pysam
+
+        # CIGAR: 5M 2I 5M 2D 5M - complex pattern
+        aln = pysam.AlignedSegment()
+        aln.query_sequence = "A" * 12  # 5 + 2 + 5 = 12 (no deletion in query)
+        aln.reference_start = 100
+        aln.cigartuples = [(0, 5), (1, 2), (0, 5), (2, 2), (0, 5)]
+
+        # Map region that includes both insertion and deletion
+        result = map_reference_to_query_coords(aln, 102, 115, skip_indels=True)
+        # Should return None due to indels
+        assert result is None
+
+    def test_map_reference_to_query_with_hard_clip(self):
+        """Test that hard clips are handled correctly (ignored)."""
+        import pysam
+
+        # CIGAR: 5H 20M 5H - hard clips at both ends
+        aln = pysam.AlignedSegment()
+        aln.query_sequence = "A" * 20  # Hard clips not in sequence
+        aln.reference_start = 100
+        aln.cigartuples = [(5, 5), (0, 20), (5, 5)]  # 5H 20M 5H
+
+        # Map normally - hard clips should be ignored
+        result = map_reference_to_query_coords(aln, 105, 110, skip_indels=False)
+        assert result is not None
+        query_start, query_end = result
+        # Hard clips don't affect query positions
+        assert query_start == 5
+        assert query_end == 10
+
+    def test_map_reference_to_query_complex_with_soft_and_hard(self):
+        """Test complex CIGAR with both soft and hard clips."""
+        import pysam
+
+        # CIGAR: 5H 3S 15M 3S 5H
+        aln = pysam.AlignedSegment()
+        aln.query_sequence = "A" * 21  # 3 + 15 + 3 (no hard clips in seq)
+        aln.reference_start = 100
+        aln.cigartuples = [(5, 5), (4, 3), (0, 15), (4, 3), (5, 5)]
+
+        result = map_reference_to_query_coords(aln, 105, 110, skip_indels=False)
+        assert result is not None
+        query_start, query_end = result
+        # 5H (ignored) + 3S (query 0->3) + 5M (query 3->8)
+        assert query_start == 8  # 3 (soft) + 5 (offset)
+        assert query_end == 13  # 3 (soft) + 10 (offset)
+
+    def test_map_reference_to_query_exact_alignment_boundaries(self):
+        """Test mapping at exact start and end of alignment."""
+        import pysam
+
+        # CIGAR: 20M
+        aln = pysam.AlignedSegment()
+        aln.query_sequence = "A" * 20
+        aln.reference_start = 100
+        aln.cigartuples = [(0, 20)]  # 20M
+
+        # Map from exact start
+        result = map_reference_to_query_coords(aln, 100, 105, skip_indels=False)
+        assert result is not None
+        assert result == (0, 5)
+
+        # Map to exact end
+        result = map_reference_to_query_coords(aln, 115, 120, skip_indels=False)
+        assert result is not None
+        assert result == (15, 20)
+
+        # Map entire alignment
+        result = map_reference_to_query_coords(aln, 100, 120, skip_indels=False)
+        assert result is not None
+        assert result == (0, 20)
+
+    def test_map_reference_to_query_single_base(self):
+        """Test mapping a single base."""
+        import pysam
+
+        aln = pysam.AlignedSegment()
+        aln.query_sequence = "A" * 20
+        aln.reference_start = 100
+        aln.cigartuples = [(0, 20)]  # 20M
+
+        # Map single base at position 105
+        result = map_reference_to_query_coords(aln, 105, 106, skip_indels=False)
+        assert result is not None
+        assert result == (5, 6)
 
 
 if __name__ == "__main__":

@@ -342,7 +342,7 @@ def map_reference_to_query_coords(
 
     # Parse CIGAR to build mapping
     ref_pos = aln.reference_start
-    query_pos = aln.query_alignment_start
+    query_pos = 0  # Start from beginning of query sequence
 
     query_start = None
     query_end = None
