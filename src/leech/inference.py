@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 import pysam
 import torch
-from tqdm import tqdm
+from rich.progress import Progress
 
 from leech.data_prep import encode_kmer, iter_bam_with_pod5
 from leech.models.inference_wrapper import ModelInferenceWrapper
@@ -84,92 +84,101 @@ def run_inference(
 
     model.eval()
 
-    # Process reads
-    for leech_read in tqdm(
-        iter_bam_with_pod5(bam_path, pod5_path, min_mapq=min_mapq), desc="Inference"
-    ):
-        total_reads += 1
+    # Process reads with progress bar
+    with Progress() as progress:
+        task = progress.add_task("[cyan]Running inference...", total=None)
 
-        # Get corresponding alignment from input BAM
-        bam_in.reset()
-        aln = None
-        for a in bam_in.fetch(until_eof=True):
-            if a.query_name == leech_read.read_id:
-                aln = a
-                break
+        for leech_read in iter_bam_with_pod5(bam_path, pod5_path, min_mapq=min_mapq):
+            total_reads += 1
+            progress.update(task, advance=1, description=f"[cyan]Processed {total_reads} reads...")
 
-        if aln is None:
-            continue
+            # Get corresponding alignment from input BAM
+            bam_in.reset()
+            aln = None
+            for a in bam_in.fetch(until_eof=True):
+                if a.query_name == leech_read.read_id:
+                    aln = a
+                    break
 
-        # Find positions to predict
-        if motif is None:
-            # Predict all positions (avoid edges)
-            positions = list(range(kmer_context, leech_read.num_bases - kmer_context))
-        else:
-            # Find motif positions
-            positions = []
-            motif_len = len(motif)
-            for i in range(len(leech_read.sequence) - motif_len + 1):
-                if leech_read.sequence[i : i + motif_len] == motif:
-                    positions.append(i + motif_offset)
-
-        # Extract chunks and run predictions
-        predictions = []
-
-        for base_idx in positions:
-            chunk = leech_read.get_chunk(
-                base_idx, signal_context=signal_context, kmer_context=kmer_context
-            )
-
-            if chunk is None:
+            if aln is None:
                 continue
 
-            # Prepare input tensors
-            signal = torch.from_numpy(chunk["signal"].astype(np.float32)).to(device)
-            sequence = encode_kmer(chunk["sequence"]).to(device)
+            # Find positions to predict
+            if motif is None:
+                # Predict all positions (avoid edges)
+                positions = list(range(kmer_context, leech_read.num_bases - kmer_context))
+            else:
+                # Find motif positions
+                positions = []
+                motif_len = len(motif)
+                for i in range(len(leech_read.sequence) - motif_len + 1):
+                    if leech_read.sequence[i : i + motif_len] == motif:
+                        positions.append(i + motif_offset)
 
-            # Add batch dimension
-            signal = signal.unsqueeze(0)
-            sequence = sequence.unsqueeze(0)
+            # Extract chunks and run predictions
+            predictions = []
 
-            # Prepare batch dict for wrapper
-            batch = {
-                "signal": signal,
-                "sequence": sequence,
-            }
+            for base_idx in positions:
+                chunk = leech_read.get_chunk(
+                    base_idx, signal_context=signal_context, kmer_context=kmer_context
+                )
 
-            # Add features if model requires them
-            if model_wrapper.requires_features:
-                features = torch.from_numpy(chunk["features"].astype(np.float32)).to(device)
-                batch["features"] = features.unsqueeze(0)
+                if chunk is None:
+                    continue
 
-            # Run inference
-            with torch.no_grad():
-                logits = model_wrapper.forward_batch(batch, device)
-                prob = torch.sigmoid(logits).item()
+                # Prepare input tensors
+                signal_array = chunk["signal"]
+                assert isinstance(signal_array, np.ndarray)
+                signal = torch.from_numpy(signal_array.astype(np.float32)).to(device)
 
-            predictions.append((base_idx, prob))
+                sequence_str = chunk["sequence"]
+                assert isinstance(sequence_str, str)
+                sequence = encode_kmer(sequence_str).to(device)
 
-        # Add predictions to BAM tags
-        # Using MM (base modification) and ML (modification likelihood) tags
-        # Format: MM:Z:C+m,0,1,2;  ML:B:C,255,128,64
-        if predictions:
-            # Sort by position
-            predictions.sort(key=lambda x: x[0])
+                # Add batch dimension
+                signal = signal.unsqueeze(0)
+                sequence = sequence.unsqueeze(0)
 
-            # Convert probabilities to phred-like scores (0-255)
-            positions_list = [p[0] for p in predictions]
-            probs_list = [p[1] for p in predictions]
-            ml_scores = [int(min(255, max(0, p * 255))) for p in probs_list]
+                # Prepare batch dict for wrapper
+                batch = {
+                    "signal": signal,
+                    "sequence": sequence,
+                }
 
-            # Add tags to alignment
-            aln.set_tag("MP", positions_list, value_type="B")  # Modification positions
-            aln.set_tag("ML", ml_scores, value_type="B")  # Modification likelihoods (0-255)
+                # Add features if model requires them
+                if model_wrapper.requires_features:
+                    features_array = chunk["features"]
+                    assert isinstance(features_array, np.ndarray)
+                    features = torch.from_numpy(features_array.astype(np.float32)).to(device)
+                    batch["features"] = features.unsqueeze(0)
 
-            total_predictions += len(predictions)
+                # Run inference
+                with torch.no_grad():
+                    logits = model_wrapper.forward_batch(batch, device)
+                    prob = torch.sigmoid(logits).item()
 
-        # Write to output
-        bam_out.write(aln)
+                predictions.append((base_idx, prob))
+
+            # Add predictions to BAM tags
+            # Using MM (base modification) and ML (modification likelihood) tags
+            # Format: MM:Z:C+m,0,1,2;  ML:B:C,255,128,64
+            if predictions:
+                # Sort by position
+                predictions.sort(key=lambda x: x[0])
+
+                # Convert probabilities to phred-like scores (0-255)
+                positions_list = [p[0] for p in predictions]
+                probs_list = [p[1] for p in predictions]
+                ml_scores = [int(min(255, max(0, p * 255))) for p in probs_list]
+
+                # Add tags to alignment
+                aln.set_tag("MP", positions_list, value_type="B")  # Modification positions
+                aln.set_tag("ML", ml_scores, value_type="B")  # Modification likelihoods (0-255)
+
+                total_predictions += len(predictions)
+
+            # Write to output
+            bam_out.write(aln)
 
     bam_in.close()
     bam_out.close()

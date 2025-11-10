@@ -11,6 +11,8 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn as nn
+from rich.console import Console
+from rich.table import Table
 from sklearn.metrics import (
     accuracy_score,
     confusion_matrix,
@@ -23,6 +25,7 @@ from sklearn.metrics import (
 from leech.models import get_model
 
 logger = logging.getLogger("leech.util")
+console = Console()
 
 
 def load_model_from_checkpoint(
@@ -171,26 +174,33 @@ def save_metrics(metrics: dict, output_path: Path) -> None:
 
 def print_metrics(metrics: dict) -> None:
     """
-    Pretty print metrics to console.
+    Pretty print metrics to console using Rich tables.
 
     Args:
         metrics: Dictionary of metrics
     """
-    logger.info("\n" + "=" * 60)
-    logger.info("EVALUATION METRICS")
-    logger.info("=" * 60)
-    logger.info(f"Accuracy:  {metrics['accuracy']:.4f}")
-    logger.info(f"Precision: {metrics['precision']:.4f}")
-    logger.info(f"Recall:    {metrics['recall']:.4f}")
-    logger.info(f"F1 Score:  {metrics['f1']:.4f}")
-    logger.info(f"ROC AUC:   {metrics['auc']:.4f}")
+    # Main metrics table
+    table = Table(title="Evaluation Metrics", show_header=True, header_style="bold magenta")
+    table.add_column("Metric", style="cyan", width=20)
+    table.add_column("Value", justify="right", style="green", width=15)
 
+    table.add_row("Accuracy", f"{metrics['accuracy']:.4f}")
+    table.add_row("Precision", f"{metrics['precision']:.4f}")
+    table.add_row("Recall", f"{metrics['recall']:.4f}")
+    table.add_row("F1 Score", f"{metrics['f1']:.4f}")
+    table.add_row("ROC AUC", f"{metrics['auc']:.4f}")
+
+    console.print(table)
+
+    # Confusion matrix table
     if "confusion_matrix" in metrics:
         cm = metrics["confusion_matrix"]
-        logger.info("\nConfusion Matrix:")
-        logger.info("                Predicted")
-        logger.info("              Neg    Pos")
-        logger.info(f"Actual  Neg  {cm[0][0]:5d}  {cm[0][1]:5d}")
-        logger.info(f"        Pos  {cm[1][0]:5d}  {cm[1][1]:5d}")
+        cm_table = Table(title="Confusion Matrix", show_header=True, header_style="bold magenta")
+        cm_table.add_column("", style="cyan", width=10)
+        cm_table.add_column("Predicted Neg", justify="right", style="yellow", width=15)
+        cm_table.add_column("Predicted Pos", justify="right", style="yellow", width=15)
 
-    logger.info("=" * 60 + "\n")
+        cm_table.add_row("Actual Neg", str(cm[0][0]), str(cm[0][1]))
+        cm_table.add_row("Actual Pos", str(cm[1][0]), str(cm[1][1]))
+
+        console.print(cm_table)
