@@ -11,7 +11,14 @@ import numpy as np
 import torch
 import torch.nn as nn
 from rich.console import Console
-from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeRemainingColumn
+from rich.progress import (
+    BarColumn,
+    Progress,
+    SpinnerColumn,
+    TaskID,
+    TextColumn,
+    TimeRemainingColumn,
+)
 from sklearn.metrics import accuracy_score, roc_auc_score
 from torch.utils.data import DataLoader
 
@@ -82,7 +89,7 @@ class Trainer:
             self.output_dir.mkdir(parents=True, exist_ok=True)
 
     def train_epoch(
-        self, progress: Progress | None = None, task_id: int | None = None
+        self, progress: Progress | None = None, task_id: TaskID | None = None
     ) -> tuple[float, float]:
         """
         Train for one epoch.
@@ -132,7 +139,7 @@ class Trainer:
         return avg_loss, accuracy
 
     def validate(
-        self, progress: Progress | None = None, task_id: int | None = None
+        self, progress: Progress | None = None, task_id: TaskID | None = None
     ) -> tuple[float, float, float]:
         """
         Validate model.

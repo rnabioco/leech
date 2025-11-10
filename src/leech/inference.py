@@ -127,8 +127,13 @@ def run_inference(
                     continue
 
                 # Prepare input tensors
-                signal = torch.from_numpy(chunk["signal"].astype(np.float32)).to(device)
-                sequence = encode_kmer(chunk["sequence"]).to(device)
+                signal_array = chunk["signal"]
+                assert isinstance(signal_array, np.ndarray)
+                signal = torch.from_numpy(signal_array.astype(np.float32)).to(device)
+
+                sequence_str = chunk["sequence"]
+                assert isinstance(sequence_str, str)
+                sequence = encode_kmer(sequence_str).to(device)
 
                 # Add batch dimension
                 signal = signal.unsqueeze(0)
@@ -142,7 +147,9 @@ def run_inference(
 
                 # Add features if model requires them
                 if model_wrapper.requires_features:
-                    features = torch.from_numpy(chunk["features"].astype(np.float32)).to(device)
+                    features_array = chunk["features"]
+                    assert isinstance(features_array, np.ndarray)
+                    features = torch.from_numpy(features_array.astype(np.float32)).to(device)
                     batch["features"] = features.unsqueeze(0)
 
                 # Run inference
