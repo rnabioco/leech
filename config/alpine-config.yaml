@@ -81,6 +81,9 @@ amino_acids:
 # ============================================================================
 motif: "CCAGGC"
 motif_offset: 2
+motif_reference: "fasta"
+reference_fasta: null
+skip_motif_indels: true
 kmer_len: 5
 chunk_context: [200, 200]
 train_split: 0.7

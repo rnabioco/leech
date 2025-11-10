@@ -97,6 +97,9 @@ amino_acids:
 # ============================================================================
 motif: "CCAGGC"           # tRNA 3' end motif (amino acid between A and G)
 motif_offset: 2           # Focus on the "A" where amino acid is attached (0-indexed)
+motif_reference: "fasta"  # Search motif in reference ("fasta") or basecalled ("bam") sequence
+reference_fasta: null     # External reference FASTA (null = use BAM @SQ header)
+skip_motif_indels: true   # Skip reads with indels in motif region
 kmer_len: 5               # K-mer context length
 chunk_context: [200, 200] # Signal context (left, right) in samples
 train_split: 0.7          # Training set fraction
