@@ -216,7 +216,7 @@ def run_prepare(args):
     import numpy as np
 
     from leech.constants import generate_random_seed
-    from leech.data_prep import extract_training_chunks, iter_bam_with_pod5, save_chunks
+    from leech.data_prep import prepare_training_data, save_chunks
 
     logger.info(f"Preparing data from {args.pod5} and {args.bam}")
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -239,14 +239,15 @@ def run_prepare(args):
     random.seed(seed)
     np.random.seed(seed)
 
-    chunks = []
-    for read in iter_bam_with_pod5(args.bam, args.pod5, min_mapq=args.min_mapq):
-        read_chunks = extract_training_chunks(
-            read, motif=args.motif, motif_offset=args.motif_offset, label=args.label
-        )
-        chunks.extend(read_chunks)
-
-    logger.info(f"Extracted {len(chunks)} training chunks")
+    # Prepare training data with statistics
+    chunks, stats = prepare_training_data(
+        bam_path=args.bam,
+        pod5_path=args.pod5,
+        motif=args.motif,
+        motif_offset=args.motif_offset,
+        label=args.label,
+        min_mapq=args.min_mapq,
+    )
 
     # Shuffle chunks
     random.shuffle(chunks)
