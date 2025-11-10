@@ -764,6 +764,61 @@ def split_chunks_by_read(
     return train_chunks, val_chunks, test_chunks
 
 
+def merge_and_split_chunks(
+    input_paths: list[Path],
+    train_frac: float = 0.7,
+    val_frac: float = 0.15,
+    seed: int | None = None,
+) -> tuple[list[dict], list[dict], list[dict]]:
+    """
+    Merge multiple chunk files and split at read level to prevent data leakage.
+
+    This implements the correct workflow for multi-sample datasets:
+    1. Load and merge all chunks from different samples
+    2. Split merged data at the READ level into train/val/test
+
+    This prevents data leakage that occurs when splitting each sample independently
+    and then merging the splits, which can allow reads from the same molecule to
+    appear in both training and validation sets.
+
+    Args:
+        input_paths: List of paths to .npz chunk files to merge
+        train_frac: Fraction of reads for training
+        val_frac: Fraction of reads for validation
+        seed: Random seed for reproducibility
+
+    Returns:
+        Tuple of (train_chunks, val_chunks, test_chunks)
+
+    Example:
+        >>> # Merge charged and uncharged samples, then split
+        >>> train, val, test = merge_and_split_chunks(
+        ...     [Path("charged_all.npz"), Path("uncharged_all.npz")],
+        ...     train_frac=0.7,
+        ...     val_frac=0.15,
+        ...     seed=42
+        ... )
+    """
+    logger.info(f"Merging {len(input_paths)} chunk files")
+
+    # Load and merge all chunks
+    all_chunks = []
+    for chunk_path in input_paths:
+        logger.info(f"Loading {chunk_path}")
+        chunks = load_chunks(chunk_path)
+        all_chunks.extend(chunks)
+        logger.info(f"  Loaded {len(chunks)} chunks")
+
+    logger.info(f"Total merged chunks: {len(all_chunks)}")
+
+    # Count unique reads
+    unique_reads = set(chunk["read_id"] for chunk in all_chunks)
+    logger.info(f"Unique reads across all files: {len(unique_reads)}")
+
+    # Split at read level
+    return split_chunks_by_read(all_chunks, train_frac=train_frac, val_frac=val_frac, seed=seed)
+
+
 def save_chunks(chunks: list[dict], output_path: Path) -> None:
     """
     Save training chunks to compressed numpy format.

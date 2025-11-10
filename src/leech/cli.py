@@ -196,6 +196,12 @@ def cli():
     default=DEFAULT_SEED,
     help="Random seed for reproducibility",
 )
+@click.option(
+    "--no-split",
+    is_flag=True,
+    default=False,
+    help="Extract chunks without splitting (for later merge-then-split workflow)",
+)
 def prepare(
     pod5,
     bam,
@@ -211,6 +217,7 @@ def prepare(
     train_split,
     val_split,
     seed,
+    no_split,
 ):
     """Prepare training data from POD5 and BAM files."""
     from leech.data_prep import (
@@ -271,18 +278,128 @@ def prepare(
 
     console.print(f"[green]Extracted {len(chunks)} training chunks[/green]")
 
-    # Split into train/val/test at READ level to prevent data leakage
-    from leech.data_prep import split_chunks_by_read
+    if no_split:
+        # Save all chunks without splitting (for merge-then-split workflow)
+        all_file = output_dir / "all.npz"
+        save_chunks(chunks, all_file)
+        logger.info(f"Saved all chunks to {all_file}")
+        console.print(f"[yellow]Skipped splitting (--no-split). All chunks saved to all.npz[/yellow]")
+    else:
+        # Split into train/val/test at READ level to prevent data leakage
+        from leech.data_prep import split_chunks_by_read
 
-    train_chunks, val_chunks, test_chunks = split_chunks_by_read(
-        chunks, train_frac=train_split, val_frac=val_split, seed=seed
+        train_chunks, val_chunks, test_chunks = split_chunks_by_read(
+            chunks, train_frac=train_split, val_frac=val_split, seed=seed
+        )
+
+        # Display split statistics in a table
+        n_total = len(chunks)
+        table = Table(title="Data Split (Read-Level)", show_header=True, header_style="bold magenta")
+        table.add_column("Split", style="cyan")
+        table.add_column("Count", justify="right", style="green")
+        table.add_column("Percentage", justify="right", style="yellow")
+
+        table.add_row("Train", str(len(train_chunks)), f"{len(train_chunks) / n_total * 100:.1f}%")
+        table.add_row("Validation", str(len(val_chunks)), f"{len(val_chunks) / n_total * 100:.1f}%")
+        table.add_row("Test", str(len(test_chunks)), f"{len(test_chunks) / n_total * 100:.1f}%")
+        table.add_row("Total", str(n_total), "100.0%", style="bold")
+
+        console.print(table)
+
+        # Save chunks
+        if train_chunks:
+            train_file = output_dir / "train.npz"
+            save_chunks(train_chunks, train_file)
+            logger.info(f"Saved train to {train_file}")
+
+        if val_chunks:
+            val_file = output_dir / "val.npz"
+            save_chunks(val_chunks, val_file)
+            logger.info(f"Saved val to {val_file}")
+
+        if test_chunks:
+            test_file = output_dir / "test.npz"
+            save_chunks(test_chunks, test_file)
+            logger.info(f"Saved test to {test_file}")
+
+    console.print("[bold green]Data preparation complete![/bold green]")
+
+
+@cli.command()
+@click.option(
+    "--input-chunks",
+    "-i",
+    required=True,
+    multiple=True,
+    type=click.Path(exists=True, path_type=Path),
+    help="Input chunk files to merge (can specify multiple with -i file1.npz -i file2.npz)",
+)
+@click.option(
+    "--output-dir",
+    "-o",
+    required=True,
+    type=click.Path(path_type=Path),
+    help="Output directory for split chunks",
+)
+@click.option(
+    "--train-split",
+    type=float,
+    default=0.7,
+    help="Fraction of reads for training",
+)
+@click.option(
+    "--val-split",
+    type=float,
+    default=0.15,
+    help="Fraction of reads for validation",
+)
+@click.option(
+    "--seed",
+    type=int,
+    default=DEFAULT_SEED,
+    help="Random seed for reproducibility",
+)
+def merge_and_split(input_chunks, output_dir, train_split, val_split, seed):
+    """Merge multiple chunk files and split at read level to prevent data leakage.
+
+    This command implements the correct workflow for multi-sample datasets:
+    1. Merge all chunks from different samples
+    2. Split merged data at the READ level into train/val/test
+
+    This prevents data leakage that can occur when splitting each sample
+    independently and then merging the splits.
+    """
+    from leech.data_prep import merge_and_split_chunks, save_chunks
+
+    logger.info("Merging and splitting chunks at read level")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Generate random seed if not provided
+    if seed is None:
+        seed = generate_random_seed()
+        logger.info(f"Generated random seed: {seed}")
+    else:
+        logger.info(f"Using provided seed: {seed}")
+
+    # Save seed for reproducibility
+    seed_file = output_dir / "seed.txt"
+    with open(seed_file, "w") as f:
+        f.write(f"{seed}\n")
+
+    # Set random seed
+    random.seed(seed)
+    np.random.seed(seed)
+
+    # Merge and split at read level
+    train_chunks, val_chunks, test_chunks = merge_and_split_chunks(
+        list(input_chunks), train_frac=train_split, val_frac=val_split, seed=seed
     )
 
-    # Display split statistics in a table
-    n_total = len(chunks)
-    table = Table(title="Data Split (Read-Level)", show_header=True, header_style="bold magenta")
+    # Display statistics
+    n_total = len(train_chunks) + len(val_chunks) + len(test_chunks)
+    table = Table(title="Merged Data Split (Read-Level)", show_header=True, header_style="bold magenta")
     table.add_column("Split", style="cyan")
-    table.add_column("Count", justify="right", style="green")
+    table.add_column("Chunks", justify="right", style="green")
     table.add_column("Percentage", justify="right", style="yellow")
 
     table.add_row("Train", str(len(train_chunks)), f"{len(train_chunks) / n_total * 100:.1f}%")
@@ -292,23 +409,12 @@ def prepare(
 
     console.print(table)
 
-    # Save chunks
-    if train_chunks:
-        train_file = output_dir / "train.npz"
-        save_chunks(train_chunks, train_file)
-        logger.info(f"Saved train to {train_file}")
+    # Save splits
+    save_chunks(train_chunks, output_dir / "train.npz")
+    save_chunks(val_chunks, output_dir / "val.npz")
+    save_chunks(test_chunks, output_dir / "test.npz")
 
-    if val_chunks:
-        val_file = output_dir / "val.npz"
-        save_chunks(val_chunks, val_file)
-        logger.info(f"Saved val to {val_file}")
-
-    if test_chunks:
-        test_file = output_dir / "test.npz"
-        save_chunks(test_chunks, test_file)
-        logger.info(f"Saved test to {test_file}")
-
-    console.print("[bold green]Data preparation complete![/bold green]")
+    console.print("[bold green]Merge and split complete![/bold green]")
 
 
 @cli.command()
