@@ -12,8 +12,10 @@ from leech.data_prep import (
     LeechRead,
     encode_kmer,
     extract_training_chunks,
+    find_motif_in_reference,
     int_to_seq,
     load_chunks,
+    map_reference_to_query_coords,
     one_hot_encode_sequence,
     save_chunks,
     seq_to_int,
@@ -362,6 +364,178 @@ class TestDataPrepEdgeCases:
         chunk = leech_read.get_chunk(base_idx=10)
         if chunk is not None:
             assert chunk["features"].size == 0  # Empty array
+
+
+class TestReferenceBasedMotifSearch:
+    """Test reference-based motif search functions."""
+
+    def test_find_motif_in_reference_basic(self):
+        """Test finding a motif in a reference sequence."""
+        ref_seq = "ACGTACGTCCAACGT"
+        motif = "CCA"
+        ref_start = 0
+        ref_end = len(ref_seq)
+
+        positions = find_motif_in_reference(ref_seq, motif, ref_start, ref_end)
+
+        # Should find "CCA" at position 8
+        assert 8 in positions
+        assert len(positions) >= 1
+
+    def test_find_motif_in_reference_multiple(self):
+        """Test finding multiple occurrences of motif."""
+        ref_seq = "CCAACGTCCAACGTCCA"
+        motif = "CCA"
+        ref_start = 0
+        ref_end = len(ref_seq)
+
+        positions = find_motif_in_reference(ref_seq, motif, ref_start, ref_end)
+
+        # Should find at positions 0, 7, 14
+        assert len(positions) == 3
+        assert 0 in positions
+        assert 7 in positions
+        assert 14 in positions
+
+    def test_find_motif_in_reference_region(self):
+        """Test finding motif only within specified region."""
+        ref_seq = "ACGTCCAACGTCCA"
+        motif = "CCA"
+        ref_start = 5  # Start after first CCA
+        ref_end = len(ref_seq)
+
+        positions = find_motif_in_reference(ref_seq, motif, ref_start, ref_end)
+
+        # Should only find the second CCA at position 11
+        assert 11 in positions
+        assert 4 not in positions  # First CCA is before ref_start
+
+    def test_find_motif_in_reference_not_found(self):
+        """Test when motif is not found."""
+        ref_seq = "ACGTACGTACGT"
+        motif = "TTT"
+        ref_start = 0
+        ref_end = len(ref_seq)
+
+        positions = find_motif_in_reference(ref_seq, motif, ref_start, ref_end)
+
+        assert len(positions) == 0
+
+
+class TestCIGARMapping:
+    """Test CIGAR string coordinate mapping."""
+
+    def test_map_reference_to_query_all_matches(self):
+        """Test mapping with simple match CIGAR (all M operations)."""
+        # Create mock alignment with CIGAR: 20M
+        import pysam
+
+        # Create a mock alignment
+        aln = pysam.AlignedSegment()
+        aln.reference_start = 100
+        aln.query_alignment_start = 0
+        aln.cigartuples = [(0, 20)]  # 20M (BAM_CMATCH)
+        # reference_end is automatically calculated from CIGAR: 100 + 20 = 120
+
+        # Map reference positions 105-110 to query
+        result = map_reference_to_query_coords(aln, 105, 110, skip_indels=False)
+
+        assert result is not None
+        query_start, query_end = result
+        # With all matches, query positions = ref positions - ref_start
+        assert query_start == 5  # 105 - 100
+        assert query_end == 10  # 110 - 100
+
+    def test_map_reference_to_query_with_insertion(self):
+        """Test mapping when there's an insertion in the motif region."""
+        import pysam
+
+        # CIGAR: 10M 3I 10M (insertion in the middle)
+        aln = pysam.AlignedSegment()
+        aln.reference_start = 100
+        aln.query_alignment_start = 0
+        aln.cigartuples = [(0, 10), (1, 3), (0, 10)]  # 10M 3I 10M
+        # reference_end = 100 + 10 + 10 = 120 (insertion doesn't consume ref)
+
+        # Map across the insertion (ref 108-112 includes the insertion point)
+        result = map_reference_to_query_coords(aln, 108, 112, skip_indels=True)
+
+        # Should return None when skip_indels=True
+        assert result is None
+
+    def test_map_reference_to_query_with_deletion(self):
+        """Test mapping when there's a deletion in the motif region."""
+        import pysam
+
+        # CIGAR: 10M 3D 10M (deletion in the middle)
+        aln = pysam.AlignedSegment()
+        aln.reference_start = 100
+        aln.query_alignment_start = 0
+        aln.cigartuples = [(0, 10), (2, 3), (0, 10)]  # 10M 3D 10M
+        # reference_end = 100 + 10 + 3 + 10 = 123 (deletion consumes ref)
+
+        # Map across the deletion (ref 108-115 includes the deletion)
+        result = map_reference_to_query_coords(aln, 108, 115, skip_indels=True)
+
+        # Should return None when skip_indels=True
+        assert result is None
+
+    def test_map_reference_to_query_skip_indels_false(self):
+        """Test that mapping works with skip_indels=False even with indels."""
+        import pysam
+
+        # CIGAR: 10M 3I 10M
+        aln = pysam.AlignedSegment()
+        aln.reference_start = 100
+        aln.query_alignment_start = 0
+        aln.cigartuples = [(0, 10), (1, 3), (0, 10)]  # 10M 3I 10M
+        # reference_end = 120
+
+        # Map a region before the insertion
+        result = map_reference_to_query_coords(aln, 102, 105, skip_indels=False)
+
+        assert result is not None
+        query_start, query_end = result
+        assert query_start == 2  # 102 - 100
+        assert query_end == 5  # 105 - 100
+
+    def test_map_reference_to_query_out_of_bounds(self):
+        """Test mapping when requested region is outside aligned region."""
+        import pysam
+
+        aln = pysam.AlignedSegment()
+        aln.reference_start = 100
+        aln.query_alignment_start = 0
+        aln.cigartuples = [(0, 20)]  # 20M
+        # reference_end = 120
+
+        # Try to map region before alignment starts
+        result = map_reference_to_query_coords(aln, 50, 55, skip_indels=False)
+        assert result is None
+
+        # Try to map region after alignment ends
+        result = map_reference_to_query_coords(aln, 150, 155, skip_indels=False)
+        assert result is None
+
+    def test_map_reference_to_query_with_soft_clip(self):
+        """Test mapping with soft-clipped bases."""
+        import pysam
+
+        # CIGAR: 5S 15M 5S (soft clips at both ends)
+        aln = pysam.AlignedSegment()
+        aln.reference_start = 100
+        aln.query_alignment_start = 5  # Starts after 5S
+        aln.cigartuples = [(4, 5), (0, 15), (4, 5)]  # 5S 15M 5S
+        # reference_end = 100 + 15 = 115 (only 15M consumes reference)
+
+        # Map within the matched region
+        result = map_reference_to_query_coords(aln, 105, 110, skip_indels=False)
+
+        assert result is not None
+        query_start, query_end = result
+        # Query positions account for soft clip offset
+        assert query_start == 10  # 5 (soft clip) + 5 (105-100)
+        assert query_end == 15  # 5 (soft clip) + 10 (110-100)
 
 
 if __name__ == "__main__":
