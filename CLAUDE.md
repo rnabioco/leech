@@ -181,8 +181,11 @@ The Snakemake workflow has been moved to a separate repository. The leech librar
 1. **Move table requirement**: BAM files MUST have `mv` and `ns` tags (from dorado/guppy basecaller)
 2. **Read ID matching**: POD5 read IDs must match BAM query names exactly
 3. **Motif-based extraction**: Training focuses on specific motifs (e.g., "CCAGGC" for tRNA); motif_offset specifies the focus base within the motif
-4. **Edge handling**: Chunks require sufficient context (default: 200 samples left/right for signal, 5 bases for k-mer)
-5. **Feature alignment**: All three model inputs (signal, sequence, features) must be temporally aligned after convolution layers
+   - **Reference-based search (default)**: Searches for motif in reference sequence, maps to query via CIGAR. Avoids bias from basecalling errors at modification sites.
+   - **Basecalled search**: Searches in basecalled sequence (backward compatible). Use `--motif-reference bam` to enable.
+4. **Reference sequences**: For reference-based motif search, BAM must contain @SQ sequences in header OR provide `--reference-fasta` path
+5. **Edge handling**: Chunks require sufficient context (default: 200 samples left/right for signal, 5 bases for k-mer)
+6. **Feature alignment**: All three model inputs (signal, sequence, features) must be temporally aligned after convolution layers
 
 ## Dependencies
 
