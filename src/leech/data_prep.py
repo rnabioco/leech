@@ -5,9 +5,10 @@ Adapted from Remora but modernized with NumPy arrays and type hints.
 """
 
 import logging
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pysam
@@ -766,16 +767,18 @@ def split_chunks_by_read(
 
 def merge_and_split_chunks(
     input_paths: list[Path],
+    output_dir: Path | None = None,
     train_frac: float = 0.7,
     val_frac: float = 0.15,
     seed: int | None = None,
-) -> tuple[list[dict], list[dict], list[dict]]:
+) -> tuple[list[dict], list[dict], list[dict]] | dict[str, Any]:
     """
     Merge multiple chunk files and split at read level to prevent data leakage.
 
     This implements the correct workflow for multi-sample datasets:
     1. Load and merge all chunks from different samples
     2. Split merged data at the READ level into train/val/test
+    3. Optionally save splits to disk
 
     This prevents data leakage that occurs when splitting each sample independently
     and then merging the splits, which can allow reads from the same molecule to
@@ -786,17 +789,27 @@ def merge_and_split_chunks(
 
     Args:
         input_paths: List of paths to .npz chunk files to merge
+        output_dir: Directory to save splits (if None, only return chunks without saving)
         train_frac: Fraction of reads for training
         val_frac: Fraction of reads for validation
         seed: Random seed for reproducibility
 
     Returns:
-        Tuple of (train_chunks, val_chunks, test_chunks)
+        If output_dir is None: Tuple of (train_chunks, val_chunks, test_chunks)
+        If output_dir provided: Dictionary with statistics:
+        {
+            'n_total': int,
+            'n_train': int,
+            'n_val': int,
+            'n_test': int,
+            'output_files': {'train': Path, 'val': Path, 'test': Path}
+        }
 
     Example:
         >>> # Merge charged and uncharged samples, then split
-        >>> train, val, test = merge_and_split_chunks(
+        >>> result = merge_and_split_chunks(
         ...     [Path("charged_all.npz"), Path("uncharged_all.npz")],
+        ...     output_dir=Path("merged"),
         ...     train_frac=0.7,
         ...     val_frac=0.15,
         ...     seed=42
@@ -804,8 +817,19 @@ def merge_and_split_chunks(
     """
     import random
 
+    from leech.util import setup_random_seed
+
     if train_frac + val_frac > 1.0:
         raise ValueError(f"train_frac ({train_frac}) + val_frac ({val_frac}) must be <= 1.0")
+
+    # Setup seed and output directory if provided
+    if output_dir is not None:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        setup_random_seed(seed, output_dir)
+    elif seed is not None:
+        # If no output_dir but seed provided, just set the seed
+        random.seed(seed)
+        logger.info(f"Using provided seed: {seed}")
 
     logger.info(f"Merging {len(input_paths)} chunk files (memory-efficient mode)")
 
@@ -872,12 +896,41 @@ def merge_and_split_chunks(
         # Clear chunks to free memory before loading next file
         del chunks
 
+    n_total = len(train_chunks) + len(val_chunks) + len(test_chunks)
     logger.info("Final chunk distribution:")
     logger.info(f"  Train: {len(train_chunks)} chunks")
     logger.info(f"  Val: {len(val_chunks)} chunks")
     logger.info(f"  Test: {len(test_chunks)} chunks")
 
-    return train_chunks, val_chunks, test_chunks
+    # If output_dir provided, save splits and return statistics
+    if output_dir is not None:
+        train_file = output_dir / "train.npz"
+        val_file = output_dir / "val.npz"
+        test_file = output_dir / "test.npz"
+
+        save_chunks(train_chunks, train_file)
+        logger.info(f"Saved {len(train_chunks)} train chunks to {train_file}")
+
+        save_chunks(val_chunks, val_file)
+        logger.info(f"Saved {len(val_chunks)} val chunks to {val_file}")
+
+        save_chunks(test_chunks, test_file)
+        logger.info(f"Saved {len(test_chunks)} test chunks to {test_file}")
+
+        return {
+            "n_total": n_total,
+            "n_train": len(train_chunks),
+            "n_val": len(val_chunks),
+            "n_test": len(test_chunks),
+            "output_files": {
+                "train": train_file,
+                "val": val_file,
+                "test": test_file,
+            },
+        }
+    else:
+        # Legacy behavior: return tuple of chunks without saving
+        return train_chunks, val_chunks, test_chunks
 
 
 def save_chunks(chunks: list[dict], output_path: Path) -> None:
@@ -992,3 +1045,139 @@ def load_chunks(input_path: Path) -> list[dict]:
             chunks.append(chunk)
 
     return chunks
+
+
+def prepare_training_data_with_split(
+    pod5_path: Path,
+    bam_path: Path,
+    output_dir: Path,
+    motif: str | None = None,
+    motif_offset: int = 0,
+    motif_reference: str = "fasta",
+    reference_fasta: Path | None = None,
+    skip_motif_indels: bool = True,
+    label: int = 0,
+    min_mapq: int = 10,
+    feature_set: str = "signal+dwell+levels",
+    train_split: float = 0.7,
+    val_split: float = 0.15,
+    seed: int = 42,
+    no_split: bool = False,
+    progress_callback: Callable[[int], None] | None = None,
+) -> dict[str, Any]:
+    """Prepare training data from POD5/BAM files with optional splitting.
+
+    This function handles the full pipeline:
+    1. Setup random seed for reproducibility
+    2. Load reference sequences if needed
+    3. Extract training chunks from reads
+    4. Split at read level (if requested)
+    5. Save to disk
+
+    Args:
+        pod5_path: Path to POD5 file
+        bam_path: Path to BAM file
+        output_dir: Directory for output files
+        motif: Sequence motif to extract
+        motif_offset: Offset within motif for focus base
+        motif_reference: Where to search for motif ("fasta" or "bam")
+        reference_fasta: External reference FASTA file
+        skip_motif_indels: Skip reads with indels in motif region
+        label: Label for all chunks (0=uncharged, 1=charged)
+        min_mapq: Minimum mapping quality
+        feature_set: Feature set to extract (not currently used, reserved for future)
+        train_split: Fraction for training
+        val_split: Fraction for validation
+        seed: Random seed
+        no_split: If True, save all chunks without splitting
+        progress_callback: Optional callback(n_chunks) for progress updates
+
+    Returns:
+        Dictionary with statistics:
+        {
+            'n_chunks': int,
+            'n_train': int,
+            'n_val': int,
+            'n_test': int,
+            'output_files': {'train': Path, 'val': Path, 'test': Path} or {'all': Path}
+        }
+    """
+    from leech.util import setup_random_seed
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Setup seed
+    setup_random_seed(seed, output_dir)
+
+    # Load reference sequences if needed
+    reference_sequences = None
+    if motif_reference == "fasta":
+        logger.info("Loading reference sequences for reference-based motif search")
+        reference_sequences = get_reference_sequences(bam_path, reference_fasta)
+
+    # Extract chunks
+    logger.info("Extracting chunks...")
+    chunks = []
+    for read in iter_bam_with_pod5(bam_path, pod5_path, min_mapq=min_mapq):
+        read_chunks = extract_training_chunks(
+            read,
+            motif=motif,
+            motif_offset=motif_offset,
+            label=label,
+            motif_reference=motif_reference,
+            reference_sequences=reference_sequences,
+            skip_motif_indels=skip_motif_indels,
+        )
+        chunks.extend(read_chunks)
+
+        # Progress callback
+        if progress_callback:
+            progress_callback(len(chunks))
+
+    logger.info(f"Extracted {len(chunks)} chunks")
+
+    # Save or split
+    if no_split:
+        all_file = output_dir / "all.npz"
+        save_chunks(chunks, all_file)
+        logger.info(f"Saved all chunks to {all_file}")
+        return {
+            "n_chunks": len(chunks),
+            "n_train": 0,
+            "n_val": 0,
+            "n_test": 0,
+            "output_files": {"all": all_file},
+        }
+    else:
+        # Split at read level
+        train_chunks, val_chunks, test_chunks = split_chunks_by_read(
+            chunks, train_frac=train_split, val_frac=val_split, seed=seed
+        )
+
+        # Save splits
+        output_files = {}
+        if train_chunks:
+            train_file = output_dir / "train.npz"
+            save_chunks(train_chunks, train_file)
+            output_files["train"] = train_file
+            logger.info(f"Saved {len(train_chunks)} train chunks to {train_file}")
+
+        if val_chunks:
+            val_file = output_dir / "val.npz"
+            save_chunks(val_chunks, val_file)
+            output_files["val"] = val_file
+            logger.info(f"Saved {len(val_chunks)} val chunks to {val_file}")
+
+        if test_chunks:
+            test_file = output_dir / "test.npz"
+            save_chunks(test_chunks, test_file)
+            output_files["test"] = test_file
+            logger.info(f"Saved {len(test_chunks)} test chunks to {test_file}")
+
+        return {
+            "n_chunks": len(chunks),
+            "n_train": len(train_chunks),
+            "n_val": len(val_chunks),
+            "n_test": len(test_chunks),
+            "output_files": output_files,
+        }
