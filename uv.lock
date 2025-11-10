@@ -497,7 +497,6 @@ dependencies = [
     { name = "snakemake" },
     { name = "snakemake-executor-plugin-slurm" },
     { name = "torch" },
-    { name = "tqdm" },
 ]
 
 [package.optional-dependencies]
@@ -525,7 +524,6 @@ requires-dist = [
     { name = "snakemake", specifier = ">=9.0.0" },
     { name = "snakemake-executor-plugin-slurm", specifier = ">=1.9.2" },
     { name = "torch", specifier = ">=2.5.0" },
-    { name = "tqdm", specifier = ">=4.65.0" },
 ]
 provides-extras = ["dev"]
 
