@@ -39,7 +39,6 @@ rc.STYLE_ERRORS_SUGGESTION = "magenta italic"
 rc.ERRORS_SUGGESTION = "Try running the '--help' flag for more information."
 rc.ERRORS_EPILOGUE = ""
 rc.MAX_WIDTH = 100
-rc.USE_MARKDOWN = True
 
 # ASCII Logo
 LOGO = """
@@ -70,8 +69,7 @@ def display_logo():
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
 @click.version_option(version="0.1.0", prog_name="leech")
 def cli():
-    """
-    [cyan]LEECH[/cyan] - Learning Enhanced Aminoacylation Classification from Hanopore signals
+    """LEECH - Learning Enhanced Aminoacylation Classification from Hanopore signals
 
     Enhanced classification from nanopore signals for aa-tRNA-seq experiments.
     """
