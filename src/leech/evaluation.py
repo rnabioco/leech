@@ -7,8 +7,8 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from rich.progress import Progress
 from torch.utils.data import DataLoader
-from tqdm import tqdm
 
 from leech.dataset import LeechDataset, collate_fn
 from leech.models.inference_wrapper import ModelInferenceWrapper
@@ -81,20 +81,25 @@ def evaluate_model(
 
     model.eval()
     with torch.no_grad():
-        for batch in tqdm(test_loader, desc="Evaluating"):
-            # Move labels to device
-            labels = batch["label"].to(device)
+        with Progress() as progress:
+            task = progress.add_task("[cyan]Evaluating...", total=len(test_loader))
 
-            # Forward pass (wrapper handles moving tensors and calling model correctly)
-            logits = model_wrapper.forward_batch(batch, device)
+            for batch in test_loader:
+                # Move labels to device
+                labels = batch["label"].to(device)
 
-            # Get predictions
-            probs = torch.sigmoid(logits).cpu().numpy()
-            preds = (probs > 0.5).astype(int)
+                # Forward pass (wrapper handles moving tensors and calling model correctly)
+                logits = model_wrapper.forward_batch(batch, device)
 
-            all_labels.extend(labels.cpu().numpy().flatten())
-            all_probs.extend(probs.flatten())
-            all_preds.extend(preds.flatten())
+                # Get predictions
+                probs = torch.sigmoid(logits).cpu().numpy()
+                preds = (probs > 0.5).astype(int)
+
+                all_labels.extend(labels.cpu().numpy().flatten())
+                all_probs.extend(probs.flatten())
+                all_preds.extend(preds.flatten())
+
+                progress.update(task, advance=1)
 
     # Compute metrics
     all_labels_arr = np.array(all_labels)

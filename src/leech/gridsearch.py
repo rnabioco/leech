@@ -14,11 +14,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+from rich.console import Console
+from rich.table import Table
 
 from leech.data_prep import extract_training_chunks, iter_bam_with_pod5, save_chunks
 from leech.training import train_model
 
 logger = logging.getLogger("leech.gridsearch")
+console = Console()
 
 
 @dataclass
@@ -303,21 +306,57 @@ def run_grid_search(config: GridSearchConfig) -> Path:
         summary_path = config.output_dir / "grid_summary.csv"
         save_grid_summary(results, summary_path)
 
-    # Print summary
-    logger.info("\n" + "=" * 80)
-    logger.info("Grid Search Complete!")
-    logger.info("=" * 80)
+    # Print summary with Rich tables
+    console.print("\n[bold green]Grid Search Complete![/bold green]\n")
 
     successful_results = [r for r in results if r.get("status") == "success"]
-    if successful_results:
-        best_result = max(successful_results, key=lambda x: x.get("best_val_acc", 0))
-        logger.info("\nBest configuration:")
-        logger.info(f"  Left context: {best_result['left_context']}")
-        logger.info(f"  Right context: {best_result['right_context']}")
-        logger.info(f"  Validation accuracy: {best_result['best_val_acc']:.4f}")
-        logger.info(f"  Model: {best_result['model_path']}")
 
-    logger.info(f"\nResults saved to: {summary_path}")
+    if successful_results:
+        # Create results table
+        table = Table(title="Grid Search Results", show_header=True, header_style="bold magenta")
+        table.add_column("Left Context", justify="right", style="cyan")
+        table.add_column("Right Context", justify="right", style="cyan")
+        table.add_column("Val Accuracy", justify="right", style="green")
+        table.add_column("Val AUC", justify="right", style="yellow")
+        table.add_column("Best Epoch", justify="right", style="blue")
+        table.add_column("Training Time", justify="right", style="white")
+
+        # Sort by validation accuracy
+        sorted_results = sorted(
+            successful_results, key=lambda x: x.get("best_val_acc", 0), reverse=True
+        )
+
+        for r in sorted_results[:10]:  # Show top 10
+            table.add_row(
+                str(r["left_context"]),
+                str(r["right_context"]),
+                f"{r.get('best_val_acc', 0):.4f}",
+                f"{r.get('best_val_auc', 0):.4f}",
+                str(r.get("best_epoch", 0)),
+                f"{r.get('training_time_sec', 0):.1f}s",
+                style="bold" if r == sorted_results[0] else None,
+            )
+
+        console.print(table)
+
+        # Best configuration summary
+        best_result = sorted_results[0]
+        summary_table = Table(
+            title="Best Configuration", show_header=True, header_style="bold magenta"
+        )
+        summary_table.add_column("Parameter", style="cyan")
+        summary_table.add_column("Value", justify="right", style="green")
+
+        summary_table.add_row("Left Context", str(best_result["left_context"]))
+        summary_table.add_row("Right Context", str(best_result["right_context"]))
+        summary_table.add_row("Validation Accuracy", f"{best_result['best_val_acc']:.4f}")
+        summary_table.add_row("Validation AUC", f"{best_result.get('best_val_auc', 0):.4f}")
+        summary_table.add_row("Best Epoch", str(best_result.get("best_epoch", 0)))
+        summary_table.add_row("Model Path", str(best_result["model_path"]))
+
+        console.print(summary_table)
+
+    console.print(f"\n[bold]Results saved to:[/bold] {summary_path}")
 
     return summary_path
 
