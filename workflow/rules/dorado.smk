@@ -188,7 +188,8 @@ rule rebasecall:
             if config.get("modifications", "")
             else ""
         ),
-        dorado_opts=config.get("dorado_opts", "--emit-moves")
+        dorado_opts=config.get("dorado_opts", "--emit-moves"),
+        models_dir=config.get("dorado_models_dir", get_project_path(config.get("rebasecall_dir", "results/bam/rebasecall")) + "/.models")
     threads: config.get("rebasecall_threads", 4)
     resources:
         mem_mb=config.get("rebasecall_mem", 16000),
@@ -203,11 +204,15 @@ rule rebasecall:
             export CUDA_VISIBLE_DEVICES
         fi
 
-        # Run basecaller
+        # Create models directory on scratch
+        mkdir -p {params.models_dir}
+        echo "Using dorado models directory: {params.models_dir}" >> {log}
+
+        # Run basecaller with models directory on scratch
         if [[ -n "{params.modifications}" ]]; then
-            {params.dorado_bin} basecaller {params.model} {input} {params.dorado_opts} --modified-bases {params.modifications} 2> {log} > {output.bam}
+            {params.dorado_bin} basecaller {params.model} {input} {params.dorado_opts} --models-directory {params.models_dir} --modified-bases {params.modifications} 2> {log} > {output.bam}
         else
-            {params.dorado_bin} basecaller {params.model} {input} {params.dorado_opts} 2> {log} > {output.bam}
+            {params.dorado_bin} basecaller {params.model} {input} {params.dorado_opts} --models-directory {params.models_dir} 2> {log} > {output.bam}
         fi
         """
 

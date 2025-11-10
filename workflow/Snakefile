@@ -72,14 +72,11 @@ rule all_single_model:
     """Run single model analysis (default model from config)."""
     input:
         # Charged vs uncharged
-        expand(
-            METRICS_DIR + "/charged_vs_uncharged/{sample}_metrics.json", sample=SAMPLES
-        ),
+        METRICS_DIR + "/charged_vs_uncharged/test_metrics.json",
         # Pairwise amino acid classifiers
         expand(
-            METRICS_DIR + "/pairwise/{pair}/{sample}_metrics.json",
+            METRICS_DIR + "/pairwise/{pair}/test_metrics.json",
             pair=AA_PAIRS,
-            sample=SAMPLES,
         )
         if AA_PAIRS
         else [],
@@ -104,24 +101,27 @@ rule all_compare_models:
 
 
 rule all_prepare:
-    """Prepare all training chunks."""
+    """Prepare all training chunks (without splitting)."""
     input:
         expand(
-            CHUNKS_DIR + "/{sample}/{split}.npz",
+            CHUNKS_DIR + "/{sample}/all.npz",
             sample=SAMPLES,
-            split=["train", "val", "test"],
         ),
 
 
 rule all_merge:
-    """Merge all prepared chunks for training."""
+    """Merge all prepared chunks and split at read level."""
     input:
         CHUNKS_DIR + "/merged/charged_vs_uncharged/train.npz",
         CHUNKS_DIR + "/merged/charged_vs_uncharged/val.npz",
+        CHUNKS_DIR + "/merged/charged_vs_uncharged/test.npz",
         expand(CHUNKS_DIR + "/merged/pairwise/{pair}/train.npz", pair=AA_PAIRS)
         if AA_PAIRS
         else [],
         expand(CHUNKS_DIR + "/merged/pairwise/{pair}/val.npz", pair=AA_PAIRS)
+        if AA_PAIRS
+        else [],
+        expand(CHUNKS_DIR + "/merged/pairwise/{pair}/test.npz", pair=AA_PAIRS)
         if AA_PAIRS
         else [],
 
