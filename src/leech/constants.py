@@ -72,8 +72,8 @@ def generate_random_seed() -> int:
 
 # Inference defaults
 DEFAULT_MIN_MAPQ = 0  # Minimum mapping quality for inference
-DEFAULT_MOTIF = "CCA"  # Default motif for tRNA 3' end
-DEFAULT_MOTIF_OFFSET = 2  # Default offset within motif (0-indexed)
+DEFAULT_MOTIF = "CCAGGC"  # Default motif for tRNA 3' end (amino acid between A and G)
+DEFAULT_MOTIF_OFFSET = 2  # Default offset within motif (0-indexed, focuses on A)
 
 # Normalization methods
 NORMALIZATION_METHODS = ["median_mad", "zscore", "quantile"]
