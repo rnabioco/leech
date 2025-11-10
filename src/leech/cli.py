@@ -143,6 +143,24 @@ def cli():
     help="Offset within motif for focus base",
 )
 @click.option(
+    "--motif-reference",
+    type=click.Choice(["fasta", "bam"]),
+    default="fasta",
+    help='Where to search for motif: "fasta" (reference sequence, recommended) or "bam" (basecalled sequence)',
+)
+@click.option(
+    "--reference-fasta",
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
+    help="External reference FASTA file (if not embedded in BAM @SQ header)",
+)
+@click.option(
+    "--skip-motif-indels",
+    is_flag=True,
+    default=True,
+    help="Skip reads with indels in motif region (for motif-reference=fasta)",
+)
+@click.option(
     "--label",
     type=int,
     default=0,
@@ -184,6 +202,9 @@ def prepare(
     output_dir,
     motif,
     motif_offset,
+    motif_reference,
+    reference_fasta,
+    skip_motif_indels,
     label,
     min_mapq,
     feature_set,
@@ -192,11 +213,17 @@ def prepare(
     seed,
 ):
     """Prepare training data from POD5 and BAM files."""
-    from leech.data_prep import extract_training_chunks, iter_bam_with_pod5, save_chunks
+    from leech.data_prep import (
+        extract_training_chunks,
+        get_reference_sequences,
+        iter_bam_with_pod5,
+        save_chunks,
+    )
 
     display_logo()
 
     logger.info(f"Preparing data from {pod5} and {bam}")
+    logger.info(f"Motif reference mode: {motif_reference}")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Generate random seed if not provided
@@ -216,6 +243,12 @@ def prepare(
     random.seed(seed)
     np.random.seed(seed)
 
+    # Load reference sequences if using reference-based motif search
+    reference_sequences = None
+    if motif_reference == "fasta":
+        logger.info("Loading reference sequences for reference-based motif search")
+        reference_sequences = get_reference_sequences(bam, reference_fasta)
+
     # Extract chunks with progress bar
     chunks = []
     with Progress(console=console) as progress:
@@ -223,7 +256,13 @@ def prepare(
 
         for read in iter_bam_with_pod5(bam, pod5, min_mapq=min_mapq):
             read_chunks = extract_training_chunks(
-                read, motif=motif, motif_offset=motif_offset, label=label
+                read,
+                motif=motif,
+                motif_offset=motif_offset,
+                label=label,
+                motif_reference=motif_reference,
+                reference_sequences=reference_sequences,
+                skip_motif_indels=skip_motif_indels,
             )
             chunks.extend(read_chunks)
             progress.update(task, advance=1, description=f"[cyan]Extracted {len(chunks)} chunks...")
