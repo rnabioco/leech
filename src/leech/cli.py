@@ -225,6 +225,7 @@ def prepare(
         get_reference_sequences,
         iter_bam_with_pod5,
         save_chunks,
+        validate_pod5_bam_compatibility,
     )
 
     # display_logo()
@@ -249,6 +250,28 @@ def prepare(
     # Set random seed for reproducibility
     random.seed(seed)
     np.random.seed(seed)
+
+    # Validate POD5/BAM compatibility upfront
+    console.print("\n[cyan]Validating POD5/BAM compatibility...[/cyan]")
+    validation_result = validate_pod5_bam_compatibility(bam, pod5, sample_size=1000)
+
+    # Save validation report
+    validation_file = output_dir / "pod5_bam_validation.txt"
+    with open(validation_file, "w") as f:
+        f.write(f"POD5/BAM Validation Report\n")
+        f.write(f"{'='*80}\n")
+        f.write(f"POD5 file: {pod5}\n")
+        f.write(f"BAM file:  {bam}\n\n")
+        f.write(f"Total reads in POD5: {validation_result['total_pod5_reads']:,}\n")
+        f.write(f"BAM reads sampled:   {validation_result['total_bam_reads']:,}\n")
+        f.write(f"Match rate:          {validation_result['match_rate']:.1f}%\n\n")
+        if validation_result['missing_reads']:
+            f.write(f"Sample of missing read IDs:\n")
+            for rid in validation_result['missing_reads']:
+                f.write(f"  - {rid}\n")
+
+    console.print(f"[green]Validation complete. Match rate: {validation_result['match_rate']:.1f}%[/green]")
+    logger.info(f"Saved validation report to {validation_file}")
 
     # Load reference sequences if using reference-based motif search
     reference_sequences = None

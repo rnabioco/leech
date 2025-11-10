@@ -14,6 +14,9 @@ rule prepare_chunks:
         + "/{sample}/{sample}.pod5",
         bam=get_project_path(config.get("rebasecall_dir", "results/bam/rebasecall"))
         + "/{sample}/{sample}.aligned.bam",
+        # Require inspect report to ensure POD5 merge was validated
+        inspect_report=get_project_path(config.get("pod5_dir", "results/pod5"))
+        + "/{sample}/{sample}_inspect.txt",
     output:
         all=CHUNKS_DIR + "/{sample}/all.npz",
     wildcard_constraints:

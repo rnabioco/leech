@@ -120,6 +120,88 @@ class LeechRead:
         }
 
 
+def get_pod5_read_ids(pod5_path: Path) -> set[str]:
+    """
+    Get all read IDs from a POD5 file.
+
+    Args:
+        pod5_path: Path to POD5 file
+
+    Returns:
+        Set of read IDs as strings
+    """
+    read_ids = set()
+    with DatasetReader(pod5_path) as reader:
+        for read_record in reader.reads():
+            read_ids.add(str(read_record.read_id))
+    return read_ids
+
+
+def validate_pod5_bam_compatibility(bam_path: Path, pod5_path: Path, sample_size: int = 1000) -> dict:
+    """
+    Validate that BAM and POD5 files are compatible.
+
+    Checks a sample of BAM reads to see if they exist in the POD5 file.
+    This helps identify pipeline issues before processing.
+
+    Args:
+        bam_path: Path to BAM file
+        pod5_path: Path to POD5 file
+        sample_size: Number of BAM reads to check
+
+    Returns:
+        Dictionary with validation results:
+        - total_bam_reads: Total BAM reads sampled
+        - total_pod5_reads: Total reads in POD5
+        - match_rate: Percentage of BAM reads found in POD5
+        - missing_reads: List of sample missing read IDs
+    """
+    logger.info(f"Validating POD5/BAM compatibility...")
+    logger.info(f"  POD5: {pod5_path}")
+    logger.info(f"  BAM:  {bam_path}")
+
+    # Get all POD5 read IDs
+    logger.info(f"  Loading POD5 read IDs...")
+    pod5_read_ids = get_pod5_read_ids(pod5_path)
+    logger.info(f"  Found {len(pod5_read_ids):,} reads in POD5")
+
+    # Sample BAM read IDs
+    logger.info(f"  Sampling {sample_size} reads from BAM...")
+    bam_sample = []
+    with pysam.AlignmentFile(str(bam_path), "rb") as bam:
+        for aln in bam:
+            if aln.is_unmapped or aln.is_secondary or aln.is_supplementary:
+                continue
+            if aln.query_name:
+                bam_sample.append(aln.query_name)
+                if len(bam_sample) >= sample_size:
+                    break
+
+    # Check matches
+    matches = sum(1 for read_id in bam_sample if read_id in pod5_read_ids)
+    match_rate = (matches / len(bam_sample) * 100) if bam_sample else 0
+    missing_reads = [r for r in bam_sample[:20] if r not in pod5_read_ids]
+
+    logger.info(f"  Match rate: {match_rate:.1f}% ({matches}/{len(bam_sample)})")
+
+    if match_rate < 95:
+        logger.warning(
+            f"WARNING: Only {match_rate:.1f}% of BAM reads found in POD5!\n"
+            f"  This suggests a pipeline issue. Common causes:\n"
+            f"    - POD5 merge failed or is incomplete\n"
+            f"    - BAM was basecalled from different POD5 files\n"
+            f"    - POD5 file path mismatch in pipeline\n"
+            f"  Check your merge logs and inspect report!"
+        )
+
+    return {
+        "total_pod5_reads": len(pod5_read_ids),
+        "total_bam_reads": len(bam_sample),
+        "match_rate": match_rate,
+        "missing_reads": missing_reads[:10],  # First 10 for logging
+    }
+
+
 def read_pod5_signal(pod5_path: Path, read_id: str) -> tuple[np.ndarray, dict]:
     """
     Read raw signal from POD5 file for a specific read.
@@ -154,6 +236,7 @@ def iter_bam_with_pod5(
     reference_fasta: Path | None = None,
     min_mapq: int = 0,
     require_tags: list[str] | None = None,
+    track_errors: bool = True,
 ) -> Iterator[LeechRead]:
     """
     Iterate over aligned reads, loading signal from POD5.
@@ -164,6 +247,7 @@ def iter_bam_with_pod5(
         reference_fasta: Optional reference for MD tag parsing
         min_mapq: Minimum mapping quality
         require_tags: BAM tags that must be present
+        track_errors: If True, suppress individual warnings and track errors for summary
 
     Yields:
         LeechRead objects with full feature extraction
@@ -171,6 +255,10 @@ def iter_bam_with_pod5(
     if require_tags is None:
         require_tags = ["mv", "ns"]
     bam = pysam.AlignmentFile(str(bam_path), "rb")
+
+    # Track errors for summary
+    error_counts = {"pod5_not_found": 0, "other": 0}
+    sample_missing_reads = []
 
     for aln in bam:
         # Filter alignments
@@ -231,10 +319,39 @@ def iter_bam_with_pod5(
             )
 
         except Exception as e:
-            logger.warning(f"Skipping read {aln.query_name}: {e}")
+            error_msg = str(e)
+
+            # Track POD5 not found errors separately
+            if "not found in" in error_msg:
+                error_counts["pod5_not_found"] += 1
+                if len(sample_missing_reads) < 10:
+                    sample_missing_reads.append(aln.query_name)
+                # Only log individual warnings if not tracking
+                if not track_errors:
+                    logger.warning(f"Skipping read {aln.query_name}: {e}")
+            else:
+                error_counts["other"] += 1
+                # Always log non-POD5 errors
+                logger.warning(f"Skipping read {aln.query_name}: {e}")
+
             continue
 
     bam.close()
+
+    # Log summary of errors
+    if track_errors and error_counts["pod5_not_found"] > 0:
+        logger.warning(
+            f"\n{'='*80}\n"
+            f"SUMMARY: Skipped {error_counts['pod5_not_found']} reads not found in POD5\n"
+            f"  POD5 file: {pod5_path}\n"
+            f"  Sample of missing read IDs:\n"
+            + "\n".join(f"    - {rid}" for rid in sample_missing_reads)
+            + f"\n\n  This indicates a pipeline issue. Check:\n"
+            f"    1. POD5 merge logs: Look for errors during merge\n"
+            f"    2. Inspect report: Verify read counts match\n"
+            f"    3. Pipeline paths: Ensure BAM was basecalled from this POD5\n"
+            f"{'='*80}\n"
+        )
 
 
 def extract_reference_from_bam(bam_path: Path) -> dict[str, str]:
