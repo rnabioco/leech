@@ -337,11 +337,7 @@ def map_reference_to_query_coords(
         or indels detected (when skip_indels=True)
     """
     # Check if region is within aligned portion
-    if (
-        aln.reference_end is None
-        or ref_start < aln.reference_start
-        or ref_end > aln.reference_end
-    ):
+    if aln.reference_end is None or ref_start < aln.reference_start or ref_end > aln.reference_end:
         return None
 
     # Parse CIGAR to build mapping
