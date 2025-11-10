@@ -35,10 +35,45 @@ console = Console()
 rc.USE_RICH_MARKUP = True
 rc.SHOW_ARGUMENTS = True
 rc.GROUP_ARGUMENTS_OPTIONS = True
+rc.MAX_WIDTH = 100
+
+# Error styling
 rc.STYLE_ERRORS_SUGGESTION = "magenta italic"
 rc.ERRORS_SUGGESTION = "Try running the '--help' flag for more information."
 rc.ERRORS_EPILOGUE = ""
-rc.MAX_WIDTH = 100
+
+# Color styling for help elements
+rc.STYLE_OPTION = "bold cyan"
+rc.STYLE_ARGUMENT = "bold yellow"
+rc.STYLE_COMMAND = "bold green"
+rc.STYLE_SWITCH = "bold blue"
+rc.STYLE_METAVAR = "bold yellow"
+rc.STYLE_METAVAR_SEPARATOR = "dim"
+rc.STYLE_HEADER_TEXT = "bold magenta"
+rc.STYLE_EPILOG_TEXT = "dim"
+rc.STYLE_FOOTER_TEXT = "dim"
+rc.STYLE_USAGE = "bold yellow"
+rc.STYLE_USAGE_COMMAND = "bold"
+rc.STYLE_DEPRECATED = "red"
+rc.STYLE_HELPTEXT_FIRST_LINE = ""
+rc.STYLE_HELPTEXT = "dim"
+rc.STYLE_OPTION_HELP = ""
+rc.STYLE_OPTION_DEFAULT = "dim italic"
+rc.STYLE_REQUIRED_SHORT = "bold red"
+rc.STYLE_REQUIRED_LONG = "bold red"
+
+# Table and panel styling
+rc.STYLE_OPTIONS_TABLE_LEADING = 1
+rc.STYLE_OPTIONS_TABLE_PAD_EDGE = True
+rc.STYLE_OPTIONS_TABLE_PADDING = (0, 1)
+rc.STYLE_COMMANDS_TABLE_LEADING = 1
+rc.STYLE_COMMANDS_TABLE_PAD_EDGE = True
+rc.STYLE_COMMANDS_TABLE_PADDING = (0, 1)
+
+# Additional features
+rc.SHOW_METAVARS_COLUMN = True
+rc.APPEND_METAVARS_HELP = True
+rc.USE_CLICK_SHORT_HELP = True
 
 # ASCII Logo
 LOGO = """
