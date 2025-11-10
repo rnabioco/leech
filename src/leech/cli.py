@@ -91,6 +91,25 @@ def add_prepare_parser(subparsers):
         "--motif-offset", type=int, default=0, help="Offset within motif for focus base"
     )
     parser.add_argument(
+        "--motif-reference",
+        type=str,
+        default="fasta",
+        choices=["fasta", "bam"],
+        help='Where to search for motif: "fasta" (reference sequence, recommended) or "bam" (basecalled sequence)',
+    )
+    parser.add_argument(
+        "--reference-fasta",
+        type=Path,
+        default=None,
+        help="External reference FASTA file (if not embedded in BAM @SQ header)",
+    )
+    parser.add_argument(
+        "--skip-motif-indels",
+        action="store_true",
+        default=True,
+        help="Skip reads with indels in motif region (for motif-reference=fasta)",
+    )
+    parser.add_argument(
         "--label",
         type=int,
         default=0,
@@ -216,9 +235,15 @@ def run_prepare(args):
     import numpy as np
 
     from leech.constants import generate_random_seed
-    from leech.data_prep import prepare_training_data, save_chunks
+    from leech.data_prep import (
+        extract_training_chunks,
+        get_reference_sequences,
+        iter_bam_with_pod5,
+        save_chunks,
+    )
 
     logger.info(f"Preparing data from {args.pod5} and {args.bam}")
+    logger.info(f"Motif reference mode: {args.motif_reference}")
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     # Generate random seed if not provided
@@ -239,15 +264,26 @@ def run_prepare(args):
     random.seed(seed)
     np.random.seed(seed)
 
-    # Prepare training data with statistics
-    chunks, stats = prepare_training_data(
-        bam_path=args.bam,
-        pod5_path=args.pod5,
-        motif=args.motif,
-        motif_offset=args.motif_offset,
-        label=args.label,
-        min_mapq=args.min_mapq,
-    )
+    # Load reference sequences if using reference-based motif search
+    reference_sequences = None
+    if args.motif_reference == "fasta":
+        logger.info("Loading reference sequences for reference-based motif search")
+        reference_sequences = get_reference_sequences(args.bam, args.reference_fasta)
+
+    chunks = []
+    for read in iter_bam_with_pod5(args.bam, args.pod5, min_mapq=args.min_mapq):
+        read_chunks = extract_training_chunks(
+            read,
+            motif=args.motif,
+            motif_offset=args.motif_offset,
+            label=args.label,
+            motif_reference=args.motif_reference,
+            reference_sequences=reference_sequences,
+            skip_motif_indels=args.skip_motif_indels,
+        )
+        chunks.extend(read_chunks)
+
+    logger.info(f"Extracted {len(chunks)} training chunks")
 
     # Shuffle chunks
     random.shuffle(chunks)

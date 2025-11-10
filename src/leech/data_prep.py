@@ -216,6 +216,7 @@ def iter_bam_with_pod5(
                 "reference_start": aln.reference_start,
                 "reference_end": aln.reference_end,
                 "is_reverse": aln.is_reverse,
+                "alignment": aln,  # Store alignment for reference-based motif search
             }
 
             yield LeechRead(
@@ -236,25 +237,216 @@ def iter_bam_with_pod5(
     bam.close()
 
 
+def extract_reference_from_bam(bam_path: Path) -> dict[str, str]:
+    """
+    Extract reference sequences from BAM header @SQ records.
+
+    Args:
+        bam_path: Path to BAM file
+
+    Returns:
+        Dictionary mapping reference name to sequence
+        Empty dict if no sequences in header
+    """
+    references = {}
+
+    with pysam.AlignmentFile(str(bam_path), "rb") as bam:
+        # Check if reference sequences are in header
+        if hasattr(bam.header, "to_dict"):
+            header_dict = bam.header.to_dict()
+            for sq in header_dict.get("SQ", []):
+                ref_name = sq.get("SN")
+                ref_seq = sq.get("SQ", None)  # SQ tag contains sequence
+                if ref_name and ref_seq:
+                    references[ref_name] = ref_seq
+
+    if references:
+        logger.info(f"Extracted {len(references)} reference sequences from BAM header")
+    else:
+        logger.warning("No reference sequences found in BAM @SQ header")
+
+    return references
+
+
+def load_reference_fasta(fasta_path: Path) -> dict[str, str]:
+    """
+    Load reference sequences from FASTA file.
+
+    Args:
+        fasta_path: Path to FASTA file
+
+    Returns:
+        Dictionary mapping reference name to sequence
+    """
+    references = {}
+
+    with pysam.FastaFile(str(fasta_path)) as fasta:
+        for ref_name in fasta.references:
+            references[ref_name] = fasta.fetch(ref_name)
+
+    logger.info(f"Loaded {len(references)} reference sequences from {fasta_path}")
+    return references
+
+
+def get_reference_sequences(bam_path: Path, fasta_path: Path | None = None) -> dict[str, str]:
+    """
+    Get reference sequences, trying BAM header first, then FASTA.
+
+    Args:
+        bam_path: Path to BAM file
+        fasta_path: Optional path to FASTA file
+
+    Returns:
+        Dictionary mapping reference name to sequence
+
+    Raises:
+        ValueError: If no reference sequences available
+    """
+    # Try BAM header first
+    references = extract_reference_from_bam(bam_path)
+
+    # Fall back to FASTA if provided and BAM had no sequences
+    if not references and fasta_path:
+        logger.info("Falling back to external FASTA file")
+        references = load_reference_fasta(fasta_path)
+
+    # Error if still no references
+    if not references:
+        raise ValueError(
+            "No reference sequences found. BAM file must contain @SQ sequences "
+            "or provide --reference-fasta path."
+        )
+
+    return references
+
+
+def map_reference_to_query_coords(
+    aln: pysam.AlignedSegment, ref_start: int, ref_end: int, skip_indels: bool = True
+) -> tuple[int, int] | None:
+    """
+    Map reference coordinates to query coordinates using CIGAR string.
+
+    Args:
+        aln: Aligned segment from BAM
+        ref_start: Start position in reference (0-based)
+        ref_end: End position in reference (0-based, exclusive)
+        skip_indels: If True, return None if indels found in region
+
+    Returns:
+        Tuple of (query_start, query_end) or None if mapping fails
+        or indels detected (when skip_indels=True)
+    """
+    # Check if region is within aligned portion
+    if aln.reference_end is None or ref_start < aln.reference_start or ref_end > aln.reference_end:
+        return None
+
+    # Parse CIGAR to build mapping
+    if aln.cigartuples is None:
+        return None
+
+    ref_pos = aln.reference_start
+    query_pos = 0  # Start from beginning of query sequence
+
+    query_start = None
+    query_end = None
+    has_indel_in_region = False
+
+    for op, length in aln.cigartuples:
+        # Check if we've passed the region
+        if query_start is not None and query_end is not None:
+            break
+
+        # M/=/X: match/mismatch (consumes both)
+        if op in (0, 7, 8):  # BAM_CMATCH, BAM_CEQUAL, BAM_CDIFF
+            for _ in range(length):
+                if ref_pos == ref_start:
+                    query_start = query_pos
+                if ref_pos == ref_end - 1:
+                    query_end = query_pos + 1
+                ref_pos += 1
+                query_pos += 1
+
+        # I: insertion (consumes query only)
+        elif op == 1:  # BAM_CINS
+            if ref_pos >= ref_start and ref_pos < ref_end:
+                has_indel_in_region = True
+            query_pos += length
+
+        # D: deletion (consumes reference only)
+        elif op == 2:  # BAM_CDEL
+            if ref_pos >= ref_start and ref_pos + length > ref_start:
+                has_indel_in_region = True
+            ref_pos += length
+
+        # S: soft clip (consumes query only, not aligned)
+        elif op == 4:  # BAM_CSOFT_CLIP
+            query_pos += length
+
+        # H: hard clip (not in sequence)
+        # N: ref skip (e.g., intron)
+        # P: padding
+        # These don't affect our mapping
+
+    # Check if we found valid coordinates
+    if query_start is None or query_end is None:
+        return None
+
+    # Check indels if requested
+    if skip_indels and has_indel_in_region:
+        return None
+
+    return (query_start, query_end)
+
+
+def find_motif_in_reference(ref_seq: str, motif: str, ref_start: int, ref_end: int) -> list[int]:
+    """
+    Find all occurrences of motif in reference sequence region.
+
+    Args:
+        ref_seq: Full reference sequence
+        motif: Motif to search for
+        ref_start: Start of region to search (0-based)
+        ref_end: End of region to search (0-based, exclusive)
+
+    Returns:
+        List of reference positions where motif starts
+    """
+    positions = []
+    motif_len = len(motif)
+    search_region = ref_seq[ref_start:ref_end]
+
+    for i in range(len(search_region) - motif_len + 1):
+        if search_region[i : i + motif_len] == motif:
+            positions.append(ref_start + i)
+
+    return positions
+
+
 def extract_training_chunks(
     leech_read: LeechRead,
     motif: str | None = None,
     motif_offset: int = 0,
     label: int = 0,
+    motif_reference: str = "bam",
+    reference_sequences: dict[str, str] | None = None,
+    skip_motif_indels: bool = True,
 ) -> list[dict[str, np.ndarray | str | int | None]]:
     """
     Extract all training chunks from a read, optionally filtered by motif.
 
     Args:
         leech_read: LeechRead object
-        motif: Optional sequence motif to filter (e.g., "CCA")
+        motif: Optional sequence motif to filter (e.g., "CCAGGC")
         motif_offset: Offset within motif for focus base
         label: Label for all chunks from this read
+        motif_reference: Where to search for motif: "bam" (basecalled) or "fasta" (reference)
+        reference_sequences: Dict of reference name -> sequence (required if motif_reference="fasta")
+        skip_motif_indels: If True, skip reads with indels in motif region (only for motif_reference="fasta")
 
     Returns:
         List of chunk dictionaries
     """
-    chunks = []
+    chunks: list[dict] = []
 
     # Set labels for all bases
     leech_read.labels = np.full(leech_read.num_bases, label, dtype=np.int64)
@@ -262,13 +454,60 @@ def extract_training_chunks(
     # Find focus bases (either all or motif matches)
     if motif is None:
         focus_bases = list(range(5, leech_read.num_bases - 5))  # Avoid edges
-    else:
-        # Find motif occurrences
+    elif motif_reference == "bam":
+        # Original behavior: search in basecalled sequence
         focus_bases = []
         motif_len = len(motif)
         for i in range(len(leech_read.sequence) - motif_len + 1):
             if leech_read.sequence[i : i + motif_len] == motif:
                 focus_bases.append(i + motif_offset)
+    elif motif_reference == "fasta":
+        # New behavior: search in reference sequence, map to query
+        if reference_sequences is None:
+            raise ValueError("reference_sequences required when motif_reference='fasta'")
+
+        # Get alignment from metadata
+        aln = leech_read.metadata.get("alignment")
+        if aln is None:
+            raise ValueError("Alignment object not found in LeechRead.metadata")
+
+        # Get reference sequence
+        ref_name = aln.reference_name
+        if ref_name not in reference_sequences:
+            logger.warning(f"Reference {ref_name} not found in reference sequences, skipping read")
+            return chunks
+
+        ref_seq = reference_sequences[ref_name]
+
+        # Find motif in reference (within aligned region)
+        ref_start = aln.reference_start
+        ref_end = aln.reference_end
+        motif_positions = find_motif_in_reference(ref_seq, motif, ref_start, ref_end)
+
+        # Map each motif position to query coordinates
+        focus_bases = []
+        motif_len = len(motif)
+        for ref_motif_start in motif_positions:
+            # Map the motif region to query
+            ref_motif_end = ref_motif_start + motif_len
+            query_coords = map_reference_to_query_coords(
+                aln, ref_motif_start, ref_motif_end, skip_indels=skip_motif_indels
+            )
+
+            if query_coords is None:
+                continue  # Skip if indels or mapping failed
+
+            query_start, query_end = query_coords
+
+            # Calculate query position of focus base
+            # The focus base is offset from the start of the motif
+            query_focus_pos = query_start + motif_offset
+
+            # Sanity check: ensure focus position is within the motif region
+            if query_start <= query_focus_pos < query_end:
+                focus_bases.append(query_focus_pos)
+    else:
+        raise ValueError(f"Invalid motif_reference: {motif_reference}. Must be 'bam' or 'fasta'")
 
     # Extract chunks
     for base_idx in focus_bases:

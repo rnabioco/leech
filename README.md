@@ -60,8 +60,12 @@ uv run leech prepare \
   --feature-set signal+dwell+levels \
   --motif CCAGGC \
   --motif-offset 2 \
+  --motif-reference fasta \
+  --skip-motif-indels \
   --label 1
 ```
+
+**Note**: By default, `--motif-reference fasta` searches for the motif in the reference sequence (from BAM @SQ header or `--reference-fasta`) and maps to query coordinates using CIGAR. This avoids training data bias from basecalling errors at modification sites. Use `--motif-reference bam` for the old behavior (search in basecalled sequence).
 
 #### 2. Train model
 
