@@ -94,7 +94,7 @@ uv sync --upgrade
    - Normalize raw signal using median-MAD
 3. **Data Preparation** (`data_prep.py`):
    - Iterate BAM + POD5 together via `iter_bam_with_pod5()`
-   - Extract training chunks centered on motifs (e.g., "CCA" for tRNA 3' end)
+   - Extract training chunks centered on motifs (e.g., "CCAGGC" for tRNA 3' end)
    - Create `LeechRead` objects with all features
 4. **Model Training**: PyTorch models with three input branches (signal, sequence, dwell/level features)
 5. **Output**: Trained models (.pt files) and predictions (BAM with modification probabilities)
@@ -180,7 +180,7 @@ The Snakemake workflow has been moved to a separate repository. The leech librar
 
 1. **Move table requirement**: BAM files MUST have `mv` and `ns` tags (from dorado/guppy basecaller)
 2. **Read ID matching**: POD5 read IDs must match BAM query names exactly
-3. **Motif-based extraction**: Training focuses on specific motifs (e.g., "CCA" for tRNA); motif_offset specifies the focus base within the motif
+3. **Motif-based extraction**: Training focuses on specific motifs (e.g., "CCAGGC" for tRNA); motif_offset specifies the focus base within the motif
 4. **Edge handling**: Chunks require sufficient context (default: 200 samples left/right for signal, 5 bases for k-mer)
 5. **Feature alignment**: All three model inputs (signal, sequence, features) must be temporally aligned after convolution layers
 

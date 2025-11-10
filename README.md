@@ -58,7 +58,7 @@ uv run leech prepare \
   --bam alignments.bam \
   --output-dir chunks/ \
   --feature-set signal+dwell+levels \
-  --motif CCA \
+  --motif CCAGGC \
   --motif-offset 2 \
   --label 1
 ```

@@ -85,7 +85,7 @@ def add_prepare_parser(subparsers):
         "--motif",
         type=str,
         default=None,
-        help='Sequence motif to extract (e.g., "CCA" for tRNA 3\' end)',
+        help='Sequence motif to extract (e.g., "CCAGGC" for tRNA 3\' end)',
     )
     parser.add_argument(
         "--motif-offset", type=int, default=0, help="Offset within motif for focus base"
