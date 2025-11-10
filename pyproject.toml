@@ -29,6 +29,9 @@ dependencies = [
     "snakefmt>=0.10.3",
     "snakemake>=9.0.0",
     "snakemake-executor-plugin-slurm>=1.9.2",
+    "click>=8.1.0",
+    "rich>=13.0.0",
+    "rich-click>=1.7.0",
 ]
 
 [project.optional-dependencies]

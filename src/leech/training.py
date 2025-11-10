@@ -10,15 +10,17 @@ from typing import Any
 import numpy as np
 import torch
 import torch.nn as nn
+from rich.console import Console
+from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeRemainingColumn
 from sklearn.metrics import accuracy_score, roc_auc_score
 from torch.utils.data import DataLoader
-from tqdm import tqdm
 
 from leech.dataset import LeechDataset, collate_fn
 from leech.models import get_model
 from leech.models.inference_wrapper import ModelInferenceWrapper
 
 logger = logging.getLogger("leech.training")
+console = Console()
 
 
 class Trainer:
@@ -79,9 +81,15 @@ class Trainer:
         if self.output_dir:
             self.output_dir.mkdir(parents=True, exist_ok=True)
 
-    def train_epoch(self) -> tuple[float, float]:
+    def train_epoch(
+        self, progress: Progress | None = None, task_id: int | None = None
+    ) -> tuple[float, float]:
         """
         Train for one epoch.
+
+        Args:
+            progress: Rich Progress instance (optional)
+            task_id: Progress task ID (optional)
 
         Returns:
             Tuple of (average_loss, accuracy)
@@ -91,7 +99,7 @@ class Trainer:
         all_preds: list[float] = []
         all_labels: list[float] = []
 
-        for batch in tqdm(self.train_loader, desc="Training", leave=False):
+        for batch in self.train_loader:
             # Move labels to device
             labels = batch["label"].to(self.device)
 
@@ -112,6 +120,10 @@ class Trainer:
             all_preds.extend(preds.flatten())
             all_labels.extend(labels.cpu().numpy().flatten())
 
+            # Update progress if provided
+            if progress is not None and task_id is not None:
+                progress.update(task_id, advance=1)
+
         # Compute metrics
         avg_loss = total_loss / len(self.train_loader)
         all_preds_binary = (np.array(all_preds) > 0.5).astype(int)
@@ -119,9 +131,15 @@ class Trainer:
 
         return avg_loss, accuracy
 
-    def validate(self) -> tuple[float, float, float]:
+    def validate(
+        self, progress: Progress | None = None, task_id: int | None = None
+    ) -> tuple[float, float, float]:
         """
         Validate model.
+
+        Args:
+            progress: Rich Progress instance (optional)
+            task_id: Progress task ID (optional)
 
         Returns:
             Tuple of (average_loss, accuracy, roc_auc)
@@ -135,7 +153,7 @@ class Trainer:
         all_labels: list[float] = []
 
         with torch.no_grad():
-            for batch in tqdm(self.val_loader, desc="Validation", leave=False):
+            for batch in self.val_loader:
                 # Move labels to device
                 labels = batch["label"].to(self.device)
 
@@ -150,6 +168,10 @@ class Trainer:
                 preds = torch.sigmoid(logits).cpu().numpy()
                 all_preds.extend(preds.flatten())
                 all_labels.extend(labels.cpu().numpy().flatten())
+
+                # Update progress if provided
+                if progress is not None and task_id is not None:
+                    progress.update(task_id, advance=1)
 
         # Compute metrics
         avg_loss = total_loss / len(self.val_loader)
@@ -172,43 +194,74 @@ class Trainer:
         """
         patience_counter = 0
 
-        for epoch in range(1, epochs + 1):
-            logger.info(f"Epoch {epoch}/{epochs}")
+        # Create progress bars
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            TimeRemainingColumn(),
+            console=console,
+        ) as progress:
+            epoch_task = progress.add_task("[cyan]Training epochs...", total=epochs)
 
-            # Train
-            train_loss, train_acc = self.train_epoch()
-            self.history["train_loss"].append(train_loss)
-            self.history["train_acc"].append(train_acc)
-
-            logger.info(f"Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f}")
-
-            # Validate
-            if self.val_loader is not None:
-                val_loss, val_acc, val_auc = self.validate()
-                self.history["val_loss"].append(val_loss)
-                self.history["val_acc"].append(val_acc)
-                self.history["val_auc"].append(val_auc)
-
-                logger.info(
-                    f"Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f} | Val AUC: {val_auc:.4f}"
+            for epoch in range(1, epochs + 1):
+                # Create tasks for this epoch
+                train_task = progress.add_task(
+                    f"[green]Epoch {epoch}/{epochs} - Training", total=len(self.train_loader)
                 )
 
-                # Save best model
-                if val_acc > self.best_val_acc:
-                    self.best_val_acc = val_acc
-                    self.best_epoch = epoch
-                    patience_counter = 0
+                # Train
+                train_loss, train_acc = self.train_epoch(progress, train_task)
+                self.history["train_loss"].append(train_loss)
+                self.history["train_acc"].append(train_acc)
 
-                    if self.output_dir:
-                        self.save_checkpoint("model_best.pt")
-                        logger.info(f"Saved best model (val_acc: {val_acc:.4f})")
+                progress.remove_task(train_task)
+
+                # Validate
+                if self.val_loader is not None:
+                    val_task = progress.add_task(
+                        f"[yellow]Epoch {epoch}/{epochs} - Validation", total=len(self.val_loader)
+                    )
+                    val_loss, val_acc, val_auc = self.validate(progress, val_task)
+                    self.history["val_loss"].append(val_loss)
+                    self.history["val_acc"].append(val_acc)
+                    self.history["val_auc"].append(val_auc)
+
+                    progress.remove_task(val_task)
+
+                    # Display metrics
+                    console.print(
+                        f"[cyan]Epoch {epoch}/{epochs}[/cyan] | "
+                        f"Train Loss: {train_loss:.4f} Acc: {train_acc:.4f} | "
+                        f"Val Loss: {val_loss:.4f} Acc: {val_acc:.4f} AUC: {val_auc:.4f}"
+                    )
+
+                    # Save best model
+                    if val_acc > self.best_val_acc:
+                        self.best_val_acc = val_acc
+                        self.best_epoch = epoch
+                        patience_counter = 0
+
+                        if self.output_dir:
+                            self.save_checkpoint("model_best.pt")
+                            console.print(
+                                f"[bold green]✓ Saved best model (val_acc: {val_acc:.4f})[/bold green]"
+                            )
+                    else:
+                        patience_counter += 1
+
+                    # Early stopping
+                    if patience_counter >= early_stopping_patience:
+                        console.print(f"[yellow]Early stopping at epoch {epoch}[/yellow]")
+                        break
                 else:
-                    patience_counter += 1
+                    console.print(
+                        f"[cyan]Epoch {epoch}/{epochs}[/cyan] | "
+                        f"Train Loss: {train_loss:.4f} Acc: {train_acc:.4f}"
+                    )
 
-                # Early stopping
-                if patience_counter >= early_stopping_patience:
-                    logger.info(f"Early stopping at epoch {epoch}")
-                    break
+                progress.update(epoch_task, advance=1)
 
         # Save final model
         if self.output_dir:
