@@ -225,8 +225,9 @@ __marimo__/
 *.fastq.gz
 *.fq.gz
 
-# POD5 temporary migration files
+# pipeline temporary files
 .tmp_pod5_v3_v4_migration_*/
+.temp_dorado_model*/
 
 # Model artifacts
 *.pt

@@ -220,7 +220,7 @@ def prepare(
         save_chunks,
     )
 
-    display_logo()
+    # display_logo()
 
     logger.info(f"Preparing data from {pod5} and {bam}")
     logger.info(f"Motif reference mode: {motif_reference}")
@@ -399,7 +399,7 @@ def train(
     """Train a model on prepared data."""
     from leech.training import train_model
 
-    display_logo()
+    # display_logo()
 
     logger.info(f"Training {model} model")
     logger.info(f"Train data: {train_data}")
@@ -473,7 +473,7 @@ def test(model, test_data, output, device):
     """Test a trained model."""
     from leech.evaluation import evaluate_model
 
-    display_logo()
+    # display_logo()
 
     logger.info(f"Testing model: {model}")
     logger.info(f"Test data: {test_data}")
@@ -527,7 +527,7 @@ def infer(model, pod5, bam, output, device):
     """Run inference on new data."""
     from leech.inference import run_inference
 
-    display_logo()
+    # display_logo()
 
     logger.info(f"Running inference with model: {model}")
     logger.info(f"Input: {pod5}, {bam}")
@@ -651,7 +651,7 @@ def grid_search(
     """Run grid search over chunk contexts for model optimization."""
     from leech.gridsearch import GridSearchConfig, run_grid_search
 
-    display_logo()
+    # display_logo()
 
     # Parse context grids
     if left_contexts is not None:
