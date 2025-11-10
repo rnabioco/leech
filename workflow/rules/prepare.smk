@@ -33,7 +33,7 @@ rule prepare_chunks:
     threads: 4
     resources:
         mem_mb=8000,
-        runtime=120,
+        runtime=60,
     log:
         CHUNKS_DIR + "/{sample}/prepare.log",
     shell:

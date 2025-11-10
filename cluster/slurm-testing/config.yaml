@@ -4,8 +4,8 @@
 # Usage: snakemake --profile cluster/slurm-testing --configfile config/samples-alpine.yaml
 
 executor: slurm
-jobs: 100
-max-jobs-per-second: 10
+jobs: 10
+max-jobs-per-second: 2
 latency-wait: 60
 restart-times: 3
 rerun-incomplete: true
@@ -22,7 +22,7 @@ slurm-qos: testing
 default-resources:
   slurm_partition: atesting
   slurm_account: amc-general
-  runtime: 120
+  runtime: 60
   mem_mb: 8000
   cpus_per_task: 4
 
@@ -37,14 +37,14 @@ set-resources:
 
   inspect_pod5:
     slurm_partition: atesting
-    runtime: 120
+    runtime: 60
     mem_mb: 8000
     cpus_per_task: 4
 
   # GPU rules - basecalling (TESTING)
   basecall_with_dorado:
     slurm_partition: atesting_a100
-    runtime: 120
+    runtime: 60
     mem_mb: 8000
     cpus_per_task: 4
     nodes: 1
@@ -65,21 +65,21 @@ set-resources:
   # Alignment (use CPU testing partition)
   align_rebasecalled:
     slurm_partition: atesting
-    runtime: 240
+    runtime: 60
     mem_mb: 16000
     cpus_per_task: 8
 
   # Data preparation (use CPU testing partition)
   prepare_training_data:
     slurm_partition: atesting
-    runtime: 180
+    runtime: 60
     mem_mb: 16000
     cpus_per_task: 4
 
   # GPU rules - grid search (TESTING)
   grid_search_charged_vs_uncharged:
     slurm_partition: atesting_a100
-    runtime: 240
+    runtime: 60
     mem_mb: 8000
     cpus_per_task: 4
     nodes: 1
@@ -89,7 +89,7 @@ set-resources:
 
   grid_search_pairwise_aa:
     slurm_partition: atesting_a100
-    runtime: 240
+    runtime: 60
     mem_mb: 8000
     cpus_per_task: 4
     nodes: 1
@@ -99,7 +99,7 @@ set-resources:
 
   grid_search:
     slurm_partition: atesting_a100
-    runtime: 240
+    runtime: 60
     mem_mb: 8000
     cpus_per_task: 4
     nodes: 1
@@ -110,7 +110,7 @@ set-resources:
   # GPU rules - training (TESTING)
   train_charged_vs_uncharged:
     slurm_partition: atesting_a100
-    runtime: 240
+    runtime: 60
     mem_mb: 8000
     cpus_per_task: 4
     nodes: 1
@@ -120,7 +120,7 @@ set-resources:
 
   train_pairwise_aa:
     slurm_partition: atesting_a100
-    runtime: 240
+    runtime: 60
     mem_mb: 8000
     cpus_per_task: 4
     nodes: 1
@@ -130,7 +130,7 @@ set-resources:
 
   train_model:
     slurm_partition: atesting_a100
-    runtime: 240
+    runtime: 60
     mem_mb: 8000
     cpus_per_task: 4
     nodes: 1
