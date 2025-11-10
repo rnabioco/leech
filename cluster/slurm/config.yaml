@@ -13,10 +13,7 @@ keep-going: true
 printshellcmds: true
 
 # SLURM settings
-slurm-logdir: logs/slurm
-slurm-keep-successful-logs: false
-slurm-delete-logfiles-older-than: 10
-slurm-qos: normal
+# No storage provider needed - using shared filesystem directly
 
 # Job naming - use project name, rule name and wildcards for readable job names
 # Example: "Snakemake-synthetic-trna-prepare_chunks-ala_synthetic-12345"
@@ -30,6 +27,9 @@ default-resources:
   runtime: 120
   mem_mb: 8000
   cpus_per_task: 4
+
+# SLURM QoS setting
+slurm-qos: normal
 
 # Rule-specific resources
 set-resources:
@@ -87,7 +87,7 @@ set-resources:
   train_charged_vs_uncharged:
     slurm_partition: aa100
     runtime: 480
-    mem_mb: 32000
+    mem_mb: 96000
     cpus_per_task: 8
     nodes: 1
     gpu: 0
@@ -97,7 +97,7 @@ set-resources:
   train_pairwise_aa:
     slurm_partition: aa100
     runtime: 480
-    mem_mb: 32000
+    mem_mb: 96000
     cpus_per_task: 8
     nodes: 1
     gpu: 0

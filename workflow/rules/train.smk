@@ -96,10 +96,10 @@ rule train_charged_vs_uncharged:
         ),
     threads: 4
     resources:
-        mem_mb=16000,
+        mem_mb=96000,
         runtime=60,
         gpu=0,  # GPU controlled by cluster profile
-        gpu_mem_mb=8000,
+        gpu_mem_mb=32000,
     log:
         MODELS_DIR + "/charged_vs_uncharged/train.log",
     shell:
@@ -218,10 +218,10 @@ rule train_pairwise_aa:
         ),
     threads: 4
     resources:
-        mem_mb=16000,
+        mem_mb=96000,
         runtime=60,
         gpu=0,  # GPU controlled by cluster profile
-        gpu_mem_mb=8000,
+        gpu_mem_mb=32000,
     log:
         MODELS_DIR + "/pairwise/{pair}/train.log",
     shell:

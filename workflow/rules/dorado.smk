@@ -88,8 +88,85 @@ rule merge_pods:
         get_project_path(config.get("pod5_dir", "results/pod5")) + "/{sample}/merge_pods.log"
     shell:
         """
-        pod5 merge -t {threads} -f -o {output.pod5} {input} &> {log}
-        rm -rf .tmp_pod5_v3_v4_migration_*
+        # Merge POD5 files
+        pod5 merge -t {threads} -f -o {output.pod5} {input} &>> {log}
+        """
+
+
+rule inspect_merged_pod5:
+    """
+    Inspect merged POD5 file for provenance and version information.
+
+    Reports:
+    - POD5 file format version
+    - Total number of reads
+    - Input file provenance
+    - Read count per input file
+    """
+    input:
+        pod5=rules.merge_pods.output.pod5,
+        raw_inputs=get_raw_pod5_inputs
+    output:
+        report=get_project_path(config.get("pod5_dir", "results/pod5")) + "/{sample}/{sample}_inspect.txt"
+    resources:
+        mem_mb=4000,
+        runtime=30
+    log:
+        get_project_path(config.get("pod5_dir", "results/pod5")) + "/{sample}/inspect.log"
+    shell:
+        """
+        echo "=== POD5 Inspection Report ===" > {output.report}
+        echo "Sample: {wildcards.sample}" >> {output.report}
+        echo "Date: $(date)" >> {output.report}
+        echo "" >> {output.report}
+
+        # Get POD5 version
+        echo "=== POD5 Tool Version ===" >> {output.report}
+        pod5 --version >> {output.report} 2>&1
+        echo "" >> {output.report}
+
+        # Get merged file format version and info
+        echo "=== Merged POD5 File Info ===" >> {output.report}
+        echo "File: {input.pod5}" >> {output.report}
+        pod5 inspect read {input.pod5} >> {output.report} 2>&1 || echo "Inspect failed, trying alternative method..." >> {output.report}
+        echo "" >> {output.report}
+
+        # Count reads in merged file
+        echo "=== Merged File Read Count ===" >> {output.report}
+        merged_count=$(pod5 view {input.pod5} --include "read_id" --output - 2>/dev/null | tail -n +2 | wc -l)
+        echo "Total reads in merged file: $merged_count" >> {output.report}
+        echo "" >> {output.report}
+
+        # Input file provenance
+        echo "=== Input File Provenance ===" >> {output.report}
+        echo "Number of input files: $(echo {input.raw_inputs} | wc -w)" >> {output.report}
+        echo "" >> {output.report}
+
+        # Count reads per input file
+        echo "=== Read Counts Per Input File ===" >> {output.report}
+        total_input_reads=0
+        for f in {input.raw_inputs}; do
+            count=$(pod5 view "$f" --include "read_id" --output - 2>/dev/null | tail -n +2 | wc -l)
+            echo "  $f: $count reads" >> {output.report}
+            total_input_reads=$((total_input_reads + count))
+        done
+        echo "" >> {output.report}
+        echo "Total reads in input files: $total_input_reads" >> {output.report}
+        echo "" >> {output.report}
+
+        # Verify read count matches
+        echo "=== Verification ===" >> {output.report}
+        if [ "$merged_count" -eq "$total_input_reads" ]; then
+            echo "✓ Read counts match: $merged_count reads" >> {output.report}
+        else
+            echo "✗ WARNING: Read count mismatch!" >> {output.report}
+            echo "  Input files total: $total_input_reads" >> {output.report}
+            echo "  Merged file total: $merged_count" >> {output.report}
+            diff=$((merged_count - total_input_reads))
+            echo "  Difference: $diff reads" >> {output.report}
+        fi
+
+        echo "Inspection complete" >> {log}
         """
 
 
@@ -122,14 +199,15 @@ rule rebasecall:
     shell:
         """
         if [[ "${{CUDA_VISIBLE_DEVICES:-}}" ]]; then
-            echo "CUDA_VISIBLE_DEVICES $CUDA_VISIBLE_DEVICES"
+            echo "CUDA_VISIBLE_DEVICES $CUDA_VISIBLE_DEVICES" >> {log}
             export CUDA_VISIBLE_DEVICES
         fi
 
+        # Run basecaller
         if [[ -n "{params.modifications}" ]]; then
-            {params.dorado_bin} basecaller {params.model} {input} {params.dorado_opts} --modified-bases {params.modifications} > {output.bam} 2> {log}
+            {params.dorado_bin} basecaller {params.model} {input} {params.dorado_opts} --modified-bases {params.modifications} 2> {log} > {output.bam}
         else
-            {params.dorado_bin} basecaller {params.model} {input} {params.dorado_opts} > {output.bam} 2> {log}
+            {params.dorado_bin} basecaller {params.model} {input} {params.dorado_opts} 2> {log} > {output.bam}
         fi
         """
 
