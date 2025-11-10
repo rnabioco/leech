@@ -250,7 +250,7 @@ def extract_reference_from_bam(bam_path: Path) -> dict[str, str]:
     """
     references = {}
 
-    with pysam.AlignmentFile(bam_path, "rb") as bam:
+    with pysam.AlignmentFile(str(bam_path), "rb") as bam:
         # Check if reference sequences are in header
         if hasattr(bam.header, "to_dict"):
             header_dict = bam.header.to_dict()
@@ -337,10 +337,17 @@ def map_reference_to_query_coords(
         or indels detected (when skip_indels=True)
     """
     # Check if region is within aligned portion
-    if ref_start < aln.reference_start or ref_end > aln.reference_end:
+    if (
+        aln.reference_end is None
+        or ref_start < aln.reference_start
+        or ref_end > aln.reference_end
+    ):
         return None
 
     # Parse CIGAR to build mapping
+    if aln.cigartuples is None:
+        return None
+
     ref_pos = aln.reference_start
     query_pos = 0  # Start from beginning of query sequence
 
@@ -443,7 +450,7 @@ def extract_training_chunks(
     Returns:
         List of chunk dictionaries
     """
-    chunks = []
+    chunks: list[dict] = []
 
     # Set labels for all bases
     leech_read.labels = np.full(leech_read.num_bases, label, dtype=np.int64)
