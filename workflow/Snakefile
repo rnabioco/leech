@@ -72,14 +72,11 @@ rule all_single_model:
     """Run single model analysis (default model from config)."""
     input:
         # Charged vs uncharged
-        expand(
-            METRICS_DIR + "/charged_vs_uncharged/{sample}_metrics.json", sample=SAMPLES
-        ),
+        METRICS_DIR + "/charged_vs_uncharged/test_metrics.json",
         # Pairwise amino acid classifiers
         expand(
-            METRICS_DIR + "/pairwise/{pair}/{sample}_metrics.json",
+            METRICS_DIR + "/pairwise/{pair}/test_metrics.json",
             pair=AA_PAIRS,
-            sample=SAMPLES,
         )
         if AA_PAIRS
         else [],
