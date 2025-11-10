@@ -679,6 +679,207 @@ def one_hot_encode_sequence(seq: str, kmer_len: int = 1) -> np.ndarray:
     return encoding
 
 
+def split_chunks_by_read(
+    chunks: list[dict],
+    train_frac: float = 0.7,
+    val_frac: float = 0.15,
+    seed: int | None = None,
+) -> tuple[list[dict], list[dict], list[dict]]:
+    """
+    Split chunks into train/val/test sets at the READ level to prevent data leakage.
+
+    Groups chunks by read_id, then splits the read IDs into train/val/test sets.
+    This ensures that no read appears in multiple splits, preventing the model
+    from seeing similar signals from the same molecule during training and validation.
+
+    Args:
+        chunks: List of chunk dictionaries (must have 'read_id' key)
+        train_frac: Fraction of reads for training
+        val_frac: Fraction of reads for validation
+        seed: Random seed for reproducibility
+
+    Returns:
+        Tuple of (train_chunks, val_chunks, test_chunks)
+
+    Raises:
+        ValueError: If fractions don't sum to <= 1.0
+    """
+    import random
+
+    if train_frac + val_frac > 1.0:
+        raise ValueError(f"train_frac ({train_frac}) + val_frac ({val_frac}) must be <= 1.0")
+
+    # Set seed if provided
+    if seed is not None:
+        random.seed(seed)
+
+    # Group chunks by read_id
+    read_to_chunks: dict[str, list[dict]] = {}
+    for chunk in chunks:
+        read_id = chunk["read_id"]
+        if read_id not in read_to_chunks:
+            read_to_chunks[read_id] = []
+        read_to_chunks[read_id].append(chunk)
+
+    # Get list of unique read IDs and shuffle
+    read_ids = list(read_to_chunks.keys())
+    random.shuffle(read_ids)
+
+    # Split read IDs
+    n_reads = len(read_ids)
+    n_train = int(n_reads * train_frac)
+    n_val = int(n_reads * val_frac)
+
+    train_read_ids = set(read_ids[:n_train])
+    val_read_ids = set(read_ids[n_train : n_train + n_val])
+    test_read_ids = set(read_ids[n_train + n_val :])
+
+    # Assign chunks to splits based on read ID
+    train_chunks = []
+    val_chunks = []
+    test_chunks = []
+
+    for read_id, read_chunks in read_to_chunks.items():
+        if read_id in train_read_ids:
+            train_chunks.extend(read_chunks)
+        elif read_id in val_read_ids:
+            val_chunks.extend(read_chunks)
+        elif read_id in test_read_ids:
+            test_chunks.extend(read_chunks)
+
+    logger.info(f"Split {n_reads} reads into train/val/test")
+    logger.info(
+        f"  Train: {len(train_read_ids)} reads ({len(train_chunks)} chunks, "
+        f"{len(train_chunks) / len(chunks) * 100:.1f}%)"
+    )
+    logger.info(
+        f"  Val: {len(val_read_ids)} reads ({len(val_chunks)} chunks, "
+        f"{len(val_chunks) / len(chunks) * 100:.1f}%)"
+    )
+    logger.info(
+        f"  Test: {len(test_read_ids)} reads ({len(test_chunks)} chunks, "
+        f"{len(test_chunks) / len(chunks) * 100:.1f}%)"
+    )
+
+    return train_chunks, val_chunks, test_chunks
+
+
+def merge_and_split_chunks(
+    input_paths: list[Path],
+    train_frac: float = 0.7,
+    val_frac: float = 0.15,
+    seed: int | None = None,
+) -> tuple[list[dict], list[dict], list[dict]]:
+    """
+    Merge multiple chunk files and split at read level to prevent data leakage.
+
+    This implements the correct workflow for multi-sample datasets:
+    1. Load and merge all chunks from different samples
+    2. Split merged data at the READ level into train/val/test
+
+    This prevents data leakage that occurs when splitting each sample independently
+    and then merging the splits, which can allow reads from the same molecule to
+    appear in both training and validation sets.
+
+    Memory-efficient implementation: First pass collects only read IDs and metadata
+    to determine splits, second pass loads and assigns chunks to appropriate splits.
+
+    Args:
+        input_paths: List of paths to .npz chunk files to merge
+        train_frac: Fraction of reads for training
+        val_frac: Fraction of reads for validation
+        seed: Random seed for reproducibility
+
+    Returns:
+        Tuple of (train_chunks, val_chunks, test_chunks)
+
+    Example:
+        >>> # Merge charged and uncharged samples, then split
+        >>> train, val, test = merge_and_split_chunks(
+        ...     [Path("charged_all.npz"), Path("uncharged_all.npz")],
+        ...     train_frac=0.7,
+        ...     val_frac=0.15,
+        ...     seed=42
+        ... )
+    """
+    import random
+
+    if train_frac + val_frac > 1.0:
+        raise ValueError(f"train_frac ({train_frac}) + val_frac ({val_frac}) must be <= 1.0")
+
+    logger.info(f"Merging {len(input_paths)} chunk files (memory-efficient mode)")
+
+    # First pass: collect only read IDs from all files (minimal memory)
+    logger.info("Pass 1: Collecting read IDs for split assignment")
+    all_read_ids = set()
+    file_chunk_counts = []
+
+    for chunk_path in input_paths:
+        logger.info(f"  Scanning {chunk_path}")
+        # Load only read_ids array (much smaller than full data)
+        with np.load(chunk_path, allow_pickle=True) as data:
+            read_ids = data["read_ids"]
+            all_read_ids.update(str(rid) for rid in read_ids)
+            file_chunk_counts.append(len(read_ids))
+            logger.info(f"    Found {len(read_ids)} chunks")
+
+    logger.info(f"Total unique reads across all files: {len(all_read_ids)}")
+
+    # Determine read-level splits
+    if seed is not None:
+        random.seed(seed)
+
+    read_ids_list = list(all_read_ids)
+    random.shuffle(read_ids_list)
+
+    n_reads = len(read_ids_list)
+    n_train = int(n_reads * train_frac)
+    n_val = int(n_reads * val_frac)
+
+    train_read_ids = set(read_ids_list[:n_train])
+    val_read_ids = set(read_ids_list[n_train : n_train + n_val])
+    test_read_ids = set(read_ids_list[n_train + n_val :])
+
+    logger.info(f"Split {n_reads} unique reads:")
+    logger.info(
+        f"  Train: {len(train_read_ids)} reads ({len(train_read_ids) / n_reads * 100:.1f}%)"
+    )
+    logger.info(f"  Val: {len(val_read_ids)} reads ({len(val_read_ids) / n_reads * 100:.1f}%)")
+    logger.info(f"  Test: {len(test_read_ids)} reads ({len(test_read_ids) / n_reads * 100:.1f}%)")
+
+    # Second pass: load chunks and assign to splits (one file at a time)
+    logger.info("Pass 2: Loading chunks and assigning to splits")
+    train_chunks = []
+    val_chunks = []
+    test_chunks = []
+
+    for chunk_path in input_paths:
+        logger.info(f"  Processing {chunk_path}")
+        # Load chunks from this file using the standard loader
+        chunks = load_chunks(chunk_path)
+
+        # Assign to appropriate split
+        for chunk in chunks:
+            read_id = chunk["read_id"]
+            if read_id in train_read_ids:
+                train_chunks.append(chunk)
+            elif read_id in val_read_ids:
+                val_chunks.append(chunk)
+            elif read_id in test_read_ids:
+                test_chunks.append(chunk)
+
+        logger.info(f"    Assigned {len(chunks)} chunks")
+        # Clear chunks to free memory before loading next file
+        del chunks
+
+    logger.info("Final chunk distribution:")
+    logger.info(f"  Train: {len(train_chunks)} chunks")
+    logger.info(f"  Val: {len(val_chunks)} chunks")
+    logger.info(f"  Test: {len(test_chunks)} chunks")
+
+    return train_chunks, val_chunks, test_chunks
+
+
 def save_chunks(chunks: list[dict], output_path: Path) -> None:
     """
     Save training chunks to compressed numpy format.
@@ -755,22 +956,39 @@ def load_chunks(input_path: Path) -> list[dict]:
 
     Returns:
         List of chunk dictionaries compatible with extract_training_chunks output
+
+    Note:
+        This function loads all arrays into memory at once. The arrays are stored
+        as numpy object arrays (dtype=object) to handle variable-length signals.
+        The loaded data is kept in memory-mapped form when possible, but converting
+        to individual dictionaries will create copies in memory.
     """
-    data = np.load(input_path, allow_pickle=True)
+    # Load all arrays at once (keeps data memory-mapped when possible)
+    with np.load(input_path, allow_pickle=True) as data:
+        # Extract all arrays first (this creates copies but only once)
+        signals = data["signals"]
+        sequences = data["sequences"]
+        dwells = data["dwells"]
+        features = data["features"]
+        labels = data["labels"]
+        read_ids = data["read_ids"]
+        base_indices = data["base_indices"]
 
-    chunks = []
-    n_chunks = len(data["labels"])
+        n_chunks = len(labels)
+        chunks = []
 
-    for i in range(n_chunks):
-        chunk = {
-            "signal": data["signals"][i],
-            "sequence": str(data["sequences"][i]),
-            "dwell": data["dwells"][i],
-            "features": data["features"][i],
-            "label": int(data["labels"][i]) if data["labels"][i] >= 0 else None,
-            "read_id": str(data["read_ids"][i]),
-            "base_idx": int(data["base_indices"][i]),
-        }
-        chunks.append(chunk)
+        # Create dictionaries with references to array elements
+        # This is more memory efficient than accessing data[key][i] each time
+        for i in range(n_chunks):
+            chunk = {
+                "signal": signals[i],
+                "sequence": str(sequences[i]),
+                "dwell": dwells[i],
+                "features": features[i],
+                "label": int(labels[i]) if labels[i] >= 0 else None,
+                "read_id": str(read_ids[i]),
+                "base_idx": int(base_indices[i]),
+            }
+            chunks.append(chunk)
 
     return chunks

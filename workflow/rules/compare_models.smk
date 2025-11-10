@@ -13,8 +13,8 @@ data splits to enable fair comparison.
 rule train_architecture_charged:
     """Train a specific architecture for charged vs uncharged classification."""
     input:
-        train=expand(CHUNKS_DIR + "/{sample}/train.npz", sample=get_charged_samples()),
-        val=expand(CHUNKS_DIR + "/{sample}/val.npz", sample=get_charged_samples()),
+        train=CHUNKS_DIR + "/merged/charged_vs_uncharged/train.npz",
+        val=CHUNKS_DIR + "/merged/charged_vs_uncharged/val.npz",
         grid_search=(
             ancient(
                 MODELS_DIR
@@ -66,14 +66,14 @@ rule train_architecture_charged:
 
 
 rule test_architecture_charged:
-    """Test a specific architecture on the test set."""
+    """Test a specific architecture on the merged test set."""
     input:
         model=MODELS_DIR
         + "/comparison/charged_vs_uncharged/{architecture}/model_best.pt",
-        test=CHUNKS_DIR + "/{sample}/test.npz",
+        test=CHUNKS_DIR + "/merged/charged_vs_uncharged/test.npz",
     output:
         metrics=METRICS_DIR
-        + "/comparison/charged_vs_uncharged/{architecture}/{sample}_metrics.json",
+        + "/comparison/charged_vs_uncharged/{architecture}/test_metrics.json",
     params:
     threads: 2
     resources:
@@ -83,7 +83,7 @@ rule test_architecture_charged:
         gpu_mem_mb=4000,
     log:
         METRICS_DIR
-        + "/comparison/charged_vs_uncharged/{architecture}/{sample}_test.log",
+        + "/comparison/charged_vs_uncharged/{architecture}/test.log",
     shell:
         """
         uv run leech test \
@@ -99,9 +99,8 @@ rule compare_architectures_charged:
     input:
         expand(
             METRICS_DIR
-            + "/comparison/charged_vs_uncharged/{arch}/{sample}_metrics.json",
+            + "/comparison/charged_vs_uncharged/{arch}/test_metrics.json",
             arch=MODEL_ARCHITECTURES,
-            sample=SAMPLES,
         ),
     output:
         comparison=METRICS_DIR
@@ -123,14 +122,8 @@ rule compare_architectures_charged:
 rule train_architecture_pairwise:
     """Train a specific architecture for pairwise AA classification."""
     input:
-        train=lambda wildcards: expand(
-            CHUNKS_DIR + "/{sample}/train.npz",
-            sample=get_samples_for_aa_pair(wildcards.pair),
-        ),
-        val=lambda wildcards: expand(
-            CHUNKS_DIR + "/{sample}/val.npz",
-            sample=get_samples_for_aa_pair(wildcards.pair),
-        ),
+        train=CHUNKS_DIR + "/merged/pairwise/{pair}/train.npz",
+        val=CHUNKS_DIR + "/merged/pairwise/{pair}/val.npz",
         grid_search=(
             ancient(
                 MODELS_DIR
@@ -181,13 +174,13 @@ rule train_architecture_pairwise:
 
 
 rule test_architecture_pairwise:
-    """Test a specific architecture on pairwise AA test set."""
+    """Test a specific architecture on merged pairwise AA test set."""
     input:
         model=MODELS_DIR + "/comparison/pairwise/{pair}/{architecture}/model_best.pt",
-        test=CHUNKS_DIR + "/{sample}/test.npz",
+        test=CHUNKS_DIR + "/merged/pairwise/{pair}/test.npz",
     output:
         metrics=METRICS_DIR
-        + "/comparison/pairwise/{pair}/{architecture}/{sample}_metrics.json",
+        + "/comparison/pairwise/{pair}/{architecture}/test_metrics.json",
     params:
     threads: 2
     resources:
@@ -196,7 +189,7 @@ rule test_architecture_pairwise:
         gpu=0,  # GPU controlled by cluster profile
         gpu_mem_mb=4000,
     log:
-        METRICS_DIR + "/comparison/pairwise/{pair}/{architecture}/{sample}_test.log",
+        METRICS_DIR + "/comparison/pairwise/{pair}/{architecture}/test.log",
     shell:
         """
         uv run leech test \
@@ -211,10 +204,9 @@ rule compare_architectures_pairwise:
     """Compare all architectures on pairwise AA task."""
     input:
         expand(
-            METRICS_DIR + "/comparison/pairwise/{pair}/{arch}/{sample}_metrics.json",
+            METRICS_DIR + "/comparison/pairwise/{pair}/{arch}/test_metrics.json",
             pair=AA_PAIRS,
             arch=MODEL_ARCHITECTURES,
-            sample=SAMPLES,
         )
         if AA_PAIRS
         else [],
@@ -236,8 +228,8 @@ rule compare_architectures_pairwise:
 rule grid_search_architecture_charged:
     """Perform grid search for a specific architecture on charged vs uncharged."""
     input:
-        train=expand(CHUNKS_DIR + "/{sample}/train.npz", sample=get_charged_samples()),
-        val=expand(CHUNKS_DIR + "/{sample}/val.npz", sample=get_charged_samples()),
+        train=CHUNKS_DIR + "/merged/charged_vs_uncharged/train.npz",
+        val=CHUNKS_DIR + "/merged/charged_vs_uncharged/val.npz",
     output:
         results=MODELS_DIR
         + "/grid_search/charged_vs_uncharged/{architecture}/grid_search_results.json",
@@ -279,14 +271,8 @@ rule grid_search_architecture_charged:
 rule grid_search_architecture_pairwise:
     """Perform grid search for a specific architecture on pairwise AA."""
     input:
-        train=lambda wildcards: expand(
-            CHUNKS_DIR + "/{sample}/train.npz",
-            sample=get_samples_for_aa_pair(wildcards.pair),
-        ),
-        val=lambda wildcards: expand(
-            CHUNKS_DIR + "/{sample}/val.npz",
-            sample=get_samples_for_aa_pair(wildcards.pair),
-        ),
+        train=CHUNKS_DIR + "/merged/pairwise/{pair}/train.npz",
+        val=CHUNKS_DIR + "/merged/pairwise/{pair}/val.npz",
     output:
         results=MODELS_DIR
         + "/grid_search/pairwise/{pair}/{architecture}/grid_search_results.json",

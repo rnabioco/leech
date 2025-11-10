@@ -4,12 +4,12 @@ Evaluation rules for testing models and aggregating results.
 
 
 rule test_charged_vs_uncharged:
-    """Evaluate model on test set."""
+    """Evaluate model on merged test set."""
     input:
         model=MODELS_DIR + "/charged_vs_uncharged/model_best.pt",
-        test=CHUNKS_DIR + "/{sample}/test.npz",
+        test=CHUNKS_DIR + "/merged/charged_vs_uncharged/test.npz",
     output:
-        metrics=METRICS_DIR + "/charged_vs_uncharged/{sample}_metrics.json",
+        metrics=METRICS_DIR + "/charged_vs_uncharged/test_metrics.json",
     threads: 2
     resources:
         mem_mb=4000,
@@ -17,7 +17,7 @@ rule test_charged_vs_uncharged:
         gpu=0,  # GPU controlled by cluster profile
         gpu_mem_mb=4000,
     log:
-        METRICS_DIR + "/charged_vs_uncharged/{sample}_test.log",
+        METRICS_DIR + "/charged_vs_uncharged/test.log",
     shell:
         """
         uv run leech test \
@@ -29,12 +29,12 @@ rule test_charged_vs_uncharged:
 
 
 rule test_pairwise_aa:
-    """Evaluate pairwise amino acid model on test set."""
+    """Evaluate pairwise amino acid model on merged test set."""
     input:
         model=MODELS_DIR + "/pairwise/{pair}/model_best.pt",
-        test=CHUNKS_DIR + "/{sample}/test.npz",
+        test=CHUNKS_DIR + "/merged/pairwise/{pair}/test.npz",
     output:
-        metrics=METRICS_DIR + "/pairwise/{pair}/{sample}_metrics.json",
+        metrics=METRICS_DIR + "/pairwise/{pair}/test_metrics.json",
     threads: 2
     resources:
         mem_mb=4000,
@@ -42,7 +42,7 @@ rule test_pairwise_aa:
         gpu=0,  # GPU controlled by cluster profile
         gpu_mem_mb=4000,
     log:
-        METRICS_DIR + "/pairwise/{pair}/{sample}_test.log",
+        METRICS_DIR + "/pairwise/{pair}/test.log",
     shell:
         """
         uv run leech test \
@@ -54,11 +54,9 @@ rule test_pairwise_aa:
 
 
 rule summarize_charged_vs_uncharged:
-    """Aggregate metrics across all samples for charged vs uncharged."""
+    """Create summary report for charged vs uncharged test metrics."""
     input:
-        expand(
-            METRICS_DIR + "/charged_vs_uncharged/{sample}_metrics.json", sample=SAMPLES
-        ),
+        METRICS_DIR + "/charged_vs_uncharged/test_metrics.json",
     output:
         summary=METRICS_DIR + "/charged_vs_uncharged_summary.tsv",
     params:
@@ -71,9 +69,8 @@ rule summarize_pairwise:
     """Aggregate metrics across all pairwise classifiers."""
     input:
         expand(
-            METRICS_DIR + "/pairwise/{pair}/{sample}_metrics.json",
+            METRICS_DIR + "/pairwise/{pair}/test_metrics.json",
             pair=AA_PAIRS,
-            sample=SAMPLES,
         )
         if AA_PAIRS
         else [],

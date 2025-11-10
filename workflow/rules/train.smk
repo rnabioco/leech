@@ -4,68 +4,44 @@ Training rules for charged vs uncharged and pairwise amino acid classification.
 
 
 rule merge_chunks_charged:
-    """Merge training chunks from all charged/uncharged samples."""
+    """Merge all charged/uncharged chunks and split at read level to prevent data leakage.
+
+    This rule implements the correct workflow:
+    1. Merge all chunks from different samples (charged and uncharged)
+    2. Split merged data at the READ level into train/val/test
+
+    This prevents data leakage that occurs when splitting each sample independently
+    and then merging the splits.
+    """
     input:
-        train=expand(CHUNKS_DIR + "/{sample}/train.npz", sample=get_charged_samples()),
-        val=expand(CHUNKS_DIR + "/{sample}/val.npz", sample=get_charged_samples()),
+        chunks=expand(CHUNKS_DIR + "/{sample}/all.npz", sample=get_charged_samples()),
     output:
         train=CHUNKS_DIR + "/merged/charged_vs_uncharged/train.npz",
         val=CHUNKS_DIR + "/merged/charged_vs_uncharged/val.npz",
+        test=CHUNKS_DIR + "/merged/charged_vs_uncharged/test.npz",
+    params:
+        output_dir=CHUNKS_DIR + "/merged/charged_vs_uncharged",
+        train_split=config.get("train_split", 0.7),
+        val_split=config.get("val_split", 0.15),
+        seed=config.get("seed", 42),
+        # Build input arguments for merge-and-split command
+        input_args=lambda wildcards, input: " ".join([f"-i {f}" for f in input.chunks]),
     threads: 4
     resources:
         mem_mb=16000,
         runtime=60,
     log:
-        CHUNKS_DIR + "/merged/charged_vs_uncharged/merge.log",
-    run:
-        import numpy as np
-        from pathlib import Path
-
-        # Merge training chunks
-        all_train_chunks = []
-        for train_file in input.train:
-            data = np.load(train_file, allow_pickle=True)
-            all_train_chunks.append(data)
-
-            # Concatenate all arrays
-        merged_train = {
-            "signals": np.concatenate([d["signals"] for d in all_train_chunks]),
-            "sequences": np.concatenate([d["sequences"] for d in all_train_chunks]),
-            "dwells": np.concatenate([d["dwells"] for d in all_train_chunks]),
-            "features": np.concatenate([d["features"] for d in all_train_chunks]),
-            "labels": np.concatenate([d["labels"] for d in all_train_chunks]),
-            "read_ids": np.concatenate([d["read_ids"] for d in all_train_chunks]),
-            "base_indices": np.concatenate(
-                [d["base_indices"] for d in all_train_chunks]
-            ),
-        }
-
-        # Merge validation chunks
-        all_val_chunks = []
-        for val_file in input.val:
-            data = np.load(val_file, allow_pickle=True)
-            all_val_chunks.append(data)
-
-        merged_val = {
-            "signals": np.concatenate([d["signals"] for d in all_val_chunks]),
-            "sequences": np.concatenate([d["sequences"] for d in all_val_chunks]),
-            "dwells": np.concatenate([d["dwells"] for d in all_val_chunks]),
-            "features": np.concatenate([d["features"] for d in all_val_chunks]),
-            "labels": np.concatenate([d["labels"] for d in all_val_chunks]),
-            "read_ids": np.concatenate([d["read_ids"] for d in all_val_chunks]),
-            "base_indices": np.concatenate([d["base_indices"] for d in all_val_chunks]),
-        }
-
-        # Save merged chunks
-        Path(output.train).parent.mkdir(parents=True, exist_ok=True)
-        np.savez_compressed(output.train, **merged_train)
-        np.savez_compressed(output.val, **merged_val)
-
-        with open(log[0], "w") as f:
-            f.write(f"Merged {len(input.train)} training files\n")
-            f.write(f"Total training chunks: {len(merged_train['labels'])}\n")
-            f.write(f"Merged {len(input.val)} validation files\n")
-            f.write(f"Total validation chunks: {len(merged_val['labels'])}\n")
+        CHUNKS_DIR + "/merged/charged_vs_uncharged/merge_and_split.log",
+    shell:
+        """
+        uv run leech merge-and-split \
+            {params.input_args} \
+            --output-dir {params.output_dir} \
+            --train-split {params.train_split} \
+            --val-split {params.val_split} \
+            --seed {params.seed} \
+            2>&1 | tee {log}
+        """
 
 
 rule train_charged_vs_uncharged:
@@ -119,75 +95,47 @@ rule train_charged_vs_uncharged:
 
 
 rule merge_chunks_pairwise:
-    """Merge training chunks for pairwise amino acid classification."""
+    """Merge pairwise amino acid chunks and split at read level to prevent data leakage.
+
+    This rule implements the correct workflow:
+    1. Merge all chunks from the two amino acid samples
+    2. Split merged data at the READ level into train/val/test
+
+    This prevents data leakage that occurs when splitting each sample independently
+    and then merging the splits.
+    """
     input:
-        train=lambda wildcards: expand(
-            CHUNKS_DIR + "/{sample}/train.npz",
-            sample=get_samples_for_aa_pair(wildcards.pair),
-        ),
-        val=lambda wildcards: expand(
-            CHUNKS_DIR + "/{sample}/val.npz",
+        chunks=lambda wildcards: expand(
+            CHUNKS_DIR + "/{sample}/all.npz",
             sample=get_samples_for_aa_pair(wildcards.pair),
         ),
     output:
         train=CHUNKS_DIR + "/merged/pairwise/{pair}/train.npz",
         val=CHUNKS_DIR + "/merged/pairwise/{pair}/val.npz",
+        test=CHUNKS_DIR + "/merged/pairwise/{pair}/test.npz",
+    params:
+        output_dir=CHUNKS_DIR + "/merged/pairwise/{pair}",
+        train_split=config.get("train_split", 0.7),
+        val_split=config.get("val_split", 0.15),
+        seed=config.get("seed", 42),
+        # Build input arguments for merge-and-split command
+        input_args=lambda wildcards, input: " ".join([f"-i {f}" for f in input.chunks]),
     threads: 4
     resources:
         mem_mb=16000,
         runtime=60,
     log:
-        CHUNKS_DIR + "/merged/pairwise/{pair}/merge.log",
-    run:
-        import numpy as np
-        from pathlib import Path
-
-        # Merge training chunks
-        all_train_chunks = []
-        for train_file in input.train:
-            data = np.load(train_file, allow_pickle=True)
-            all_train_chunks.append(data)
-
-        merged_train = {
-            "signals": np.concatenate([d["signals"] for d in all_train_chunks]),
-            "sequences": np.concatenate([d["sequences"] for d in all_train_chunks]),
-            "dwells": np.concatenate([d["dwells"] for d in all_train_chunks]),
-            "features": np.concatenate([d["features"] for d in all_train_chunks]),
-            "labels": np.concatenate([d["labels"] for d in all_train_chunks]),
-            "read_ids": np.concatenate([d["read_ids"] for d in all_train_chunks]),
-            "base_indices": np.concatenate(
-                [d["base_indices"] for d in all_train_chunks]
-            ),
-        }
-
-        # Merge validation chunks
-        all_val_chunks = []
-        for val_file in input.val:
-            data = np.load(val_file, allow_pickle=True)
-            all_val_chunks.append(data)
-
-        merged_val = {
-            "signals": np.concatenate([d["signals"] for d in all_val_chunks]),
-            "sequences": np.concatenate([d["sequences"] for d in all_val_chunks]),
-            "dwells": np.concatenate([d["dwells"] for d in all_val_chunks]),
-            "features": np.concatenate([d["features"] for d in all_val_chunks]),
-            "labels": np.concatenate([d["labels"] for d in all_val_chunks]),
-            "read_ids": np.concatenate([d["read_ids"] for d in all_val_chunks]),
-            "base_indices": np.concatenate([d["base_indices"] for d in all_val_chunks]),
-        }
-
-        # Save merged chunks
-        Path(output.train).parent.mkdir(parents=True, exist_ok=True)
-        np.savez_compressed(output.train, **merged_train)
-        np.savez_compressed(output.val, **merged_val)
-
-        with open(log[0], "w") as f:
-            f.write(
-                f"Merged {len(input.train)} training files for pair {wildcards.pair}\n"
-            )
-            f.write(f"Total training chunks: {len(merged_train['labels'])}\n")
-            f.write(f"Merged {len(input.val)} validation files\n")
-            f.write(f"Total validation chunks: {len(merged_val['labels'])}\n")
+        CHUNKS_DIR + "/merged/pairwise/{pair}/merge_and_split.log",
+    shell:
+        """
+        uv run leech merge-and-split \
+            {params.input_args} \
+            --output-dir {params.output_dir} \
+            --train-split {params.train_split} \
+            --val-split {params.val_split} \
+            --seed {params.seed} \
+            2>&1 | tee {log}
+        """
 
 
 rule train_pairwise_aa:

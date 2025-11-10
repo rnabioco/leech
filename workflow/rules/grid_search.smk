@@ -6,8 +6,8 @@ Grid search rules for hyperparameter tuning.
 rule grid_search_charged_vs_uncharged:
     """Perform grid search for hyperparameter tuning on charged vs uncharged."""
     input:
-        train=expand(CHUNKS_DIR + "/{sample}/train.npz", sample=get_charged_samples()),
-        val=expand(CHUNKS_DIR + "/{sample}/val.npz", sample=get_charged_samples()),
+        train=CHUNKS_DIR + "/merged/charged_vs_uncharged/train.npz",
+        val=CHUNKS_DIR + "/merged/charged_vs_uncharged/val.npz",
     output:
         results=MODELS_DIR
         + "/grid_search/charged_vs_uncharged/grid_search_results.json",
@@ -47,14 +47,8 @@ rule grid_search_charged_vs_uncharged:
 rule grid_search_pairwise_aa:
     """Perform grid search for pairwise amino acid classifier."""
     input:
-        train=lambda wildcards: expand(
-            CHUNKS_DIR + "/{sample}/train.npz",
-            sample=get_samples_for_aa_pair(wildcards.pair),
-        ),
-        val=lambda wildcards: expand(
-            CHUNKS_DIR + "/{sample}/val.npz",
-            sample=get_samples_for_aa_pair(wildcards.pair),
-        ),
+        train=CHUNKS_DIR + "/merged/pairwise/{pair}/train.npz",
+        val=CHUNKS_DIR + "/merged/pairwise/{pair}/val.npz",
     output:
         results=MODELS_DIR + "/grid_search/pairwise/{pair}/grid_search_results.json",
         best_params=MODELS_DIR + "/grid_search/pairwise/{pair}/best_params.json",

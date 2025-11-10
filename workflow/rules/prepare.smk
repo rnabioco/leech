@@ -4,16 +4,18 @@ Data preparation rules for extracting training chunks.
 
 
 rule prepare_chunks:
-    """Extract training chunks from POD5/BAM files."""
+    """Extract training chunks from POD5/BAM files without splitting.
+
+    Chunks are extracted with labels but not split into train/val/test.
+    Splitting happens later at the merge step to prevent data leakage across samples.
+    """
     input:
         pod5=get_project_path(config.get("pod5_dir", "results/pod5"))
         + "/{sample}/{sample}.pod5",
         bam=get_project_path(config.get("rebasecall_dir", "results/bam/rebasecall"))
         + "/{sample}/{sample}.aligned.bam",
     output:
-        train=CHUNKS_DIR + "/{sample}/train.npz",
-        val=CHUNKS_DIR + "/{sample}/val.npz",
-        test=CHUNKS_DIR + "/{sample}/test.npz",
+        all=CHUNKS_DIR + "/{sample}/all.npz",
     wildcard_constraints:
         sample="[^/]+",  # Sample name cannot contain slashes (excludes merged/*/)
     params:
@@ -23,16 +25,10 @@ rule prepare_chunks:
         motif_reference=config.get("motif_reference", "fasta"),
         reference_fasta=config.get("reference_fasta", None),
         skip_motif_indels=config.get("skip_motif_indels", True),
-        train_split=config.get("train_split", 0.7),
-        val_split=config.get("val_split", 0.15),
-        seed=config.get("seed", ""),  # Empty string = no seed (will generate random)
         label=lambda wildcards: (
             1 if config["samples"][wildcards.sample].get("label") == "charged" else 0
         ),
         # Conditional arguments using lambda functions
-        seed_arg=lambda wildcards: (
-            f"--seed {config.get('seed', '')}" if config.get("seed", "") else ""
-        ),
         ref_fasta_arg=lambda wildcards: (
             f"--reference-fasta {config.get('reference_fasta', None)}"
             if config.get("reference_fasta", None) and config.get("reference_fasta", None) != "None"
@@ -60,8 +56,6 @@ rule prepare_chunks:
             {params.ref_fasta_arg} \
             {params.skip_indels_arg} \
             --label {params.label} \
-            --train-split {params.train_split} \
-            --val-split {params.val_split} \
-            {params.seed_arg} \
+            --no-split \
             2>&1 | tee {log}
         """
