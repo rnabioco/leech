@@ -113,7 +113,7 @@ echo "You can monitor jobs with: squeue -u $USER"
 echo ""
 
 # Run with Slurm executor - will submit jobs for each stage
-uv run snakemake --profile=cluster/slurm-testing \
+uv run snakemake --profile=cluster/slurm \
   --configfile=config/samples-alpine.yaml \
   all_train
 
