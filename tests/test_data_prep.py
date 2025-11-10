@@ -434,15 +434,17 @@ class TestSplitChunksByRead:
             read_id = f"read_{read_num:03d}"
             # Each read has 5 chunks
             for chunk_num in range(5):
-                chunks.append({
-                    "read_id": read_id,
-                    "signal": np.random.randn(400),
-                    "sequence": "ACGT" * 3,
-                    "dwell": np.random.randn(11),
-                    "features": np.random.randn(3, 11),
-                    "label": chunk_num % 2,
-                    "base_idx": chunk_num,
-                })
+                chunks.append(
+                    {
+                        "read_id": read_id,
+                        "signal": np.random.randn(400),
+                        "sequence": "ACGT" * 3,
+                        "dwell": np.random.randn(11),
+                        "features": np.random.randn(3, 11),
+                        "label": chunk_num % 2,
+                        "base_idx": chunk_num,
+                    }
+                )
 
         train, val, test = split_chunks_by_read(chunks, train_frac=0.7, val_frac=0.15, seed=42)
 
@@ -462,15 +464,17 @@ class TestSplitChunksByRead:
         for read_num in range(50):
             read_id = f"read_{read_num:03d}"
             for chunk_num in range(3):
-                chunks.append({
-                    "read_id": read_id,
-                    "signal": np.random.randn(400),
-                    "sequence": "ACGT" * 3,
-                    "dwell": np.random.randn(11),
-                    "features": np.random.randn(3, 11),
-                    "label": 0,
-                    "base_idx": chunk_num,
-                })
+                chunks.append(
+                    {
+                        "read_id": read_id,
+                        "signal": np.random.randn(400),
+                        "sequence": "ACGT" * 3,
+                        "dwell": np.random.randn(11),
+                        "features": np.random.randn(3, 11),
+                        "label": 0,
+                        "base_idx": chunk_num,
+                    }
+                )
 
         train, val, test = split_chunks_by_read(chunks, train_frac=0.6, val_frac=0.2, seed=42)
 
@@ -483,15 +487,17 @@ class TestSplitChunksByRead:
         for read_num in range(100):
             read_id = f"read_{read_num:03d}"
             # Single chunk per read for easier proportion checking
-            chunks.append({
-                "read_id": read_id,
-                "signal": np.random.randn(400),
-                "sequence": "ACGT" * 3,
-                "dwell": np.random.randn(11),
-                "features": np.random.randn(3, 11),
-                "label": 0,
-                "base_idx": 0,
-            })
+            chunks.append(
+                {
+                    "read_id": read_id,
+                    "signal": np.random.randn(400),
+                    "sequence": "ACGT" * 3,
+                    "dwell": np.random.randn(11),
+                    "features": np.random.randn(3, 11),
+                    "label": 0,
+                    "base_idx": 0,
+                }
+            )
 
         train, val, test = split_chunks_by_read(chunks, train_frac=0.7, val_frac=0.15, seed=42)
 
@@ -507,15 +513,17 @@ class TestSplitChunksByRead:
             read_id = f"read_{read_num:03d}"
             # Each read has 10 chunks
             for chunk_num in range(10):
-                chunks.append({
-                    "read_id": read_id,
-                    "signal": np.random.randn(400),
-                    "sequence": "ACGT" * 3,
-                    "dwell": np.random.randn(11),
-                    "features": np.random.randn(3, 11),
-                    "label": 0,
-                    "base_idx": chunk_num,
-                })
+                chunks.append(
+                    {
+                        "read_id": read_id,
+                        "signal": np.random.randn(400),
+                        "sequence": "ACGT" * 3,
+                        "dwell": np.random.randn(11),
+                        "features": np.random.randn(3, 11),
+                        "label": 0,
+                        "base_idx": chunk_num,
+                    }
+                )
 
         train, val, test = split_chunks_by_read(chunks, train_frac=0.6, val_frac=0.2, seed=42)
 
@@ -547,15 +555,17 @@ class TestSplitChunksByRead:
         chunks = []
         for read_num in range(50):
             read_id = f"read_{read_num:03d}"
-            chunks.append({
-                "read_id": read_id,
-                "signal": np.random.randn(400),
-                "sequence": "ACGT" * 3,
-                "dwell": np.random.randn(11),
-                "features": np.random.randn(3, 11),
-                "label": 0,
-                "base_idx": 0,
-            })
+            chunks.append(
+                {
+                    "read_id": read_id,
+                    "signal": np.random.randn(400),
+                    "sequence": "ACGT" * 3,
+                    "dwell": np.random.randn(11),
+                    "features": np.random.randn(3, 11),
+                    "label": 0,
+                    "base_idx": 0,
+                }
+            )
 
         # Split twice with same seed
         train1, val1, test1 = split_chunks_by_read(chunks, train_frac=0.7, val_frac=0.15, seed=123)

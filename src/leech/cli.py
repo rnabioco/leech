@@ -283,7 +283,9 @@ def prepare(
         all_file = output_dir / "all.npz"
         save_chunks(chunks, all_file)
         logger.info(f"Saved all chunks to {all_file}")
-        console.print(f"[yellow]Skipped splitting (--no-split). All chunks saved to all.npz[/yellow]")
+        console.print(
+            "[yellow]Skipped splitting (--no-split). All chunks saved to all.npz[/yellow]"
+        )
     else:
         # Split into train/val/test at READ level to prevent data leakage
         from leech.data_prep import split_chunks_by_read
@@ -294,7 +296,9 @@ def prepare(
 
         # Display split statistics in a table
         n_total = len(chunks)
-        table = Table(title="Data Split (Read-Level)", show_header=True, header_style="bold magenta")
+        table = Table(
+            title="Data Split (Read-Level)", show_header=True, header_style="bold magenta"
+        )
         table.add_column("Split", style="cyan")
         table.add_column("Count", justify="right", style="green")
         table.add_column("Percentage", justify="right", style="yellow")
@@ -397,7 +401,9 @@ def merge_and_split(input_chunks, output_dir, train_split, val_split, seed):
 
     # Display statistics
     n_total = len(train_chunks) + len(val_chunks) + len(test_chunks)
-    table = Table(title="Merged Data Split (Read-Level)", show_header=True, header_style="bold magenta")
+    table = Table(
+        title="Merged Data Split (Read-Level)", show_header=True, header_style="bold magenta"
+    )
     table.add_column("Split", style="cyan")
     table.add_column("Chunks", justify="right", style="green")
     table.add_column("Percentage", justify="right", style="yellow")
