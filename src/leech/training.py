@@ -279,6 +279,7 @@ def train_model(
     learning_rate: float = 0.001,
     device: str = "cuda",
     seed: int | None = None,
+    early_stopping_patience: int = 10,
     **model_kwargs,
 ) -> dict[str, Any]:
     """
@@ -296,6 +297,7 @@ def train_model(
         learning_rate: Learning rate
         device: Device for training
         seed: Random seed (None = generate random seed)
+        early_stopping_patience: Stop training if validation loss doesn't improve for N epochs
         **model_kwargs: Additional model parameters
 
     Returns:
@@ -389,6 +391,6 @@ def train_model(
     )
 
     # Train
-    history = trainer.train(epochs=epochs)
+    history = trainer.train(epochs=epochs, early_stopping_patience=early_stopping_patience)
 
     return history

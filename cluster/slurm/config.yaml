@@ -18,6 +18,10 @@ slurm-keep-successful-logs: false
 slurm-delete-logfiles-older-than: 10
 slurm-qos: normal
 
+# Job naming - use project name, rule name and wildcards for readable job names
+# Example: "Snakemake-synthetic-trna-prepare_chunks-ala_synthetic"
+jobname: "Snakemake-{config[project_name]}-{rule}-{wildcards}"
+
 # Default resources
 default-resources:
   slurm_partition: amilan
