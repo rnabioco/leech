@@ -9,9 +9,8 @@ import logging
 import random
 from pathlib import Path
 
-import click
 import numpy as np
-import rich_click as rc
+import rich_click as click
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import Progress
@@ -32,48 +31,48 @@ logger = logging.getLogger("leech.cli")
 console = Console()
 
 # Configure rich-click for beautiful help display
-rc.USE_RICH_MARKUP = True
-rc.SHOW_ARGUMENTS = True
-rc.GROUP_ARGUMENTS_OPTIONS = True
-rc.MAX_WIDTH = 100
+click.rich_click.USE_RICH_MARKUP = True
+click.rich_click.SHOW_ARGUMENTS = True
+click.rich_click.GROUP_ARGUMENTS_OPTIONS = True
+click.rich_click.MAX_WIDTH = 100
 
 # Error styling
-rc.STYLE_ERRORS_SUGGESTION = "magenta italic"
-rc.ERRORS_SUGGESTION = "Try running the '--help' flag for more information."
-rc.ERRORS_EPILOGUE = ""
+click.rich_click.STYLE_ERRORS_SUGGESTION = "magenta italic"
+click.rich_click.ERRORS_SUGGESTION = "Try running the '--help' flag for more information."
+click.rich_click.ERRORS_EPILOGUE = ""
 
 # Color styling for help elements
-rc.STYLE_OPTION = "bold cyan"
-rc.STYLE_ARGUMENT = "bold yellow"
-rc.STYLE_COMMAND = "bold green"
-rc.STYLE_SWITCH = "bold blue"
-rc.STYLE_METAVAR = "bold yellow"
-rc.STYLE_METAVAR_SEPARATOR = "dim"
-rc.STYLE_HEADER_TEXT = "bold magenta"
-rc.STYLE_EPILOG_TEXT = "dim"
-rc.STYLE_FOOTER_TEXT = "dim"
-rc.STYLE_USAGE = "bold yellow"
-rc.STYLE_USAGE_COMMAND = "bold"
-rc.STYLE_DEPRECATED = "red"
-rc.STYLE_HELPTEXT_FIRST_LINE = ""
-rc.STYLE_HELPTEXT = "dim"
-rc.STYLE_OPTION_HELP = ""
-rc.STYLE_OPTION_DEFAULT = "dim italic"
-rc.STYLE_REQUIRED_SHORT = "bold red"
-rc.STYLE_REQUIRED_LONG = "bold red"
+click.rich_click.STYLE_OPTION = "bold cyan"
+click.rich_click.STYLE_ARGUMENT = "bold yellow"
+click.rich_click.STYLE_COMMAND = "bold green"
+click.rich_click.STYLE_SWITCH = "bold blue"
+click.rich_click.STYLE_METAVAR = "bold yellow"
+click.rich_click.STYLE_METAVAR_SEPARATOR = "dim"
+click.rich_click.STYLE_HEADER_TEXT = "bold magenta"
+click.rich_click.STYLE_EPILOG_TEXT = "dim"
+click.rich_click.STYLE_FOOTER_TEXT = "dim"
+click.rich_click.STYLE_USAGE = "bold yellow"
+click.rich_click.STYLE_USAGE_COMMAND = "bold"
+click.rich_click.STYLE_DEPRECATED = "red"
+click.rich_click.STYLE_HELPTEXT_FIRST_LINE = ""
+click.rich_click.STYLE_HELPTEXT = "dim"
+click.rich_click.STYLE_OPTION_HELP = ""
+click.rich_click.STYLE_OPTION_DEFAULT = "dim italic"
+click.rich_click.STYLE_REQUIRED_SHORT = "bold red"
+click.rich_click.STYLE_REQUIRED_LONG = "bold red"
 
 # Table and panel styling
-rc.STYLE_OPTIONS_TABLE_LEADING = 1
-rc.STYLE_OPTIONS_TABLE_PAD_EDGE = True
-rc.STYLE_OPTIONS_TABLE_PADDING = (0, 1)
-rc.STYLE_COMMANDS_TABLE_LEADING = 1
-rc.STYLE_COMMANDS_TABLE_PAD_EDGE = True
-rc.STYLE_COMMANDS_TABLE_PADDING = (0, 1)
+click.rich_click.STYLE_OPTIONS_TABLE_LEADING = 1
+click.rich_click.STYLE_OPTIONS_TABLE_PAD_EDGE = True
+click.rich_click.STYLE_OPTIONS_TABLE_PADDING = (0, 1)
+click.rich_click.STYLE_COMMANDS_TABLE_LEADING = 1
+click.rich_click.STYLE_COMMANDS_TABLE_PAD_EDGE = True
+click.rich_click.STYLE_COMMANDS_TABLE_PADDING = (0, 1)
 
 # Additional features
-rc.SHOW_METAVARS_COLUMN = True
-rc.APPEND_METAVARS_HELP = True
-rc.USE_CLICK_SHORT_HELP = True
+click.rich_click.SHOW_METAVARS_COLUMN = True
+click.rich_click.APPEND_METAVARS_HELP = True
+click.rich_click.USE_CLICK_SHORT_HELP = True
 
 # ASCII Logo
 LOGO = """
