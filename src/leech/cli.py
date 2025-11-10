@@ -50,6 +50,12 @@ def add_training_args(parser):
     parser.add_argument(
         "--seed", type=int, default=DEFAULT_SEED, help="Random seed for reproducibility"
     )
+    parser.add_argument(
+        "--early-stopping",
+        type=int,
+        default=10,
+        help="Stop training if validation loss doesn't improve for N epochs",
+    )
     return parser
 
 
@@ -300,6 +306,7 @@ def run_train(args):
         learning_rate=args.learning_rate,
         device=args.device,
         seed=args.seed,
+        early_stopping_patience=args.early_stopping,
         **model_kwargs,
     )
 
@@ -384,6 +391,7 @@ def run_grid_search(args):
         learning_rate=args.learning_rate,
         device=args.device,
         seed=args.seed,
+        early_stopping_patience=args.early_stopping,
     )
 
     # Run grid search

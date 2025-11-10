@@ -39,6 +39,7 @@ class GridSearchConfig:
         learning_rate: Learning rate
         device: Device for training
         seed: Random seed
+        early_stopping_patience: Stop training if validation loss doesn't improve for N epochs
         motif: Optional motif for chunk extraction
         motif_offset: Offset within motif
     """
@@ -55,6 +56,7 @@ class GridSearchConfig:
     learning_rate: float = 0.001
     device: str = "cuda"
     seed: int | None = None  # None = generate random seed
+    early_stopping_patience: int = 10
     motif: str | None = None
     motif_offset: int = 0
 
@@ -128,6 +130,7 @@ def run_grid_point(
     learning_rate: float,
     device: str,
     seed: int,
+    early_stopping_patience: int = 10,
 ) -> dict:
     """
     Train model for a single grid point.
@@ -145,6 +148,7 @@ def run_grid_point(
         learning_rate: Learning rate
         device: Device
         seed: Random seed
+        early_stopping_patience: Stop training if validation loss doesn't improve for N epochs
 
     Returns:
         Dictionary with grid point results
@@ -172,6 +176,7 @@ def run_grid_point(
             learning_rate=learning_rate,
             device=device,
             seed=seed,
+            early_stopping_patience=early_stopping_patience,
         )
 
         train_time = time.time() - start_time
@@ -289,6 +294,7 @@ def run_grid_search(config: GridSearchConfig) -> Path:
             learning_rate=config.learning_rate,
             device=config.device,
             seed=config.seed,
+            early_stopping_patience=config.early_stopping_patience,
         )
 
         results.append(result)
