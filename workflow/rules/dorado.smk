@@ -80,10 +80,6 @@ rule merge_pods:
         get_raw_pod5_inputs
     output:
         pod5=get_project_path(config.get("pod5_dir", "results/pod5")) + "/{sample}/{sample}.pod5"
-    threads: config.get("merge_pods_threads", 12)
-    resources:
-        mem_mb=config.get("merge_pods_mem", 16000),
-        runtime=config.get("merge_pods_time", 120)
     log:
         get_project_path(config.get("pod5_dir", "results/pod5")) + "/{sample}/merge_pods.log"
     shell:
@@ -108,9 +104,6 @@ rule inspect_merged_pod5:
         raw_inputs=get_raw_pod5_inputs
     output:
         report=get_project_path(config.get("pod5_dir", "results/pod5")) + "/{sample}/{sample}_inspect.txt"
-    resources:
-        mem_mb=4000,
-        runtime=30
     log:
         get_project_path(config.get("pod5_dir", "results/pod5")) + "/{sample}/inspect.log"
     shell:
@@ -190,11 +183,6 @@ rule rebasecall:
         ),
         dorado_opts=config.get("dorado_opts", "--emit-moves"),
         models_dir=config.get("dorado_models_dir", get_project_path(config.get("rebasecall_dir", "results/bam/rebasecall")) + "/.models")
-    threads: config.get("rebasecall_threads", 4)
-    resources:
-        mem_mb=config.get("rebasecall_mem", 16000),
-        runtime=config.get("rebasecall_time", 480),
-        gpu=0,  # GPU controlled by cluster profile
     log:
         get_project_path(config.get("rebasecall_dir", "results/bam/rebasecall")) + "/{sample}/rebasecall.log"
     shell:
@@ -239,10 +227,6 @@ rule align_rebasecalled:
     params:
         samtools_bin=config.get("samtools_bin", "samtools"),
         minimap2_bin=config.get("minimap2_bin", "minimap2")
-    threads: config.get("align_threads", 8)
-    resources:
-        mem_mb=config.get("align_mem", 16000),
-        runtime=config.get("align_time", 240)
     log:
         get_project_path(config.get("rebasecall_dir", "results/bam/rebasecall")) + "/{sample}/align.log"
     shell:
