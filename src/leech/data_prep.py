@@ -280,6 +280,75 @@ def extract_training_chunks(
     return chunks
 
 
+def prepare_training_data(
+    bam_path: Path,
+    pod5_path: Path,
+    motif: str | None = None,
+    motif_offset: int = 0,
+    label: int = 0,
+    min_mapq: int = 0,
+) -> tuple[list[dict[str, np.ndarray | str | int | None]], dict[str, int]]:
+    """
+    Prepare training data from BAM and POD5 files with statistics tracking.
+
+    Args:
+        bam_path: Path to BAM file with alignments
+        pod5_path: Path to POD5 file with signal
+        motif: Optional sequence motif to filter
+        motif_offset: Offset within motif for focus base
+        label: Label for all chunks
+        min_mapq: Minimum mapping quality
+
+    Returns:
+        Tuple of (chunks, statistics) where statistics is a dict with:
+        - total_reads: Total number of reads processed
+        - reads_with_motif: Number of reads containing motif
+        - reads_without_motif: Number of reads without motif
+        - total_chunks: Total number of chunks extracted
+    """
+    total_reads = 0
+    reads_with_motif = 0
+    reads_without_motif = 0
+    chunks = []
+
+    for read in iter_bam_with_pod5(bam_path, pod5_path, min_mapq=min_mapq):
+        total_reads += 1
+        read_chunks = extract_training_chunks(
+            read, motif=motif, motif_offset=motif_offset, label=label
+        )
+
+        # Track whether this read had motif matches
+        if len(read_chunks) > 0:
+            reads_with_motif += 1
+        else:
+            reads_without_motif += 1
+
+        chunks.extend(read_chunks)
+
+    # Compile statistics
+    stats = {
+        "total_reads": total_reads,
+        "reads_with_motif": reads_with_motif,
+        "reads_without_motif": reads_without_motif,
+        "total_chunks": len(chunks),
+    }
+
+    # Log statistics
+    logger.info(f"Processed {total_reads} reads")
+    if motif is not None:
+        logger.info(
+            f"Reads with motif '{motif}': {reads_with_motif} "
+            f"({100.0 * reads_with_motif / total_reads:.1f}%)"
+        )
+        logger.info(
+            f"Reads without motif: {reads_without_motif} "
+            f"({100.0 * reads_without_motif / total_reads:.1f}%)"
+        )
+    logger.info(f"Extracted {len(chunks)} training chunks")
+
+    return chunks, stats
+
+
 def seq_to_int(seq: str) -> np.ndarray:
     """
     Convert DNA sequence to integer encoding.

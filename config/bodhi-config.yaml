@@ -78,8 +78,8 @@ amino_acids:
 # ============================================================================
 # Data Preparation Parameters
 # ============================================================================
-motif: "CCAGGC"
-motif_offset: 2
+motif: "CCATGGC"
+motif_offset: 3
 kmer_len: 5
 chunk_context: [200, 200]
 train_split: 0.7
