@@ -87,8 +87,8 @@ set-resources:
   train_charged_vs_uncharged:
     slurm_partition: aa100
     runtime: 480
-    mem_mb: 96000
-    cpus_per_task: 8
+    mem_mb: 76000
+    cpus_per_task: 20  # 76000 MB / 20 CPUs = 3,800 MB/CPU (within 3,840 MB/CPU limit)
     nodes: 1
     gpu: 0
     tasks_per_gpu: 0
@@ -97,8 +97,8 @@ set-resources:
   train_pairwise_aa:
     slurm_partition: aa100
     runtime: 480
-    mem_mb: 96000
-    cpus_per_task: 8
+    mem_mb: 76000
+    cpus_per_task: 20  # 76000 MB / 20 CPUs = 3,800 MB/CPU (within 3,840 MB/CPU limit)
     nodes: 1
     gpu: 0
     tasks_per_gpu: 0

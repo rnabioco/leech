@@ -29,6 +29,18 @@ rule prepare_chunks:
         label=lambda wildcards: (
             1 if config["samples"][wildcards.sample].get("label") == "charged" else 0
         ),
+        # Conditional arguments using lambda functions
+        seed_arg=lambda wildcards: (
+            f"--seed {config.get('seed', '')}" if config.get("seed", "") else ""
+        ),
+        ref_fasta_arg=lambda wildcards: (
+            f"--reference-fasta {config.get('reference_fasta', None)}"
+            if config.get("reference_fasta", None) and config.get("reference_fasta", None) != "None"
+            else ""
+        ),
+        skip_indels_arg=lambda wildcards: (
+            "--skip-motif-indels" if config.get("skip_motif_indels", True) else ""
+        ),
         slurm_extra="",  # No GPU needed for data preparation
     threads: 4
     resources:
@@ -38,24 +50,6 @@ rule prepare_chunks:
         CHUNKS_DIR + "/{sample}/prepare.log",
     shell:
         """
-        # Build seed argument only if provided
-        SEED_ARG=""
-        if [ -n "{params.seed}" ]; then
-            SEED_ARG="--seed {params.seed}"
-        fi
-
-        # Build reference-fasta argument only if provided
-        REF_FASTA_ARG=""
-        if [ "{params.reference_fasta}" != "None" ] && [ -n "{params.reference_fasta}" ]; then
-            REF_FASTA_ARG="--reference-fasta {params.reference_fasta}"
-        fi
-
-        # Build skip-motif-indels flag
-        SKIP_INDELS_ARG=""
-        if [ "{params.skip_motif_indels}" = "True" ]; then
-            SKIP_INDELS_ARG="--skip-motif-indels"
-        fi
-
         uv run leech prepare \
             --pod5 {input.pod5} \
             --bam {input.bam} \
@@ -63,11 +57,11 @@ rule prepare_chunks:
             --motif {params.motif} \
             --motif-offset {params.motif_offset} \
             --motif-reference {params.motif_reference} \
-            $REF_FASTA_ARG \
-            $SKIP_INDELS_ARG \
+            {params.ref_fasta_arg} \
+            {params.skip_indels_arg} \
             --label {params.label} \
             --train-split {params.train_split} \
             --val-split {params.val_split} \
-            $SEED_ARG \
+            {params.seed_arg} \
             2>&1 | tee {log}
         """
