@@ -781,6 +781,9 @@ def merge_and_split_chunks(
     and then merging the splits, which can allow reads from the same molecule to
     appear in both training and validation sets.
 
+    Memory-efficient implementation: First pass collects only read IDs and metadata
+    to determine splits, second pass loads and assigns chunks to appropriate splits.
+
     Args:
         input_paths: List of paths to .npz chunk files to merge
         train_frac: Fraction of reads for training
@@ -799,24 +802,82 @@ def merge_and_split_chunks(
         ...     seed=42
         ... )
     """
-    logger.info(f"Merging {len(input_paths)} chunk files")
+    import random
 
-    # Load and merge all chunks
-    all_chunks = []
+    if train_frac + val_frac > 1.0:
+        raise ValueError(f"train_frac ({train_frac}) + val_frac ({val_frac}) must be <= 1.0")
+
+    logger.info(f"Merging {len(input_paths)} chunk files (memory-efficient mode)")
+
+    # First pass: collect only read IDs from all files (minimal memory)
+    logger.info("Pass 1: Collecting read IDs for split assignment")
+    all_read_ids = set()
+    file_chunk_counts = []
+
     for chunk_path in input_paths:
-        logger.info(f"Loading {chunk_path}")
+        logger.info(f"  Scanning {chunk_path}")
+        # Load only read_ids array (much smaller than full data)
+        with np.load(chunk_path, allow_pickle=True) as data:
+            read_ids = data["read_ids"]
+            all_read_ids.update(str(rid) for rid in read_ids)
+            file_chunk_counts.append(len(read_ids))
+            logger.info(f"    Found {len(read_ids)} chunks")
+
+    logger.info(f"Total unique reads across all files: {len(all_read_ids)}")
+
+    # Determine read-level splits
+    if seed is not None:
+        random.seed(seed)
+
+    read_ids_list = list(all_read_ids)
+    random.shuffle(read_ids_list)
+
+    n_reads = len(read_ids_list)
+    n_train = int(n_reads * train_frac)
+    n_val = int(n_reads * val_frac)
+
+    train_read_ids = set(read_ids_list[:n_train])
+    val_read_ids = set(read_ids_list[n_train : n_train + n_val])
+    test_read_ids = set(read_ids_list[n_train + n_val :])
+
+    logger.info(f"Split {n_reads} unique reads:")
+    logger.info(
+        f"  Train: {len(train_read_ids)} reads ({len(train_read_ids) / n_reads * 100:.1f}%)"
+    )
+    logger.info(f"  Val: {len(val_read_ids)} reads ({len(val_read_ids) / n_reads * 100:.1f}%)")
+    logger.info(f"  Test: {len(test_read_ids)} reads ({len(test_read_ids) / n_reads * 100:.1f}%)")
+
+    # Second pass: load chunks and assign to splits (one file at a time)
+    logger.info("Pass 2: Loading chunks and assigning to splits")
+    train_chunks = []
+    val_chunks = []
+    test_chunks = []
+
+    for chunk_path in input_paths:
+        logger.info(f"  Processing {chunk_path}")
+        # Load chunks from this file using the standard loader
         chunks = load_chunks(chunk_path)
-        all_chunks.extend(chunks)
-        logger.info(f"  Loaded {len(chunks)} chunks")
 
-    logger.info(f"Total merged chunks: {len(all_chunks)}")
+        # Assign to appropriate split
+        for chunk in chunks:
+            read_id = chunk["read_id"]
+            if read_id in train_read_ids:
+                train_chunks.append(chunk)
+            elif read_id in val_read_ids:
+                val_chunks.append(chunk)
+            elif read_id in test_read_ids:
+                test_chunks.append(chunk)
 
-    # Count unique reads
-    unique_reads = set(chunk["read_id"] for chunk in all_chunks)
-    logger.info(f"Unique reads across all files: {len(unique_reads)}")
+        logger.info(f"    Assigned {len(chunks)} chunks")
+        # Clear chunks to free memory before loading next file
+        del chunks
 
-    # Split at read level
-    return split_chunks_by_read(all_chunks, train_frac=train_frac, val_frac=val_frac, seed=seed)
+    logger.info("Final chunk distribution:")
+    logger.info(f"  Train: {len(train_chunks)} chunks")
+    logger.info(f"  Val: {len(val_chunks)} chunks")
+    logger.info(f"  Test: {len(test_chunks)} chunks")
+
+    return train_chunks, val_chunks, test_chunks
 
 
 def save_chunks(chunks: list[dict], output_path: Path) -> None:
@@ -895,22 +956,39 @@ def load_chunks(input_path: Path) -> list[dict]:
 
     Returns:
         List of chunk dictionaries compatible with extract_training_chunks output
+
+    Note:
+        This function loads all arrays into memory at once. The arrays are stored
+        as numpy object arrays (dtype=object) to handle variable-length signals.
+        The loaded data is kept in memory-mapped form when possible, but converting
+        to individual dictionaries will create copies in memory.
     """
-    data = np.load(input_path, allow_pickle=True)
+    # Load all arrays at once (keeps data memory-mapped when possible)
+    with np.load(input_path, allow_pickle=True) as data:
+        # Extract all arrays first (this creates copies but only once)
+        signals = data["signals"]
+        sequences = data["sequences"]
+        dwells = data["dwells"]
+        features = data["features"]
+        labels = data["labels"]
+        read_ids = data["read_ids"]
+        base_indices = data["base_indices"]
 
-    chunks = []
-    n_chunks = len(data["labels"])
+        n_chunks = len(labels)
+        chunks = []
 
-    for i in range(n_chunks):
-        chunk = {
-            "signal": data["signals"][i],
-            "sequence": str(data["sequences"][i]),
-            "dwell": data["dwells"][i],
-            "features": data["features"][i],
-            "label": int(data["labels"][i]) if data["labels"][i] >= 0 else None,
-            "read_id": str(data["read_ids"][i]),
-            "base_idx": int(data["base_indices"][i]),
-        }
-        chunks.append(chunk)
+        # Create dictionaries with references to array elements
+        # This is more memory efficient than accessing data[key][i] each time
+        for i in range(n_chunks):
+            chunk = {
+                "signal": signals[i],
+                "sequence": str(sequences[i]),
+                "dwell": dwells[i],
+                "features": features[i],
+                "label": int(labels[i]) if labels[i] >= 0 else None,
+                "read_id": str(read_ids[i]),
+                "base_idx": int(base_indices[i]),
+            }
+            chunks.append(chunk)
 
     return chunks
