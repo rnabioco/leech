@@ -6,7 +6,6 @@ Adapted from Remora but modernized with NumPy arrays and type hints.
 
 import logging
 import multiprocessing as mp
-import pickle
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -529,6 +528,8 @@ class ReadInfo:
     read_id: str
     sequence: str
     move_table_data: tuple[int, np.ndarray]  # (stride, moves)
+    num_samples: int
+    trim_offset: int
     mapping_quality: int
     reference_name: str | None
     reference_start: int | None
@@ -587,11 +588,17 @@ def collect_read_infos_from_bam(
                 stride = int(moves[0])
                 move_table_data = (stride, moves)
 
+                # Extract signal metadata
+                num_samples = int(aln.get_tag("ns"))
+                trim_offset = int(aln.get_tag("ts")) if aln.has_tag("ts") else 0
+
                 # Create ReadInfo
                 read_info = ReadInfo(
                     read_id=read_id,
                     sequence=read_seq,
                     move_table_data=move_table_data,
+                    num_samples=num_samples,
+                    trim_offset=trim_offset,
                     mapping_quality=aln.mapping_quality,
                     reference_name=aln.reference_name,
                     reference_start=aln.reference_start,
@@ -609,7 +616,7 @@ def collect_read_infos_from_bam(
 
 
 def _process_read_chunk_worker(
-    args: tuple[list[ReadInfo], Path, str | None, int, int, str, dict[str, str] | None, bool]
+    args: tuple[list[ReadInfo], Path, str | None, int, int, str, dict[str, str] | None, bool],
 ) -> list[dict[str, np.ndarray | str | int | None]]:
     """
     Worker function to process a chunk of reads in parallel.
@@ -623,9 +630,16 @@ def _process_read_chunk_worker(
     """
     from leech.features import MoveTable
 
-    read_infos, pod5_path, motif, motif_offset, label, motif_reference, reference_sequences, skip_motif_indels = (
-        args
-    )
+    (
+        read_infos,
+        pod5_path,
+        motif,
+        motif_offset,
+        label,
+        motif_reference,
+        reference_sequences,
+        skip_motif_indels,
+    ) = args
 
     all_chunks = []
 
@@ -654,7 +668,13 @@ def _process_read_chunk_worker(
 
                 # Reconstruct move table
                 stride, moves = read_info.move_table_data
-                move_table = MoveTable(stride=stride, moves=moves)
+                move_table = MoveTable(
+                    stride=stride,
+                    moves=moves,
+                    read_id=read_info.read_id,
+                    num_samples=read_info.num_samples,
+                    trim_offset=read_info.trim_offset,
+                )
 
                 # Normalize signal
                 norm_signal, norm_params = normalize_signal(raw_signal, method="median_mad")
@@ -764,7 +784,12 @@ def prepare_training_data_parallel(
     logger.info(f"Found {total_reads} reads to process")
 
     if total_reads == 0:
-        return [], {"total_reads": 0, "reads_with_motif": 0, "reads_without_motif": 0, "total_chunks": 0}
+        return [], {
+            "total_reads": 0,
+            "reads_with_motif": 0,
+            "reads_without_motif": 0,
+            "total_chunks": 0,
+        }
 
     # Split read_infos into chunks for workers
     read_chunks = [read_infos[i : i + chunk_size] for i in range(0, len(read_infos), chunk_size)]
@@ -791,7 +816,9 @@ def prepare_training_data_parallel(
 
     with mp.Pool(processes=num_workers) as pool:
         # Use imap_unordered for progress tracking
-        for i, chunk_results in enumerate(pool.imap_unordered(_process_read_chunk_worker, worker_args)):
+        for i, chunk_results in enumerate(
+            pool.imap_unordered(_process_read_chunk_worker, worker_args)
+        ):
             all_chunks.extend(chunk_results)
             logger.info(
                 f"Processed chunk {i + 1}/{len(read_chunks)}: "
@@ -807,7 +834,9 @@ def prepare_training_data_parallel(
         "total_chunks": len(all_chunks),
     }
 
-    logger.info(f"Parallel processing complete: extracted {len(all_chunks)} chunks from {total_reads} reads")
+    logger.info(
+        f"Parallel processing complete: extracted {len(all_chunks)} chunks from {total_reads} reads"
+    )
 
     return all_chunks, stats
 
@@ -1127,7 +1156,7 @@ def merge_and_split_chunks(
 
     # First pass: collect only read IDs from all files (minimal memory)
     logger.info("Pass 1: Collecting read IDs for split assignment")
-    all_read_ids = set()
+    all_read_ids: set[str] = set()
     file_chunk_counts = []
 
     for chunk_path in input_paths:
