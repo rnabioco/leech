@@ -329,9 +329,7 @@ def prepare(
 
         with Progress(console=console) as progress:
             progress_container["progress"] = progress
-            progress_container["task"] = progress.add_task(
-                "[cyan]Extracting chunks...", total=None
-            )
+            progress_container["task"] = progress.add_task("[cyan]Extracting chunks...", total=None)
 
             result = prepare_training_data_with_split(
                 pod5_path=pod5,
@@ -358,7 +356,9 @@ def prepare(
     console.print(f"[green]Extracted {result['n_chunks']} training chunks[/green]")
 
     if no_split:
-        console.print("[yellow]Skipped splitting (--no-split). All chunks saved to all.npz[/yellow]")
+        console.print(
+            "[yellow]Skipped splitting (--no-split). All chunks saved to all.npz[/yellow]"
+        )
     else:
         # Display split statistics in a table
         table = Table(
@@ -369,12 +369,8 @@ def prepare(
         table.add_column("Percentage", justify="right", style="yellow")
 
         n_total = result["n_chunks"]
-        table.add_row(
-            "Train", str(result["n_train"]), f"{result['n_train'] / n_total * 100:.1f}%"
-        )
-        table.add_row(
-            "Validation", str(result["n_val"]), f"{result['n_val'] / n_total * 100:.1f}%"
-        )
+        table.add_row("Train", str(result["n_train"]), f"{result['n_train'] / n_total * 100:.1f}%")
+        table.add_row("Validation", str(result["n_val"]), f"{result['n_val'] / n_total * 100:.1f}%")
         table.add_row("Test", str(result["n_test"]), f"{result['n_test'] / n_total * 100:.1f}%")
         table.add_row("Total", str(n_total), "100.0%", style="bold")
 
@@ -450,9 +446,7 @@ def merge_and_split(input_chunks, output_dir, train_split, val_split, seed):
 
     n_total = result["n_total"]
     table.add_row("Train", str(result["n_train"]), f"{result['n_train'] / n_total * 100:.1f}%")
-    table.add_row(
-        "Validation", str(result["n_val"]), f"{result['n_val'] / n_total * 100:.1f}%"
-    )
+    table.add_row("Validation", str(result["n_val"]), f"{result['n_val'] / n_total * 100:.1f}%")
     table.add_row("Test", str(result["n_test"]), f"{result['n_test'] / n_total * 100:.1f}%")
     table.add_row("Total", str(n_total), "100.0%", style="bold")
 
