@@ -110,7 +110,7 @@ amino_acids:
 # - Increases runtime allocation (60 min → 240 min)
 # - Increases CPU cores (10 → 16)
 # - Sets --device cpu flag for all training/inference commands
-use_cpu_training: false   # Set to true to enable CPU training mode
+use_cpu_training: true # Set to true to enable CPU training mode
 
 # ============================================================================
 # Data Preparation Parameters
@@ -228,7 +228,7 @@ model: "ConvLSTMDwell"    # Model architecture: ConvLSTMDwell, ConvLSTMBase, etc
 
 # Model comparison: Train and evaluate multiple architectures
 # Set compare_models: true to enable multi-architecture comparison
-compare_models: false
+compare_models: true
 
 # Models to compare (used when compare_models: true)
 # Available models:

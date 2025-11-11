@@ -115,174 +115,75 @@ set-resources:
   # ============================================================================
   # Grid Search Rules (GPU/CPU configurable via use_cpu_training)
   # ============================================================================
-  # Note: Resources below are for GPU mode. When use_cpu_training=true:
-  #   - partition changes to amilan (no GPU)
-  #   - runtime increased 4x
-  #   - cpus_per_task increased to 16
-  #   - gres/gpu/nodes removed
-  grid_search_charged_vs_uncharged:
-    slurm_partition: aa100
-    runtime: 1440
-    mem_mb: 16000
-    cpus_per_task: 4
-    nodes: 1
-    gpu: 0
-    tasks_per_gpu: 0
-    gres: "gpu:1"
+  # Note: Resources are dynamically set in workflow/rules/grid_search.smk based on
+  # use_cpu_training config parameter. Do NOT set resources here as they will
+  # override the dynamic allocation.
+  #
+  # Dynamic behavior (defined in grid_search.smk):
+  #   GPU mode (use_cpu_training: false):
+  #     - partition: aa100, runtime: 1440, cpus: 4, gres: gpu:1
+  #   CPU mode (use_cpu_training: true):
+  #     - partition: amilan, runtime: 5760, cpus: 16, gres: ""
+  #
+  # grid_search_charged_vs_uncharged: (resources set dynamically in grid_search.smk)
+  # grid_search_pairwise_aa: (resources set dynamically in grid_search.smk)
 
-  grid_search_pairwise_aa:
-    slurm_partition: aa100
-    runtime: 1440
-    mem_mb: 16000
-    cpus_per_task: 4
-    nodes: 1
-    gpu: 0
-    tasks_per_gpu: 0
-    gres: "gpu:1"
-
-  grid_search_architecture_charged:
-    slurm_partition: aa100
-    runtime: 1440
-    mem_mb: 16000
-    cpus_per_task: 4
-    nodes: 1
-    gpu: 0
-    tasks_per_gpu: 0
-    gres: "gpu:1"
-
-  grid_search_architecture_pairwise:
-    slurm_partition: aa100
-    runtime: 1440
-    mem_mb: 16000
-    cpus_per_task: 4
-    nodes: 1
-    gpu: 0
-    tasks_per_gpu: 0
-    gres: "gpu:1"
+  # grid_search_architecture_charged: (resources set dynamically in compare_models.smk)
+  # grid_search_architecture_pairwise: (resources set dynamically in compare_models.smk)
 
   # ============================================================================
   # Training Rules (GPU/CPU configurable via use_cpu_training)
   # ============================================================================
-  # Note: Resources below are for GPU mode. When use_cpu_training=true:
-  #   - partition changes to amilan (no GPU)
-  #   - runtime increased 4x (60→240, 480→1920)
-  #   - cpus_per_task increased to 16
-  #   - gres/gpu/nodes removed
-  train_charged_vs_uncharged:
-    slurm_partition: aa100
-    runtime: 60
-    mem_mb: 36000
-    cpus_per_task: 10
-    nodes: 1
-    gpu: 0
-    tasks_per_gpu: 0
-    gres: "gpu:1"
+  # Note: Resources are dynamically set in workflow/rules/train.smk based on
+  # use_cpu_training config parameter. Do NOT set resources here as they will
+  # override the dynamic allocation.
+  #
+  # Dynamic behavior (defined in train.smk):
+  #   GPU mode (use_cpu_training: false):
+  #     - partition: aa100, runtime: 60, cpus: 10, gres: gpu:1
+  #   CPU mode (use_cpu_training: true):
+  #     - partition: amilan, runtime: 240, cpus: 16, gres: ""
+  #
+  # train_charged_vs_uncharged: (resources set dynamically in train.smk)
+  # train_pairwise_aa: (resources set dynamically in train.smk)
 
-  train_pairwise_aa:
-    slurm_partition: aa100
-    runtime: 60
-    mem_mb: 36000
-    cpus_per_task: 10
-    nodes: 1
-    gpu: 0
-    tasks_per_gpu: 0
-    gres: "gpu:1"
-
-  train_architecture_charged:
-    slurm_partition: aa100
-    runtime: 480
-    mem_mb: 16000
-    cpus_per_task: 4
-    nodes: 1
-    gpu: 0
-    tasks_per_gpu: 0
-    gres: "gpu:1"
-
-  train_architecture_pairwise:
-    slurm_partition: aa100
-    runtime: 480
-    mem_mb: 16000
-    cpus_per_task: 4
-    nodes: 1
-    gpu: 0
-    tasks_per_gpu: 0
-    gres: "gpu:1"
+  # train_architecture_charged: (resources set dynamically in compare_models.smk)
+  # train_architecture_pairwise: (resources set dynamically in compare_models.smk)
 
   # ============================================================================
   # Inference Rules (GPU/CPU configurable via use_cpu_training)
   # ============================================================================
-  # Note: Resources below are for GPU mode. When use_cpu_training=true:
-  #   - partition changes to amilan (no GPU)
-  #   - runtime increased 4x (240→960)
-  #   - cpus_per_task increased to 16
-  #   - gres/gpu/nodes removed
-  infer_charged_vs_uncharged:
-    slurm_partition: aa100
-    runtime: 240
-    mem_mb: 8000
-    cpus_per_task: 4
-    nodes: 1
-    gpu: 0
-    tasks_per_gpu: 0
-    gres: "gpu:1"
-
-  infer_pairwise_aa:
-    slurm_partition: aa100
-    runtime: 240
-    mem_mb: 8000
-    cpus_per_task: 4
-    nodes: 1
-    gpu: 0
-    tasks_per_gpu: 0
-    gres: "gpu:1"
+  # Note: Resources are dynamically set in workflow/rules/inference.smk based on
+  # use_cpu_training config parameter. Do NOT set resources here as they will
+  # override the dynamic allocation.
+  #
+  # Dynamic behavior (defined in inference.smk):
+  #   GPU mode (use_cpu_training: false):
+  #     - partition: aa100, runtime: 240, cpus: 4, gres: gpu:1
+  #   CPU mode (use_cpu_training: true):
+  #     - partition: amilan, runtime: 960, cpus: 16, gres: ""
+  #
+  # infer_charged_vs_uncharged: (resources set dynamically in inference.smk)
+  # infer_pairwise_aa: (resources set dynamically in inference.smk)
 
   # ============================================================================
   # Testing/Evaluation Rules (GPU/CPU configurable via use_cpu_training)
   # ============================================================================
-  # Note: Resources below are for GPU mode. When use_cpu_training=true:
-  #   - partition changes to amilan (no GPU)
-  #   - runtime increased 4x (60→240)
-  #   - cpus_per_task increased to 16
-  #   - gres/gpu/nodes removed
-  test_charged_vs_uncharged:
-    slurm_partition: atesting_a100
-    runtime: 60
-    mem_mb: 4000
-    cpus_per_task: 2
-    nodes: 1
-    gpu: 0
-    tasks_per_gpu: 0
-    gres: "gpu:1"
+  # Note: Resources are dynamically set in workflow/rules/evaluate.smk based on
+  # use_cpu_training config parameter. Do NOT set resources here as they will
+  # override the dynamic allocation.
+  #
+  # Dynamic behavior (defined in evaluate.smk):
+  #   GPU mode (use_cpu_training: false):
+  #     - partition: atesting_a100, runtime: 60, cpus: 2, gres: gpu:1
+  #   CPU mode (use_cpu_training: true):
+  #     - partition: amilan, runtime: 240, cpus: 16, gres: ""
+  #
+  # test_charged_vs_uncharged: (resources set dynamically in evaluate.smk)
+  # test_pairwise_aa: (resources set dynamically in evaluate.smk)
 
-  test_pairwise_aa:
-    slurm_partition: atesting_a100
-    runtime: 60
-    mem_mb: 4000
-    cpus_per_task: 2
-    nodes: 1
-    gpu: 0
-    tasks_per_gpu: 0
-    gres: "gpu:1"
-
-  test_architecture_charged:
-    slurm_partition: atesting_a100
-    runtime: 60
-    mem_mb: 4000
-    cpus_per_task: 2
-    nodes: 1
-    gpu: 0
-    tasks_per_gpu: 0
-    gres: "gpu:1"
-
-  test_architecture_pairwise:
-    slurm_partition: atesting_a100
-    runtime: 60
-    mem_mb: 4000
-    cpus_per_task: 2
-    nodes: 1
-    gpu: 0
-    tasks_per_gpu: 0
-    gres: "gpu:1"
+  # test_architecture_charged: (resources set dynamically in compare_models.smk)
+  # test_architecture_pairwise: (resources set dynamically in compare_models.smk)
 
   # ============================================================================
   # Comparison and Summary Rules (CPU only)
