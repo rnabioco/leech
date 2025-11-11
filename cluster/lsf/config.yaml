@@ -97,12 +97,12 @@ set-resources:
   # ============================================================================
   # Grid Search Rules
   # ============================================================================
-  - grid_search_charged_vs_uncharged:runtime=1440
+  - grid_search_charged_vs_uncharged:runtime=240
   - grid_search_charged_vs_uncharged:gpu=1
   - grid_search_charged_vs_uncharged:mem_mb=16000
   - grid_search_charged_vs_uncharged:threads=4
 
-  - grid_search_pairwise_aa:runtime=1440
+  - grid_search_pairwise_aa:runtime=240
   - grid_search_pairwise_aa:gpu=1
   - grid_search_pairwise_aa:mem_mb=16000
   - grid_search_pairwise_aa:threads=4
@@ -130,12 +130,12 @@ set-resources:
   - train_pairwise_aa:mem_mb=76000
   - train_pairwise_aa:threads=4
 
-  - train_architecture_charged:runtime=480
+  - train_architecture_charged:runtime=240
   - train_architecture_charged:gpu=1
   - train_architecture_charged:mem_mb=16000
   - train_architecture_charged:threads=4
 
-  - train_architecture_pairwise:runtime=480
+  - train_architecture_pairwise:runtime=240
   - train_architecture_pairwise:gpu=1
   - train_architecture_pairwise:mem_mb=16000
   - train_architecture_pairwise:threads=4
