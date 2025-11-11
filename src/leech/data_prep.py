@@ -1501,6 +1501,9 @@ def process_comparison_spec(
             relabel_pairwise=(labels_1, labels_2),
         )
 
+        # Type narrowing: result is always a dict when output_dir is provided
+        assert isinstance(result, dict)
+
         # Save metadata documenting the comparison
         metadata = {
             "comparison": comparison_name,
