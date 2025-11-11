@@ -2,8 +2,7 @@
 # ======================================
 # Each sample should have:
 #   - pod5: path to POD5 directory (pipeline will find BAM files automatically)
-#   - label: "charged" or "uncharged" (for charged vs uncharged classification)
-#   - amino_acid: amino acid label (for pairwise classification, e.g., "Ala", "Gly")
+#   - label: amino acid label (e.g., "Ala", "Gly") or "uncharged" for uncharged controls
 #
 # Note: BAM files are generated/found by the pipeline and do not need to be specified
 
@@ -22,130 +21,107 @@ samples:
   uncharged_synthetic:
     pod5: "/pl/active/BMG_RBI/hesselberth/aatrnaseq-synethic/raw/uncharged_synthetic/20240201_1229_P2S-01617-A_PAS98920_2488b946/pod5_pass"
     label: "uncharged"
-    amino_acid: "uncharged"
 
   # Charged samples - Alanine
   ala_synthetic:
     pod5: "/pl/active/BMG_RBI/hesselberth/aatrnaseq-synethic/raw/ala_synthetic/20240208_1650_P2S-01618-A_PAU73551_03200e15/pod5_pass"
-    label: "charged"
-    amino_acid: "Ala"
+    label: "Ala"
 
   # Charged samples - Arginine
   arg_synthetic:
     pod5: "/pl/active/BMG_RBI/hesselberth/aatrnaseq-synethic/raw/arg_synthetic/20240119_1408_P2S-01617-A_PAS67224_0dd95ae4/pod5_pass"
-    label: "charged"
-    amino_acid: "Arg"
+    label: "Arg"
 
   # Charged samples - Asparagine
   asn_synthetic:
     pod5: "/pl/active/BMG_RBI/hesselberth/aatrnaseq-synethic/raw/asn_synthetic/20240208_1313_P2S-01617-A_PAU71318_b8db1a09/pod5_pass"
-    label: "charged"
-    amino_acid: "Asn"
+    label: "Asn"
 
   # Charged samples - Aspartate
   asp_synthetic:
     pod5: "/pl/active/BMG_RBI/hesselberth/aatrnaseq-synethic/raw/asp_synthetic/20240207_2013_P2I-00030-B_PAS25444_0ef35a6c/pod5_pass"
-    label: "charged"
-    amino_acid: "Asp"
+    label: "Asp"
 
   # Charged samples - Cysteine (run 1)
   cys_synthetic_rep1:
     pod5: "/pl/active/BMG_RBI/hesselberth/aatrnaseq-synethic/raw/cys_synthetic/20240207_1318_P2S-01618-A_PAU71434_9df2edde/pod5_pass"
-    label: "charged"
-    amino_acid: "Cys"
+    label: "Cys"
 
   # Charged samples - Cysteine (run 2)
   cys_synthetic_rep2:
     pod5: "/pl/active/BMG_RBI/hesselberth/aatrnaseq-synethic/raw/cys_synthetic/20240208_1936_P2I-00030-A_PAU09412_df51e868/pod5_pass"
-    label: "charged"
-    amino_acid: "Cys"
+    label: "Cys"
 
   # Charged samples - Glutamine
   gln_synthetic:
     pod5: "/pl/active/BMG_RBI/hesselberth/aatrnaseq-synethic/raw/gln_synthetic/20240208_1313_P2S-01618-B_PAU73551_04300e47/pod5_pass"
-    label: "charged"
-    amino_acid: "Gln"
+    label: "Gln"
 
   # Charged samples - Glutamate
   glu_synthetic:
     pod5: "/pl/active/BMG_RBI/hesselberth/aatrnaseq-synethic/raw/glu_synthetic/20240208_1650_P2S-01618-B_PAU09412_ac2bf946/pod5_pass"
-    label: "charged"
-    amino_acid: "Glu"
+    label: "Glu"
 
   # Charged samples - Glycine
   gly_synthetic:
     pod5: "/pl/active/BMG_RBI/hesselberth/aatrnaseq-synethic/raw/gly_synthetic/20240119_1250_P2S-01617-A_PAS98920_30c0e33e/pod5_pass"
-    label: "charged"
-    amino_acid: "Gly"
+    label: "Gly"
 
   # Charged samples - Histidine
   his_synthetic:
     pod5: "/pl/active/BMG_RBI/hesselberth/aatrnaseq-synethic/raw/his_synthetic/20240201_1229_P2S-01618-B_PAU71608_dffec1fe/pod5_pass"
-    label: "charged"
-    amino_acid: "His"
+    label: "His"
 
   # Charged samples - Isoleucine
   ile_synthetic:
     pod5: "/pl/active/BMG_RBI/hesselberth/aatrnaseq-synethic/raw/ile_synthetic/20240119_1345_P2S-01617-B_PAU71608_1c26fe2c/pod5_pass"
-    label: "charged"
-    amino_acid: "Ile"
+    label: "Ile"
 
   # Charged samples - Leucine
   leu_synthetic:
     pod5: "/pl/active/BMG_RBI/hesselberth/aatrnaseq-synethic/raw/leu_synthetic/20240208_2010_P2I-00030-B_PAU71604_1e136988/pod5_pass"
-    label: "charged"
-    amino_acid: "Leu"
+    label: "Leu"
 
   # Charged samples - Lysine
   lys_synthetic:
     pod5: "/pl/active/BMG_RBI/hesselberth/aatrnaseq-synethic/raw/lys_synthetic/20240119_1250_P2S-01617-B_PAS92267_fa9d9f55/pod5_pass"
-    label: "charged"
-    amino_acid: "Lys"
+    label: "Lys"
 
   # Charged samples - Methionine
   met_synthetic:
     pod5: "/pl/active/BMG_RBI/hesselberth/aatrnaseq-synethic/raw/met_synthetic/20240207_1318_P2S-01618-B_PAS67224_5d31eecc/pod5_pass"
-    label: "charged"
-    amino_acid: "Met"
+    label: "Met"
 
   # Charged samples - Phenylalanine
   phe_synthetic:
     pod5: "/pl/active/BMG_RBI/hesselberth/aatrnaseq-synethic/raw/phe_synthetic/20240201_1229_P2S-01618-A_PAS67224_75a5f363/pod5_pass"
-    label: "charged"
-    amino_acid: "Phe"
+    label: "Phe"
 
   # Charged samples - Proline
   pro_synthetic:
     pod5: "/pl/active/BMG_RBI/hesselberth/aatrnaseq-synethic/raw/pro_synthetic/20240208_1313_P2S-01617-B_PAU70675_ffb5398e/pod5_pass"
-    label: "charged"
-    amino_acid: "Pro"
+    label: "Pro"
 
   # Charged samples - Serine
   ser_synthetic:
     pod5: "/pl/active/BMG_RBI/hesselberth/aatrnaseq-synethic/raw/ser_synthetic/20240207_1318_P2S-01617-B_PAU71608_87930687/pod5_pass"
-    label: "charged"
-    amino_acid: "Ser"
+    label: "Ser"
 
   # Charged samples - Threonine
   thr_synthetic:
     pod5: "/pl/active/BMG_RBI/hesselberth/aatrnaseq-synethic/raw/thr_synthetic/20240207_1318_P2S-01617-A_PAU05281_73385aa6/pod5_pass"
-    label: "charged"
-    amino_acid: "Thr"
+    label: "Thr"
 
   # Charged samples - Tryptophan
   trp_synthetic:
     pod5: "/pl/active/BMG_RBI/hesselberth/aatrnaseq-synethic/raw/trp_synthetic/20240207_2013_P2I-00030-A_PAS66377_951cb040/pod5_pass"
-    label: "charged"
-    amino_acid: "Trp"
+    label: "Trp"
 
   # Charged samples - Tyrosine
   tyr_synthetic:
     pod5: "/pl/active/BMG_RBI/hesselberth/aatrnaseq-synethic/raw/tyr_synthetic/20240201_1229_P2S-01617-B_PAU71434_cddc463d/pod5_pass"
-    label: "charged"
-    amino_acid: "Tyr"
+    label: "Tyr"
 
   # Charged samples - Valine
   val_synthetic:
     pod5: "/pl/active/BMG_RBI/hesselberth/aatrnaseq-synethic/raw/val_synthetic/20240208_1313_P2S-01618-A_PAS25822_96f9890f/pod5_pass"
-    label: "charged"
-    amino_acid: "Val"

@@ -68,30 +68,6 @@ metrics_dir: "/scratch/alpine/jhesselberth@xsede.org/leech/metrics"
 # Note: samples are no longer defined in this main config file to avoid
 # cluster-specific paths and conflicts.
 
-# Amino acids for pairwise classification
-# All pairs will be generated automatically: choose(amino_acids, 2)
-amino_acids:
-  - "Ala"
-  - "Gly"
-  - "Val"
-  - "Leu"
-  - "Ile"
-  - "Pro"
-  - "Phe"
-  - "Trp"
-  - "Met"
-  - "Ser"
-  - "Thr"
-  - "Cys"
-  - "Asn"
-  - "Gln"
-  - "Tyr"
-  - "Lys"
-  - "Arg"
-  - "His"
-  - "Asp"
-  - "Glu"
-
 # ============================================================================
 # Device Configuration (CPU vs GPU)
 # ============================================================================

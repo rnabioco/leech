@@ -50,12 +50,8 @@ def get_project_path(base_dir):
             return str(Path(project_name) / path.name)
 
 
-# Extract sample names and amino acid pairs
+# Extract sample names
 SAMPLES = list(config["samples"].keys())
-AMINO_ACIDS = config.get("amino_acids", [])
-AA_PAIRS = [
-    f"{aa1}_vs_{aa2}" for aa1, aa2 in itertools.combinations(sorted(AMINO_ACIDS), 2)
-]
 
 # Output directories (with optional project_name support)
 CHUNKS_DIR = get_project_path(config.get("chunks_dir", "results/chunks"))
@@ -72,15 +68,9 @@ else:
 
 
 def get_charged_samples():
-    """Get samples labeled as charged or uncharged."""
+    """Get samples labeled as charged or uncharged (deprecated)."""
     return [
         s
         for s in SAMPLES
         if config["samples"][s].get("label") in ["charged", "uncharged"]
     ]
-
-
-def get_samples_for_aa_pair(pair):
-    """Get samples for a specific amino acid pair."""
-    aa1, aa2 = pair.split("_vs_")
-    return [s for s in SAMPLES if config["samples"][s].get("label") in [aa1, aa2]]
