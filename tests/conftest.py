@@ -116,7 +116,8 @@ def sample_chunks(sample_leech_read):
         )
         if chunk is not None:
             chunk["read_id"] = sample_leech_read.read_id
-            chunk["label"] = base_idx % 2  # Alternate labels
+            chunk["label_int"] = base_idx % 2  # Alternate numeric labels (0 or 1)
+            chunk["label"] = "charged" if (base_idx % 2) == 1 else "uncharged"  # String label
             chunks.append(chunk)
 
     return chunks

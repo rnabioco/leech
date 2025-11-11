@@ -107,7 +107,8 @@ def prepare_chunks_with_context(
     kmer_context: int = 5,
     motif: str | None = None,
     motif_offset: int = 0,
-    label: int = 0,
+    label: str | None = None,
+    label_int: int = 0,
     min_mapq: int = 10,
 ) -> None:
     """
@@ -122,7 +123,8 @@ def prepare_chunks_with_context(
         kmer_context: K-mer context for sequence
         motif: Optional motif for filtering
         motif_offset: Offset within motif
-        label: Label for chunks
+        label: String label for chunks (e.g., 'charged', 'uncharged')
+        label_int: Numeric label for chunks (0 or 1)
         min_mapq: Minimum mapping quality
     """
     chunks = []
@@ -145,7 +147,7 @@ def prepare_chunks_with_context(
 
         # Extract chunks
         read_chunks = extract_training_chunks(
-            read, motif=motif, motif_offset=motif_offset, label=label
+            read, motif=motif, motif_offset=motif_offset, label=label, label_int=label_int
         )
         chunks.extend(read_chunks)
 

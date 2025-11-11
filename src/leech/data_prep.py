@@ -429,7 +429,8 @@ def extract_training_chunks(
     leech_read: LeechRead,
     motif: str | None = None,
     motif_offset: int = 0,
-    label: int = 0,
+    label: str | None = None,
+    label_int: int | None = None,
     motif_reference: str = "bam",
     reference_sequences: dict[str, str] | None = None,
     skip_motif_indels: bool = True,
@@ -441,7 +442,8 @@ def extract_training_chunks(
         leech_read: LeechRead object
         motif: Optional sequence motif to filter (e.g., "CCAGGC")
         motif_offset: Offset within motif for focus base
-        label: Label for all chunks from this read
+        label: String label identifier (e.g., "Ala", "Gly", "charged", "uncharged")
+        label_int: Optional numeric label (0, 1) - assigned during merge for pairwise comparisons
         motif_reference: Where to search for motif: "bam" (basecalled) or "fasta" (reference)
         reference_sequences: Dict of reference name -> sequence (required if motif_reference="fasta")
         skip_motif_indels: If True, skip reads with indels in motif region (only for motif_reference="fasta")
@@ -451,8 +453,9 @@ def extract_training_chunks(
     """
     chunks: list[dict] = []
 
-    # Set labels for all bases
-    leech_read.labels = np.full(leech_read.num_bases, label, dtype=np.int64)
+    # Set numeric labels for all bases if provided
+    if label_int is not None:
+        leech_read.labels = np.full(leech_read.num_bases, label_int, dtype=np.int64)
 
     # Find focus bases (either all or motif matches)
     if motif is None:
@@ -517,6 +520,10 @@ def extract_training_chunks(
         chunk = leech_read.get_chunk(base_idx)
         if chunk is not None:
             chunk["read_id"] = leech_read.read_id
+            # Rename numeric "label" from get_chunk() to "label_int"
+            chunk["label_int"] = chunk.pop("label", None)
+            # Add string label
+            chunk["label"] = label
             chunks.append(chunk)
 
     return chunks
@@ -617,13 +624,23 @@ def collect_read_infos_from_bam(
 
 
 def _process_read_chunk_worker(
-    args: tuple[list[ReadInfo], Path, str | None, int, int, str, dict[str, str] | None, bool],
+    args: tuple[
+        list[ReadInfo],
+        Path,
+        str | None,
+        int,
+        str | None,
+        int | None,
+        str,
+        dict[str, str] | None,
+        bool,
+    ],
 ) -> list[dict[str, np.ndarray | str | int | None]]:
     """
     Worker function to process a chunk of reads in parallel.
 
     Args:
-        args: Tuple of (read_infos, pod5_path, motif, motif_offset, label,
+        args: Tuple of (read_infos, pod5_path, motif, motif_offset, label, label_int,
                         motif_reference, reference_sequences, skip_motif_indels)
 
     Returns:
@@ -637,6 +654,7 @@ def _process_read_chunk_worker(
         motif,
         motif_offset,
         label,
+        label_int,
         motif_reference,
         reference_sequences,
         skip_motif_indels,
@@ -730,6 +748,7 @@ def _process_read_chunk_worker(
                     motif=motif,
                     motif_offset=motif_offset,
                     label=label,
+                    label_int=label_int,
                     motif_reference=motif_reference,
                     reference_sequences=reference_sequences,
                     skip_motif_indels=skip_motif_indels,
@@ -749,7 +768,8 @@ def prepare_training_data_parallel(
     pod5_path: Path,
     motif: str | None = None,
     motif_offset: int = 0,
-    label: int = 0,
+    label: str | None = None,
+    label_int: int | None = None,
     min_mapq: int = 0,
     motif_reference: str = "bam",
     reference_sequences: dict[str, str] | None = None,
@@ -765,7 +785,8 @@ def prepare_training_data_parallel(
         pod5_path: Path to POD5 file with signal
         motif: Optional sequence motif to filter
         motif_offset: Offset within motif for focus base
-        label: Label for all chunks
+        label: String label identifier (e.g., "Ala", "Gly", "charged", "uncharged")
+        label_int: Optional numeric label (0, 1) - assigned during merge for pairwise comparisons
         min_mapq: Minimum mapping quality
         motif_reference: Where to search for motif ("bam" or "fasta")
         reference_sequences: Dict of reference sequences (for motif_reference="fasta")
@@ -806,6 +827,7 @@ def prepare_training_data_parallel(
             motif,
             motif_offset,
             label,
+            label_int,
             motif_reference,
             reference_sequences,
             skip_motif_indels,
@@ -874,7 +896,8 @@ def prepare_training_data(
     pod5_path: Path,
     motif: str | None = None,
     motif_offset: int = 0,
-    label: int = 0,
+    label: str | None = None,
+    label_int: int | None = None,
     min_mapq: int = 0,
 ) -> tuple[list[dict[str, np.ndarray | str | int | None]], dict[str, int]]:
     """
@@ -885,7 +908,8 @@ def prepare_training_data(
         pod5_path: Path to POD5 file with signal
         motif: Optional sequence motif to filter
         motif_offset: Offset within motif for focus base
-        label: Label for all chunks
+        label: String label identifier (e.g., "Ala", "Gly", "charged", "uncharged")
+        label_int: Optional numeric label (0, 1) - assigned during merge for pairwise comparisons
         min_mapq: Minimum mapping quality
 
     Returns:
@@ -903,7 +927,7 @@ def prepare_training_data(
     for read in iter_bam_with_pod5(bam_path, pod5_path, min_mapq=min_mapq):
         total_reads += 1
         read_chunks = extract_training_chunks(
-            read, motif=motif, motif_offset=motif_offset, label=label
+            read, motif=motif, motif_offset=motif_offset, label=label, label_int=label_int
         )
 
         # Track whether this read had motif matches
@@ -1120,6 +1144,7 @@ def merge_and_split_chunks(
     train_frac: float = 0.7,
     val_frac: float = 0.15,
     seed: int | None = None,
+    relabel_pairwise: tuple[str, str] | None = None,
 ) -> tuple[list[dict], list[dict], list[dict]] | dict[str, Any]:
     """
     Merge multiple chunk files and split at read level to prevent data leakage.
@@ -1127,7 +1152,8 @@ def merge_and_split_chunks(
     This implements the correct workflow for multi-sample datasets:
     1. Load and merge all chunks from different samples
     2. Split merged data at the READ level into train/val/test
-    3. Optionally save splits to disk
+    3. Optionally relabel chunks for pairwise classification
+    4. Optionally save splits to disk
 
     This prevents data leakage that occurs when splitting each sample independently
     and then merging the splits, which can allow reads from the same molecule to
@@ -1142,6 +1168,9 @@ def merge_and_split_chunks(
         train_frac: Fraction of reads for training
         val_frac: Fraction of reads for validation
         seed: Random seed for reproducibility
+        relabel_pairwise: Optional tuple of (label_type1, label_type2) for pairwise comparison.
+            If provided, chunks with label_type1 get label=0, label_type2 get label=1.
+            Example: ("Ala", "Gly") will assign label=0 to Ala chunks, label=1 to Gly chunks.
 
     Returns:
         If output_dir is None: Tuple of (train_chunks, val_chunks, test_chunks)
@@ -1161,6 +1190,14 @@ def merge_and_split_chunks(
         ...     output_dir=Path("merged"),
         ...     train_frac=0.7,
         ...     val_frac=0.15,
+        ...     seed=42
+        ... )
+
+        >>> # Pairwise amino acid comparison with relabeling
+        >>> result = merge_and_split_chunks(
+        ...     [Path("ala_all.npz"), Path("gly_all.npz")],
+        ...     output_dir=Path("merged/Ala_vs_Gly"),
+        ...     relabel_pairwise=("Ala", "Gly"),
         ...     seed=42
         ... )
     """
@@ -1231,6 +1268,34 @@ def merge_and_split_chunks(
         # Load chunks from this file using the standard loader
         chunks = load_chunks(chunk_path)
 
+        # Relabel chunks if pairwise comparison is requested
+        if relabel_pairwise is not None:
+            label_type1, label_type2 = relabel_pairwise
+            relabeled_count = 0
+            skipped_count = 0
+            for chunk in chunks:
+                chunk_label_type = chunk.get("label_type")
+                if chunk_label_type == label_type1:
+                    chunk["label"] = 0
+                    relabeled_count += 1
+                elif chunk_label_type == label_type2:
+                    chunk["label"] = 1
+                    relabeled_count += 1
+                else:
+                    # Skip chunks that don't match either label type
+                    logger.warning(
+                        f"Chunk with label_type='{chunk_label_type}' does not match "
+                        f"pairwise comparison ({label_type1}, {label_type2}), keeping original label"
+                    )
+                    skipped_count += 1
+            if relabeled_count > 0:
+                logger.info(
+                    f"    Relabeled {relabeled_count} chunks for pairwise comparison "
+                    f"({label_type1}=0, {label_type2}=1)"
+                )
+            if skipped_count > 0:
+                logger.warning(f"    Skipped {skipped_count} chunks with mismatched label_types")
+
         # Assign to appropriate split
         for chunk in chunks:
             read_id = chunk["read_id"]
@@ -1250,6 +1315,23 @@ def merge_and_split_chunks(
     logger.info(f"  Train: {len(train_chunks)} chunks")
     logger.info(f"  Val: {len(val_chunks)} chunks")
     logger.info(f"  Test: {len(test_chunks)} chunks")
+
+    # Check label distribution and warn if all labels are the same
+    all_chunks_combined = train_chunks + val_chunks + test_chunks
+    unique_labels = {chunk["label"] for chunk in all_chunks_combined if chunk["label"] is not None}
+    if len(unique_labels) == 1:
+        logger.warning(
+            f"⚠️  WARNING: All chunks have the same label ({list(unique_labels)[0]})! "
+            "This suggests pairwise relabeling may not have worked correctly. "
+            "Check that label_type values match the relabel_pairwise argument."
+        )
+    elif len(unique_labels) > 0:
+        label_counts: dict[str, int] = {}
+        for chunk in all_chunks_combined:
+            label = chunk["label"]
+            if label is not None:
+                label_counts[label] = label_counts.get(label, 0) + 1
+        logger.info(f"Label distribution: {label_counts}")
 
     # If output_dir provided, save splits and return statistics
     if output_dir is not None:
@@ -1309,6 +1391,7 @@ def save_chunks(chunks: list[dict], output_path: Path) -> None:
     dwells = []
     features = []
     labels = []
+    labels_int = []
     read_ids = []
     base_indices = []
 
@@ -1317,7 +1400,10 @@ def save_chunks(chunks: list[dict], output_path: Path) -> None:
         sequences.append(chunk["sequence"])
         dwells.append(chunk["dwell"])
         features.append(chunk["features"])
-        labels.append(chunk["label"] if chunk["label"] is not None else -1)
+        labels.append(chunk.get("label", ""))  # String label (e.g., "Ala", "Gly")
+        labels_int.append(
+            chunk.get("label_int", -1) if chunk.get("label_int") is not None else -1
+        )  # Numeric label or -1
         read_ids.append(chunk["read_id"])
         base_indices.append(chunk["base_idx"])
 
@@ -1327,7 +1413,8 @@ def save_chunks(chunks: list[dict], output_path: Path) -> None:
     sequences_arr = np.array(sequences, dtype=str)
     dwells_arr = np.array(dwells, dtype=object)
     features_arr = np.array(features, dtype=object)
-    labels_arr = np.array(labels, dtype=np.int64)
+    labels_arr = np.array(labels, dtype=str)  # String labels
+    labels_int_arr = np.array(labels_int, dtype=np.int64)  # Numeric labels
     read_ids_arr = np.array(read_ids, dtype=str)
     base_indices_arr = np.array(base_indices, dtype=np.int64)
 
@@ -1342,6 +1429,7 @@ def save_chunks(chunks: list[dict], output_path: Path) -> None:
         dwells=dwells_arr,
         features=features_arr,
         labels=labels_arr,
+        labels_int=labels_int_arr,
         read_ids=read_ids_arr,
         base_indices=base_indices_arr,
     )
@@ -1372,11 +1460,12 @@ def load_chunks(input_path: Path) -> list[dict]:
         sequences = data["sequences"]
         dwells = data["dwells"]
         features = data["features"]
-        labels = data["labels"]
+        labels_arr = data["labels"]  # String labels
+        labels_int_arr = data["labels_int"]  # Numeric labels
         read_ids = data["read_ids"]
         base_indices = data["base_indices"]
 
-        n_chunks = len(labels)
+        n_chunks = len(labels_arr)
         chunks = []
 
         # Create dictionaries with references to array elements
@@ -1387,10 +1476,12 @@ def load_chunks(input_path: Path) -> list[dict]:
                 "sequence": str(sequences[i]),
                 "dwell": dwells[i],
                 "features": features[i],
-                "label": int(labels[i]) if labels[i] >= 0 else None,
                 "read_id": str(read_ids[i]),
                 "base_idx": int(base_indices[i]),
+                "label": str(labels_arr[i]) if labels_arr[i] != "" else None,
+                "label_int": int(labels_int_arr[i]) if labels_int_arr[i] >= 0 else None,
             }
+
             chunks.append(chunk)
 
     return chunks
@@ -1405,7 +1496,8 @@ def prepare_training_data_with_split(
     motif_reference: str = "fasta",
     reference_fasta: Path | None = None,
     skip_motif_indels: bool = True,
-    label: int = 0,
+    label: str | None = None,
+    label_int: int | None = None,
     min_mapq: int = 10,
     feature_set: str = "signal+dwell+levels",
     train_split: float = 0.7,
@@ -1432,7 +1524,8 @@ def prepare_training_data_with_split(
         motif_reference: Where to search for motif ("fasta" or "bam")
         reference_fasta: External reference FASTA file
         skip_motif_indels: Skip reads with indels in motif region
-        label: Label for all chunks (0=uncharged, 1=charged)
+        label: String label identifier (e.g., "Ala", "Gly", "charged", "uncharged")
+        label_int: Optional numeric label (0, 1) - assigned during merge for pairwise comparisons
         min_mapq: Minimum mapping quality
         feature_set: Feature set to extract (not currently used, reserved for future)
         train_split: Fraction for training
@@ -1473,6 +1566,7 @@ def prepare_training_data_with_split(
             motif=motif,
             motif_offset=motif_offset,
             label=label,
+            label_int=label_int,
             motif_reference=motif_reference,
             reference_sequences=reference_sequences,
             skip_motif_indels=skip_motif_indels,

@@ -97,7 +97,8 @@ rule merge_chunks_pairwise:
 
     This rule implements the correct workflow:
     1. Merge all chunks from the two amino acid samples
-    2. Split merged data at the READ level into train/val/test
+    2. Relabel chunks for pairwise comparison (aa1=0, aa2=1)
+    3. Split merged data at the READ level into train/val/test
 
     This prevents data leakage that occurs when splitting each sample independently
     and then merging the splits.
@@ -118,6 +119,8 @@ rule merge_chunks_pairwise:
         seed=config.get("seed", 42),
         # Build input arguments for merge-and-split command
         input_args=lambda wildcards, input: " ".join([f"-i {f}" for f in input.chunks]),
+        # Extract amino acids from pair name (e.g., "Ala_vs_Gly" -> "Ala,Gly")
+        relabel_pairwise=lambda wildcards: wildcards.pair.replace("_vs_", ","),
     log:
         CHUNKS_DIR + "/merged/pairwise/{pair}/merge_and_split.log",
     shell:
@@ -128,6 +131,7 @@ rule merge_chunks_pairwise:
             --train-split {params.train_split} \
             --val-split {params.val_split} \
             --seed {params.seed} \
+            --relabel-pairwise {params.relabel_pairwise} \
             2>&1 | tee {log}
         """
 
