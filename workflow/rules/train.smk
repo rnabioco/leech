@@ -61,11 +61,18 @@ rule train_charged_vs_uncharged:
         batch_size=config.get("batch_size", 128),
         lr=config.get("learning_rate", 0.001),
         early_stopping=config.get("early_stopping_patience", 5),
+        device="cpu" if config.get("use_cpu_training", False) else "cuda",
         config_flag=lambda wildcards, input: (
             f"--config {input.grid_search}"
             if config.get("use_grid_search", False)
             else ""
         ),
+    resources:
+        slurm_partition=lambda wildcards, attempt: "amilan" if config.get("use_cpu_training", False) else "aa100",
+        runtime=lambda wildcards, attempt: 240 if config.get("use_cpu_training", False) else 60,
+        cpus_per_task=lambda wildcards, attempt: 16 if config.get("use_cpu_training", False) else 10,
+        mem_mb=36000,
+        gres=lambda wildcards, attempt: "" if config.get("use_cpu_training", False) else "gpu:1",
     log:
         MODELS_DIR + "/charged_vs_uncharged/train.log",
     shell:
@@ -79,6 +86,7 @@ rule train_charged_vs_uncharged:
             --batch-size {params.batch_size} \
             --learning-rate {params.lr} \
             --early-stopping {params.early_stopping} \
+            --device {params.device} \
             {params.config_flag} \
             2>&1 | tee {log}
         """
@@ -145,11 +153,18 @@ rule train_pairwise_aa:
         batch_size=config.get("batch_size", 128),
         lr=config.get("learning_rate", 0.001),
         early_stopping=config.get("early_stopping_patience", 5),
+        device="cpu" if config.get("use_cpu_training", False) else "cuda",
         config_flag=lambda wildcards, input: (
             f"--config {input.grid_search}"
             if config.get("use_grid_search", False)
             else ""
         ),
+    resources:
+        slurm_partition=lambda wildcards, attempt: "amilan" if config.get("use_cpu_training", False) else "aa100",
+        runtime=lambda wildcards, attempt: 240 if config.get("use_cpu_training", False) else 60,
+        cpus_per_task=lambda wildcards, attempt: 16 if config.get("use_cpu_training", False) else 10,
+        mem_mb=36000,
+        gres=lambda wildcards, attempt: "" if config.get("use_cpu_training", False) else "gpu:1",
     log:
         MODELS_DIR + "/pairwise/{pair}/train.log",
     shell:
@@ -163,6 +178,7 @@ rule train_pairwise_aa:
             --batch-size {params.batch_size} \
             --learning-rate {params.lr} \
             --early-stopping {params.early_stopping} \
+            --device {params.device} \
             {params.config_flag} \
             2>&1 | tee {log}
         """
