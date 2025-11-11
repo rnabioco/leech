@@ -6,10 +6,8 @@ Designed for Snakemake integration with clear input/output paths.
 
 import json
 import logging
-import random
 from pathlib import Path
 
-import numpy as np
 import rich_click as click
 from rich.console import Console
 from rich.panel import Panel
@@ -22,7 +20,6 @@ from leech.constants import (
     DEFAULT_EPOCHS,
     DEFAULT_LEARNING_RATE,
     DEFAULT_SEED,
-    generate_random_seed,
 )
 from leech.logging_config import setup_logging
 
@@ -235,12 +232,13 @@ def prepare(
 ):
     """Prepare training data from POD5 and BAM files."""
     from leech.data_prep import (
-        extract_training_chunks,
         get_reference_sequences,
-        iter_bam_with_pod5,
         prepare_training_data_parallel,
+        prepare_training_data_with_split,
         save_chunks,
+        split_chunks_by_read,
     )
+    from leech.util import setup_random_seed
 
     # display_logo()
 
@@ -248,24 +246,8 @@ def prepare(
     logger.info(f"Motif reference mode: {motif_reference}")
     if workers > 1:
         logger.info(f"Parallel mode: {workers} workers, {chunk_size} reads per batch")
+
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Generate random seed if not provided
-    if seed is None:
-        seed = generate_random_seed()
-        logger.info(f"Generated random seed: {seed}")
-    else:
-        logger.info(f"Using provided seed: {seed}")
-
-    # Save seed for reproducibility
-    seed_file = output_dir / "seed.txt"
-    with open(seed_file, "w") as f:
-        f.write(f"{seed}\n")
-    logger.info(f"Saved seed to {seed_file}")
-
-    # Set random seed for reproducibility
-    random.seed(seed)
-    np.random.seed(seed)
 
     # Load reference sequences if using reference-based motif search
     reference_sequences = None
@@ -275,7 +257,8 @@ def prepare(
 
     # Extract chunks (parallel or sequential)
     if workers > 1:
-        # Parallel processing
+        # Parallel processing - extract chunks, then handle splitting/saving separately
+        logger.info("Extracting chunks in parallel...")
         chunks, stats = prepare_training_data_parallel(
             bam_path=bam,
             pod5_path=pod5,
@@ -289,47 +272,95 @@ def prepare(
             num_workers=workers,
             chunk_size=chunk_size,
         )
+
+        # Setup seed and handle splitting/saving
+        setup_random_seed(seed, output_dir)
+
+        if no_split:
+            # Save all chunks without splitting
+            all_file = output_dir / "all.npz"
+            save_chunks(chunks, all_file)
+            logger.info(f"Saved all chunks to {all_file}")
+            result = {
+                "n_chunks": len(chunks),
+                "n_train": 0,
+                "n_val": 0,
+                "n_test": 0,
+            }
+        else:
+            # Split at read level
+            train_chunks, val_chunks, test_chunks = split_chunks_by_read(
+                chunks, train_frac=train_split, val_frac=val_split, seed=seed
+            )
+
+            # Save splits
+            if train_chunks:
+                train_file = output_dir / "train.npz"
+                save_chunks(train_chunks, train_file)
+                logger.info(f"Saved {len(train_chunks)} train chunks to {train_file}")
+
+            if val_chunks:
+                val_file = output_dir / "val.npz"
+                save_chunks(val_chunks, val_file)
+                logger.info(f"Saved {len(val_chunks)} val chunks to {val_file}")
+
+            if test_chunks:
+                test_file = output_dir / "test.npz"
+                save_chunks(test_chunks, test_file)
+                logger.info(f"Saved {len(test_chunks)} test chunks to {test_file}")
+
+            result = {
+                "n_chunks": len(chunks),
+                "n_train": len(train_chunks),
+                "n_val": len(val_chunks),
+                "n_test": len(test_chunks),
+            }
     else:
-        # Sequential processing with progress bar
-        chunks = []
-        with Progress(console=console) as progress:
-            task = progress.add_task("[cyan]Extracting chunks...", total=None)
+        # Sequential processing with refactored function
+        progress_container = {"progress": None, "task": None}
 
-            for read in iter_bam_with_pod5(bam, pod5, min_mapq=min_mapq):
-                read_chunks = extract_training_chunks(
-                    read,
-                    motif=motif,
-                    motif_offset=motif_offset,
-                    label=label,
-                    motif_reference=motif_reference,
-                    reference_sequences=reference_sequences,
-                    skip_motif_indels=skip_motif_indels,
+        def update_progress(n_chunks):
+            if progress_container["progress"] is not None:
+                progress_container["progress"].update(
+                    progress_container["task"],
+                    advance=1,
+                    description=f"[cyan]Extracted {n_chunks} chunks...",
                 )
-                chunks.extend(read_chunks)
-                progress.update(task, advance=1, description=f"[cyan]Extracted {len(chunks)} chunks...")
 
-            progress.update(task, completed=True)
+        with Progress(console=console) as progress:
+            progress_container["progress"] = progress
+            progress_container["task"] = progress.add_task(
+                "[cyan]Extracting chunks...", total=None
+            )
 
-    console.print(f"[green]Extracted {len(chunks)} training chunks[/green]")
+            result = prepare_training_data_with_split(
+                pod5_path=pod5,
+                bam_path=bam,
+                output_dir=output_dir,
+                motif=motif,
+                motif_offset=motif_offset,
+                motif_reference=motif_reference,
+                reference_fasta=reference_fasta,
+                skip_motif_indels=skip_motif_indels,
+                label=label,
+                min_mapq=min_mapq,
+                feature_set=feature_set,
+                train_split=train_split,
+                val_split=val_split,
+                seed=seed,
+                no_split=no_split,
+                progress_callback=update_progress,
+            )
+
+            progress.update(progress_container["task"], completed=True)
+
+    # Display results
+    console.print(f"[green]Extracted {result['n_chunks']} training chunks[/green]")
 
     if no_split:
-        # Save all chunks without splitting (for merge-then-split workflow)
-        all_file = output_dir / "all.npz"
-        save_chunks(chunks, all_file)
-        logger.info(f"Saved all chunks to {all_file}")
-        console.print(
-            "[yellow]Skipped splitting (--no-split). All chunks saved to all.npz[/yellow]"
-        )
+        console.print("[yellow]Skipped splitting (--no-split). All chunks saved to all.npz[/yellow]")
     else:
-        # Split into train/val/test at READ level to prevent data leakage
-        from leech.data_prep import split_chunks_by_read
-
-        train_chunks, val_chunks, test_chunks = split_chunks_by_read(
-            chunks, train_frac=train_split, val_frac=val_split, seed=seed
-        )
-
         # Display split statistics in a table
-        n_total = len(chunks)
         table = Table(
             title="Data Split (Read-Level)", show_header=True, header_style="bold magenta"
         )
@@ -337,28 +368,17 @@ def prepare(
         table.add_column("Count", justify="right", style="green")
         table.add_column("Percentage", justify="right", style="yellow")
 
-        table.add_row("Train", str(len(train_chunks)), f"{len(train_chunks) / n_total * 100:.1f}%")
-        table.add_row("Validation", str(len(val_chunks)), f"{len(val_chunks) / n_total * 100:.1f}%")
-        table.add_row("Test", str(len(test_chunks)), f"{len(test_chunks) / n_total * 100:.1f}%")
+        n_total = result["n_chunks"]
+        table.add_row(
+            "Train", str(result["n_train"]), f"{result['n_train'] / n_total * 100:.1f}%"
+        )
+        table.add_row(
+            "Validation", str(result["n_val"]), f"{result['n_val'] / n_total * 100:.1f}%"
+        )
+        table.add_row("Test", str(result["n_test"]), f"{result['n_test'] / n_total * 100:.1f}%")
         table.add_row("Total", str(n_total), "100.0%", style="bold")
 
         console.print(table)
-
-        # Save chunks
-        if train_chunks:
-            train_file = output_dir / "train.npz"
-            save_chunks(train_chunks, train_file)
-            logger.info(f"Saved train to {train_file}")
-
-        if val_chunks:
-            val_file = output_dir / "val.npz"
-            save_chunks(val_chunks, val_file)
-            logger.info(f"Saved val to {val_file}")
-
-        if test_chunks:
-            test_file = output_dir / "test.npz"
-            save_chunks(test_chunks, test_file)
-            logger.info(f"Saved test to {test_file}")
 
     console.print("[bold green]Data preparation complete![/bold green]")
 
@@ -407,34 +427,20 @@ def merge_and_split(input_chunks, output_dir, train_split, val_split, seed):
     This prevents data leakage that can occur when splitting each sample
     independently and then merging the splits.
     """
-    from leech.data_prep import merge_and_split_chunks, save_chunks
+    from leech.data_prep import merge_and_split_chunks
 
     logger.info("Merging and splitting chunks at read level")
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Generate random seed if not provided
-    if seed is None:
-        seed = generate_random_seed()
-        logger.info(f"Generated random seed: {seed}")
-    else:
-        logger.info(f"Using provided seed: {seed}")
-
-    # Save seed for reproducibility
-    seed_file = output_dir / "seed.txt"
-    with open(seed_file, "w") as f:
-        f.write(f"{seed}\n")
-
-    # Set random seed
-    random.seed(seed)
-    np.random.seed(seed)
 
     # Merge and split at read level
-    train_chunks, val_chunks, test_chunks = merge_and_split_chunks(
-        list(input_chunks), train_frac=train_split, val_frac=val_split, seed=seed
+    result = merge_and_split_chunks(
+        input_paths=list(input_chunks),
+        output_dir=output_dir,
+        train_frac=train_split,
+        val_frac=val_split,
+        seed=seed,
     )
 
     # Display statistics
-    n_total = len(train_chunks) + len(val_chunks) + len(test_chunks)
     table = Table(
         title="Merged Data Split (Read-Level)", show_header=True, header_style="bold magenta"
     )
@@ -442,17 +448,15 @@ def merge_and_split(input_chunks, output_dir, train_split, val_split, seed):
     table.add_column("Chunks", justify="right", style="green")
     table.add_column("Percentage", justify="right", style="yellow")
 
-    table.add_row("Train", str(len(train_chunks)), f"{len(train_chunks) / n_total * 100:.1f}%")
-    table.add_row("Validation", str(len(val_chunks)), f"{len(val_chunks) / n_total * 100:.1f}%")
-    table.add_row("Test", str(len(test_chunks)), f"{len(test_chunks) / n_total * 100:.1f}%")
+    n_total = result["n_total"]
+    table.add_row("Train", str(result["n_train"]), f"{result['n_train'] / n_total * 100:.1f}%")
+    table.add_row(
+        "Validation", str(result["n_val"]), f"{result['n_val'] / n_total * 100:.1f}%"
+    )
+    table.add_row("Test", str(result["n_test"]), f"{result['n_test'] / n_total * 100:.1f}%")
     table.add_row("Total", str(n_total), "100.0%", style="bold")
 
     console.print(table)
-
-    # Save splits
-    save_chunks(train_chunks, output_dir / "train.npz")
-    save_chunks(val_chunks, output_dir / "val.npz")
-    save_chunks(test_chunks, output_dir / "test.npz")
 
     console.print("[bold green]Merge and split complete![/bold green]")
 
@@ -791,20 +795,14 @@ def grid_search(
     early_stopping,
 ):
     """Run grid search over chunk contexts for model optimization."""
-    from leech.gridsearch import GridSearchConfig, run_grid_search
+    from leech.gridsearch import GridSearchConfig, parse_context_grid, run_grid_search
 
     # display_logo()
 
     # Parse context grids
-    if left_contexts is not None:
-        left_contexts_list = [int(x.strip()) for x in left_contexts.split(",")]
-    else:
-        left_contexts_list = [int(x.strip()) for x in context_grid.split(",")]
-
-    if right_contexts is not None:
-        right_contexts_list = [int(x.strip()) for x in right_contexts.split(",")]
-    else:
-        right_contexts_list = [int(x.strip()) for x in context_grid.split(",")]
+    left_contexts_list, right_contexts_list = parse_context_grid(
+        context_grid, left_contexts, right_contexts
+    )
 
     logger.info(
         f"Starting grid search with {len(left_contexts_list)} x {len(right_contexts_list)} grid points"
