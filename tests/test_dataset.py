@@ -26,7 +26,7 @@ class TestLeechDataset:
         """Test that ValueError is raised when no valid chunks exist."""
         import numpy as np
 
-        # Create file with chunks but no labels
+        # Create file with chunks but no valid labels
         chunks_file = tmp_path / "empty_chunks.npz"
         np.savez_compressed(
             chunks_file,
@@ -34,7 +34,8 @@ class TestLeechDataset:
             sequences=np.array(["ACGTACGTACG"]),
             dwells=np.array([np.random.randn(11)], dtype=object),
             features=np.array([np.random.randn(5, 11)], dtype=object),
-            labels=np.array([-1]),  # Invalid label
+            labels=np.array([""]),  # Empty string label
+            labels_int=np.array([-1]),  # Invalid numeric label
             read_ids=np.array(["read_001"]),
             base_indices=np.array([5]),
         )

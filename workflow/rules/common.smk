@@ -83,4 +83,4 @@ def get_charged_samples():
 def get_samples_for_aa_pair(pair):
     """Get samples for a specific amino acid pair."""
     aa1, aa2 = pair.split("_vs_")
-    return [s for s in SAMPLES if config["samples"][s].get("amino_acid") in [aa1, aa2]]
+    return [s for s in SAMPLES if config["samples"][s].get("label") in [aa1, aa2]]
