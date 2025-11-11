@@ -54,8 +54,8 @@ rule train_charged_vs_uncharged:
         ),
     output:
         model=MODELS_DIR + "/charged_vs_uncharged/model_best.pt",
-        checkpoint=MODELS_DIR + "/charged_vs_uncharged/model_checkpoint.pt",
-        history=MODELS_DIR + "/charged_vs_uncharged/training_history.json",
+        checkpoint=MODELS_DIR + "/charged_vs_uncharged/model_last.pt",
+        history=MODELS_DIR + "/charged_vs_uncharged/metrics.json",
     params:
         output_dir=MODELS_DIR + "/charged_vs_uncharged",
         model_type=config.get("model", "ConvLSTMDwell"),
@@ -145,8 +145,8 @@ rule train_pairwise_aa:
         ),
     output:
         model=MODELS_DIR + "/pairwise/{pair}/model_best.pt",
-        checkpoint=MODELS_DIR + "/pairwise/{pair}/model_checkpoint.pt",
-        history=MODELS_DIR + "/pairwise/{pair}/training_history.json",
+        checkpoint=MODELS_DIR + "/pairwise/{pair}/model_last.pt",
+        history=MODELS_DIR + "/pairwise/{pair}/metrics.json",
     params:
         output_dir=MODELS_DIR + "/pairwise/{pair}",
         model_type=config.get("model", "ConvLSTMDwell"),
