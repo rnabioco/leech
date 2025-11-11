@@ -258,10 +258,15 @@ def prepare(
 
     # Extract chunks with progress bar
     chunks = []
+    total_reads = 0
+    reads_with_motif = 0
+    reads_without_motif = 0
+
     with Progress(console=console) as progress:
-        task = progress.add_task("[cyan]Extracting chunks...", total=None)
+        task = progress.add_task("[cyan]Processing reads...", total=None)
 
         for read in iter_bam_with_pod5(bam, pod5, min_mapq=min_mapq):
+            total_reads += 1
             read_chunks = extract_training_chunks(
                 read,
                 motif=motif,
@@ -271,12 +276,37 @@ def prepare(
                 reference_sequences=reference_sequences,
                 skip_motif_indels=skip_motif_indels,
             )
+
+            # Track motif statistics
+            if len(read_chunks) > 0:
+                reads_with_motif += 1
+            else:
+                reads_without_motif += 1
+
             chunks.extend(read_chunks)
-            progress.update(task, advance=1, description=f"[cyan]Extracted {len(chunks)} chunks...")
+
+            # Update progress with detailed statistics
+            if motif:
+                description = (
+                    f"[cyan]Reads: {total_reads} | "
+                    f"With motif: {reads_with_motif} ({100.0 * reads_with_motif / total_reads:.1f}%) | "
+                    f"Chunks: {len(chunks)}"
+                )
+            else:
+                description = f"[cyan]Reads: {total_reads} | Chunks: {len(chunks)}"
+
+            progress.update(task, advance=1, description=description)
 
         progress.update(task, completed=True)
 
-    console.print(f"[green]Extracted {len(chunks)} training chunks[/green]")
+    # Summary output
+    console.print(f"\n[green]✓ Processed {total_reads} reads[/green]")
+    if motif:
+        console.print(
+            f"[green]✓ Reads with motif '{motif}': {reads_with_motif} "
+            f"({100.0 * reads_with_motif / total_reads:.1f}%)[/green]"
+        )
+    console.print(f"[green]✓ Extracted {len(chunks)} training chunks[/green]")
 
     if no_split:
         # Save all chunks without splitting (for merge-then-split workflow)
@@ -394,10 +424,16 @@ def merge_and_split(input_chunks, output_dir, train_split, val_split, seed):
     random.seed(seed)
     np.random.seed(seed)
 
-    # Merge and split at read level
-    train_chunks, val_chunks, test_chunks = merge_and_split_chunks(
-        list(input_chunks), train_frac=train_split, val_frac=val_split, seed=seed
-    )
+    # Merge and split at read level with progress tracking
+    with Progress(console=console) as progress:
+        task = progress.add_task("[cyan]Merging and splitting chunks...", total=len(input_chunks) + 1)
+
+        # Wrap the merge function to show progress
+        train_chunks, val_chunks, test_chunks = merge_and_split_chunks(
+            list(input_chunks), train_frac=train_split, val_frac=val_split, seed=seed
+        )
+
+        progress.update(task, completed=len(input_chunks) + 1)
 
     # Display statistics
     n_total = len(train_chunks) + len(val_chunks) + len(test_chunks)
