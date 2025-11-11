@@ -30,10 +30,8 @@ rule prepare_chunks:
         skip_motif_indels=config.get("skip_motif_indels", True),
         workers=config.get("workers", 4),
         chunk_size=config.get("chunk_size", 100),
-        label=lambda wildcards: (
-            1 if config["samples"][wildcards.sample].get("label") == "charged" else 0
-        ),
-        label_type=lambda wildcards: config["samples"][wildcards.sample].get("amino_acid", None),
+        label=0,  # Default label (will be reassigned during merge for pairwise comparisons)
+        label_type=lambda wildcards: config["samples"][wildcards.sample].get("label", None),
         # Conditional arguments using lambda functions
         ref_fasta_arg=lambda wildcards: (
             f"--reference-fasta {config.get('reference_fasta', None)}"
@@ -44,8 +42,8 @@ rule prepare_chunks:
             "--skip-motif-indels" if config.get("skip_motif_indels", True) else ""
         ),
         label_type_arg=lambda wildcards: (
-            f"--label-type {config['samples'][wildcards.sample].get('amino_acid', None)}"
-            if config['samples'][wildcards.sample].get('amino_acid', None)
+            f"--label-type {config['samples'][wildcards.sample].get('label', None)}"
+            if config['samples'][wildcards.sample].get('label', None)
             else ""
         ),
         slurm_extra="",  # No GPU needed for data preparation
