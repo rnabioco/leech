@@ -421,7 +421,13 @@ def prepare(
     default=None,
     help="Relabel for pairwise comparison. Format: 'label1,label2' (e.g., 'Ala,Gly'). Assigns label_int=0 to first label, label_int=1 to second label.",
 )
-def merge_and_split(input_chunks, output_dir, train_split, val_split, seed, relabel_pairwise):
+@click.option(
+    "--comparison-spec",
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
+    help="TSV file with comparison specifications (4 columns: meta_label1, label_set1, meta_label2, label_set2). Mutually exclusive with --relabel-pairwise.",
+)
+def merge_and_split(input_chunks, output_dir, train_split, val_split, seed, relabel_pairwise, comparison_spec):
     """Merge multiple chunk files and split at read level to prevent data leakage.
 
     This command implements the correct workflow for multi-sample datasets:
@@ -431,8 +437,42 @@ def merge_and_split(input_chunks, output_dir, train_split, val_split, seed, rela
     This prevents data leakage that can occur when splitting each sample
     independently and then merging the splits.
     """
-    from leech.data_prep import merge_and_split_chunks
+    from leech.data_prep import merge_and_split_chunks, process_comparison_spec
 
+    # Check for mutually exclusive options
+    if relabel_pairwise and comparison_spec:
+        raise ValueError(
+            "Options --relabel-pairwise and --comparison-spec are mutually exclusive. "
+            "Use --relabel-pairwise for a single comparison or --comparison-spec for batch processing."
+        )
+
+    # Batch processing mode with comparison spec
+    if comparison_spec:
+        logger.info("Processing comparisons from spec file")
+
+        # For batch mode, input_chunks should be directories
+        chunk_dirs = list(input_chunks)
+
+        result = process_comparison_spec(
+            chunk_dirs=chunk_dirs,
+            comparison_spec=comparison_spec,
+            output_dir=output_dir,
+            train_frac=train_split,
+            val_frac=val_split,
+            seed=seed,
+        )
+
+        # Display summary
+        console.print(f"\n[bold green]Processed {result['n_comparisons']} comparisons:[/bold green]")
+        for comp_name, stats in result["comparisons"].items():
+            console.print(
+                f"  {comp_name}: {stats['n_train']} train, {stats['n_val']} val, {stats['n_test']} test"
+            )
+
+        console.print(f"\n[bold green]All comparisons saved to {output_dir}/[/bold green]")
+        return
+
+    # Single comparison mode (original behavior)
     logger.info("Merging and splitting chunks at read level")
 
     # Parse relabel_pairwise if provided
