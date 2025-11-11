@@ -43,11 +43,17 @@ rule train_architecture_charged:
             else ""
         ),
     resources:
-        slurm_partition=lambda wildcards, attempt: "amilan" if config.get("use_cpu_training", False) else "aa100",
+        slurm_partition=lambda wildcards, attempt: (
+            "amilan" if config.get("use_cpu_training", False) else "aa100"
+        ),
         runtime=240,
-        cpus_per_task=lambda wildcards, attempt: 16 if config.get("use_cpu_training", False) else 4,
+        cpus_per_task=lambda wildcards, attempt: (
+            16 if config.get("use_cpu_training", False) else 4
+        ),
         mem_mb=16000,
-        gres=lambda wildcards, attempt: "" if config.get("use_cpu_training", False) else "gpu:1",
+        gres=lambda wildcards, attempt: (
+            "" if config.get("use_cpu_training", False) else "gpu:1"
+        ),
     log:
         MODELS_DIR + "/comparison/charged_vs_uncharged/{architecture}/train.log",
     shell:
@@ -77,8 +83,7 @@ rule test_architecture_charged:
         metrics=METRICS_DIR
         + "/comparison/charged_vs_uncharged/{architecture}/test_metrics.json",
     log:
-        METRICS_DIR
-        + "/comparison/charged_vs_uncharged/{architecture}/test.log",
+        METRICS_DIR + "/comparison/charged_vs_uncharged/{architecture}/test.log",
     shell:
         """
         uv run leech test \
@@ -93,8 +98,7 @@ rule compare_architectures_charged:
     """Compare all architectures on charged vs uncharged task."""
     input:
         expand(
-            METRICS_DIR
-            + "/comparison/charged_vs_uncharged/{arch}/test_metrics.json",
+            METRICS_DIR + "/comparison/charged_vs_uncharged/{arch}/test_metrics.json",
             arch=MODEL_ARCHITECTURES,
         ),
     output:
@@ -170,12 +174,10 @@ rule train_architecture_pairwise:
             else []
         ),
     output:
-        model=MODELS_DIR
-        + "/comparison/pairwise/{pair}/{architecture}/model_best.pt",
+        model=MODELS_DIR + "/comparison/pairwise/{pair}/{architecture}/model_best.pt",
         checkpoint=MODELS_DIR
         + "/comparison/pairwise/{pair}/{architecture}/model_last.pt",
-        history=MODELS_DIR
-        + "/comparison/pairwise/{pair}/{architecture}/metrics.json",
+        history=MODELS_DIR + "/comparison/pairwise/{pair}/{architecture}/metrics.json",
     params:
         output_dir=MODELS_DIR + "/comparison/pairwise/{pair}/{architecture}",
         epochs=config.get("epochs", 50),
@@ -189,11 +191,17 @@ rule train_architecture_pairwise:
             else ""
         ),
     resources:
-        slurm_partition=lambda wildcards, attempt: "amilan" if config.get("use_cpu_training", False) else "aa100",
+        slurm_partition=lambda wildcards, attempt: (
+            "amilan" if config.get("use_cpu_training", False) else "aa100"
+        ),
         runtime=240,
-        cpus_per_task=lambda wildcards, attempt: 16 if config.get("use_cpu_training", False) else 4,
+        cpus_per_task=lambda wildcards, attempt: (
+            16 if config.get("use_cpu_training", False) else 4
+        ),
         mem_mb=16000,
-        gres=lambda wildcards, attempt: "" if config.get("use_cpu_training", False) else "gpu:1",
+        gres=lambda wildcards, attempt: (
+            "" if config.get("use_cpu_training", False) else "gpu:1"
+        ),
     log:
         MODELS_DIR + "/comparison/pairwise/{pair}/{architecture}/train.log",
     shell:
@@ -216,8 +224,7 @@ rule train_architecture_pairwise:
 rule test_architecture_pairwise:
     """Test a specific architecture on pairwise test set."""
     input:
-        model=MODELS_DIR
-        + "/comparison/pairwise/{pair}/{architecture}/model_best.pt",
+        model=MODELS_DIR + "/comparison/pairwise/{pair}/{architecture}/model_best.pt",
         test=CHUNKS_DIR + "/merged/pairwise/{pair}/test.npz",
     output:
         metrics=METRICS_DIR
@@ -225,14 +232,21 @@ rule test_architecture_pairwise:
     params:
         device="cpu" if config.get("use_cpu_training", False) else "cuda",
     resources:
-        slurm_partition=lambda wildcards, attempt: "amilan" if config.get("use_cpu_training", False) else "atesting_a100",
-        runtime=lambda wildcards, attempt: 240 if config.get("use_cpu_training", False) else 60,
-        cpus_per_task=lambda wildcards, attempt: 16 if config.get("use_cpu_training", False) else 2,
+        slurm_partition=lambda wildcards, attempt: (
+            "amilan" if config.get("use_cpu_training", False) else "atesting_a100"
+        ),
+        runtime=lambda wildcards, attempt: (
+            240 if config.get("use_cpu_training", False) else 60
+        ),
+        cpus_per_task=lambda wildcards, attempt: (
+            16 if config.get("use_cpu_training", False) else 2
+        ),
         mem_mb=4000,
-        gres=lambda wildcards, attempt: "" if config.get("use_cpu_training", False) else "gpu:1",
+        gres=lambda wildcards, attempt: (
+            "" if config.get("use_cpu_training", False) else "gpu:1"
+        ),
     log:
-        METRICS_DIR
-        + "/comparison/pairwise/{pair}/{architecture}/test.log",
+        METRICS_DIR + "/comparison/pairwise/{pair}/{architecture}/test.log",
     shell:
         """
         uv run leech test \
@@ -248,15 +262,13 @@ rule compare_architectures_pairwise:
     """Compare all architectures on a specific pairwise task."""
     input:
         expand(
-            METRICS_DIR
-            + "/comparison/pairwise/{{pair}}/{arch}/test_metrics.json",
+            METRICS_DIR + "/comparison/pairwise/{{pair}}/{arch}/test_metrics.json",
             arch=MODEL_ARCHITECTURES,
         ),
     output:
         comparison=METRICS_DIR
         + "/comparison/pairwise/{pair}/architecture_comparison.tsv",
-        summary=METRICS_DIR
-        + "/comparison/pairwise/{pair}/architecture_summary.txt",
+        summary=METRICS_DIR + "/comparison/pairwise/{pair}/architecture_summary.txt",
     params:
         metrics_dir=METRICS_DIR + "/comparison/pairwise/{pair}",
         architectures=MODEL_ARCHITECTURES,
@@ -293,7 +305,7 @@ rule aggregate_pairwise_comparisons:
                 df.insert(0, "pair", pair_name)
                 dfs.append(df)
 
-            # Concatenate and save
+                # Concatenate and save
             combined = pd.concat(dfs, ignore_index=True)
             combined.to_csv(output.comparison, sep="\t", index=False)
 
@@ -311,14 +323,20 @@ rule aggregate_pairwise_comparisons:
                     pair_df = combined[combined["pair"] == pair]
                     if not pair_df.empty:
                         best = pair_df.loc[pair_df["accuracy"].idxmax()]
-                        f.write(f"{pair:20s} {best['architecture']:20s} acc={best['accuracy']:.4f}\n")
+                        f.write(
+                            f"{pair:20s} {best['architecture']:20s} acc={best['accuracy']:.4f}\n"
+                        )
 
                 f.write("\n")
 
                 # Overall best architecture (average across pairs)
                 f.write("Overall Best Architecture (average accuracy):\n")
                 f.write("-" * 70 + "\n")
-                avg_by_arch = combined.groupby("architecture")["accuracy"].mean().sort_values(ascending=False)
+                avg_by_arch = (
+                    combined.groupby("architecture")["accuracy"]
+                    .mean()
+                    .sort_values(ascending=False)
+                )
                 for arch, acc in avg_by_arch.items():
                     f.write(f"{arch:20s} avg_acc={acc:.4f}\n")
 
@@ -346,11 +364,19 @@ rule grid_search_architecture_pairwise:
         ),
         max_epochs=config.get("grid_search_epochs", 20),
     resources:
-        slurm_partition=lambda wildcards, attempt: "amilan" if config.get("use_cpu_training", False) else "aa100",
-        runtime=lambda wildcards, attempt: 1400 if config.get("use_cpu_training", False) else 480,
-        cpus_per_task=lambda wildcards, attempt: 16 if config.get("use_cpu_training", False) else 4,
+        slurm_partition=lambda wildcards, attempt: (
+            "amilan" if config.get("use_cpu_training", False) else "aa100"
+        ),
+        runtime=lambda wildcards, attempt: (
+            1400 if config.get("use_cpu_training", False) else 480
+        ),
+        cpus_per_task=lambda wildcards, attempt: (
+            16 if config.get("use_cpu_training", False) else 4
+        ),
         mem_mb=16000,
-        gres=lambda wildcards, attempt: "" if config.get("use_cpu_training", False) else "gpu:1",
+        gres=lambda wildcards, attempt: (
+            "" if config.get("use_cpu_training", False) else "gpu:1"
+        ),
     log:
         MODELS_DIR + "/grid_search/pairwise/{pair}/{architecture}/grid_search.log",
     shell:

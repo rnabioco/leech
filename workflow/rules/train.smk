@@ -24,11 +24,16 @@ rule merge_chunks_charged:
         train_split=config.get("train_split", 0.7),
         val_split=config.get("val_split", 0.15),
         # Build input arguments with label=file format
-        input_args=lambda wildcards, input: " ".join([
-            f"-i charged={f}" if "charged" in str(f) and "uncharged" not in str(f)
-            else f"-i uncharged={f}"
-            for f in input.chunks
-        ]),
+        input_args=lambda wildcards, input: " ".join(
+            [
+                (
+                    f"-i charged={f}"
+                    if "charged" in str(f) and "uncharged" not in str(f)
+                    else f"-i uncharged={f}"
+                )
+                for f in input.chunks
+            ]
+        ),
     log:
         CHUNKS_DIR + "/merged/charged_vs_uncharged/merge_and_split.log",
     shell:
@@ -70,11 +75,19 @@ rule train_charged_vs_uncharged:
             else ""
         ),
     resources:
-        slurm_partition=lambda wildcards, attempt: "amilan" if config.get("use_cpu_training", False) else "aa100",
-        runtime=lambda wildcards, attempt: 240 if config.get("use_cpu_training", False) else 60,
-        cpus_per_task=lambda wildcards, attempt: 16 if config.get("use_cpu_training", False) else 10,
+        slurm_partition=lambda wildcards, attempt: (
+            "amilan" if config.get("use_cpu_training", False) else "aa100"
+        ),
+        runtime=lambda wildcards, attempt: (
+            240 if config.get("use_cpu_training", False) else 60
+        ),
+        cpus_per_task=lambda wildcards, attempt: (
+            16 if config.get("use_cpu_training", False) else 10
+        ),
         mem_mb=16000,
-        gres=lambda wildcards, attempt: "" if config.get("use_cpu_training", False) else "gpu:1",
+        gres=lambda wildcards, attempt: (
+            "" if config.get("use_cpu_training", False) else "gpu:1"
+        ),
     log:
         MODELS_DIR + "/charged_vs_uncharged/train.log",
     shell:
@@ -119,7 +132,9 @@ rule merge_chunks_pairwise:
         train_split=config.get("train_split", 0.7),
         val_split=config.get("val_split", 0.15),
         # Build input arguments with label=file format
-        input_args=lambda wildcards, input: build_merge_input_args(wildcards.pair, input.chunks),
+        input_args=lambda wildcards, input: build_merge_input_args(
+            wildcards.pair, input.chunks
+        ),
     log:
         CHUNKS_DIR + "/merged/pairwise/{pair}/merge_and_split.log",
     shell:
@@ -161,11 +176,19 @@ rule train_pairwise_aa:
             else ""
         ),
     resources:
-        slurm_partition=lambda wildcards, attempt: "amilan" if config.get("use_cpu_training", False) else "aa100",
-        runtime=lambda wildcards, attempt: 240 if config.get("use_cpu_training", False) else 60,
-        cpus_per_task=lambda wildcards, attempt: 16 if config.get("use_cpu_training", False) else 10,
+        slurm_partition=lambda wildcards, attempt: (
+            "amilan" if config.get("use_cpu_training", False) else "aa100"
+        ),
+        runtime=lambda wildcards, attempt: (
+            240 if config.get("use_cpu_training", False) else 60
+        ),
+        cpus_per_task=lambda wildcards, attempt: (
+            16 if config.get("use_cpu_training", False) else 10
+        ),
         mem_mb=18000,
-        gres=lambda wildcards, attempt: "" if config.get("use_cpu_training", False) else "gpu:1",
+        gres=lambda wildcards, attempt: (
+            "" if config.get("use_cpu_training", False) else "gpu:1"
+        ),
     log:
         MODELS_DIR + "/pairwise/{pair}/train.log",
     shell:

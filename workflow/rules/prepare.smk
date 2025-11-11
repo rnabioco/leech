@@ -34,7 +34,8 @@ rule prepare_chunks:
         # Conditional arguments using lambda functions
         ref_fasta_arg=lambda wildcards: (
             f"--reference-fasta {config.get('reference_fasta', None)}"
-            if config.get("reference_fasta", None) and config.get("reference_fasta", None) != "None"
+            if config.get("reference_fasta", None)
+            and config.get("reference_fasta", None) != "None"
             else ""
         ),
         skip_indels_arg=lambda wildcards: (
@@ -42,7 +43,7 @@ rule prepare_chunks:
         ),
         label_arg=lambda wildcards: (
             f"--label {config['samples'][wildcards.sample].get('label', None)}"
-            if config['samples'][wildcards.sample].get('label', None)
+            if config["samples"][wildcards.sample].get("label", None)
             else ""
         ),
         slurm_extra="",  # No GPU needed for data preparation

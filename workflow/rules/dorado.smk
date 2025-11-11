@@ -44,6 +44,7 @@ def get_raw_pod5_inputs(wildcards):
         if os.path.isdir(raw_pod5):
             # Directory: find all POD5 files
             from pathlib import Path
+
             return list(Path(raw_pod5).rglob("*.pod5"))
         else:
             # Single file
@@ -54,6 +55,7 @@ def get_raw_pod5_inputs(wildcards):
         if os.path.isdir(raw_pod5):
             # Directory: find all POD5 files
             from pathlib import Path
+
             return list(Path(raw_pod5).rglob("*.pod5"))
         else:
             # Single file
@@ -77,11 +79,13 @@ rule merge_pods:
     so no separate update step is needed.
     """
     input:
-        get_raw_pod5_inputs
+        get_raw_pod5_inputs,
     output:
-        pod5=get_project_path(config.get("pod5_dir", "results/pod5")) + "/{sample}/{sample}.pod5"
+        pod5=get_project_path(config.get("pod5_dir", "results/pod5"))
+        + "/{sample}/{sample}.pod5",
     log:
-        get_project_path(config.get("pod5_dir", "results/pod5")) + "/{sample}/merge_pods.log"
+        get_project_path(config.get("pod5_dir", "results/pod5"))
+        + "/{sample}/merge_pods.log",
     shell:
         """
         # Merge POD5 files
@@ -101,11 +105,13 @@ rule inspect_merged_pod5:
     """
     input:
         pod5=rules.merge_pods.output.pod5,
-        raw_inputs=get_raw_pod5_inputs
+        raw_inputs=get_raw_pod5_inputs,
     output:
-        report=get_project_path(config.get("pod5_dir", "results/pod5")) + "/{sample}/{sample}_inspect.txt"
+        report=get_project_path(config.get("pod5_dir", "results/pod5"))
+        + "/{sample}/{sample}_inspect.txt",
     log:
-        get_project_path(config.get("pod5_dir", "results/pod5")) + "/{sample}/inspect.log"
+        get_project_path(config.get("pod5_dir", "results/pod5"))
+        + "/{sample}/inspect.log",
     shell:
         """
         echo "=== POD5 Inspection Report ===" > {output.report}
@@ -170,9 +176,12 @@ rule rebasecall:
     Outputs BAM file with basecalls and move tables (mv tag) needed for leech feature extraction.
     """
     input:
-        rules.merge_pods.output.pod5
+        rules.merge_pods.output.pod5,
     output:
-        bam=protected(get_project_path(config.get("rebasecall_dir", "results/bam/rebasecall")) + "/{sample}/{sample}.rbc.bam")
+        bam=protected(
+            get_project_path(config.get("rebasecall_dir", "results/bam/rebasecall"))
+            + "/{sample}/{sample}.rbc.bam"
+        ),
     params:
         dorado_bin=config.get("dorado_bin", "dorado"),
         model=config.get("base_calling_model", "rna004_130bps_sup@v5.2.0"),
@@ -182,9 +191,14 @@ rule rebasecall:
             else ""
         ),
         dorado_opts=config.get("dorado_opts", "--emit-moves"),
-        models_dir=config.get("dorado_models_dir", get_project_path(config.get("rebasecall_dir", "results/bam/rebasecall")) + "/.models")
+        models_dir=config.get(
+            "dorado_models_dir",
+            get_project_path(config.get("rebasecall_dir", "results/bam/rebasecall"))
+            + "/.models",
+        ),
     log:
-        get_project_path(config.get("rebasecall_dir", "results/bam/rebasecall")) + "/{sample}/rebasecall.log"
+        get_project_path(config.get("rebasecall_dir", "results/bam/rebasecall"))
+        + "/{sample}/rebasecall.log",
     shell:
         """
         if [[ "${{CUDA_VISIBLE_DEVICES:-}}" ]]; then
@@ -220,15 +234,18 @@ rule align_rebasecalled:
     """
     input:
         bam=rules.rebasecall.output.bam,
-        reference=config.get("reference", "references/reference.fasta")
+        reference=config.get("reference", "references/reference.fasta"),
     output:
-        bam=get_project_path(config.get("rebasecall_dir", "results/bam/rebasecall")) + "/{sample}/{sample}.aligned.bam",
-        bai=get_project_path(config.get("rebasecall_dir", "results/bam/rebasecall")) + "/{sample}/{sample}.aligned.bam.bai"
+        bam=get_project_path(config.get("rebasecall_dir", "results/bam/rebasecall"))
+        + "/{sample}/{sample}.aligned.bam",
+        bai=get_project_path(config.get("rebasecall_dir", "results/bam/rebasecall"))
+        + "/{sample}/{sample}.aligned.bam.bai",
     params:
         samtools_bin=config.get("samtools_bin", "samtools"),
-        minimap2_bin=config.get("minimap2_bin", "minimap2")
+        minimap2_bin=config.get("minimap2_bin", "minimap2"),
     log:
-        get_project_path(config.get("rebasecall_dir", "results/bam/rebasecall")) + "/{sample}/align.log"
+        get_project_path(config.get("rebasecall_dir", "results/bam/rebasecall"))
+        + "/{sample}/align.log",
     shell:
         """
         # Convert BAM to FASTQ preserving all tags (-T '*')

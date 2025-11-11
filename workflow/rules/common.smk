@@ -76,6 +76,7 @@ if comparison_spec_file:
     # TSV format: meta_label1 \t label_set1 \t meta_label2 \t label_set2
     # Example: "Ala\tAla\tArg\tArg" creates comparison "Ala_Arg"
     from pathlib import Path
+
     spec_path = Path(comparison_spec_file)
     if spec_path.exists():
         with open(spec_path) as f:
