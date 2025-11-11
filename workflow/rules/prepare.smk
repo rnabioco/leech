@@ -8,6 +8,8 @@ rule prepare_chunks:
 
     Chunks are extracted with labels but not split into train/val/test.
     Splitting happens later at the merge step to prevent data leakage across samples.
+
+    Uses parallel processing with workers matching the number of allocated CPUs.
     """
     input:
         pod5=get_project_path(config.get("pod5_dir", "results/pod5"))
@@ -18,6 +20,7 @@ rule prepare_chunks:
         all=CHUNKS_DIR + "/{sample}/all.npz",
     wildcard_constraints:
         sample="[^/]+",  # Sample name cannot contain slashes (excludes merged/*/)
+    threads: config.get("workers", 4)  # Match threads to workers from config
     params:
         output_dir=CHUNKS_DIR + "/{sample}",
         motif=config.get("motif", "CCA"),
@@ -25,6 +28,8 @@ rule prepare_chunks:
         motif_reference=config.get("motif_reference", "fasta"),
         reference_fasta=config.get("reference_fasta", None),
         skip_motif_indels=config.get("skip_motif_indels", True),
+        workers=config.get("workers", 4),
+        chunk_size=config.get("chunk_size", 100),
         label=lambda wildcards: (
             1 if config["samples"][wildcards.sample].get("label") == "charged" else 0
         ),
@@ -52,6 +57,8 @@ rule prepare_chunks:
             {params.ref_fasta_arg} \
             {params.skip_indels_arg} \
             --label {params.label} \
+            --workers {params.workers} \
+            --chunk-size {params.chunk_size} \
             --no-split \
             2>&1 | tee {log}
         """
