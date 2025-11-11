@@ -93,6 +93,26 @@ amino_acids:
   - "Glu"
 
 # ============================================================================
+# Device Configuration (CPU vs GPU)
+# ============================================================================
+# Toggle between CPU and GPU training modes
+# - GPU mode (use_cpu_training: false): Uses aa100 partition with GPU acceleration
+# - CPU mode (use_cpu_training: true): Uses amilan partition with CPU-only training
+#
+# CPU training is ~10-50x slower but useful when:
+# - GPU partition queue times are long
+# - Running small experiments or debugging
+# - GPU resources are limited
+#
+# When enabled, automatically:
+# - Changes partition from aa100 to amilan
+# - Removes GPU resource requests
+# - Increases runtime allocation (60 min → 240 min)
+# - Increases CPU cores (10 → 16)
+# - Sets --device cpu flag for all training/inference commands
+use_cpu_training: false   # Set to true to enable CPU training mode
+
+# ============================================================================
 # Data Preparation Parameters
 # ============================================================================
 motif: "CCATGGC"          # tRNA 3' end motif (CCA + TGG + C adaptor)

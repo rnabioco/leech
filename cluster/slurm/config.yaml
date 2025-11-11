@@ -2,6 +2,25 @@
 # ======================================
 # Alpine cluster production configuration
 # Usage: snakemake --profile cluster/slurm --configfile config/samples-alpine.yaml
+#
+# CPU/GPU Toggle Support:
+# -----------------------
+# The pipeline supports toggling between CPU and GPU training modes via the
+# 'use_cpu_training' parameter in config/config.yaml.
+#
+# GPU Mode (use_cpu_training: false, DEFAULT):
+#   - Partition: aa100 / atesting_a100
+#   - Resources: 1 GPU, shorter runtime
+#   - Best for: production runs, grid search, model comparison
+#
+# CPU Mode (use_cpu_training: true):
+#   - Partition: amilan
+#   - Resources: No GPU, longer runtime (4x), more CPUs
+#   - Best for: long GPU queues, debugging, small experiments
+#
+# Note: Resource allocation is conditionally set based on use_cpu_training.
+# YAML doesn't support Python conditionals, so we use Snakemake's runtime
+# evaluation of config values. See workflow rules for --device flag handling.
 
 executor: slurm
 jobs: 100
@@ -94,8 +113,13 @@ set-resources:
     cpus_per_task: 4
 
   # ============================================================================
-  # Grid Search Rules
+  # Grid Search Rules (GPU/CPU configurable via use_cpu_training)
   # ============================================================================
+  # Note: Resources below are for GPU mode. When use_cpu_training=true:
+  #   - partition changes to amilan (no GPU)
+  #   - runtime increased 4x
+  #   - cpus_per_task increased to 16
+  #   - gres/gpu/nodes removed
   grid_search_charged_vs_uncharged:
     slurm_partition: aa100
     runtime: 1440
@@ -137,13 +161,18 @@ set-resources:
     gres: "gpu:1"
 
   # ============================================================================
-  # Training Rules
+  # Training Rules (GPU/CPU configurable via use_cpu_training)
   # ============================================================================
+  # Note: Resources below are for GPU mode. When use_cpu_training=true:
+  #   - partition changes to amilan (no GPU)
+  #   - runtime increased 4x (60→240, 480→1920)
+  #   - cpus_per_task increased to 16
+  #   - gres/gpu/nodes removed
   train_charged_vs_uncharged:
     slurm_partition: aa100
     runtime: 60
     mem_mb: 36000
-    cpus_per_task: 10 
+    cpus_per_task: 10
     nodes: 1
     gpu: 0
     tasks_per_gpu: 0
@@ -153,7 +182,7 @@ set-resources:
     slurm_partition: aa100
     runtime: 60
     mem_mb: 36000
-    cpus_per_task: 10  
+    cpus_per_task: 10
     nodes: 1
     gpu: 0
     tasks_per_gpu: 0
@@ -180,8 +209,13 @@ set-resources:
     gres: "gpu:1"
 
   # ============================================================================
-  # Inference Rules
+  # Inference Rules (GPU/CPU configurable via use_cpu_training)
   # ============================================================================
+  # Note: Resources below are for GPU mode. When use_cpu_training=true:
+  #   - partition changes to amilan (no GPU)
+  #   - runtime increased 4x (240→960)
+  #   - cpus_per_task increased to 16
+  #   - gres/gpu/nodes removed
   infer_charged_vs_uncharged:
     slurm_partition: aa100
     runtime: 240
@@ -203,8 +237,13 @@ set-resources:
     gres: "gpu:1"
 
   # ============================================================================
-  # Testing/Evaluation Rules
+  # Testing/Evaluation Rules (GPU/CPU configurable via use_cpu_training)
   # ============================================================================
+  # Note: Resources below are for GPU mode. When use_cpu_training=true:
+  #   - partition changes to amilan (no GPU)
+  #   - runtime increased 4x (60→240)
+  #   - cpus_per_task increased to 16
+  #   - gres/gpu/nodes removed
   test_charged_vs_uncharged:
     slurm_partition: atesting_a100
     runtime: 60
