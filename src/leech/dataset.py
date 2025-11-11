@@ -83,8 +83,8 @@ class LeechDataset(Dataset):
         # Load chunks
         self.chunks = load_chunks(chunk_path)
 
-        # Filter chunks with valid labels
-        self.chunks = [c for c in self.chunks if c["label"] is not None]
+        # Filter chunks with valid numeric labels (label_int)
+        self.chunks = [c for c in self.chunks if c["label_int"] is not None]
 
         if len(self.chunks) == 0:
             raise ValueError(f"No valid chunks found in {chunk_path}")
@@ -132,8 +132,8 @@ class LeechDataset(Dataset):
             # If no features, create dummy features
             features_tensor = torch.zeros(1, self.kmer_len, dtype=torch.float32)
 
-        # Label
-        label = torch.tensor([chunk["label"]], dtype=torch.float32)
+        # Label (use label_int for numeric label)
+        label = torch.tensor([chunk["label_int"]], dtype=torch.float32)
 
         result = {
             "signal": signal_tensor,
