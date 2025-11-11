@@ -10,12 +10,6 @@ rule test_charged_vs_uncharged:
         test=CHUNKS_DIR + "/merged/charged_vs_uncharged/test.npz",
     output:
         metrics=METRICS_DIR + "/charged_vs_uncharged/test_metrics.json",
-    threads: 2
-    resources:
-        mem_mb=4000,
-        runtime=60,
-        gpu=0,  # GPU controlled by cluster profile
-        gpu_mem_mb=4000,
     log:
         METRICS_DIR + "/charged_vs_uncharged/test.log",
     shell:
@@ -35,12 +29,6 @@ rule test_pairwise_aa:
         test=CHUNKS_DIR + "/merged/pairwise/{pair}/test.npz",
     output:
         metrics=METRICS_DIR + "/pairwise/{pair}/test_metrics.json",
-    threads: 2
-    resources:
-        mem_mb=4000,
-        runtime=60,
-        gpu=0,  # GPU controlled by cluster profile
-        gpu_mem_mb=4000,
     log:
         METRICS_DIR + "/pairwise/{pair}/test.log",
     shell:

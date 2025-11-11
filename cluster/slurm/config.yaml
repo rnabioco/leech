@@ -33,41 +33,73 @@ slurm-qos: normal
 
 # Rule-specific resources
 set-resources:
-  # POD5 processing
+  # ============================================================================
+  # POD5 Processing Rules
+  # ============================================================================
   merge_pods:
     runtime: 120
     mem_mb: 16000
     cpus_per_task: 12
 
-  # GPU rules - basecalling
+  inspect_merged_pod5:
+    runtime: 30
+    mem_mb: 4000
+    cpus_per_task: 4
+
+  inspect_sample_pod5s:
+    runtime: 60
+    mem_mb: 4000
+    cpus_per_task: 4
+
+  aggregate_all_inspections:
+    runtime: 5
+    mem_mb: 1000
+    cpus_per_task: 1
+
+  # ============================================================================
+  # Basecalling and Alignment Rules
+  # ============================================================================
   rebasecall:
     slurm_partition: aa100
     runtime: 480
-    mem_mb: 32000
-    cpus_per_task: 8
+    mem_mb: 16000
+    cpus_per_task: 4
     nodes: 1
     gpu: 0
     tasks_per_gpu: 0
     gres: "gpu:1"
 
-  # Alignment
   align_rebasecalled:
     runtime: 240
     mem_mb: 16000
     cpus_per_task: 8
 
-  # Data preparation
+  # ============================================================================
+  # Data Preparation Rules
+  # ============================================================================
   prepare_chunks:
-    runtime: 240
+    runtime: 60
+    mem_mb: 8000
+    cpus_per_task: 4
+
+  merge_chunks_charged:
+    runtime: 60
     mem_mb: 16000
     cpus_per_task: 4
 
-  # GPU rules - grid search
+  merge_chunks_pairwise:
+    runtime: 60
+    mem_mb: 16000
+    cpus_per_task: 4
+
+  # ============================================================================
+  # Grid Search Rules
+  # ============================================================================
   grid_search_charged_vs_uncharged:
     slurm_partition: aa100
     runtime: 1440
-    mem_mb: 32000
-    cpus_per_task: 8
+    mem_mb: 16000
+    cpus_per_task: 4
     nodes: 1
     gpu: 0
     tasks_per_gpu: 0
@@ -76,17 +108,39 @@ set-resources:
   grid_search_pairwise_aa:
     slurm_partition: aa100
     runtime: 1440
-    mem_mb: 32000
-    cpus_per_task: 8
+    mem_mb: 16000
+    cpus_per_task: 4
     nodes: 1
     gpu: 0
     tasks_per_gpu: 0
     gres: "gpu:1"
 
-  # GPU rules - training
+  grid_search_architecture_charged:
+    slurm_partition: aa100
+    runtime: 1440
+    mem_mb: 16000
+    cpus_per_task: 4
+    nodes: 1
+    gpu: 0
+    tasks_per_gpu: 0
+    gres: "gpu:1"
+
+  grid_search_architecture_pairwise:
+    slurm_partition: aa100
+    runtime: 1440
+    mem_mb: 16000
+    cpus_per_task: 4
+    nodes: 1
+    gpu: 0
+    tasks_per_gpu: 0
+    gres: "gpu:1"
+
+  # ============================================================================
+  # Training Rules
+  # ============================================================================
   train_charged_vs_uncharged:
     slurm_partition: aa100
-    runtime: 480
+    runtime: 60
     mem_mb: 76000
     cpus_per_task: 20  # 76000 MB / 20 CPUs = 3,800 MB/CPU (within 3,840 MB/CPU limit)
     nodes: 1
@@ -96,7 +150,7 @@ set-resources:
 
   train_pairwise_aa:
     slurm_partition: aa100
-    runtime: 480
+    runtime: 60
     mem_mb: 76000
     cpus_per_task: 20  # 76000 MB / 20 CPUs = 3,800 MB/CPU (within 3,840 MB/CPU limit)
     nodes: 1
@@ -104,11 +158,33 @@ set-resources:
     tasks_per_gpu: 0
     gres: "gpu:1"
 
-  # GPU rules - inference
+  train_architecture_charged:
+    slurm_partition: aa100
+    runtime: 480
+    mem_mb: 16000
+    cpus_per_task: 4
+    nodes: 1
+    gpu: 0
+    tasks_per_gpu: 0
+    gres: "gpu:1"
+
+  train_architecture_pairwise:
+    slurm_partition: aa100
+    runtime: 480
+    mem_mb: 16000
+    cpus_per_task: 4
+    nodes: 1
+    gpu: 0
+    tasks_per_gpu: 0
+    gres: "gpu:1"
+
+  # ============================================================================
+  # Inference Rules
+  # ============================================================================
   infer_charged_vs_uncharged:
     slurm_partition: aa100
     runtime: 240
-    mem_mb: 16000
+    mem_mb: 8000
     cpus_per_task: 4
     nodes: 1
     gpu: 0
@@ -118,14 +194,16 @@ set-resources:
   infer_pairwise_aa:
     slurm_partition: aa100
     runtime: 240
-    mem_mb: 16000
+    mem_mb: 8000
     cpus_per_task: 4
     nodes: 1
     gpu: 0
     tasks_per_gpu: 0
     gres: "gpu:1"
 
-  # Testing/evaluation (use testing partition)
+  # ============================================================================
+  # Testing/Evaluation Rules
+  # ============================================================================
   test_charged_vs_uncharged:
     slurm_partition: atesting_a100
     runtime: 60
@@ -145,3 +223,46 @@ set-resources:
     gpu: 0
     tasks_per_gpu: 0
     gres: "gpu:1"
+
+  test_architecture_charged:
+    slurm_partition: atesting_a100
+    runtime: 60
+    mem_mb: 4000
+    cpus_per_task: 2
+    nodes: 1
+    gpu: 0
+    tasks_per_gpu: 0
+    gres: "gpu:1"
+
+  test_architecture_pairwise:
+    slurm_partition: atesting_a100
+    runtime: 60
+    mem_mb: 4000
+    cpus_per_task: 2
+    nodes: 1
+    gpu: 0
+    tasks_per_gpu: 0
+    gres: "gpu:1"
+
+  # ============================================================================
+  # Comparison and Summary Rules (CPU only)
+  # ============================================================================
+  compare_architectures_charged:
+    runtime: 10
+    mem_mb: 2000
+    cpus_per_task: 1
+
+  compare_architectures_pairwise:
+    runtime: 10
+    mem_mb: 2000
+    cpus_per_task: 1
+
+  summarize_charged_vs_uncharged:
+    runtime: 5
+    mem_mb: 1000
+    cpus_per_task: 1
+
+  summarize_pairwise:
+    runtime: 5
+    mem_mb: 1000
+    cpus_per_task: 1

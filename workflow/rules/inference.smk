@@ -15,12 +15,6 @@ rule infer_charged_vs_uncharged:
     params:
         batch_size=config.get("infer_batch_size", 256),
         samtools_bin=config.get("samtools_bin", "samtools"),
-    threads: 4
-    resources:
-        mem_mb=8000,
-        runtime=240,
-        gpu=0,  # GPU controlled by cluster profile
-        gpu_mem_mb=4000,
     log:
         INFER_DIR + "/charged_vs_uncharged/{sample}_infer.log",
     shell:
@@ -49,12 +43,6 @@ rule infer_pairwise_aa:
     params:
         batch_size=config.get("infer_batch_size", 256),
         samtools_bin=config.get("samtools_bin", "samtools"),
-    threads: 4
-    resources:
-        mem_mb=8000,
-        runtime=240,
-        gpu=0,  # GPU controlled by cluster profile
-        gpu_mem_mb=4000,
     log:
         INFER_DIR + "/pairwise/{pair}/{sample}_infer.log",
     shell:

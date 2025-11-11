@@ -38,10 +38,6 @@ rule prepare_chunks:
             "--skip-motif-indels" if config.get("skip_motif_indels", True) else ""
         ),
         slurm_extra="",  # No GPU needed for data preparation
-    threads: 4
-    resources:
-        mem_mb=8000,
-        runtime=60,
     log:
         CHUNKS_DIR + "/{sample}/prepare.log",
     shell:

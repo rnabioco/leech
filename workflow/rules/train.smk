@@ -26,10 +26,6 @@ rule merge_chunks_charged:
         seed=config.get("seed", 42),
         # Build input arguments for merge-and-split command
         input_args=lambda wildcards, input: " ".join([f"-i {f}" for f in input.chunks]),
-    threads: 4
-    resources:
-        mem_mb=16000,
-        runtime=60,
     log:
         CHUNKS_DIR + "/merged/charged_vs_uncharged/merge_and_split.log",
     shell:
@@ -70,12 +66,6 @@ rule train_charged_vs_uncharged:
             if config.get("use_grid_search", False)
             else ""
         ),
-    threads: 4
-    resources:
-        mem_mb=76000,
-        runtime=60,
-        gpu=0,  # GPU controlled by cluster profile
-        gpu_mem_mb=32000,
     log:
         MODELS_DIR + "/charged_vs_uncharged/train.log",
     shell:
@@ -120,10 +110,6 @@ rule merge_chunks_pairwise:
         seed=config.get("seed", 42),
         # Build input arguments for merge-and-split command
         input_args=lambda wildcards, input: " ".join([f"-i {f}" for f in input.chunks]),
-    threads: 4
-    resources:
-        mem_mb=16000,
-        runtime=60,
     log:
         CHUNKS_DIR + "/merged/pairwise/{pair}/merge_and_split.log",
     shell:
@@ -164,12 +150,6 @@ rule train_pairwise_aa:
             if config.get("use_grid_search", False)
             else ""
         ),
-    threads: 4
-    resources:
-        mem_mb=76000,
-        runtime=60,
-        gpu=0,  # GPU controlled by cluster profile
-        gpu_mem_mb=32000,
     log:
         MODELS_DIR + "/pairwise/{pair}/train.log",
     shell:
