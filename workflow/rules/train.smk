@@ -71,7 +71,7 @@ rule train_charged_vs_uncharged:
         slurm_partition=lambda wildcards, attempt: "amilan" if config.get("use_cpu_training", False) else "aa100",
         runtime=lambda wildcards, attempt: 240 if config.get("use_cpu_training", False) else 60,
         cpus_per_task=lambda wildcards, attempt: 16 if config.get("use_cpu_training", False) else 10,
-        mem_mb=36000,
+        mem_mb=16000,
         gres=lambda wildcards, attempt: "" if config.get("use_cpu_training", False) else "gpu:1",
     log:
         MODELS_DIR + "/charged_vs_uncharged/train.log",
@@ -163,7 +163,7 @@ rule train_pairwise_aa:
         slurm_partition=lambda wildcards, attempt: "amilan" if config.get("use_cpu_training", False) else "aa100",
         runtime=lambda wildcards, attempt: 240 if config.get("use_cpu_training", False) else 60,
         cpus_per_task=lambda wildcards, attempt: 16 if config.get("use_cpu_training", False) else 10,
-        mem_mb=36000,
+        mem_mb=18000,
         gres=lambda wildcards, attempt: "" if config.get("use_cpu_training", False) else "gpu:1",
     log:
         MODELS_DIR + "/pairwise/{pair}/train.log",
