@@ -109,6 +109,15 @@ class TestLeechDataset:
         item = dataset[0]
         assert "features" in item
 
+    def test_model_type_transformer_has_features(self, temp_chunks_file):
+        """Test that TransformerDwell dataset includes features."""
+        dataset = LeechDataset(
+            temp_chunks_file, signal_len=400, kmer_len=11, model_type="TransformerDwell"
+        )
+
+        item = dataset[0]
+        assert "features" in item
+
     def test_sequence_one_hot_encoding(self, temp_chunks_file):
         """Test that sequences are properly one-hot encoded."""
         dataset = LeechDataset(

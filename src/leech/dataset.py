@@ -24,13 +24,13 @@ Example:
     >>> from torch.utils.data import DataLoader
     >>>
     >>> # Create dataset
-    >>> dataset = LeechDataset("chunks.npz", model_type="ConvLSTMDwell")
+    >>> dataset = LeechDataset("chunks.npz", model_type="TransformerDwell")
     >>> print(f"Dataset size: {len(dataset)}")
     >>>
     >>> # Create DataLoader
     >>> loader = DataLoader(dataset, batch_size=128, collate_fn=collate_fn)
     >>> batch = next(iter(loader))
-    >>> print(batch.keys())  # ['signal', 'sequence', 'features', 'label']
+    >>> print(batch.keys())  # ['signal', 'sequence', 'features', 'label'] for feature models
 """
 
 from pathlib import Path
@@ -40,6 +40,16 @@ import torch
 from torch.utils.data import Dataset
 
 from leech.data_prep import encode_kmer, load_chunks
+
+# Models that require dwell/signal features as third input
+# Must match ModelInferenceWrapper.FEATURE_MODELS
+FEATURE_MODELS = {
+    "ConvLSTMDwell",
+    "TransformerDwell",
+    "ConvOnly",
+    "TCNDwell",
+    "ResNetDwell",
+}
 
 
 class LeechDataset(Dataset):
@@ -63,7 +73,7 @@ class LeechDataset(Dataset):
             chunk_path: Path to .npz file with training chunks
             signal_len: Expected signal length (will pad/truncate)
             kmer_len: Expected k-mer length
-            model_type: "ConvLSTMDwell" or "ConvLSTMBase"
+            model_type: Model architecture name (e.g., "ConvLSTMDwell", "TransformerDwell")
         """
         self.chunk_path = chunk_path
         self.signal_len = signal_len
@@ -91,7 +101,7 @@ class LeechDataset(Dataset):
             Dictionary with:
             - signal: (signal_len,) tensor
             - sequence: (4, kmer_len) one-hot encoded tensor
-            - features: (num_features, kmer_len) tensor (if ConvLSTMDwell)
+            - features: (num_features, kmer_len) tensor (if model requires features)
             - label: (1,) tensor
         """
         chunk = self.chunks[idx]
@@ -131,7 +141,8 @@ class LeechDataset(Dataset):
             "label": label,
         }
 
-        if self.model_type == "ConvLSTMDwell":
+        # Include features for models that require them
+        if self.model_type in FEATURE_MODELS:
             result["features"] = features_tensor
 
         return result
