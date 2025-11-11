@@ -222,6 +222,70 @@ The Snakemake workflow has been moved to a separate repository. The leech librar
 5. **Edge handling**: Chunks require sufficient context (default: 200 samples left/right for signal, 5 bases for k-mer)
 6. **Feature alignment**: All three model inputs (signal, sequence, features) must be temporally aligned after convolution layers
 
+## Batch Effects and Data Leakage
+
+**⚠️ CRITICAL**: If charged and uncharged samples are sequenced in **separate runs**, the model may learn run-specific artifacts instead of biological signal, leading to perfect AUC in validation but complete failure on new data.
+
+### The Problem
+
+The default per-read normalization (median-MAD) removes within-read signal drift but **preserves batch effects** between sequencing runs:
+- Different pore types or conditions
+- Different baseline signal characteristics
+- Different temperature/voltage settings
+- Different sequencing chemistry batches
+
+Since train/test splits are done by read (not by run), the model sees examples from both runs in training and can learn to distinguish "Run A" (charged) vs "Run B" (uncharged) rather than the biological difference.
+
+### Symptoms of Batch Effect Leakage
+
+1. **Perfect or near-perfect AUC** (1.000) on validation data
+2. Model trained quickly (few epochs to convergence)
+3. High per-sample accuracy differences during validation
+4. Model fails completely on new sequencing runs
+5. Between-sample variance >> between-label variance
+
+### Solutions
+
+**Best practices (in order of preference)**:
+
+1. **Multiplex samples in same run**: Barcode charged and uncharged samples together in the same flowcell
+2. **Global normalization** (planned): Use `--global-normalization` flag to normalize across all reads from all samples
+3. **Batch effect correction**: Apply explicit batch correction before training
+4. **Cross-run validation**: Hold out entire runs for testing (not just reads)
+
+### Diagnosing Batch Effects
+
+Use the diagnostic script to detect batch effects in your data:
+
+```bash
+python scripts/diagnose_leakage.py \
+  --chunks-dir path/to/chunks/ \
+  --output-dir diagnostics/
+```
+
+This will:
+- Compute between-sample vs between-label variance ratios
+- Generate PCA/t-SNE plots colored by sample and label
+- Flag if batch effects are larger than biological signal
+- Provide recommendations for correction
+
+**Interpretation**:
+- Variance ratio > 2.0: ⚠️ Strong batch effects detected
+- Variance ratio > 1.0: ⚠️ Moderate batch effects
+- Variance ratio < 1.0: ✓ Label variance dominates (good)
+
+### Global Normalization (Planned)
+
+The `--global-normalization` flag will enable two-pass processing:
+
+1. **Pass 1**: Extract all chunks with per-read normalization
+2. **Pass 2**: Re-normalize all chunks using dataset-wide median/MAD
+3. Save globally-normalized chunks for training
+
+This ensures all samples are on the same scale, preventing the model from learning run-specific artifacts.
+
+**Status**: CLI flag added, implementation in progress. See features.py for `compute_global_normalization_params()` and `apply_global_normalization()`.
+
 ## Dependencies
 
 - **PyTorch**: Neural network training

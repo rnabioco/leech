@@ -17,6 +17,8 @@ Core Functions:
     compute_dwell_times(): Calculate per-base dwell times from move table
     compute_signal_levels(): Calculate signal statistics (mean, median, std, range)
     normalize_signal(): Normalize raw signal using median-MAD, z-score, or quantile
+    compute_global_normalization_params(): Compute dataset-wide normalization parameters
+    apply_global_normalization(): Apply pre-computed global normalization
 
 Feature Engineering:
     Dwell features (5 total):
@@ -244,6 +246,111 @@ def normalize_signal(
         raise ValueError(f"Unknown normalization method: {method}")
 
     return normalized.astype(np.float32), params
+
+
+def compute_global_normalization_params(
+    signals: list[np.ndarray], method: str = "median_mad"
+) -> dict[str, float]:
+    """
+    Compute normalization parameters across multiple signals (global normalization).
+
+    This addresses batch effects by computing statistics across all signals from
+    all samples, rather than per-read. Use this when samples were sequenced in
+    separate runs to prevent the model from learning run-specific artifacts.
+
+    Args:
+        signals: List of raw signal arrays from multiple reads
+        method: Normalization method ('median_mad', 'zscore', 'quantile')
+
+    Returns:
+        Dictionary of normalization parameters to pass to apply_global_normalization()
+
+    Example:
+        >>> # Collect signals from all samples
+        >>> all_signals = [read1_signal, read2_signal, ...]
+        >>> params = compute_global_normalization_params(all_signals)
+        >>> # Apply to new signals
+        >>> normalized = apply_global_normalization(new_signal, params)
+    """
+    # Concatenate all signals to compute global statistics
+    # For very large datasets, consider sampling or computing streaming statistics
+    concatenated = np.concatenate(signals)
+
+    if method == "median_mad":
+        median = np.median(concatenated)
+        mad = np.median(np.abs(concatenated - median))
+        scale_factor = 1.4826
+        params = {
+            "method": method,
+            "median": float(median),
+            "mad": float(mad),
+            "scale_factor": scale_factor,
+        }
+
+    elif method == "zscore":
+        mean = np.mean(concatenated)
+        std = np.std(concatenated)
+        params = {"method": method, "mean": float(mean), "std": float(std)}
+
+    elif method == "quantile":
+        q01 = np.quantile(concatenated, 0.01)
+        q99 = np.quantile(concatenated, 0.99)
+        clipped = np.clip(concatenated, q01, q99)
+        median = np.median(clipped)
+        mad = np.median(np.abs(clipped - median))
+        params = {
+            "method": method,
+            "median": float(median),
+            "mad": float(mad),
+            "q01": float(q01),
+            "q99": float(q99),
+        }
+
+    else:
+        raise ValueError(f"Unknown normalization method: {method}")
+
+    return params
+
+
+def apply_global_normalization(raw_signal: np.ndarray, params: dict[str, float]) -> np.ndarray:
+    """
+    Apply pre-computed global normalization parameters to a signal.
+
+    Use this with parameters from compute_global_normalization_params() to
+    normalize signals using dataset-wide statistics rather than per-read stats.
+
+    Args:
+        raw_signal: Raw DAC signal values
+        params: Normalization parameters from compute_global_normalization_params()
+
+    Returns:
+        Normalized signal array
+
+    Raises:
+        ValueError: If params dict is missing required keys
+    """
+    method = params.get("method", "median_mad")
+
+    if method == "median_mad":
+        median = params["median"]
+        mad = params["mad"]
+        scale_factor = params["scale_factor"]
+        normalized = (raw_signal - median) / (mad * scale_factor)
+
+    elif method == "zscore":
+        mean = params["mean"]
+        std = params["std"]
+        normalized = (raw_signal - mean) / std
+
+    elif method == "quantile":
+        median = params["median"]
+        mad = params["mad"]
+        normalized = (raw_signal - median) / (mad * 1.4826)
+
+    else:
+        raise ValueError(f"Unknown normalization method: {method}")
+
+    return normalized.astype(np.float32)
 
 
 def compute_dwell_features(dwells: np.ndarray, window: int = 5) -> dict[str, np.ndarray]:

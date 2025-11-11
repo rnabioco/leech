@@ -1006,6 +1006,77 @@ def one_hot_encode_sequence(seq: str, kmer_len: int = 1) -> np.ndarray:
     return encoding
 
 
+def _check_batch_effects(
+    all_chunks: list[dict],
+    train_chunks: list[dict],
+    val_chunks: list[dict],
+    test_chunks: list[dict],
+) -> None:
+    """
+    Check for potential batch effects in the data splits.
+
+    Computes signal statistics per label and checks if variance between
+    train/val/test is much larger than variance between labels, which
+    could indicate batch effects or data leakage.
+
+    Args:
+        all_chunks: All chunks before splitting
+        train_chunks: Training chunks
+        val_chunks: Validation chunks
+        test_chunks: Test chunks
+    """
+    # Group signals by label
+    label_0_signals = []
+    label_1_signals = []
+
+    for chunk in all_chunks:
+        if chunk["label"] == 0:
+            label_0_signals.append(np.mean(chunk["signal"]))
+        else:
+            label_1_signals.append(np.mean(chunk["signal"]))
+
+    if not label_0_signals or not label_1_signals:
+        return  # Can't check with only one label
+
+    # Compute between-label statistics
+    label_0_mean = np.mean(label_0_signals)
+    label_1_mean = np.mean(label_1_signals)
+    between_label_diff = abs(label_1_mean - label_0_mean)
+
+    # Compute within-label variance
+    label_0_std = np.std(label_0_signals)
+    label_1_std = np.std(label_1_signals)
+    within_label_std = (label_0_std + label_1_std) / 2
+
+    # Check if signal difference between labels is small compared to within-label variance
+    if within_label_std > 0:
+        signal_to_noise = between_label_diff / within_label_std
+
+        if signal_to_noise < 0.5:
+            logger.warning(
+                "⚠️  Between-label signal difference is small compared to within-label variance!"
+            )
+            logger.warning(
+                f"   Signal-to-noise ratio: {signal_to_noise:.3f} "
+                f"(difference: {between_label_diff:.2f}, within-std: {within_label_std:.2f})"
+            )
+            logger.warning(
+                "   This suggests potential batch effects or that samples were sequenced separately."
+            )
+            logger.warning(
+                "   Consider using global normalization or running diagnostics: "
+                "scripts/diagnose_leakage.py"
+            )
+        elif signal_to_noise < 1.0:
+            logger.info(
+                f"Signal-to-noise ratio between labels: {signal_to_noise:.3f} (moderate separation)"
+            )
+        else:
+            logger.info(
+                f"Signal-to-noise ratio between labels: {signal_to_noise:.3f} (good separation)"
+            )
+
+
 def split_chunks_by_read(
     chunks: list[dict],
     train_frac: float = 0.7,
@@ -1087,6 +1158,9 @@ def split_chunks_by_read(
         f"  Test: {len(test_read_ids)} reads ({len(test_chunks)} chunks, "
         f"{len(test_chunks) / len(chunks) * 100:.1f}%)"
     )
+
+    # Check for potential batch effects
+    _check_batch_effects(chunks, train_chunks, val_chunks, test_chunks)
 
     return train_chunks, val_chunks, test_chunks
 

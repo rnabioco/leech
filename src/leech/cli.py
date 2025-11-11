@@ -211,6 +211,12 @@ def cli():
     default=100,
     help="Number of reads to process per worker batch (for parallel processing)",
 )
+@click.option(
+    "--global-normalization",
+    is_flag=True,
+    default=False,
+    help="Use global (dataset-wide) normalization instead of per-read normalization to reduce batch effects",
+)
 def prepare(
     pod5,
     bam,
@@ -229,6 +235,7 @@ def prepare(
     no_split,
     workers,
     chunk_size,
+    global_normalization,
 ):
     """Prepare training data from POD5 and BAM files."""
     from leech.data_prep import (
@@ -246,6 +253,18 @@ def prepare(
     logger.info(f"Motif reference mode: {motif_reference}")
     if workers > 1:
         logger.info(f"Parallel mode: {workers} workers, {chunk_size} reads per batch")
+
+    if global_normalization:
+        logger.info("Global normalization enabled - will normalize across all reads")
+        logger.warning(
+            "Global normalization requires two-pass processing. "
+            "This feature is planned but not yet implemented. "
+            "See https://github.com/rnabioco/leech/issues for updates."
+        )
+        console.print(
+            "[yellow]⚠ Warning: --global-normalization flag is not yet implemented. "
+            "Proceeding with per-read normalization (default behavior).[/yellow]"
+        )
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
