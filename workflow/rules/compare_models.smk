@@ -44,7 +44,7 @@ rule train_architecture_charged:
         ),
     resources:
         slurm_partition=lambda wildcards, attempt: "amilan" if config.get("use_cpu_training", False) else "aa100",
-        runtime=lambda wildcards, attempt: 1400 if config.get("use_cpu_training", False) else 480,
+        runtime=240,
         cpus_per_task=lambda wildcards, attempt: 16 if config.get("use_cpu_training", False) else 4,
         mem_mb=16000,
         gres=lambda wildcards, attempt: "" if config.get("use_cpu_training", False) else "gpu:1",
@@ -190,7 +190,7 @@ rule train_architecture_pairwise:
         ),
     resources:
         slurm_partition=lambda wildcards, attempt: "amilan" if config.get("use_cpu_training", False) else "aa100",
-        runtime=lambda wildcards, attempt: 1400 if config.get("use_cpu_training", False) else 480,
+        runtime=240,
         cpus_per_task=lambda wildcards, attempt: 16 if config.get("use_cpu_training", False) else 4,
         mem_mb=16000,
         gres=lambda wildcards, attempt: "" if config.get("use_cpu_training", False) else "gpu:1",

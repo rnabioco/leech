@@ -27,7 +27,7 @@ rule grid_search_charged_vs_uncharged:
         device="cpu" if config.get("use_cpu_training", False) else "cuda",
     resources:
         slurm_partition=lambda wildcards, attempt: "amilan" if config.get("use_cpu_training", False) else "aa100",
-        runtime=lambda wildcards, attempt: 1400 if config.get("use_cpu_training", False) else 1440,
+        runtime=240,
         cpus_per_task=lambda wildcards, attempt: 16 if config.get("use_cpu_training", False) else 4,
         mem_mb=16000,
         gres=lambda wildcards, attempt: "" if config.get("use_cpu_training", False) else "gpu:1",
@@ -69,7 +69,7 @@ rule grid_search_pairwise_aa:
         device="cpu" if config.get("use_cpu_training", False) else "cuda",
     resources:
         slurm_partition=lambda wildcards, attempt: "amilan" if config.get("use_cpu_training", False) else "aa100",
-        runtime=lambda wildcards, attempt: 1400 if config.get("use_cpu_training", False) else 1440,
+        runtime=240,
         cpus_per_task=lambda wildcards, attempt: 16 if config.get("use_cpu_training", False) else 4,
         mem_mb=16000,
         gres=lambda wildcards, attempt: "" if config.get("use_cpu_training", False) else "gpu:1",
