@@ -74,29 +74,11 @@ ${GREEN}Leech Model Comparison Orchestrator - TSV-Based Workflow${NC}
 
 ${YELLOW}IMPORTANT:${NC} Pairwise Snakemake rules have been removed.
 
-${GREEN}This Script (Snakemake for Charged vs Uncharged):${NC}
-  sbatch $0 charged      # Train 6 architectures on charged vs uncharged
-  sbatch $0 dry-run      # Preview (default if no arg)
-
-${GREEN}For Pairwise/Multi-Label (Use CLI Directly):${NC}
-
-  ${YELLOW}Step 1:${NC} Prepare comparisons from spec file
-    uv run leech merge-and-split \\
-      --input-chunks results/chunks/*_synthetic/*.npz \\
-      --comparison-spec config/comparisons_chemical_properties.tsv \\
-      --output-dir results/chunks/merged \\
-      --seed 42
-
-  ${YELLOW}Step 2:${NC} Train models (example with bash loop)
-    for comp_dir in results/chunks/merged/*/; do
-      comp_name=\$(basename "\$comp_dir")
-      uv run leech train \\
-        --train-data "\$comp_dir/train.npz" \\
-        --val-data "\$comp_dir/val.npz" \\
-        --model ConvLSTMDwell \\
-        --output-dir "results/models/\$comp_name" \\
-        --epochs 50
-    done
+${GREEN}Usage:${NC}
+  sbatch $0 charged              # Compare 6 architectures on charged vs uncharged (6 jobs)
+  sbatch $0 pairwise             # Compare 6 architectures on 190 AA pairs (1,140 jobs)
+  sbatch $0 chemical-properties  # Compare 6 architectures on 9 chemical comparisons (54 jobs)
+  sbatch $0 dry-run              # Preview (default if no arg)
 
 ${GREEN}Available Comparison Specs:${NC}
   config/comparisons_all_pairwise.tsv          # All 190 AA pairs
@@ -114,26 +96,58 @@ EOF
 run_snakemake() {
     local mode=$1
 
-    if [[ "$mode" == "dry-run" ]]; then
-        print_info "Running dry-run for charged vs uncharged..."
-        snakemake \
-            --profile "$PROFILE" \
-            --configfile "$SAMPLES_CONFIG" \
-            --dryrun \
-            --printshellcmds \
-            compare_architectures_charged
-        print_success "Dry-run complete. Check logs/orchestrator-${SLURM_JOB_ID}.out"
-        exit 0
-    fi
+    case "$mode" in
+        dry-run)
+            print_info "Running dry-run for charged vs uncharged..."
+            snakemake \
+                --profile "$PROFILE" \
+                --configfile "$SAMPLES_CONFIG" \
+                --dryrun \
+                --printshellcmds \
+                compare_architectures_charged
+            print_success "Dry-run complete. Check logs/orchestrator-${SLURM_JOB_ID}.out"
+            exit 0
+            ;;
 
-    print_info "Starting training: Charged vs Uncharged (6 jobs)"
-    print_info "Orchestrator job ID: $SLURM_JOB_ID"
+        charged)
+            print_info "Starting training: Charged vs Uncharged (6 architectures)"
+            print_info "Orchestrator job ID: $SLURM_JOB_ID"
 
-    snakemake \
-        --profile "$PROFILE" \
-        --configfile "$SAMPLES_CONFIG" \
-        --printshellcmds \
-        compare_architectures_charged
+            snakemake \
+                --profile "$PROFILE" \
+                --configfile "$SAMPLES_CONFIG" \
+                --printshellcmds \
+                compare_architectures_charged
+            ;;
+
+        pairwise)
+            print_info "Starting pairwise comparisons: All 190 AA pairs"
+            print_info "This will merge data and train all architectures for each pair"
+            print_info "Total jobs: 190 pairs × 6 architectures = 1,140 training jobs"
+            print_info "Orchestrator job ID: $SLURM_JOB_ID"
+
+            snakemake \
+                --profile "$PROFILE" \
+                --configfile "$SAMPLES_CONFIG" \
+                --config comparison_spec_file=config/comparisons_all_pairwise.tsv \
+                --printshellcmds \
+                all_compare_models
+            ;;
+
+        chemical-properties)
+            print_info "Starting chemical property comparisons: 9 comparisons"
+            print_info "This will merge data and train all architectures for each comparison"
+            print_info "Total jobs: 9 comparisons × 6 architectures = 54 training jobs"
+            print_info "Orchestrator job ID: $SLURM_JOB_ID"
+
+            snakemake \
+                --profile "$PROFILE" \
+                --configfile "$SAMPLES_CONFIG" \
+                --config comparison_spec_file=config/comparisons_chemical_properties.tsv \
+                --printshellcmds \
+                all_compare_models
+            ;;
+    esac
 
     if [[ $? -eq 0 ]]; then
         print_success "Pipeline submitted successfully!"
@@ -167,7 +181,7 @@ main() {
     fi
 
     case "$MODE" in
-        charged|dry-run)
+        charged|pairwise|chemical-properties|dry-run)
             run_snakemake "$MODE"
             ;;
         *)

@@ -387,8 +387,8 @@ def prepare(
     "-i",
     required=True,
     multiple=True,
-    type=click.Path(exists=True, path_type=Path),
-    help="Input chunk files to merge (can specify multiple with -i file1.npz -i file2.npz)",
+    type=str,
+    help="Input chunk files with labels. Format: label=file.npz (e.g., -i Ala=ala.npz -i Gly=gly.npz or -i basic=lys.npz -i basic=arg.npz -i acidic=asp.npz)",
 )
 @click.option(
     "--output-dir",
@@ -416,19 +416,13 @@ def prepare(
     help="Random seed for reproducibility",
 )
 @click.option(
-    "--relabel-pairwise",
-    type=str,
-    default=None,
-    help="Relabel for pairwise comparison. Format: 'label1,label2' (e.g., 'Ala,Gly'). Assigns label_int=0 to first label, label_int=1 to second label.",
-)
-@click.option(
     "--comparison-spec",
     type=click.Path(exists=True, path_type=Path),
     default=None,
-    help="TSV file with comparison specifications (4 columns: meta_label1, label_set1, meta_label2, label_set2). Mutually exclusive with --relabel-pairwise.",
+    help="TSV file with comparison specifications (4 columns: meta_label1, label_set1, meta_label2, label_set2). When provided, input-chunks should be directories.",
 )
 def merge_and_split(
-    input_chunks, output_dir, train_split, val_split, seed, relabel_pairwise, comparison_spec
+    input_chunks, output_dir, train_split, val_split, seed, comparison_spec
 ):
     """Merge multiple chunk files and split at read level to prevent data leakage.
 
@@ -438,22 +432,25 @@ def merge_and_split(
 
     This prevents data leakage that can occur when splitting each sample
     independently and then merging the splits.
+
+    Examples:
+        # Pairwise comparison with single labels
+        leech merge-and-split -i Ala=ala.npz -i Gly=gly.npz -o merged/
+
+        # Multi-label comparison (chemical properties)
+        leech merge-and-split -i basic=lys.npz -i basic=arg.npz -i acidic=asp.npz -o merged/
+
+        # Batch processing from TSV spec
+        leech merge-and-split -i chunks/dir1 -i chunks/dir2 --comparison-spec spec.tsv -o merged/
     """
     from leech.data_prep import merge_and_split_chunks, process_comparison_spec
-
-    # Check for mutually exclusive options
-    if relabel_pairwise and comparison_spec:
-        raise ValueError(
-            "Options --relabel-pairwise and --comparison-spec are mutually exclusive. "
-            "Use --relabel-pairwise for a single comparison or --comparison-spec for batch processing."
-        )
 
     # Batch processing mode with comparison spec
     if comparison_spec:
         logger.info("Processing comparisons from spec file")
 
-        # For batch mode, input_chunks should be directories
-        chunk_dirs = list(input_chunks)
+        # For batch mode, input_chunks should be directories (no label= prefix)
+        chunk_dirs = [Path(c) for c in input_chunks]
 
         result = process_comparison_spec(
             chunk_dirs=chunk_dirs,
@@ -476,26 +473,75 @@ def merge_and_split(
         console.print(f"\n[bold green]All comparisons saved to {output_dir}/[/bold green]")
         return
 
-    # Single comparison mode (original behavior)
+    # Single comparison mode with label=file syntax
     logger.info("Merging and splitting chunks at read level")
 
-    # Parse relabel_pairwise if provided
-    relabel_tuple = None
-    if relabel_pairwise:
-        parts = relabel_pairwise.split(",")
-        if len(parts) != 2:
+    # Parse label=file format and group files by meta-label
+    import numpy as np
+
+    meta_to_files = {}
+    meta_to_chunk_labels = {}
+    meta_order = []  # Track order for label_int assignment
+
+    for chunk_spec in input_chunks:
+        if "=" not in chunk_spec:
             raise ValueError(
-                f"Invalid --relabel-pairwise format: '{relabel_pairwise}'. "
-                "Expected format: 'label1,label2' (e.g., 'Ala,Gly')"
+                f"Invalid input format: '{chunk_spec}'. "
+                "Expected format: label=file.npz (e.g., Ala=ala.npz or basic=lys.npz)"
             )
-        relabel_tuple = (parts[0].strip(), parts[1].strip())
-        logger.info(
-            f"Relabeling for pairwise comparison: {relabel_tuple[0]}=0, {relabel_tuple[1]}=1"
+
+        meta_label, file_path = chunk_spec.split("=", 1)
+        meta_label = meta_label.strip()
+        file_path = Path(file_path.strip())
+
+        if not file_path.exists():
+            raise FileNotFoundError(f"Input file not found: {file_path}")
+
+        # Track meta-label order (first appearance)
+        if meta_label not in meta_to_files:
+            meta_to_files[meta_label] = []
+            meta_to_chunk_labels[meta_label] = set()
+            meta_order.append(meta_label)
+
+        meta_to_files[meta_label].append(file_path)
+
+        # Extract actual chunk labels from file (peek at first chunk)
+        with np.load(file_path, allow_pickle=True) as data:
+            # Get unique labels from this file
+            if "labels" in data:
+                chunk_labels = set(data["labels"])
+                # Filter out None values
+                chunk_labels = {l for l in chunk_labels if l is not None and l != ""}
+                meta_to_chunk_labels[meta_label].update(chunk_labels)
+
+    # Validate we have exactly 2 groups for binary classification
+    if len(meta_to_files) != 2:
+        raise ValueError(
+            f"Expected exactly 2 unique meta-labels for binary classification, got {len(meta_to_files)}: {list(meta_to_files.keys())}"
         )
+
+    # Build relabel_pairwise tuple: (group1_chunk_labels, group2_chunk_labels)
+    # First seen meta-label = 0, second = 1
+    meta1, meta2 = meta_order[0], meta_order[1]
+    group1_labels = sorted(meta_to_chunk_labels[meta1])
+    group2_labels = sorted(meta_to_chunk_labels[meta2])
+
+    # Collect all file paths in order
+    all_files = meta_to_files[meta1] + meta_to_files[meta2]
+
+    logger.info(
+        f"Relabeling for comparison: {meta1} (labels={group1_labels}) = label_int 0, "
+        f"{meta2} (labels={group2_labels}) = label_int 1"
+    )
+
+    # Build relabel tuple: use list for multi-label groups, string for single
+    relabel_group1 = group1_labels[0] if len(group1_labels) == 1 else group1_labels
+    relabel_group2 = group2_labels[0] if len(group2_labels) == 1 else group2_labels
+    relabel_tuple = (relabel_group1, relabel_group2)
 
     # Merge and split at read level
     result = merge_and_split_chunks(
-        input_paths=list(input_chunks),
+        input_paths=all_files,
         output_dir=output_dir,
         train_frac=train_split,
         val_frac=val_split,

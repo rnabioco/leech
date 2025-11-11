@@ -23,9 +23,12 @@ rule merge_chunks_charged:
         output_dir=CHUNKS_DIR + "/merged/charged_vs_uncharged",
         train_split=config.get("train_split", 0.7),
         val_split=config.get("val_split", 0.15),
-        seed=config.get("seed", 42),
-        # Build input arguments for merge-and-split command
-        input_args=lambda wildcards, input: " ".join([f"-i {f}" for f in input.chunks]),
+        # Build input arguments with label=file format
+        input_args=lambda wildcards, input: " ".join([
+            f"-i charged={f}" if "charged" in str(f) and "uncharged" not in str(f)
+            else f"-i uncharged={f}"
+            for f in input.chunks
+        ]),
     log:
         CHUNKS_DIR + "/merged/charged_vs_uncharged/merge_and_split.log",
     shell:
@@ -35,7 +38,6 @@ rule merge_chunks_charged:
             --output-dir {params.output_dir} \
             --train-split {params.train_split} \
             --val-split {params.val_split} \
-            --seed {params.seed} \
             2>&1 | tee {log}
         """
 
@@ -116,11 +118,8 @@ rule merge_chunks_pairwise:
         output_dir=CHUNKS_DIR + "/merged/pairwise/{pair}",
         train_split=config.get("train_split", 0.7),
         val_split=config.get("val_split", 0.15),
-        seed=config.get("seed", 42),
-        # Build input arguments for merge-and-split command
-        input_args=lambda wildcards, input: " ".join([f"-i {f}" for f in input.chunks]),
-        # Extract amino acids from pair name (e.g., "Ala_vs_Gly" -> "Ala,Gly")
-        relabel_pairwise=lambda wildcards: wildcards.pair.replace("_vs_", ","),
+        # Build input arguments with label=file format
+        input_args=lambda wildcards, input: build_merge_input_args(wildcards.pair, input.chunks),
     log:
         CHUNKS_DIR + "/merged/pairwise/{pair}/merge_and_split.log",
     shell:
@@ -130,8 +129,6 @@ rule merge_chunks_pairwise:
             --output-dir {params.output_dir} \
             --train-split {params.train_split} \
             --val-split {params.val_split} \
-            --seed {params.seed} \
-            --relabel-pairwise {params.relabel_pairwise} \
             2>&1 | tee {log}
         """
 
