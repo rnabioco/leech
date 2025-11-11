@@ -24,6 +24,40 @@ logger = logging.getLogger("leech.gridsearch")
 console = Console()
 
 
+def parse_context_grid(
+    context_grid: str,
+    left_contexts: str | None = None,
+    right_contexts: str | None = None,
+) -> tuple[list[int], list[int]]:
+    """Parse context grid strings into integer lists.
+
+    Args:
+        context_grid: Comma-separated context values (e.g., "200,500,1000")
+        left_contexts: Override left contexts (comma-separated), or None to use context_grid
+        right_contexts: Override right contexts (comma-separated), or None to use context_grid
+
+    Returns:
+        Tuple of (left_contexts_list, right_contexts_list)
+
+    Example:
+        >>> parse_context_grid("200,500,1000")
+        ([200, 500, 1000], [200, 500, 1000])
+        >>> parse_context_grid("200,500", left_contexts="100,200", right_contexts="300,400")
+        ([100, 200], [300, 400])
+    """
+    if left_contexts is not None:
+        left_list = [int(x.strip()) for x in left_contexts.split(",")]
+    else:
+        left_list = [int(x.strip()) for x in context_grid.split(",")]
+
+    if right_contexts is not None:
+        right_list = [int(x.strip()) for x in right_contexts.split(",")]
+    else:
+        right_list = [int(x.strip()) for x in context_grid.split(",")]
+
+    return left_list, right_list
+
+
 @dataclass
 class GridSearchConfig:
     """

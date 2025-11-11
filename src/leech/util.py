@@ -6,6 +6,7 @@ Includes model loading/saving helpers, metrics computation, and logging utilitie
 
 import json
 import logging
+import random
 from pathlib import Path
 
 import numpy as np
@@ -22,10 +23,47 @@ from sklearn.metrics import (
     roc_auc_score,
 )
 
+from leech.constants import generate_random_seed
 from leech.models import get_model
 
 logger = logging.getLogger("leech.util")
 console = Console()
+
+
+def setup_random_seed(seed: int | None, output_dir: Path | None = None) -> int:
+    """Setup random seed for reproducibility and optionally save to file.
+
+    Args:
+        seed: Random seed value, or None to generate one
+        output_dir: Directory to save seed.txt file, or None to skip saving
+
+    Returns:
+        The seed value used
+    """
+    # Generate if needed
+    if seed is None:
+        seed = generate_random_seed()
+        logger.info(f"Generated random seed: {seed}")
+    else:
+        logger.info(f"Using provided seed: {seed}")
+
+    # Set for all libraries
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+
+    # Save if requested
+    if output_dir is not None:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        seed_file = output_dir / "seed.txt"
+        with open(seed_file, "w") as f:
+            f.write(f"{seed}\n")
+        logger.info(f"Saved seed to {seed_file}")
+
+    return seed
 
 
 def load_model_from_checkpoint(
