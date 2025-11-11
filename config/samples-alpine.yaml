@@ -125,3 +125,4 @@ samples:
   # Charged samples - Valine
   val_synthetic:
     pod5: "/pl/active/BMG_RBI/hesselberth/aatrnaseq-synethic/raw/val_synthetic/20240208_1313_P2S-01618-A_PAS25822_96f9890f/pod5_pass"
+    label: "Val"
