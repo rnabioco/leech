@@ -13,11 +13,19 @@ rule test_charged_vs_uncharged:
     params:
         device="cpu" if config.get("use_cpu_training", False) else "cuda",
     resources:
-        slurm_partition=lambda wildcards, attempt: "amilan" if config.get("use_cpu_training", False) else "atesting_a100",
-        runtime=lambda wildcards, attempt: 240 if config.get("use_cpu_training", False) else 60,
-        cpus_per_task=lambda wildcards, attempt: 16 if config.get("use_cpu_training", False) else 2,
+        slurm_partition=lambda wildcards, attempt: (
+            "amilan" if config.get("use_cpu_training", False) else "atesting_a100"
+        ),
+        runtime=lambda wildcards, attempt: (
+            240 if config.get("use_cpu_training", False) else 60
+        ),
+        cpus_per_task=lambda wildcards, attempt: (
+            16 if config.get("use_cpu_training", False) else 2
+        ),
         mem_mb=4000,
-        gres=lambda wildcards, attempt: "" if config.get("use_cpu_training", False) else "gpu:1",
+        gres=lambda wildcards, attempt: (
+            "" if config.get("use_cpu_training", False) else "gpu:1"
+        ),
     log:
         METRICS_DIR + "/charged_vs_uncharged/test.log",
     shell:
@@ -41,11 +49,19 @@ rule test_pairwise_aa:
     params:
         device="cpu" if config.get("use_cpu_training", False) else "cuda",
     resources:
-        slurm_partition=lambda wildcards, attempt: "amilan" if config.get("use_cpu_training", False) else "atesting_a100",
-        runtime=lambda wildcards, attempt: 240 if config.get("use_cpu_training", False) else 60,
-        cpus_per_task=lambda wildcards, attempt: 16 if config.get("use_cpu_training", False) else 2,
+        slurm_partition=lambda wildcards, attempt: (
+            "amilan" if config.get("use_cpu_training", False) else "atesting_a100"
+        ),
+        runtime=lambda wildcards, attempt: (
+            240 if config.get("use_cpu_training", False) else 60
+        ),
+        cpus_per_task=lambda wildcards, attempt: (
+            16 if config.get("use_cpu_training", False) else 2
+        ),
         mem_mb=4000,
-        gres=lambda wildcards, attempt: "" if config.get("use_cpu_training", False) else "gpu:1",
+        gres=lambda wildcards, attempt: (
+            "" if config.get("use_cpu_training", False) else "gpu:1"
+        ),
     log:
         METRICS_DIR + "/pairwise/{pair}/test.log",
     shell:
