@@ -421,9 +421,7 @@ def prepare(
     default=None,
     help="TSV file with comparison specifications (4 columns: meta_label1, label_set1, meta_label2, label_set2). When provided, input-chunks should be directories.",
 )
-def merge_and_split(
-    input_chunks, output_dir, train_split, val_split, seed, comparison_spec
-):
+def merge_and_split(input_chunks, output_dir, train_split, val_split, seed, comparison_spec):
     """Merge multiple chunk files and split at read level to prevent data leakage.
 
     This command implements the correct workflow for multi-sample datasets:
@@ -511,7 +509,9 @@ def merge_and_split(
             if "labels" in data:
                 chunk_labels = set(data["labels"])
                 # Filter out None values
-                chunk_labels = {l for l in chunk_labels if l is not None and l != ""}
+                chunk_labels = {
+                    label for label in chunk_labels if label is not None and label != ""
+                }
                 meta_to_chunk_labels[meta_label].update(chunk_labels)
 
     # Validate we have exactly 2 groups for binary classification

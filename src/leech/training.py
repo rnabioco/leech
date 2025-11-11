@@ -272,7 +272,7 @@ class Trainer:
 
         # Save final model
         if self.output_dir:
-            self.save_checkpoint("model_checkpoint.pt")
+            self.save_checkpoint("model_last.pt")
             self.save_history()
 
         return self.history
@@ -298,7 +298,7 @@ class Trainer:
         if self.output_dir is None:
             return
 
-        history_path = self.output_dir / "training_history.json"
+        history_path = self.output_dir / "metrics.json"
         with open(history_path, "w") as f:
             json.dump(self.history, f, indent=2)
 
