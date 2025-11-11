@@ -5,6 +5,8 @@ Adapted from Remora but modernized with NumPy arrays and type hints.
 """
 
 import logging
+import multiprocessing as mp
+import pickle
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -518,6 +520,296 @@ def extract_training_chunks(
             chunks.append(chunk)
 
     return chunks
+
+
+@dataclass
+class ReadInfo:
+    """Lightweight container for BAM read information to pass to workers."""
+
+    read_id: str
+    sequence: str
+    move_table_data: tuple[int, np.ndarray]  # (stride, moves)
+    mapping_quality: int
+    reference_name: str | None
+    reference_start: int | None
+    reference_end: int | None
+    is_reverse: bool
+    cigar_tuples: list[tuple[int, int]] | None
+
+
+def collect_read_infos_from_bam(
+    bam_path: Path,
+    min_mapq: int = 0,
+    require_tags: list[str] | None = None,
+) -> list[ReadInfo]:
+    """
+    First pass: collect lightweight read info from BAM (no POD5 access).
+
+    Args:
+        bam_path: Path to BAM file
+        min_mapq: Minimum mapping quality
+        require_tags: BAM tags that must be present
+
+    Returns:
+        List of ReadInfo objects
+    """
+    if require_tags is None:
+        require_tags = ["mv", "ns"]
+
+    read_infos = []
+
+    with pysam.AlignmentFile(str(bam_path), "rb") as bam:
+        for aln in bam:
+            # Filter alignments
+            if aln.is_unmapped or aln.is_secondary or aln.is_supplementary:
+                continue
+            if aln.mapping_quality < min_mapq:
+                continue
+
+            # Check required tags
+            if not all(aln.has_tag(tag) for tag in require_tags):
+                continue
+
+            # Check for required query fields
+            read_id = aln.query_name
+            read_seq = aln.query_sequence
+            if read_id is None or read_seq is None:
+                continue
+
+            # Extract move table data (lightweight)
+            try:
+                mv_tag = aln.get_tag("mv")
+                if isinstance(mv_tag, np.ndarray):
+                    moves = mv_tag
+                else:
+                    moves = np.array(mv_tag, dtype=np.int16)
+
+                stride = int(moves[0])
+                move_table_data = (stride, moves)
+
+                # Create ReadInfo
+                read_info = ReadInfo(
+                    read_id=read_id,
+                    sequence=read_seq,
+                    move_table_data=move_table_data,
+                    mapping_quality=aln.mapping_quality,
+                    reference_name=aln.reference_name,
+                    reference_start=aln.reference_start,
+                    reference_end=aln.reference_end,
+                    is_reverse=aln.is_reverse,
+                    cigar_tuples=aln.cigartuples,
+                )
+                read_infos.append(read_info)
+
+            except Exception as e:
+                logger.warning(f"Skipping read {read_id}: {e}")
+                continue
+
+    return read_infos
+
+
+def _process_read_chunk_worker(
+    args: tuple[list[ReadInfo], Path, str | None, int, int, str, dict[str, str] | None, bool]
+) -> list[dict[str, np.ndarray | str | int | None]]:
+    """
+    Worker function to process a chunk of reads in parallel.
+
+    Args:
+        args: Tuple of (read_infos, pod5_path, motif, motif_offset, label,
+                        motif_reference, reference_sequences, skip_motif_indels)
+
+    Returns:
+        List of extracted chunks from all reads in this chunk
+    """
+    from leech.features import MoveTable
+
+    read_infos, pod5_path, motif, motif_offset, label, motif_reference, reference_sequences, skip_motif_indels = (
+        args
+    )
+
+    all_chunks = []
+
+    # Open POD5 once for this worker
+    with DatasetReader(pod5_path) as pod5_reader:
+        for read_info in read_infos:
+            try:
+                # Read signal from POD5
+                signal_found = False
+                for read in pod5_reader.reads([read_info.read_id]):
+                    raw_signal = read.signal
+                    pod5_metadata = {
+                        "read_id": str(read.read_id),
+                        "channel": read.pore.channel,
+                        "well": read.pore.well,
+                        "pore_type": read.pore.pore_type,
+                        "calibration_offset": read.calibration.offset,
+                        "calibration_scale": read.calibration.scale,
+                        "sample_rate": read.run_info.sample_rate,
+                    }
+                    signal_found = True
+                    break
+
+                if not signal_found:
+                    continue
+
+                # Reconstruct move table
+                stride, moves = read_info.move_table_data
+                move_table = MoveTable(stride=stride, moves=moves)
+
+                # Normalize signal
+                norm_signal, norm_params = normalize_signal(raw_signal, method="median_mad")
+
+                # Compute seq-to-signal mapping
+                seq_to_sig_map = move_table.to_seq_to_sig_map()
+
+                # Compute features
+                dwells = compute_dwell_times(move_table)
+                dwell_feats = compute_dwell_features(dwells)
+                signal_feats = compute_signal_features(norm_signal, seq_to_sig_map)
+
+                # Build metadata (create mock alignment for reference-based search)
+                metadata = {
+                    **pod5_metadata,
+                    "normalization": norm_params,
+                    "mapping_quality": read_info.mapping_quality,
+                    "reference_name": read_info.reference_name,
+                    "reference_start": read_info.reference_start,
+                    "reference_end": read_info.reference_end,
+                    "is_reverse": read_info.is_reverse,
+                }
+
+                # For reference-based motif search, create a mock alignment object
+                if motif_reference == "fasta" and reference_sequences is not None:
+                    # Create minimal mock alignment for CIGAR parsing
+                    class MockAlignment:
+                        def __init__(self, read_info: ReadInfo):
+                            self.reference_name = read_info.reference_name
+                            self.reference_start = read_info.reference_start
+                            self.reference_end = read_info.reference_end
+                            self.cigartuples = read_info.cigar_tuples
+                            self.is_reverse = read_info.is_reverse
+
+                    metadata["alignment"] = MockAlignment(read_info)
+
+                # Create LeechRead
+                leech_read = LeechRead(
+                    read_id=read_info.read_id,
+                    sequence=read_info.sequence,
+                    signal=norm_signal,
+                    seq_to_sig_map=seq_to_sig_map,
+                    dwells=dwells,
+                    dwell_features=dwell_feats,
+                    signal_features=signal_feats,
+                    metadata=metadata,
+                )
+
+                # Extract training chunks
+                read_chunks = extract_training_chunks(
+                    leech_read,
+                    motif=motif,
+                    motif_offset=motif_offset,
+                    label=label,
+                    motif_reference=motif_reference,
+                    reference_sequences=reference_sequences,
+                    skip_motif_indels=skip_motif_indels,
+                )
+
+                all_chunks.extend(read_chunks)
+
+            except Exception as e:
+                logger.warning(f"Worker failed to process read {read_info.read_id}: {e}")
+                continue
+
+    return all_chunks
+
+
+def prepare_training_data_parallel(
+    bam_path: Path,
+    pod5_path: Path,
+    motif: str | None = None,
+    motif_offset: int = 0,
+    label: int = 0,
+    min_mapq: int = 0,
+    motif_reference: str = "bam",
+    reference_sequences: dict[str, str] | None = None,
+    skip_motif_indels: bool = True,
+    num_workers: int = 4,
+    chunk_size: int = 100,
+) -> tuple[list[dict[str, np.ndarray | str | int | None]], dict[str, int]]:
+    """
+    Prepare training data from BAM and POD5 files using multiprocessing.
+
+    Args:
+        bam_path: Path to BAM file with alignments
+        pod5_path: Path to POD5 file with signal
+        motif: Optional sequence motif to filter
+        motif_offset: Offset within motif for focus base
+        label: Label for all chunks
+        min_mapq: Minimum mapping quality
+        motif_reference: Where to search for motif ("bam" or "fasta")
+        reference_sequences: Dict of reference sequences (for motif_reference="fasta")
+        skip_motif_indels: Skip reads with indels in motif region
+        num_workers: Number of parallel workers
+        chunk_size: Number of reads to process per worker batch
+
+    Returns:
+        Tuple of (chunks, statistics)
+    """
+    logger.info(f"Starting parallel data preparation with {num_workers} workers")
+
+    # First pass: collect read info from BAM (lightweight, sequential)
+    logger.info("Pass 1: Collecting read info from BAM...")
+    read_infos = collect_read_infos_from_bam(bam_path, min_mapq=min_mapq)
+    total_reads = len(read_infos)
+    logger.info(f"Found {total_reads} reads to process")
+
+    if total_reads == 0:
+        return [], {"total_reads": 0, "reads_with_motif": 0, "reads_without_motif": 0, "total_chunks": 0}
+
+    # Split read_infos into chunks for workers
+    read_chunks = [read_infos[i : i + chunk_size] for i in range(0, len(read_infos), chunk_size)]
+    logger.info(f"Split into {len(read_chunks)} chunks of up to {chunk_size} reads each")
+
+    # Prepare worker arguments
+    worker_args = [
+        (
+            chunk,
+            pod5_path,
+            motif,
+            motif_offset,
+            label,
+            motif_reference,
+            reference_sequences,
+            skip_motif_indels,
+        )
+        for chunk in read_chunks
+    ]
+
+    # Second pass: parallel processing
+    logger.info("Pass 2: Processing reads in parallel...")
+    all_chunks = []
+
+    with mp.Pool(processes=num_workers) as pool:
+        # Use imap_unordered for progress tracking
+        for i, chunk_results in enumerate(pool.imap_unordered(_process_read_chunk_worker, worker_args)):
+            all_chunks.extend(chunk_results)
+            logger.info(
+                f"Processed chunk {i + 1}/{len(read_chunks)}: "
+                f"{len(chunk_results)} chunks extracted, "
+                f"{len(all_chunks)} total so far"
+            )
+
+    # Compile statistics (approximate - we don't track individual read success)
+    stats = {
+        "total_reads": total_reads,
+        "reads_with_motif": len(all_chunks),  # Approximate
+        "reads_without_motif": total_reads - len(all_chunks),  # Approximate
+        "total_chunks": len(all_chunks),
+    }
+
+    logger.info(f"Parallel processing complete: extracted {len(all_chunks)} chunks from {total_reads} reads")
+
+    return all_chunks, stats
 
 
 def prepare_training_data(
