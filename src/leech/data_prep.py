@@ -429,8 +429,8 @@ def extract_training_chunks(
     leech_read: LeechRead,
     motif: str | None = None,
     motif_offset: int = 0,
-    label: int = 0,
-    label_type: str | None = None,
+    label: str | None = None,
+    label_int: int | None = None,
     motif_reference: str = "bam",
     reference_sequences: dict[str, str] | None = None,
     skip_motif_indels: bool = True,
@@ -442,8 +442,8 @@ def extract_training_chunks(
         leech_read: LeechRead object
         motif: Optional sequence motif to filter (e.g., "CCAGGC")
         motif_offset: Offset within motif for focus base
-        label: Label for all chunks from this read (may be reassigned during merge for pairwise comparisons)
-        label_type: Optional label type identifier for pairwise comparisons (e.g., "Ala", "Gly", "treatment_A")
+        label: String label identifier (e.g., "Ala", "Gly", "charged", "uncharged")
+        label_int: Optional numeric label (0, 1) - assigned during merge for pairwise comparisons
         motif_reference: Where to search for motif: "bam" (basecalled) or "fasta" (reference)
         reference_sequences: Dict of reference name -> sequence (required if motif_reference="fasta")
         skip_motif_indels: If True, skip reads with indels in motif region (only for motif_reference="fasta")
@@ -453,8 +453,9 @@ def extract_training_chunks(
     """
     chunks: list[dict] = []
 
-    # Set labels for all bases
-    leech_read.labels = np.full(leech_read.num_bases, label, dtype=np.int64)
+    # Set numeric labels for all bases if provided
+    if label_int is not None:
+        leech_read.labels = np.full(leech_read.num_bases, label_int, dtype=np.int64)
 
     # Find focus bases (either all or motif matches)
     if motif is None:
@@ -519,7 +520,10 @@ def extract_training_chunks(
         chunk = leech_read.get_chunk(base_idx)
         if chunk is not None:
             chunk["read_id"] = leech_read.read_id
-            chunk["label_type"] = label_type
+            # Rename numeric "label" from get_chunk() to "label_int"
+            chunk["label_int"] = chunk.pop("label", None)
+            # Add string label
+            chunk["label"] = label
             chunks.append(chunk)
 
     return chunks
@@ -620,13 +624,13 @@ def collect_read_infos_from_bam(
 
 
 def _process_read_chunk_worker(
-    args: tuple[list[ReadInfo], Path, str | None, int, int, str | None, str, dict[str, str] | None, bool],
+    args: tuple[list[ReadInfo], Path, str | None, int, str | None, int | None, str, dict[str, str] | None, bool],
 ) -> list[dict[str, np.ndarray | str | int | None]]:
     """
     Worker function to process a chunk of reads in parallel.
 
     Args:
-        args: Tuple of (read_infos, pod5_path, motif, motif_offset, label, label_type,
+        args: Tuple of (read_infos, pod5_path, motif, motif_offset, label, label_int,
                         motif_reference, reference_sequences, skip_motif_indels)
 
     Returns:
@@ -640,7 +644,7 @@ def _process_read_chunk_worker(
         motif,
         motif_offset,
         label,
-        label_type,
+        label_int,
         motif_reference,
         reference_sequences,
         skip_motif_indels,
@@ -734,7 +738,7 @@ def _process_read_chunk_worker(
                     motif=motif,
                     motif_offset=motif_offset,
                     label=label,
-                    label_type=label_type,
+                    label_int=label_int,
                     motif_reference=motif_reference,
                     reference_sequences=reference_sequences,
                     skip_motif_indels=skip_motif_indels,
@@ -754,8 +758,8 @@ def prepare_training_data_parallel(
     pod5_path: Path,
     motif: str | None = None,
     motif_offset: int = 0,
-    label: int = 0,
-    label_type: str | None = None,
+    label: str | None = None,
+    label_int: int | None = None,
     min_mapq: int = 0,
     motif_reference: str = "bam",
     reference_sequences: dict[str, str] | None = None,
@@ -771,8 +775,8 @@ def prepare_training_data_parallel(
         pod5_path: Path to POD5 file with signal
         motif: Optional sequence motif to filter
         motif_offset: Offset within motif for focus base
-        label: Label for all chunks (may be reassigned during pairwise comparisons)
-        label_type: Optional label type identifier (e.g., "Ala", "Gly", "treatment_A")
+        label: String label identifier (e.g., "Ala", "Gly", "charged", "uncharged")
+        label_int: Optional numeric label (0, 1) - assigned during merge for pairwise comparisons
         min_mapq: Minimum mapping quality
         motif_reference: Where to search for motif ("bam" or "fasta")
         reference_sequences: Dict of reference sequences (for motif_reference="fasta")
@@ -813,7 +817,7 @@ def prepare_training_data_parallel(
             motif,
             motif_offset,
             label,
-            label_type,
+            label_int,
             motif_reference,
             reference_sequences,
             skip_motif_indels,
@@ -882,8 +886,8 @@ def prepare_training_data(
     pod5_path: Path,
     motif: str | None = None,
     motif_offset: int = 0,
-    label: int = 0,
-    label_type: str | None = None,
+    label: str | None = None,
+    label_int: int | None = None,
     min_mapq: int = 0,
 ) -> tuple[list[dict[str, np.ndarray | str | int | None]], dict[str, int]]:
     """
@@ -894,8 +898,8 @@ def prepare_training_data(
         pod5_path: Path to POD5 file with signal
         motif: Optional sequence motif to filter
         motif_offset: Offset within motif for focus base
-        label: Label for all chunks (may be reassigned during pairwise comparisons)
-        label_type: Optional label type identifier (e.g., "Ala", "Gly", "treatment_A")
+        label: String label identifier (e.g., "Ala", "Gly", "charged", "uncharged")
+        label_int: Optional numeric label (0, 1) - assigned during merge for pairwise comparisons
         min_mapq: Minimum mapping quality
 
     Returns:
@@ -913,7 +917,7 @@ def prepare_training_data(
     for read in iter_bam_with_pod5(bam_path, pod5_path, min_mapq=min_mapq):
         total_reads += 1
         read_chunks = extract_training_chunks(
-            read, motif=motif, motif_offset=motif_offset, label=label, label_type=label_type
+            read, motif=motif, motif_offset=motif_offset, label=label, label_int=label_int
         )
 
         # Track whether this read had motif matches
@@ -1377,7 +1381,7 @@ def save_chunks(chunks: list[dict], output_path: Path) -> None:
     dwells = []
     features = []
     labels = []
-    label_types = []
+    labels_int = []
     read_ids = []
     base_indices = []
 
@@ -1386,8 +1390,8 @@ def save_chunks(chunks: list[dict], output_path: Path) -> None:
         sequences.append(chunk["sequence"])
         dwells.append(chunk["dwell"])
         features.append(chunk["features"])
-        labels.append(chunk["label"] if chunk["label"] is not None else -1)
-        label_types.append(chunk.get("label_type", ""))
+        labels.append(chunk.get("label", ""))  # String label (e.g., "Ala", "Gly")
+        labels_int.append(chunk.get("label_int", -1) if chunk.get("label_int") is not None else -1)  # Numeric label or -1
         read_ids.append(chunk["read_id"])
         base_indices.append(chunk["base_idx"])
 
@@ -1397,8 +1401,8 @@ def save_chunks(chunks: list[dict], output_path: Path) -> None:
     sequences_arr = np.array(sequences, dtype=str)
     dwells_arr = np.array(dwells, dtype=object)
     features_arr = np.array(features, dtype=object)
-    labels_arr = np.array(labels, dtype=np.int64)
-    label_types_arr = np.array(label_types, dtype=str)
+    labels_arr = np.array(labels, dtype=str)  # String labels
+    labels_int_arr = np.array(labels_int, dtype=np.int64)  # Numeric labels
     read_ids_arr = np.array(read_ids, dtype=str)
     base_indices_arr = np.array(base_indices, dtype=np.int64)
 
@@ -1413,7 +1417,7 @@ def save_chunks(chunks: list[dict], output_path: Path) -> None:
         dwells=dwells_arr,
         features=features_arr,
         labels=labels_arr,
-        label_types=label_types_arr,
+        labels_int=labels_int_arr,
         read_ids=read_ids_arr,
         base_indices=base_indices_arr,
     )
@@ -1444,13 +1448,12 @@ def load_chunks(input_path: Path) -> list[dict]:
         sequences = data["sequences"]
         dwells = data["dwells"]
         features = data["features"]
-        labels = data["labels"]
+        labels_arr = data["labels"]  # String labels
+        labels_int_arr = data["labels_int"]  # Numeric labels
         read_ids = data["read_ids"]
         base_indices = data["base_indices"]
-        # Backward compatibility: label_types may not exist in old chunk files
-        label_types = data.get("label_types", None)
 
-        n_chunks = len(labels)
+        n_chunks = len(labels_arr)
         chunks = []
 
         # Create dictionaries with references to array elements
@@ -1461,16 +1464,12 @@ def load_chunks(input_path: Path) -> list[dict]:
                 "sequence": str(sequences[i]),
                 "dwell": dwells[i],
                 "features": features[i],
-                "label": int(labels[i]) if labels[i] >= 0 else None,
                 "read_id": str(read_ids[i]),
                 "base_idx": int(base_indices[i]),
+                "label": str(labels_arr[i]) if labels_arr[i] != "" else None,
+                "label_int": int(labels_int_arr[i]) if labels_int_arr[i] >= 0 else None,
             }
-            # Add label_type if available (backward compatibility)
-            if label_types is not None:
-                label_type_val = str(label_types[i]) if label_types[i] else None
-                chunk["label_type"] = label_type_val if label_type_val != "" else None
-            else:
-                chunk["label_type"] = None
+
             chunks.append(chunk)
 
     return chunks
@@ -1485,8 +1484,8 @@ def prepare_training_data_with_split(
     motif_reference: str = "fasta",
     reference_fasta: Path | None = None,
     skip_motif_indels: bool = True,
-    label: int = 0,
-    label_type: str | None = None,
+    label: str | None = None,
+    label_int: int | None = None,
     min_mapq: int = 10,
     feature_set: str = "signal+dwell+levels",
     train_split: float = 0.7,
@@ -1513,8 +1512,8 @@ def prepare_training_data_with_split(
         motif_reference: Where to search for motif ("fasta" or "bam")
         reference_fasta: External reference FASTA file
         skip_motif_indels: Skip reads with indels in motif region
-        label: Label for all chunks (may be reassigned during pairwise comparisons)
-        label_type: Optional label type identifier (e.g., "Ala", "Gly", "treatment_A")
+        label: String label identifier (e.g., "Ala", "Gly", "charged", "uncharged")
+        label_int: Optional numeric label (0, 1) - assigned during merge for pairwise comparisons
         min_mapq: Minimum mapping quality
         feature_set: Feature set to extract (not currently used, reserved for future)
         train_split: Fraction for training
@@ -1555,7 +1554,7 @@ def prepare_training_data_with_split(
             motif=motif,
             motif_offset=motif_offset,
             label=label,
-            label_type=label_type,
+            label_int=label_int,
             motif_reference=motif_reference,
             reference_sequences=reference_sequences,
             skip_motif_indels=skip_motif_indels,
