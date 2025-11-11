@@ -828,6 +828,43 @@ def grid_search(
     logger.info(f"Results saved to: {summary_path}")
 
 
+@cli.command(name="validate-splits")
+@click.option(
+    "--data-dir",
+    "-d",
+    required=True,
+    type=click.Path(exists=True, path_type=Path),
+    help="Directory containing train.npz, val.npz, test.npz files",
+)
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    default=False,
+    help="Print detailed leakage information including read IDs",
+)
+def validate_splits(data_dir, verbose):
+    """Validate data splits and detect potential data leakage.
+
+    This command checks that:
+    - No read appears in multiple splits (train/val/test)
+    - All chunks are assigned to exactly one split
+    - Provides detailed leakage reports if issues are found
+    """
+    from leech.validate_splits import validate_directory
+
+    logger.info(f"Validating splits in {data_dir}")
+
+    report = validate_directory(data_dir, verbose=verbose)
+
+    # Exit with error code if leakage detected
+    if report["has_leakage"]:
+        console.print("[bold red]⚠️  Data leakage detected! See report above.[/bold red]")
+        raise click.Abort()
+    else:
+        console.print("[bold green]✅ No data leakage detected![/bold green]")
+
+
 def main():
     """Main CLI entry point."""
     cli()
