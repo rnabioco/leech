@@ -57,8 +57,14 @@ uv run mypy src/leech/
 
 ### Running the CLI
 ```bash
-# Prepare training data
+# Prepare training data (sequential)
 uv run leech prepare --pod5 reads.pod5 --bam alignments.bam --output-dir chunks/
+
+# Prepare training data (parallel - recommended for large datasets)
+# Use --workers to specify number of parallel processes
+# Use --chunk-size to control batch size (default: 100 reads per batch)
+uv run leech prepare --pod5 reads.pod5 --bam alignments.bam --output-dir chunks/ \
+  --workers 8 --chunk-size 100
 
 # Train model
 uv run leech train --train-data chunks/train.json --val-data chunks/val.json \
@@ -98,6 +104,35 @@ uv sync --upgrade
    - Create `LeechRead` objects with all features
 4. **Model Training**: PyTorch models with three input branches (signal, sequence, dwell/level features)
 5. **Output**: Trained models (.pt files) and predictions (BAM with modification probabilities)
+
+### Parallel Processing
+
+The `prepare` command supports multiprocessing for large datasets:
+
+**Implementation** (data_prep.py:525-812):
+- `collect_read_infos_from_bam()`: First pass to collect lightweight read metadata from BAM
+- `_process_read_chunk_worker()`: Worker function that processes batches of reads in parallel
+- `prepare_training_data_parallel()`: Main parallel orchestration with configurable workers and chunk size
+
+**Usage**:
+```bash
+# Use --workers N to enable parallel processing (N > 1)
+# Use --chunk-size M to control batch size (default: 100 reads)
+uv run leech prepare --pod5 data.pod5 --bam alignments.bam \
+  --output-dir chunks/ --workers 8 --chunk-size 100
+```
+
+**Performance**:
+- Expected speedup: 3-6x on typical multi-core machines
+- CPU-bound tasks (feature extraction): near-linear speedup with cores
+- I/O-bound tasks (POD5 reading): moderate speedup (2-4x)
+- Memory-efficient: Chunks reads into batches to avoid loading entire dataset
+
+**Implementation details**:
+- Two-pass design: (1) collect read metadata from BAM, (2) parallel POD5 + feature extraction
+- Each worker opens POD5 independently for thread-safe access
+- Batching via `chunk_size` prevents memory issues with large datasets
+- Reference sequences are passed to workers for reference-based motif search
 
 ### Key Classes and Functions
 

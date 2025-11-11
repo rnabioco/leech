@@ -202,6 +202,18 @@ def cli():
     default=False,
     help="Extract chunks without splitting (for later merge-then-split workflow)",
 )
+@click.option(
+    "--workers",
+    type=int,
+    default=1,
+    help="Number of parallel workers for data processing (1=sequential, >1=parallel)",
+)
+@click.option(
+    "--chunk-size",
+    type=int,
+    default=100,
+    help="Number of reads to process per worker batch (for parallel processing)",
+)
 def prepare(
     pod5,
     bam,
@@ -218,12 +230,15 @@ def prepare(
     val_split,
     seed,
     no_split,
+    workers,
+    chunk_size,
 ):
     """Prepare training data from POD5 and BAM files."""
     from leech.data_prep import (
         extract_training_chunks,
         get_reference_sequences,
         iter_bam_with_pod5,
+        prepare_training_data_parallel,
         save_chunks,
     )
 
@@ -231,6 +246,8 @@ def prepare(
 
     logger.info(f"Preparing data from {pod5} and {bam}")
     logger.info(f"Motif reference mode: {motif_reference}")
+    if workers > 1:
+        logger.info(f"Parallel mode: {workers} workers, {chunk_size} reads per batch")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Generate random seed if not provided
@@ -256,25 +273,42 @@ def prepare(
         logger.info("Loading reference sequences for reference-based motif search")
         reference_sequences = get_reference_sequences(bam, reference_fasta)
 
-    # Extract chunks with progress bar
-    chunks = []
-    with Progress(console=console) as progress:
-        task = progress.add_task("[cyan]Extracting chunks...", total=None)
+    # Extract chunks (parallel or sequential)
+    if workers > 1:
+        # Parallel processing
+        chunks, stats = prepare_training_data_parallel(
+            bam_path=bam,
+            pod5_path=pod5,
+            motif=motif,
+            motif_offset=motif_offset,
+            label=label,
+            min_mapq=min_mapq,
+            motif_reference=motif_reference,
+            reference_sequences=reference_sequences,
+            skip_motif_indels=skip_motif_indels,
+            num_workers=workers,
+            chunk_size=chunk_size,
+        )
+    else:
+        # Sequential processing with progress bar
+        chunks = []
+        with Progress(console=console) as progress:
+            task = progress.add_task("[cyan]Extracting chunks...", total=None)
 
-        for read in iter_bam_with_pod5(bam, pod5, min_mapq=min_mapq):
-            read_chunks = extract_training_chunks(
-                read,
-                motif=motif,
-                motif_offset=motif_offset,
-                label=label,
-                motif_reference=motif_reference,
-                reference_sequences=reference_sequences,
-                skip_motif_indels=skip_motif_indels,
-            )
-            chunks.extend(read_chunks)
-            progress.update(task, advance=1, description=f"[cyan]Extracted {len(chunks)} chunks...")
+            for read in iter_bam_with_pod5(bam, pod5, min_mapq=min_mapq):
+                read_chunks = extract_training_chunks(
+                    read,
+                    motif=motif,
+                    motif_offset=motif_offset,
+                    label=label,
+                    motif_reference=motif_reference,
+                    reference_sequences=reference_sequences,
+                    skip_motif_indels=skip_motif_indels,
+                )
+                chunks.extend(read_chunks)
+                progress.update(task, advance=1, description=f"[cyan]Extracted {len(chunks)} chunks...")
 
-        progress.update(task, completed=True)
+            progress.update(task, completed=True)
 
     console.print(f"[green]Extracted {len(chunks)} training chunks[/green]")
 
