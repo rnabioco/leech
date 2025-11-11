@@ -427,7 +427,9 @@ def prepare(
     default=None,
     help="TSV file with comparison specifications (4 columns: meta_label1, label_set1, meta_label2, label_set2). Mutually exclusive with --relabel-pairwise.",
 )
-def merge_and_split(input_chunks, output_dir, train_split, val_split, seed, relabel_pairwise, comparison_spec):
+def merge_and_split(
+    input_chunks, output_dir, train_split, val_split, seed, relabel_pairwise, comparison_spec
+):
     """Merge multiple chunk files and split at read level to prevent data leakage.
 
     This command implements the correct workflow for multi-sample datasets:
@@ -463,7 +465,9 @@ def merge_and_split(input_chunks, output_dir, train_split, val_split, seed, rela
         )
 
         # Display summary
-        console.print(f"\n[bold green]Processed {result['n_comparisons']} comparisons:[/bold green]")
+        console.print(
+            f"\n[bold green]Processed {result['n_comparisons']} comparisons:[/bold green]"
+        )
         for comp_name, stats in result["comparisons"].items():
             console.print(
                 f"  {comp_name}: {stats['n_train']} train, {stats['n_val']} val, {stats['n_test']} test"
