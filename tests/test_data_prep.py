@@ -112,10 +112,11 @@ class TestExtractTrainingChunks:
 
     def test_extract_without_motif(self, sample_leech_read):
         """Test extracting chunks without motif filtering."""
-        chunks = extract_training_chunks(sample_leech_read, motif=None, label=1)
+        chunks = extract_training_chunks(sample_leech_read, motif=None, label="charged", label_int=1)
 
         assert len(chunks) > 0
-        assert all(chunk["label"] == 1 for chunk in chunks)
+        assert all(chunk["label"] == "charged" for chunk in chunks)
+        assert all(chunk["label_int"] == 1 for chunk in chunks)
         assert all(chunk["read_id"] == sample_leech_read.read_id for chunk in chunks)
 
     def test_extract_with_motif(self, sample_leech_read):
@@ -123,24 +124,25 @@ class TestExtractTrainingChunks:
         # Use a motif that exists in the sequence
         motif = sample_leech_read.sequence[7:10]  # 3-base motif
 
-        chunks = extract_training_chunks(sample_leech_read, motif=motif, motif_offset=1, label=0)
+        chunks = extract_training_chunks(sample_leech_read, motif=motif, motif_offset=1, label="uncharged", label_int=0)
 
         # Should find at least one occurrence
         assert len(chunks) >= 1
-        assert all(chunk["label"] == 0 for chunk in chunks)
+        assert all(chunk["label"] == "uncharged" for chunk in chunks)
+        assert all(chunk["label_int"] == 0 for chunk in chunks)
 
     def test_extract_with_nonexistent_motif(self, sample_leech_read):
         """Test extracting with a motif that doesn't exist."""
         motif = "ZZZZZ"  # Invalid motif
 
-        chunks = extract_training_chunks(sample_leech_read, motif=motif, label=0)
+        chunks = extract_training_chunks(sample_leech_read, motif=motif, label="uncharged", label_int=0)
 
         # Should find no chunks
         assert len(chunks) == 0
 
     def test_chunk_structure(self, sample_leech_read):
         """Test that extracted chunks have correct structure."""
-        chunks = extract_training_chunks(sample_leech_read, motif=None, label=1)
+        chunks = extract_training_chunks(sample_leech_read, motif=None, label="charged", label_int=1)
 
         for chunk in chunks:
             assert "signal" in chunk
@@ -197,7 +199,8 @@ class TestChunkSerialization:
         np.testing.assert_array_almost_equal(orig["signal"], loaded["signal"])
         assert orig["sequence"] == loaded["sequence"]
         np.testing.assert_array_almost_equal(orig["dwell"], loaded["dwell"])
-        assert orig["label"] == loaded["label"]
+        assert orig["label"] == loaded["label"]  # String label
+        assert orig["label_int"] == loaded["label_int"]  # Numeric label
         assert orig["read_id"] == loaded["read_id"]
 
     def test_save_empty_chunks_raises(self, tmp_path):
