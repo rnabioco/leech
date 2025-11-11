@@ -27,9 +27,9 @@ rule train_architecture_charged:
         model=MODELS_DIR
         + "/comparison/charged_vs_uncharged/{architecture}/model_best.pt",
         checkpoint=MODELS_DIR
-        + "/comparison/charged_vs_uncharged/{architecture}/model_checkpoint.pt",
+        + "/comparison/charged_vs_uncharged/{architecture}/model_last.pt",
         history=MODELS_DIR
-        + "/comparison/charged_vs_uncharged/{architecture}/training_history.json",
+        + "/comparison/charged_vs_uncharged/{architecture}/metrics.json",
     params:
         output_dir=MODELS_DIR + "/comparison/charged_vs_uncharged/{architecture}",
         epochs=config.get("epochs", 50),
@@ -173,9 +173,9 @@ rule train_architecture_pairwise:
         model=MODELS_DIR
         + "/comparison/pairwise/{pair}/{architecture}/model_best.pt",
         checkpoint=MODELS_DIR
-        + "/comparison/pairwise/{pair}/{architecture}/model_checkpoint.pt",
+        + "/comparison/pairwise/{pair}/{architecture}/model_last.pt",
         history=MODELS_DIR
-        + "/comparison/pairwise/{pair}/{architecture}/training_history.json",
+        + "/comparison/pairwise/{pair}/{architecture}/metrics.json",
     params:
         output_dir=MODELS_DIR + "/comparison/pairwise/{pair}/{architecture}",
         epochs=config.get("epochs", 50),
