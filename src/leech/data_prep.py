@@ -6,6 +6,7 @@ Adapted from Remora but modernized with NumPy arrays and type hints.
 
 import logging
 import multiprocessing as mp
+import sys
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -816,20 +817,42 @@ def prepare_training_data_parallel(
     logger.info("Pass 2: Processing reads in parallel...")
     all_chunks = []
 
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TaskProgressColumn(),
-        TextColumn("[cyan]{task.fields[chunks_extracted]} chunks extracted"),
-    ) as progress:
-        task = progress.add_task("Processing chunks", total=len(read_chunks), chunks_extracted=0)
+    # Check if we're in a TTY (interactive terminal) or redirected (e.g., log file)
+    use_progress_bar = sys.stdout.isatty()
 
+    if use_progress_bar:
+        # Interactive terminal - use rich progress bar
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TextColumn("[cyan]{task.fields[chunks_extracted]} chunks extracted"),
+        ) as progress:
+            task = progress.add_task(
+                "Processing chunks", total=len(read_chunks), chunks_extracted=0
+            )
+
+            with mp.Pool(processes=num_workers) as pool:
+                # Use imap_unordered for progress tracking
+                for chunk_results in pool.imap_unordered(_process_read_chunk_worker, worker_args):
+                    all_chunks.extend(chunk_results)
+                    progress.update(task, advance=1, chunks_extracted=len(all_chunks))
+    else:
+        # Redirected output (log file) - use periodic logging
+        log_interval = max(1, len(read_chunks) // 20)  # Log every 5%
         with mp.Pool(processes=num_workers) as pool:
-            # Use imap_unordered for progress tracking
-            for chunk_results in pool.imap_unordered(_process_read_chunk_worker, worker_args):
+            for i, chunk_results in enumerate(
+                pool.imap_unordered(_process_read_chunk_worker, worker_args), 1
+            ):
                 all_chunks.extend(chunk_results)
-                progress.update(task, advance=1, chunks_extracted=len(all_chunks))
+                # Log progress periodically
+                if i % log_interval == 0 or i == len(read_chunks):
+                    pct = (i / len(read_chunks)) * 100
+                    logger.info(
+                        f"Progress: {i}/{len(read_chunks)} batches ({pct:.1f}%) | "
+                        f"{len(all_chunks)} chunks extracted"
+                    )
 
     # Compile statistics (approximate - we don't track individual read success)
     stats = {
