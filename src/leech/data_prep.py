@@ -1326,7 +1326,7 @@ def merge_and_split_chunks(
             "Check that label_type values match the relabel_pairwise argument."
         )
     elif len(unique_labels) > 0:
-        label_counts = {}
+        label_counts: dict[str, int] = {}
         for chunk in all_chunks_combined:
             label = chunk["label"]
             if label is not None:
