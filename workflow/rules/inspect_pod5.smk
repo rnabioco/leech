@@ -46,10 +46,6 @@ rule inspect_sample_pod5s:
         report="results/pod5_inspection/{sample}/inspection_report.tsv",
     params:
         pod5_files=get_sample_pod5_files,
-    threads: 4
-    resources:
-        mem_mb=4000,
-        runtime=60,
     log:
         "results/pod5_inspection/{sample}/inspect.log",
     run:
@@ -157,10 +153,6 @@ rule aggregate_all_inspections:
     output:
         master_report="results/pod5_inspection/pod5_inspection_master_report.tsv",
         summary="results/pod5_inspection/pod5_inspection_summary.txt",
-    threads: 1
-    resources:
-        mem_mb=1000,
-        runtime=5,
     run:
         import pandas as pd
 

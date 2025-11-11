@@ -24,12 +24,6 @@ rule grid_search_charged_vs_uncharged:
             },
         ),
         max_epochs=config.get("grid_search_epochs", 20),
-    threads: 4
-    resources:
-        mem_mb=16000,
-        runtime=1440,  # 24 hours for grid search
-        gpu=0,  # GPU controlled by cluster profile
-        gpu_mem_mb=10000,
     log:
         MODELS_DIR + "/grid_search/charged_vs_uncharged/grid_search.log",
     shell:
@@ -64,12 +58,6 @@ rule grid_search_pairwise_aa:
             },
         ),
         max_epochs=config.get("grid_search_epochs", 20),
-    threads: 4
-    resources:
-        mem_mb=16000,
-        runtime=1440,
-        gpu=0,  # GPU controlled by cluster profile
-        gpu_mem_mb=10000,
     log:
         MODELS_DIR + "/grid_search/pairwise/{pair}/grid_search.log",
     shell:
