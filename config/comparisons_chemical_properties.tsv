@@ -1,0 +1,12 @@
+# Chemical property-based amino acid comparisons
+# Format: meta_label1	label_set1	meta_label2	label_set2
+# Each label_set is comma-separated list of amino acid labels
+basic	Lys,Arg,His	acidic	Asp,Glu
+polar	Ser,Thr,Asn,Gln,Cys,Tyr	nonpolar	Ala,Val,Leu,Ile,Met,Phe,Trp,Gly,Pro
+aromatic	Phe,Tyr,Trp	aliphatic	Gly,Ala,Val,Leu,Ile
+small	Gly,Ala,Ser	large	Phe,Tyr,Trp,Arg,Lys
+hydrophobic	Ala,Val,Leu,Ile,Met,Phe,Trp,Pro	hydrophilic	Ser,Thr,Asn,Gln,Lys,Arg,His,Asp,Glu
+charged	Lys,Arg,His,Asp,Glu	uncharged	Gly,Ala,Val,Leu,Ile,Pro,Phe,Trp,Met,Ser,Thr,Cys,Asn,Gln,Tyr
+positive	Lys,Arg,His	negative	Asp,Glu
+hydroxyl	Ser,Thr,Tyr	non_hydroxyl	Gly,Ala,Val,Leu,Ile,Pro,Phe,Trp,Met,Asn,Gln,Lys,Arg,His,Asp,Glu,Cys
+sulfur	Cys,Met	non_sulfur	Gly,Ala,Val,Leu,Ile,Pro,Phe,Trp,Ser,Thr,Asn,Gln,Tyr,Lys,Arg,His,Asp,Glu
