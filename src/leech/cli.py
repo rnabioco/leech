@@ -459,6 +459,9 @@ def merge_and_split(input_chunks, output_dir, train_split, val_split, seed, rela
         relabel_pairwise=relabel_tuple,
     )
 
+    # Type narrowing: result is always a dict when output_dir is provided
+    assert isinstance(result, dict)
+
     # Display statistics
     table = Table(
         title="Merged Data Split (Read-Level)", show_header=True, header_style="bold magenta"
