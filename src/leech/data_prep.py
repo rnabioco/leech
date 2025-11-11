@@ -1318,9 +1318,7 @@ def merge_and_split_chunks(
 
     # Check label distribution and warn if all labels are the same
     all_chunks_combined = train_chunks + val_chunks + test_chunks
-    unique_labels = {
-        chunk["label"] for chunk in all_chunks_combined if chunk["label"] is not None
-    }
+    unique_labels = {chunk["label"] for chunk in all_chunks_combined if chunk["label"] is not None}
     if len(unique_labels) == 1:
         logger.warning(
             f"⚠️  WARNING: All chunks have the same label ({list(unique_labels)[0]})! "
