@@ -753,7 +753,7 @@ def prepare_training_data_parallel(
     motif_reference: str = "bam",
     reference_sequences: dict[str, str] | None = None,
     skip_motif_indels: bool = True,
-    num_workers: int = 4,
+    num_workers: int = 8,
     chunk_size: int = 100,
 ) -> tuple[list[dict[str, np.ndarray | str | int | None]], dict[str, int]]:
     """
@@ -775,6 +775,8 @@ def prepare_training_data_parallel(
     Returns:
         Tuple of (chunks, statistics)
     """
+    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
+
     logger.info(f"Starting parallel data preparation with {num_workers} workers")
 
     # First pass: collect read info from BAM (lightweight, sequential)
@@ -810,21 +812,32 @@ def prepare_training_data_parallel(
         for chunk in read_chunks
     ]
 
-    # Second pass: parallel processing
+    # Second pass: parallel processing with progress bar
     logger.info("Pass 2: Processing reads in parallel...")
     all_chunks = []
 
-    with mp.Pool(processes=num_workers) as pool:
-        # Use imap_unordered for progress tracking
-        for i, chunk_results in enumerate(
-            pool.imap_unordered(_process_read_chunk_worker, worker_args)
-        ):
-            all_chunks.extend(chunk_results)
-            logger.info(
-                f"Processed chunk {i + 1}/{len(read_chunks)}: "
-                f"{len(chunk_results)} chunks extracted, "
-                f"{len(all_chunks)} total so far"
-            )
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TextColumn("[cyan]{task.fields[chunks_extracted]} chunks extracted"),
+    ) as progress:
+        task = progress.add_task(
+            "Processing chunks",
+            total=len(read_chunks),
+            chunks_extracted=0
+        )
+
+        with mp.Pool(processes=num_workers) as pool:
+            # Use imap_unordered for progress tracking
+            for chunk_results in pool.imap_unordered(_process_read_chunk_worker, worker_args):
+                all_chunks.extend(chunk_results)
+                progress.update(
+                    task,
+                    advance=1,
+                    chunks_extracted=len(all_chunks)
+                )
 
     # Compile statistics (approximate - we don't track individual read success)
     stats = {

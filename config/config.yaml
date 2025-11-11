@@ -107,7 +107,7 @@ val_split: 0.15           # Validation set fraction (test = 1 - train - val)
 
 # Parallel processing for data preparation
 # Workers will be automatically matched to cpus_per_task from cluster config
-workers: 4                # Number of parallel workers (default: 4, matches cluster cpus_per_task)
+workers: 8                # Number of parallel workers (default: 8, matches cluster cpus_per_task)
 chunk_size: 100           # Number of reads per batch for parallel processing
 
 # ============================================================================

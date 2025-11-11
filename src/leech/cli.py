@@ -202,7 +202,7 @@ def cli():
 @click.option(
     "--workers",
     type=int,
-    default=1,
+    default=8,
     help="Number of parallel workers for data processing (1=sequential, >1=parallel)",
 )
 @click.option(

@@ -24,7 +24,7 @@ default-resources:
   slurm_account: amc-general
   runtime: 60
   mem_mb: 8000
-  cpus_per_task: 4
+  cpus_per_task: 8
 
 # Rule-specific resources (ALL GPU rules use atesting_a100)
 set-resources:
@@ -74,7 +74,7 @@ set-resources:
     slurm_partition: atesting
     runtime: 60
     mem_mb: 16000
-    cpus_per_task: 4
+    cpus_per_task: 8
 
   # GPU rules - grid search (TESTING)
   grid_search_charged_vs_uncharged:
