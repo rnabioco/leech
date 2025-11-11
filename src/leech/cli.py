@@ -445,7 +445,9 @@ def merge_and_split(input_chunks, output_dir, train_split, val_split, seed, rela
                 "Expected format: 'label1,label2' (e.g., 'Ala,Gly')"
             )
         relabel_tuple = (parts[0].strip(), parts[1].strip())
-        logger.info(f"Relabeling for pairwise comparison: {relabel_tuple[0]}=0, {relabel_tuple[1]}=1")
+        logger.info(
+            f"Relabeling for pairwise comparison: {relabel_tuple[0]}=0, {relabel_tuple[1]}=1"
+        )
 
     # Merge and split at read level
     result = merge_and_split_chunks(

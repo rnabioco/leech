@@ -624,7 +624,17 @@ def collect_read_infos_from_bam(
 
 
 def _process_read_chunk_worker(
-    args: tuple[list[ReadInfo], Path, str | None, int, str | None, int | None, str, dict[str, str] | None, bool],
+    args: tuple[
+        list[ReadInfo],
+        Path,
+        str | None,
+        int,
+        str | None,
+        int | None,
+        str,
+        dict[str, str] | None,
+        bool,
+    ],
 ) -> list[dict[str, np.ndarray | str | int | None]]:
     """
     Worker function to process a chunk of reads in parallel.
@@ -1308,7 +1318,9 @@ def merge_and_split_chunks(
 
     # Check label distribution and warn if all labels are the same
     all_chunks_combined = train_chunks + val_chunks + test_chunks
-    unique_labels = set(chunk["label"] for chunk in all_chunks_combined if chunk["label"] is not None)
+    unique_labels = {
+        chunk["label"] for chunk in all_chunks_combined if chunk["label"] is not None
+    }
     if len(unique_labels) == 1:
         logger.warning(
             f"⚠️  WARNING: All chunks have the same label ({list(unique_labels)[0]})! "
@@ -1391,7 +1403,9 @@ def save_chunks(chunks: list[dict], output_path: Path) -> None:
         dwells.append(chunk["dwell"])
         features.append(chunk["features"])
         labels.append(chunk.get("label", ""))  # String label (e.g., "Ala", "Gly")
-        labels_int.append(chunk.get("label_int", -1) if chunk.get("label_int") is not None else -1)  # Numeric label or -1
+        labels_int.append(
+            chunk.get("label_int", -1) if chunk.get("label_int") is not None else -1
+        )  # Numeric label or -1
         read_ids.append(chunk["read_id"])
         base_indices.append(chunk["base_idx"])
 

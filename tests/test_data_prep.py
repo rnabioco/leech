@@ -112,7 +112,9 @@ class TestExtractTrainingChunks:
 
     def test_extract_without_motif(self, sample_leech_read):
         """Test extracting chunks without motif filtering."""
-        chunks = extract_training_chunks(sample_leech_read, motif=None, label="charged", label_int=1)
+        chunks = extract_training_chunks(
+            sample_leech_read, motif=None, label="charged", label_int=1
+        )
 
         assert len(chunks) > 0
         assert all(chunk["label"] == "charged" for chunk in chunks)
@@ -124,7 +126,9 @@ class TestExtractTrainingChunks:
         # Use a motif that exists in the sequence
         motif = sample_leech_read.sequence[7:10]  # 3-base motif
 
-        chunks = extract_training_chunks(sample_leech_read, motif=motif, motif_offset=1, label="uncharged", label_int=0)
+        chunks = extract_training_chunks(
+            sample_leech_read, motif=motif, motif_offset=1, label="uncharged", label_int=0
+        )
 
         # Should find at least one occurrence
         assert len(chunks) >= 1
@@ -135,14 +139,18 @@ class TestExtractTrainingChunks:
         """Test extracting with a motif that doesn't exist."""
         motif = "ZZZZZ"  # Invalid motif
 
-        chunks = extract_training_chunks(sample_leech_read, motif=motif, label="uncharged", label_int=0)
+        chunks = extract_training_chunks(
+            sample_leech_read, motif=motif, label="uncharged", label_int=0
+        )
 
         # Should find no chunks
         assert len(chunks) == 0
 
     def test_chunk_structure(self, sample_leech_read):
         """Test that extracted chunks have correct structure."""
-        chunks = extract_training_chunks(sample_leech_read, motif=None, label="charged", label_int=1)
+        chunks = extract_training_chunks(
+            sample_leech_read, motif=None, label="charged", label_int=1
+        )
 
         for chunk in chunks:
             assert "signal" in chunk
