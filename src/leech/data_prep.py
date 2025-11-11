@@ -1144,7 +1144,7 @@ def merge_and_split_chunks(
     train_frac: float = 0.7,
     val_frac: float = 0.15,
     seed: int | None = None,
-    relabel_pairwise: tuple[str, str] | None = None,
+    relabel_pairwise: tuple[str | list[str], str | list[str]] | None = None,
 ) -> tuple[list[dict], list[dict], list[dict]] | dict[str, Any]:
     """
     Merge multiple chunk files and split at read level to prevent data leakage.
@@ -1168,9 +1168,12 @@ def merge_and_split_chunks(
         train_frac: Fraction of reads for training
         val_frac: Fraction of reads for validation
         seed: Random seed for reproducibility
-        relabel_pairwise: Optional tuple of (label_type1, label_type2) for pairwise comparison.
-            If provided, chunks with label_type1 get label=0, label_type2 get label=1.
-            Example: ("Ala", "Gly") will assign label=0 to Ala chunks, label=1 to Gly chunks.
+        relabel_pairwise: Optional tuple of (group1, group2) for pairwise comparison.
+            Each group can be a single label (str) or multiple labels (list[str]).
+            Chunks matching group1 get label_int=0, chunks matching group2 get label_int=1.
+            Examples:
+                ("Ala", "Gly") - Single label per group
+                (["Lys", "Arg"], ["Glu", "Asp"]) - Multiple labels per group (basic vs acidic)
 
     Returns:
         If output_dir is None: Tuple of (train_chunks, val_chunks, test_chunks)
@@ -1270,31 +1273,35 @@ def merge_and_split_chunks(
 
         # Relabel chunks if pairwise comparison is requested
         if relabel_pairwise is not None:
-            label_type1, label_type2 = relabel_pairwise
+            group1, group2 = relabel_pairwise
+            # Normalize to lists for uniform handling
+            group1_labels = [group1] if isinstance(group1, str) else group1
+            group2_labels = [group2] if isinstance(group2, str) else group2
+
             relabeled_count = 0
             skipped_count = 0
             for chunk in chunks:
-                chunk_label_type = chunk.get("label_type")
-                if chunk_label_type == label_type1:
-                    chunk["label"] = 0
+                chunk_label = chunk.get("label")
+                if chunk_label in group1_labels:
+                    chunk["label_int"] = 0
                     relabeled_count += 1
-                elif chunk_label_type == label_type2:
-                    chunk["label"] = 1
+                elif chunk_label in group2_labels:
+                    chunk["label_int"] = 1
                     relabeled_count += 1
                 else:
-                    # Skip chunks that don't match either label type
+                    # Skip chunks that don't match either group
                     logger.warning(
-                        f"Chunk with label_type='{chunk_label_type}' does not match "
-                        f"pairwise comparison ({label_type1}, {label_type2}), keeping original label"
+                        f"Chunk with label='{chunk_label}' does not match "
+                        f"pairwise comparison (group1={group1_labels}, group2={group2_labels}), keeping original label"
                     )
                     skipped_count += 1
             if relabeled_count > 0:
                 logger.info(
                     f"    Relabeled {relabeled_count} chunks for pairwise comparison "
-                    f"({label_type1}=0, {label_type2}=1)"
+                    f"(group1={group1_labels}→0, group2={group2_labels}→1)"
                 )
             if skipped_count > 0:
-                logger.warning(f"    Skipped {skipped_count} chunks with mismatched label_types")
+                logger.warning(f"    Skipped {skipped_count} chunks with mismatched labels")
 
         # Assign to appropriate split
         for chunk in chunks:
@@ -1323,7 +1330,7 @@ def merge_and_split_chunks(
         logger.warning(
             f"⚠️  WARNING: All chunks have the same label ({list(unique_labels)[0]})! "
             "This suggests pairwise relabeling may not have worked correctly. "
-            "Check that label_type values match the relabel_pairwise argument."
+            "Check that label values match the relabel_pairwise argument."
         )
     elif len(unique_labels) > 0:
         label_counts: dict[str, int] = {}
@@ -1362,6 +1369,165 @@ def merge_and_split_chunks(
     else:
         # Legacy behavior: return tuple of chunks without saving
         return train_chunks, val_chunks, test_chunks
+
+
+def parse_comparison_spec(tsv_path: Path) -> list[tuple[str, list[str], str, list[str]]]:
+    """
+    Parse TSV comparison spec file into list of comparison specifications.
+
+    The TSV file should have 4 columns with NO header:
+    - Column 1: meta_label_1 (e.g., "basic")
+    - Column 2: label_set_1 (comma-separated, e.g., "Lys,Arg")
+    - Column 3: meta_label_2 (e.g., "acidic")
+    - Column 4: label_set_2 (comma-separated, e.g., "Glu,Asp")
+
+    Args:
+        tsv_path: Path to TSV file
+
+    Returns:
+        List of tuples: (meta_label_1, labels_1, meta_label_2, labels_2)
+        where labels_1 and labels_2 are lists of label strings
+
+    Example:
+        >>> specs = parse_comparison_spec(Path("comparisons.tsv"))
+        >>> specs[0]
+        ('basic', ['Lys', 'Arg'], 'acidic', ['Glu', 'Asp'])
+    """
+    comparisons = []
+    with open(tsv_path) as f:
+        for line_num, line in enumerate(f, start=1):
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+
+            parts = line.split("\t")
+            if len(parts) != 4:
+                raise ValueError(
+                    f"Invalid format at line {line_num}: expected 4 tab-separated columns, "
+                    f"got {len(parts)}. Line: {line}"
+                )
+
+            meta_label_1, label_set_1, meta_label_2, label_set_2 = parts
+
+            # Parse comma-separated label sets
+            labels_1 = [label.strip() for label in label_set_1.split(",")]
+            labels_2 = [label.strip() for label in label_set_2.split(",")]
+
+            comparisons.append((meta_label_1, labels_1, meta_label_2, labels_2))
+
+    logger.info(f"Parsed {len(comparisons)} comparisons from {tsv_path}")
+    return comparisons
+
+
+def process_comparison_spec(
+    chunk_dirs: list[Path],
+    comparison_spec: Path,
+    output_dir: Path,
+    train_frac: float = 0.7,
+    val_frac: float = 0.15,
+    seed: int | None = None,
+) -> dict[str, Any]:
+    """
+    Process all comparisons from a TSV spec file.
+
+    For each comparison in the spec:
+    1. Create output subdirectory named "{meta_label_1}_vs_{meta_label_2}"
+    2. Run merge_and_split_chunks with relabel_pairwise=(labels_1, labels_2)
+    3. Save metadata.json documenting the comparison
+
+    Args:
+        chunk_dirs: List of directories containing .npz chunk files
+        comparison_spec: Path to TSV comparison specification file
+        output_dir: Base output directory (subdirs created for each comparison)
+        train_frac: Fraction of reads for training
+        val_frac: Fraction of reads for validation
+        seed: Random seed for reproducibility
+
+    Returns:
+        Dictionary with processing results:
+        {
+            'n_comparisons': int,
+            'comparisons': {
+                'basic_vs_acidic': {'n_train': int, 'n_val': int, 'n_test': int},
+                ...
+            }
+        }
+
+    Example:
+        >>> result = process_comparison_spec(
+        ...     chunk_dirs=[Path("chunks/Lys"), Path("chunks/Arg"), Path("chunks/Glu")],
+        ...     comparison_spec=Path("comparisons.tsv"),
+        ...     output_dir=Path("splits/"),
+        ...     seed=42
+        ... )
+    """
+    import json
+
+    # Parse comparison specifications
+    comparisons = parse_comparison_spec(comparison_spec)
+
+    # Collect all chunk files from input directories
+    chunk_files = []
+    for chunk_dir in chunk_dirs:
+        if not chunk_dir.exists():
+            logger.warning(f"Chunk directory does not exist: {chunk_dir}")
+            continue
+        chunk_files.extend(sorted(chunk_dir.glob("*.npz")))
+
+    if not chunk_files:
+        raise ValueError(f"No .npz chunk files found in {chunk_dirs}")
+
+    logger.info(f"Found {len(chunk_files)} chunk files across {len(chunk_dirs)} directories")
+
+    # Process each comparison
+    output_dir.mkdir(parents=True, exist_ok=True)
+    results = {}
+
+    for meta_label_1, labels_1, meta_label_2, labels_2 in comparisons:
+        comparison_name = f"{meta_label_1}_vs_{meta_label_2}"
+        comparison_dir = output_dir / comparison_name
+
+        logger.info(f"\nProcessing comparison: {comparison_name}")
+        logger.info(f"  Group 0 ({meta_label_1}): {labels_1}")
+        logger.info(f"  Group 1 ({meta_label_2}): {labels_2}")
+
+        # Run merge and split with pairwise relabeling
+        result = merge_and_split_chunks(
+            input_paths=chunk_files,
+            output_dir=comparison_dir,
+            train_frac=train_frac,
+            val_frac=val_frac,
+            seed=seed,
+            relabel_pairwise=(labels_1, labels_2),
+        )
+
+        # Save metadata documenting the comparison
+        metadata = {
+            "comparison": comparison_name,
+            "group_0": {"meta_label": meta_label_1, "labels": labels_1},
+            "group_1": {"meta_label": meta_label_2, "labels": labels_2},
+            "train_frac": train_frac,
+            "val_frac": val_frac,
+            "seed": seed,
+            "n_train": result["n_train"],
+            "n_val": result["n_val"],
+            "n_test": result["n_test"],
+            "n_total": result["n_total"],
+        }
+
+        metadata_file = comparison_dir / "metadata.json"
+        with open(metadata_file, "w") as f:
+            json.dump(metadata, f, indent=2)
+
+        logger.info(f"Saved metadata to {metadata_file}")
+
+        results[comparison_name] = {
+            "n_train": result["n_train"],
+            "n_val": result["n_val"],
+            "n_test": result["n_test"],
+        }
+
+    return {"n_comparisons": len(comparisons), "comparisons": results}
 
 
 def save_chunks(chunks: list[dict], output_path: Path) -> None:
