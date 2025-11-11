@@ -27,7 +27,7 @@ default-resources:
   ntasks: 1
   runtime: 120
   mem_mb: 8000
-  cpus_per_task: 4
+  cpus_per_task: 8
 
 # SLURM QoS setting
 slurm-qos: normal
@@ -79,9 +79,9 @@ set-resources:
   # Data Preparation Rules
   # ============================================================================
   prepare_chunks:
-    runtime: 60
+    runtime: 240
     mem_mb: 8000
-    cpus_per_task: 4
+    cpus_per_task: 8
 
   merge_chunks_charged:
     runtime: 60

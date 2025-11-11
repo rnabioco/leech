@@ -7,8 +7,9 @@ rule infer_charged_vs_uncharged:
     """Run inference on test data for charged vs uncharged classification."""
     input:
         model=MODELS_DIR + "/charged_vs_uncharged/model_best.pt",
-        pod5=lambda wildcards: config["samples"][wildcards.sample]["pod5"],
-        bam=lambda wildcards: config["samples"][wildcards.sample]["bam"],
+        pod5=get_project_path(config.get("pod5_dir", "results/pod5")) + "/{sample}/{sample}.pod5",
+        bam=get_project_path(config.get("rebasecall_dir", "results/bam/rebasecall")) + "/{sample}/{sample}.aligned.bam",
+        bai=get_project_path(config.get("rebasecall_dir", "results/bam/rebasecall")) + "/{sample}/{sample}.aligned.bam.bai",
     output:
         bam=INFER_DIR + "/charged_vs_uncharged/{sample}_predictions.bam",
         bai=INFER_DIR + "/charged_vs_uncharged/{sample}_predictions.bam.bai",
@@ -35,8 +36,9 @@ rule infer_pairwise_aa:
     """Run inference for pairwise amino acid classification."""
     input:
         model=MODELS_DIR + "/pairwise/{pair}/model_best.pt",
-        pod5=lambda wildcards: config["samples"][wildcards.sample]["pod5"],
-        bam=lambda wildcards: config["samples"][wildcards.sample]["bam"],
+        pod5=get_project_path(config.get("pod5_dir", "results/pod5")) + "/{sample}/{sample}.pod5",
+        bam=get_project_path(config.get("rebasecall_dir", "results/bam/rebasecall")) + "/{sample}/{sample}.aligned.bam",
+        bai=get_project_path(config.get("rebasecall_dir", "results/bam/rebasecall")) + "/{sample}/{sample}.aligned.bam.bai",
     output:
         bam=INFER_DIR + "/pairwise/{pair}/{sample}_predictions.bam",
         bai=INFER_DIR + "/pairwise/{pair}/{sample}_predictions.bam.bai",
