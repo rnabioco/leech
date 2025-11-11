@@ -17,7 +17,8 @@ printshellcmds: true
 
 # Job naming - use project name, rule name and wildcards for readable job names
 # Example: "Snakemake-synthetic-trna-prepare_chunks-ala_synthetic-12345"
-jobname: "Snakemake-{config[project_name]}-{rule}-{wildcards}-{jobid}"
+# jobname: "Snakemake-{config[project_name]}-{rule}-{wildcards}-{jobid}"
+jobname: "leech-{rule}-{wildcards}-{jobid}"
 
 # Default resources
 default-resources:
@@ -141,8 +142,8 @@ set-resources:
   train_charged_vs_uncharged:
     slurm_partition: aa100
     runtime: 60
-    mem_mb: 76000
-    cpus_per_task: 20  # 76000 MB / 20 CPUs = 3,800 MB/CPU (within 3,840 MB/CPU limit)
+    mem_mb: 36000
+    cpus_per_task: 10 
     nodes: 1
     gpu: 0
     tasks_per_gpu: 0
@@ -151,8 +152,8 @@ set-resources:
   train_pairwise_aa:
     slurm_partition: aa100
     runtime: 60
-    mem_mb: 76000
-    cpus_per_task: 20  # 76000 MB / 20 CPUs = 3,800 MB/CPU (within 3,840 MB/CPU limit)
+    mem_mb: 36000
+    cpus_per_task: 10  
     nodes: 1
     gpu: 0
     tasks_per_gpu: 0
