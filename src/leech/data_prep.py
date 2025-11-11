@@ -775,7 +775,7 @@ def prepare_training_data_parallel(
     Returns:
         Tuple of (chunks, statistics)
     """
-    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
+    from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 
     logger.info(f"Starting parallel data preparation with {num_workers} workers")
 
@@ -823,21 +823,13 @@ def prepare_training_data_parallel(
         TaskProgressColumn(),
         TextColumn("[cyan]{task.fields[chunks_extracted]} chunks extracted"),
     ) as progress:
-        task = progress.add_task(
-            "Processing chunks",
-            total=len(read_chunks),
-            chunks_extracted=0
-        )
+        task = progress.add_task("Processing chunks", total=len(read_chunks), chunks_extracted=0)
 
         with mp.Pool(processes=num_workers) as pool:
             # Use imap_unordered for progress tracking
             for chunk_results in pool.imap_unordered(_process_read_chunk_worker, worker_args):
                 all_chunks.extend(chunk_results)
-                progress.update(
-                    task,
-                    advance=1,
-                    chunks_extracted=len(all_chunks)
-                )
+                progress.update(task, advance=1, chunks_extracted=len(all_chunks))
 
     # Compile statistics (approximate - we don't track individual read success)
     stats = {
