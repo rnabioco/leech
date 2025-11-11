@@ -33,6 +33,7 @@ rule prepare_chunks:
         label=lambda wildcards: (
             1 if config["samples"][wildcards.sample].get("label") == "charged" else 0
         ),
+        label_type=lambda wildcards: config["samples"][wildcards.sample].get("amino_acid", None),
         # Conditional arguments using lambda functions
         ref_fasta_arg=lambda wildcards: (
             f"--reference-fasta {config.get('reference_fasta', None)}"
@@ -41,6 +42,11 @@ rule prepare_chunks:
         ),
         skip_indels_arg=lambda wildcards: (
             "--skip-motif-indels" if config.get("skip_motif_indels", True) else ""
+        ),
+        label_type_arg=lambda wildcards: (
+            f"--label-type {config['samples'][wildcards.sample].get('amino_acid', None)}"
+            if config['samples'][wildcards.sample].get('amino_acid', None)
+            else ""
         ),
         slurm_extra="",  # No GPU needed for data preparation
     log:
@@ -57,6 +63,7 @@ rule prepare_chunks:
             {params.ref_fasta_arg} \
             {params.skip_indels_arg} \
             --label {params.label} \
+            {params.label_type_arg} \
             --workers {params.workers} \
             --chunk-size {params.chunk_size} \
             --no-split \

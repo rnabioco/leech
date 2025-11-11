@@ -161,7 +161,13 @@ def cli():
     "--label",
     type=int,
     default=0,
-    help="Label for all chunks from this file (0=uncharged, 1=charged)",
+    help="Label for all chunks from this file (may be reassigned during pairwise comparisons)",
+)
+@click.option(
+    "--label-type",
+    type=str,
+    default=None,
+    help="Label type identifier for pairwise comparisons (e.g., 'Ala', 'Gly', 'treatment_A')",
 )
 @click.option(
     "--min-mapq",
@@ -221,6 +227,7 @@ def prepare(
     reference_fasta,
     skip_motif_indels,
     label,
+    label_type,
     min_mapq,
     feature_set,
     train_split,
@@ -265,6 +272,7 @@ def prepare(
             motif=motif,
             motif_offset=motif_offset,
             label=label,
+            label_type=label_type,
             min_mapq=min_mapq,
             motif_reference=motif_reference,
             reference_sequences=reference_sequences,
@@ -341,6 +349,7 @@ def prepare(
                 reference_fasta=reference_fasta,
                 skip_motif_indels=skip_motif_indels,
                 label=label,
+                label_type=label_type,
                 min_mapq=min_mapq,
                 feature_set=feature_set,
                 train_split=train_split,
@@ -413,7 +422,13 @@ def prepare(
     default=DEFAULT_SEED,
     help="Random seed for reproducibility",
 )
-def merge_and_split(input_chunks, output_dir, train_split, val_split, seed):
+@click.option(
+    "--relabel-pairwise",
+    type=str,
+    default=None,
+    help="Relabel for pairwise comparison. Format: 'label_type1,label_type2' (e.g., 'Ala,Gly')",
+)
+def merge_and_split(input_chunks, output_dir, train_split, val_split, seed, relabel_pairwise):
     """Merge multiple chunk files and split at read level to prevent data leakage.
 
     This command implements the correct workflow for multi-sample datasets:
@@ -427,6 +442,18 @@ def merge_and_split(input_chunks, output_dir, train_split, val_split, seed):
 
     logger.info("Merging and splitting chunks at read level")
 
+    # Parse relabel_pairwise if provided
+    relabel_tuple = None
+    if relabel_pairwise:
+        parts = relabel_pairwise.split(",")
+        if len(parts) != 2:
+            raise ValueError(
+                f"Invalid --relabel-pairwise format: '{relabel_pairwise}'. "
+                "Expected format: 'label_type1,label_type2' (e.g., 'Ala,Gly')"
+            )
+        relabel_tuple = (parts[0].strip(), parts[1].strip())
+        logger.info(f"Relabeling for pairwise comparison: {relabel_tuple[0]}=0, {relabel_tuple[1]}=1")
+
     # Merge and split at read level
     result = merge_and_split_chunks(
         input_paths=list(input_chunks),
@@ -434,6 +461,7 @@ def merge_and_split(input_chunks, output_dir, train_split, val_split, seed):
         train_frac=train_split,
         val_frac=val_split,
         seed=seed,
+        relabel_pairwise=relabel_tuple,
     )
 
     # Display statistics
