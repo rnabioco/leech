@@ -32,6 +32,9 @@ jobs:
       - name: Run ruff lint
         run: uv run ruff check .
 
+      - name: Run ty check
+        run: uvx ty check
+
       - name: Run mypy
         run: uv run mypy src/leech
 
