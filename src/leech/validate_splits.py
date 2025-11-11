@@ -263,40 +263,38 @@ def validate_directory(data_dir: Path, verbose: bool = False) -> Dict:
 
 
 if __name__ == "__main__":
-    import argparse
+    import click
 
-    parser = argparse.ArgumentParser(
-        description="Validate data splits and detect data leakage"
-    )
-    parser.add_argument(
-        "data_dir",
-        type=Path,
-        help="Directory containing train.npz, val.npz, test.npz files",
-    )
-    parser.add_argument(
+    @click.command()
+    @click.argument("data_dir", type=click.Path(exists=True, path_type=Path))
+    @click.option(
         "-v",
         "--verbose",
-        action="store_true",
+        is_flag=True,
         help="Print detailed leakage information including read IDs",
     )
-    parser.add_argument(
+    @click.option(
         "--log-level",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR"]),
         default="INFO",
         help="Logging level",
     )
+    def main(data_dir, verbose, log_level):
+        """Validate data splits and detect data leakage.
 
-    args = parser.parse_args()
+        DATA_DIR: Directory containing train.npz, val.npz, test.npz files
+        """
+        # Setup logging
+        logging.basicConfig(
+            level=getattr(logging, log_level),
+            format="%(levelname)s: %(message)s",
+        )
 
-    # Setup logging
-    logging.basicConfig(
-        level=getattr(logging, args.log_level),
-        format="%(levelname)s: %(message)s",
-    )
+        # Validate
+        report = validate_directory(data_dir, verbose=verbose)
 
-    # Validate
-    report = validate_directory(args.data_dir, verbose=args.verbose)
+        # Exit with error code if leakage detected
+        exit_code = 1 if report["has_leakage"] else 0
+        exit(exit_code)
 
-    # Exit with error code if leakage detected
-    exit_code = 1 if report["has_leakage"] else 0
-    exit(exit_code)
+    main()
