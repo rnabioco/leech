@@ -35,7 +35,7 @@ def save_chunks(chunks: list[dict], output_path: Path) -> None:
         - read_ids: (N,) string array of read IDs
         - base_indices: (N,) base indices
 
-    Example:
+    Examples:
         >>> chunks = extract_training_chunks(read, motif="CCAGGC")
         >>> save_chunks(chunks, Path("output/chunks.npz"))
     """
@@ -110,7 +110,7 @@ def load_chunks(input_path: Path) -> list[dict]:
         The loaded data is kept in memory-mapped form when possible, but converting
         to individual dictionaries will create copies in memory.
 
-    Example:
+    Examples:
         >>> chunks = load_chunks(Path("output/chunks.npz"))
         >>> print(f"Loaded {len(chunks)} chunks")
         >>> for chunk in chunks[:5]:
@@ -167,7 +167,7 @@ def get_chunk_statistics(chunks: list[dict]) -> dict:
         - signal_lengths: Mean/std/min/max signal lengths
         - sequence_lengths: Mean/std/min/max sequence lengths
 
-    Example:
+    Examples:
         >>> chunks = load_chunks(Path("chunks.npz"))
         >>> stats = get_chunk_statistics(chunks)
         >>> print(f"Chunks: {stats['n_chunks']}")

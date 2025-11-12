@@ -29,7 +29,7 @@ def read_pod5_signal(pod5_path: Path, read_id: str) -> tuple[np.ndarray, dict]:
     Raises:
         ValueError: If read_id not found in POD5 file
 
-    Example:
+    Examples:
         >>> signal, meta = read_pod5_signal(Path("reads.pod5"), "read_001")
         >>> print(f"Signal length: {len(signal)}")
         >>> print(f"Sample rate: {meta['sample_rate']}")
@@ -68,7 +68,7 @@ def read_pod5_signals_batch(
         Dictionary mapping read_id to (signal, metadata) tuples.
         Missing reads are not included in the output.
 
-    Example:
+    Examples:
         >>> read_ids = ["read_001", "read_002", "read_003"]
         >>> signals = read_pod5_signals_batch(Path("reads.pod5"), read_ids)
         >>> for read_id, (signal, meta) in signals.items():
@@ -106,7 +106,7 @@ class POD5Reader:
     Provides a high-level interface for reading signals from POD5 files,
     with support for batched access and caching.
 
-    Example:
+    Examples:
         >>> with POD5Reader(Path("reads.pod5")) as reader:
         ...     for read_id in ["read_001", "read_002"]:
         ...         signal, meta = reader.get_signal(read_id)
@@ -211,7 +211,7 @@ class POD5Reader:
         Raises:
             RuntimeError: If reader not opened (use as context manager)
 
-        Example:
+        Examples:
             >>> with POD5Reader(Path("reads.pod5")) as reader:
             ...     for read_id, signal, meta in reader.iter_all_reads():
             ...         print(f"{read_id}: {len(signal)} samples")

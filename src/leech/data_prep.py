@@ -112,7 +112,7 @@ def iter_bam_with_pod5(
     Yields:
         LeechRead objects with full feature extraction
 
-    Example:
+    Examples:
         >>> for read in iter_bam_with_pod5(Path("alignments.bam"), Path("reads.pod5")):
         ...     print(f"{read.read_id}: {read.num_bases} bases")
     """
@@ -348,7 +348,7 @@ def prepare_training_data_parallel(
     Returns:
         Tuple of (chunks, statistics)
 
-    Example:
+    Examples:
         >>> chunks, stats = prepare_training_data_parallel(
         ...     bam_path=Path("alignments.bam"),
         ...     pod5_path=Path("reads.pod5"),
@@ -710,7 +710,7 @@ def encode_kmer(sequence: str) -> Any:  # Returns torch.Tensor
         Bases are encoded as: A=0, C=1, G=2, T=3
         Unknown bases (e.g., N) are encoded as all zeros
 
-    Example:
+    Examples:
         >>> seq = "ACGT"
         >>> encoded = encode_kmer(seq)
         >>> encoded.shape
