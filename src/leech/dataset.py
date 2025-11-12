@@ -39,7 +39,8 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from leech.data_prep import encode_kmer, load_chunks
+from leech.chunking import load_chunks
+from leech.preparation import encode_kmer
 
 # Models that require dwell/signal features as third input
 # Must match ModelInferenceWrapper.FEATURE_MODELS

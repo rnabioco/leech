@@ -64,13 +64,10 @@ def handle_prepare(
     Returns:
         Dictionary with extraction statistics
     """
-    from leech.data_prep import (
-        get_reference_sequences,
-        prepare_training_data_parallel,
-        prepare_training_data_with_split,
-        save_chunks,
-        split_chunks_by_read,
-    )
+    from leech.chunking import save_chunks
+    from leech.io import get_reference_sequences
+    from leech.preparation import prepare_training_data_parallel, prepare_training_data_with_split
+    from leech.splitting import split_chunks_by_read
     from leech.util import setup_random_seed
 
     logger.info(f"Preparing data from {pod5} and {bam}")

@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 import torch
 
-from leech.data_prep import LeechRead, save_chunks
+from leech.chunking import LeechRead, save_chunks
 from leech.features import MoveTable
 
 

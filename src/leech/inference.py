@@ -13,7 +13,7 @@ import pysam
 import torch
 from rich.progress import Progress
 
-from leech.data_prep import encode_kmer, iter_bam_with_pod5
+from leech.preparation import encode_kmer, iter_bam_with_pod5
 from leech.models.inference_wrapper import ModelInferenceWrapper
 from leech.util import load_model_from_checkpoint
 

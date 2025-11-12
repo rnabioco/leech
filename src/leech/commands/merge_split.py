@@ -41,7 +41,7 @@ def handle_merge_and_split(
     Returns:
         Dictionary with merge and split statistics
     """
-    from leech.data_prep import merge_and_split_chunks, process_comparison_spec
+    from leech.splitting import merge_and_split_chunks, process_comparison_spec
 
     # Batch processing mode with comparison spec
     if comparison_spec:
