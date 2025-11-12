@@ -41,6 +41,11 @@ dev = [
     "mypy>=1.8.0",
     "nbqa>=1.7.0",  # Quality assurance for Jupyter notebooks
 ]
+notebook = [
+    "polars>=1.0.0",
+    "plotnine>=0.13.0",
+    "great_tables>=0.14.0",
+]
 
 [project.scripts]
 leech = "leech.cli:main"
