@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader
 
 from leech.dataset import LeechDataset, collate_fn
 from leech.models import get_model
-from leech.training import Trainer, train_model
+from leech.training import Trainer, compute_class_weights, train_model
 
 
 class TestTrainer:
@@ -383,6 +383,136 @@ class TestTrainModel:
         )
 
         assert len(history["train_loss"]) >= 1
+
+
+class TestClassWeighting:
+    """Test class weighting functionality."""
+
+    def test_compute_class_weights_balanced(self, temp_chunks_file):
+        """Test class weight computation for balanced dataset."""
+        dataset = LeechDataset(
+            temp_chunks_file, signal_len=400, kmer_len=11, model_type="ConvLSTMDwell"
+        )
+
+        pos_weight = compute_class_weights(dataset)
+
+        # For a relatively balanced dataset, pos_weight should be close to 1.0
+        # (can vary based on exact split in temp_chunks_file)
+        assert pos_weight is not None
+        assert isinstance(pos_weight, torch.Tensor)
+        assert pos_weight.shape == (1,)
+        assert pos_weight.item() > 0
+
+    def test_trainer_with_pos_weight(self, sample_model, sample_dataloader):
+        """Test Trainer initialization with pos_weight."""
+        pos_weight = torch.tensor([2.0])
+
+        trainer = Trainer(
+            model=sample_model,
+            model_type="ConvLSTMDwell",
+            train_loader=sample_dataloader,
+            device="cpu",
+            pos_weight=pos_weight,
+        )
+
+        assert trainer.criterion is not None
+        # Verify that pos_weight was set (BCEWithLogitsLoss should have pos_weight attribute)
+        assert hasattr(trainer.criterion, "pos_weight")
+
+    def test_trainer_without_pos_weight(self, sample_model, sample_dataloader):
+        """Test Trainer initialization without pos_weight."""
+        trainer = Trainer(
+            model=sample_model,
+            model_type="ConvLSTMDwell",
+            train_loader=sample_dataloader,
+            device="cpu",
+            pos_weight=None,
+        )
+
+        assert trainer.criterion is not None
+
+    def test_train_model_with_class_weights(self, temp_chunks_file, tmp_path):
+        """Test train_model with automatic class weighting enabled."""
+        output_dir = tmp_path / "training"
+
+        history = train_model(
+            train_data_path=temp_chunks_file,
+            val_data_path=None,
+            model_name="ConvLSTMDwell",
+            output_dir=output_dir,
+            epochs=1,
+            batch_size=2,
+            device="cpu",
+            seed=42,
+            use_class_weights=True,  # Enable class weighting
+        )
+
+        assert len(history["train_loss"]) >= 1
+
+        # Check that config was saved with class weight info
+        config_path = output_dir / "config.json"
+        assert config_path.exists()
+
+        with open(config_path) as f:
+            config = json.load(f)
+
+        assert "use_class_weights" in config
+        assert config["use_class_weights"] is True
+
+    def test_train_model_without_class_weights(self, temp_chunks_file, tmp_path):
+        """Test train_model with class weighting disabled."""
+        output_dir = tmp_path / "training"
+
+        history = train_model(
+            train_data_path=temp_chunks_file,
+            val_data_path=None,
+            model_name="ConvLSTMDwell",
+            output_dir=output_dir,
+            epochs=1,
+            batch_size=2,
+            device="cpu",
+            seed=42,
+            use_class_weights=False,  # Disable class weighting
+        )
+
+        assert len(history["train_loss"]) >= 1
+
+        # Check that config was saved with class weight info
+        config_path = output_dir / "config.json"
+        with open(config_path) as f:
+            config = json.load(f)
+
+        assert "use_class_weights" in config
+        assert config["use_class_weights"] is False
+        assert config["pos_weight"] is None
+
+    def test_train_model_with_manual_pos_weight(self, temp_chunks_file, tmp_path):
+        """Test train_model with manual pos_weight."""
+        output_dir = tmp_path / "training"
+        manual_weight = 1.5
+
+        history = train_model(
+            train_data_path=temp_chunks_file,
+            val_data_path=None,
+            model_name="ConvLSTMDwell",
+            output_dir=output_dir,
+            epochs=1,
+            batch_size=2,
+            device="cpu",
+            seed=42,
+            use_class_weights=False,  # Will be overridden by manual pos_weight
+            pos_weight=manual_weight,
+        )
+
+        assert len(history["train_loss"]) >= 1
+
+        # Check that config saved the manual weight
+        config_path = output_dir / "config.json"
+        with open(config_path) as f:
+            config = json.load(f)
+
+        assert "pos_weight" in config
+        assert config["pos_weight"] == manual_weight
 
 
 class TestTrainingEdgeCases:

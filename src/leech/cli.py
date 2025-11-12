@@ -639,6 +639,17 @@ def merge_and_split(input_chunks, output_dir, train_split, val_split, seed, comp
     default=10,
     help="Stop training if validation loss doesn't improve for N epochs",
 )
+@click.option(
+    "--use-class-weights/--no-class-weights",
+    default=True,
+    help="Auto-compute class weights from training data to handle class imbalance (default: enabled)",
+)
+@click.option(
+    "--pos-weight",
+    type=float,
+    default=None,
+    help="Manual positive class weight for BCEWithLogitsLoss (overrides --use-class-weights)",
+)
 def train(
     train_data,
     val_data,
@@ -651,6 +662,8 @@ def train(
     device,
     seed,
     early_stopping,
+    use_class_weights,
+    pos_weight,
 ):
     """Train a model on prepared data."""
     from leech.training import train_model
@@ -679,6 +692,8 @@ def train(
         device=device,
         seed=seed,
         early_stopping_patience=early_stopping,
+        use_class_weights=use_class_weights,
+        pos_weight=pos_weight,
         **model_kwargs,
     )
 
