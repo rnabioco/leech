@@ -393,7 +393,7 @@ def merge_and_split(input_chunks, output_dir, train_split, val_split, seed, comp
     "--early-stopping",
     type=int,
     default=10,
-    help="Stop training if validation loss doesn't improve for N epochs",
+    help="Patience for early stopping: stop training if validation accuracy doesn't improve for N epochs (set to 0 to disable)",
 )
 @click.option(
     "--use-class-weights/--no-class-weights",
@@ -657,7 +657,7 @@ def infer(model, pod5, bam, output, device):
     "--early-stopping",
     type=int,
     default=10,
-    help="Stop training if validation loss doesn't improve for N epochs",
+    help="Patience for early stopping: stop training if validation accuracy doesn't improve for N epochs (set to 0 to disable)",
 )
 def grid_search(
     train_data,
