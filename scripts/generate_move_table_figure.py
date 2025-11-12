@@ -133,19 +133,18 @@ def create_figure(output_path: Path):
 
     # Annotate signal regions for ALL bases using reconstructed dwells
     # (to ensure alignment with move table and Panel D)
-    colors = [
-        "#FF6B6B",
-        "#4ECDC4",
-        "#45B7D1",
-        "#FFA07A",
-        "#95E1D3",
-        "#F38181",
-        "#AA96DA",
-        "#FCBAD3",
-    ]
+    # Use consistent colors for each base type
+    base_colors = {
+        "A": "#FF6B6B",
+        "C": "#4ECDC4",
+        "G": "#45B7D1",
+        "T": "#FFA07A",
+        "U": "#FFA07A",  # Same as T
+    }
     cumsum_pos = 0
     for i, (base, dwell) in enumerate(zip(sequence, reconstructed_dwells, strict=True)):
-        ax1.axvspan(cumsum_pos, cumsum_pos + dwell, alpha=0.15, color=colors[i % len(colors)])
+        color = base_colors.get(base, "#CCCCCC")  # Default gray for unknown bases
+        ax1.axvspan(cumsum_pos, cumsum_pos + dwell, alpha=0.15, color=color)
         ax1.text(
             cumsum_pos + dwell / 2,
             ax1.get_ylim()[1] - 5,
@@ -153,7 +152,7 @@ def create_figure(output_path: Path):
             ha="center",
             va="top",
             fontsize=9,
-            bbox={"boxstyle": "round,pad=0.3", "facecolor": colors[i % len(colors)], "alpha": 0.3},
+            bbox={"boxstyle": "round,pad=0.3", "facecolor": color, "alpha": 0.3},
         )
         cumsum_pos += dwell
 
@@ -282,7 +281,7 @@ def create_figure(output_path: Path):
     # Draw bases with dwell times
     cumsum_pos = 0
     for i, (base, dwell) in enumerate(zip(sequence, reconstructed_dwells, strict=True)):
-        color = colors[i % len(colors)]
+        color = base_colors.get(base, "#CCCCCC")  # Use same base_colors mapping from Panel A
 
         # Draw rectangle for base
         rect = patches.Rectangle(
