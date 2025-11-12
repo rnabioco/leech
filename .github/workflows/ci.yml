@@ -27,16 +27,16 @@ jobs:
         run: uv pip install --system ruff mypy nbqa
 
       - name: Run ruff format check
-        run: uv run ruff format --check --exclude notebooks/ .
+        run: ruff format --check --exclude notebooks/ .
 
       - name: Run ruff lint
-        run: uv run ruff check --exclude notebooks/ .
+        run: ruff check --exclude notebooks/ .
 
       - name: Run ruff lint on notebooks
-        run: uv run nbqa ruff notebooks/
+        run: nbqa ruff notebooks/
 
       - name: Run mypy
-        run: uv run mypy src/leech/
+        run: mypy src/leech/
 
   test:
     name: Test - Python ${{ matrix.python-version }}
