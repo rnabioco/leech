@@ -5,12 +5,8 @@ import json
 import numpy as np
 import pytest
 
-from leech.data_prep import (
-    merge_and_split_chunks,
-    parse_comparison_spec,
-    process_comparison_spec,
-    save_chunks,
-)
+from leech.chunking import save_chunks
+from leech.splitting import merge_and_split_chunks, parse_comparison_spec, process_comparison_spec
 
 
 @pytest.fixture

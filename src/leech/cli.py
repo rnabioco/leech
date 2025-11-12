@@ -11,7 +11,6 @@ from pathlib import Path
 import rich_click as click
 from rich.console import Console
 from rich.panel import Panel
-from rich.progress import Progress
 from rich.table import Table
 
 from leech.constants import (
@@ -231,154 +230,29 @@ def prepare(
     chunk_size,
 ):
     """Prepare training data from POD5 and BAM files."""
-    from leech.data_prep import (
-        get_reference_sequences,
-        prepare_training_data_parallel,
-        prepare_training_data_with_split,
-        save_chunks,
-        split_chunks_by_read,
-    )
-    from leech.util import setup_random_seed
+    from leech.commands import handle_prepare
 
     # display_logo()
 
-    logger.info(f"Preparing data from {pod5} and {bam}")
-    logger.info(f"Motif reference mode: {motif_reference}")
-    if workers > 1:
-        logger.info(f"Parallel mode: {workers} workers, {chunk_size} reads per batch")
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Load reference sequences if using reference-based motif search
-    reference_sequences = None
-    if motif_reference == "fasta":
-        logger.info("Loading reference sequences for reference-based motif search")
-        reference_sequences = get_reference_sequences(bam, reference_fasta)
-
-    # Extract chunks (parallel or sequential)
-    if workers > 1:
-        # Parallel processing - extract chunks, then handle splitting/saving separately
-        logger.info("Extracting chunks in parallel...")
-        chunks, stats = prepare_training_data_parallel(
-            bam_path=bam,
-            pod5_path=pod5,
-            motif=motif,
-            motif_offset=motif_offset,
-            label=label,
-            label_int=None,  # Will be assigned during merge-and-split
-            min_mapq=min_mapq,
-            motif_reference=motif_reference,
-            reference_sequences=reference_sequences,
-            skip_motif_indels=skip_motif_indels,
-            num_workers=workers,
-            chunk_size=chunk_size,
-        )
-
-        # Setup seed and handle splitting/saving
-        setup_random_seed(seed, output_dir)
-
-        if no_split:
-            # Save all chunks without splitting
-            all_file = output_dir / "all.npz"
-            save_chunks(chunks, all_file)
-            logger.info(f"Saved all chunks to {all_file}")
-            result = {
-                "n_chunks": len(chunks),
-                "n_train": 0,
-                "n_val": 0,
-                "n_test": 0,
-            }
-        else:
-            # Split at read level
-            train_chunks, val_chunks, test_chunks = split_chunks_by_read(
-                chunks, train_frac=train_split, val_frac=val_split, seed=seed
-            )
-
-            # Save splits
-            if train_chunks:
-                train_file = output_dir / "train.npz"
-                save_chunks(train_chunks, train_file)
-                logger.info(f"Saved {len(train_chunks)} train chunks to {train_file}")
-
-            if val_chunks:
-                val_file = output_dir / "val.npz"
-                save_chunks(val_chunks, val_file)
-                logger.info(f"Saved {len(val_chunks)} val chunks to {val_file}")
-
-            if test_chunks:
-                test_file = output_dir / "test.npz"
-                save_chunks(test_chunks, test_file)
-                logger.info(f"Saved {len(test_chunks)} test chunks to {test_file}")
-
-            result = {
-                "n_chunks": len(chunks),
-                "n_train": len(train_chunks),
-                "n_val": len(val_chunks),
-                "n_test": len(test_chunks),
-            }
-    else:
-        # Sequential processing with refactored function
-        progress_container = {"progress": None, "task": None}
-
-        def update_progress(n_chunks):
-            if progress_container["progress"] is not None:
-                progress_container["progress"].update(
-                    progress_container["task"],
-                    advance=1,
-                    description=f"[cyan]Extracted {n_chunks} chunks...",
-                )
-
-        with Progress(console=console) as progress:
-            progress_container["progress"] = progress
-            progress_container["task"] = progress.add_task("[cyan]Extracting chunks...", total=None)
-
-            result = prepare_training_data_with_split(
-                pod5_path=pod5,
-                bam_path=bam,
-                output_dir=output_dir,
-                motif=motif,
-                motif_offset=motif_offset,
-                motif_reference=motif_reference,
-                reference_fasta=reference_fasta,
-                skip_motif_indels=skip_motif_indels,
-                label=label,
-                label_int=None,  # Will be assigned during merge-and-split
-                min_mapq=min_mapq,
-                feature_set=feature_set,
-                train_split=train_split,
-                val_split=val_split,
-                seed=seed,
-                no_split=no_split,
-                progress_callback=update_progress,
-            )
-
-            progress.update(progress_container["task"], completed=True)
-
-    # Display results
-    console.print(f"[green]Extracted {result['n_chunks']} training chunks[/green]")
-
-    if no_split:
-        console.print(
-            "[yellow]Skipped splitting (--no-split). All chunks saved to all.npz[/yellow]"
-        )
-    else:
-        # Display split statistics in a table
-        table = Table(
-            title="Data Split (Read-Level)", show_header=True, header_style="bold magenta"
-        )
-        table.add_column("Split", style="cyan")
-        table.add_column("Count", justify="right", style="green")
-        table.add_column("Percentage", justify="right", style="yellow")
-
-        n_total = result["n_chunks"]
-        table.add_row("Train", str(result["n_train"]), f"{result['n_train'] / n_total * 100:.1f}%")
-        table.add_row("Validation", str(result["n_val"]), f"{result['n_val'] / n_total * 100:.1f}%")
-        table.add_row("Test", str(result["n_test"]), f"{result['n_test'] / n_total * 100:.1f}%")
-        table.add_row("Total", str(n_total), "100.0%", style="bold")
-
-        console.print(table)
-
-    console.print("[bold green]Data preparation complete![/bold green]")
+    handle_prepare(
+        pod5=pod5,
+        bam=bam,
+        output_dir=output_dir,
+        motif=motif,
+        motif_offset=motif_offset,
+        motif_reference=motif_reference,
+        reference_fasta=reference_fasta,
+        skip_motif_indels=skip_motif_indels,
+        label=label,
+        min_mapq=min_mapq,
+        feature_set=feature_set,
+        train_split=train_split,
+        val_split=val_split,
+        seed=seed,
+        no_split=no_split,
+        workers=workers,
+        chunk_size=chunk_size,
+    )
 
 
 @cli.command()
@@ -441,134 +315,16 @@ def merge_and_split(input_chunks, output_dir, train_split, val_split, seed, comp
         # Batch processing from TSV spec
         leech merge-and-split -i chunks/dir1 -i chunks/dir2 --comparison-spec spec.tsv -o merged/
     """
-    from leech.data_prep import merge_and_split_chunks, process_comparison_spec
+    from leech.commands import handle_merge_and_split
 
-    # Batch processing mode with comparison spec
-    if comparison_spec:
-        logger.info("Processing comparisons from spec file")
-
-        # For batch mode, input_chunks should be directories (no label= prefix)
-        chunk_dirs = [Path(c) for c in input_chunks]
-
-        result = process_comparison_spec(
-            chunk_dirs=chunk_dirs,
-            comparison_spec=comparison_spec,
-            output_dir=output_dir,
-            train_frac=train_split,
-            val_frac=val_split,
-            seed=seed,
-        )
-
-        # Display summary
-        console.print(
-            f"\n[bold green]Processed {result['n_comparisons']} comparisons:[/bold green]"
-        )
-        for comp_name, stats in result["comparisons"].items():
-            console.print(
-                f"  {comp_name}: {stats['n_train']} train, {stats['n_val']} val, {stats['n_test']} test"
-            )
-
-        console.print(f"\n[bold green]All comparisons saved to {output_dir}/[/bold green]")
-        return
-
-    # Single comparison mode with label=file syntax
-    logger.info("Merging and splitting chunks at read level")
-
-    # Parse label=file format and group files by meta-label
-    import numpy as np
-
-    meta_to_files = {}
-    meta_to_chunk_labels = {}
-    meta_order = []  # Track order for label_int assignment
-
-    for chunk_spec in input_chunks:
-        if "=" not in chunk_spec:
-            raise ValueError(
-                f"Invalid input format: '{chunk_spec}'. "
-                "Expected format: label=file.npz (e.g., Ala=ala.npz or basic=lys.npz)"
-            )
-
-        meta_label, file_path = chunk_spec.split("=", 1)
-        meta_label = meta_label.strip()
-        file_path = Path(file_path.strip())
-
-        if not file_path.exists():
-            raise FileNotFoundError(f"Input file not found: {file_path}")
-
-        # Track meta-label order (first appearance)
-        if meta_label not in meta_to_files:
-            meta_to_files[meta_label] = []
-            meta_to_chunk_labels[meta_label] = set()
-            meta_order.append(meta_label)
-
-        meta_to_files[meta_label].append(file_path)
-
-        # Extract actual chunk labels from file (peek at first chunk)
-        with np.load(file_path, allow_pickle=True) as data:
-            # Get unique labels from this file
-            if "labels" in data:
-                chunk_labels = set(data["labels"])
-                # Filter out None values
-                chunk_labels = {
-                    label for label in chunk_labels if label is not None and label != ""
-                }
-                meta_to_chunk_labels[meta_label].update(chunk_labels)
-
-    # Validate we have exactly 2 groups for binary classification
-    if len(meta_to_files) != 2:
-        raise ValueError(
-            f"Expected exactly 2 unique meta-labels for binary classification, got {len(meta_to_files)}: {list(meta_to_files.keys())}"
-        )
-
-    # Build relabel_pairwise tuple: (group1_chunk_labels, group2_chunk_labels)
-    # First seen meta-label = 0, second = 1
-    meta1, meta2 = meta_order[0], meta_order[1]
-    group1_labels = sorted(meta_to_chunk_labels[meta1])
-    group2_labels = sorted(meta_to_chunk_labels[meta2])
-
-    # Collect all file paths in order
-    all_files = meta_to_files[meta1] + meta_to_files[meta2]
-
-    logger.info(
-        f"Relabeling for comparison: {meta1} (labels={group1_labels}) = label_int 0, "
-        f"{meta2} (labels={group2_labels}) = label_int 1"
-    )
-
-    # Build relabel tuple: use list for multi-label groups, string for single
-    relabel_group1 = group1_labels[0] if len(group1_labels) == 1 else group1_labels
-    relabel_group2 = group2_labels[0] if len(group2_labels) == 1 else group2_labels
-    relabel_tuple = (relabel_group1, relabel_group2)
-
-    # Merge and split at read level
-    result = merge_and_split_chunks(
-        input_paths=all_files,
+    handle_merge_and_split(
+        input_chunks=input_chunks,
         output_dir=output_dir,
-        train_frac=train_split,
-        val_frac=val_split,
+        train_split=train_split,
+        val_split=val_split,
         seed=seed,
-        relabel_pairwise=relabel_tuple,
+        comparison_spec=comparison_spec,
     )
-
-    # Type narrowing: result is always a dict when output_dir is provided
-    assert isinstance(result, dict)
-
-    # Display statistics
-    table = Table(
-        title="Merged Data Split (Read-Level)", show_header=True, header_style="bold magenta"
-    )
-    table.add_column("Split", style="cyan")
-    table.add_column("Chunks", justify="right", style="green")
-    table.add_column("Percentage", justify="right", style="yellow")
-
-    n_total = result["n_total"]
-    table.add_row("Train", str(result["n_train"]), f"{result['n_train'] / n_total * 100:.1f}%")
-    table.add_row("Validation", str(result["n_val"]), f"{result['n_val'] / n_total * 100:.1f}%")
-    table.add_row("Test", str(result["n_test"]), f"{result['n_test'] / n_total * 100:.1f}%")
-    table.add_row("Total", str(n_total), "100.0%", style="bold")
-
-    console.print(table)
-
-    console.print("[bold green]Merge and split complete![/bold green]")
 
 
 @cli.command()
