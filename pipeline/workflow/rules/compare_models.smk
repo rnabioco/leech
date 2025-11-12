@@ -174,9 +174,9 @@ rule aggregate_pairwise_comparisons:
                 for pair in AA_PAIRS:
                     pair_df = combined[combined["pair"] == pair]
                     if not pair_df.empty:
-                        best = pair_df.loc[pair_df["accuracy"].idxmax()]
+                        best = pair_df.loc[pair_df["accuracy_mean"].idxmax()]
                         f.write(
-                            f"{pair:20s} {best['architecture']:20s} acc={best['accuracy']:.4f}\n"
+                            f"{pair:20s} {best['architecture']:20s} acc={best['accuracy_mean']:.4f}\n"
                         )
 
                 f.write("\n")
@@ -185,7 +185,7 @@ rule aggregate_pairwise_comparisons:
                 f.write("Overall Best Architecture (average accuracy):\n")
                 f.write("-" * 70 + "\n")
                 avg_by_arch = (
-                    combined.groupby("architecture")["accuracy"]
+                    combined.groupby("architecture")["accuracy_mean"]
                     .mean()
                     .sort_values(ascending=False)
                 )
