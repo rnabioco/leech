@@ -66,43 +66,34 @@ graph TB
 
 ### The Dwell Time Advantage
 
-```mermaid
-graph LR
-    subgraph "Signal Timeline"
-        S1[Sample 1-15] --> S2[Sample 16-35] --> S3[Sample 36-50] --> S4[Sample 51-80]
-    end
+The figure below illustrates how leech extracts dwell times from move tables:
 
-    subgraph "Move Table Decoding"
-        M[stride=5, moves=1,0,0,1,1,0,1]
-        M --> D1[Base A: 15 samples]
-        M --> D2[Base T: 20 samples]
-        M --> D3[Base C: 15 samples]
-        M --> D4[Base G: 30 samples]
-    end
+![Move Table Decoding](figures/move_table_diagram.png)
 
-    subgraph "Basecalled Sequence"
-        B[A T C G]
-    end
-
-    S1 -.-> D1
-    S2 -.-> D2
-    S3 -.-> D3
-    S4 -.-> D4
-
-    D1 --> B
-    D2 --> B
-    D3 --> B
-    D4 --> B
-
-    style D1 fill:#e1ffe1
-    style D2 fill:#e1ffe1
-    style D3 fill:#e1ffe1
-    style D4 fill:#e1ffe1
-    style B fill:#ffe1e1
-    style M fill:#fff4e1
-```
+**Panel A** shows the raw nanopore signal with colored regions indicating different bases. **Panel B** displays stride positions where the basecaller samples the signal. **Panel C** shows the move table (from BAM `mv` tag) with 1s indicating new bases and 0s indicating the pore is still reading the same base. **Panel D** combines the sequence with per-base dwell times calculated from the move table.
 
 Modified bases (like charged tRNAs) often exhibit **different translocation kinetics** through the nanopore, resulting in distinctive dwell time patterns that leech models can learn to recognize.
+
+??? note "Technical Details: Move Table Format"
+
+    The move table is stored in the BAM `mv` tag with format: `[stride, move_0, move_1, ..., move_n]`
+
+    ```
+    Raw signal:  [s0, s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, ...]
+                  ↓   ↓   ↓   ↓   ↓   ↓   ↓   ↓   ↓   ↓    ↓
+    Stride=5:    [0        ][1        ][2        ][3         ]...
+
+    Move table:  [5, 1, 0, 0, 1, 1, 0, 1, ...]
+                     ↑  ↑  ↑  ↑  ↑  ↑  ↑
+                     A  A  A  T  C  C  G  ... (bases)
+
+    Dwell times: Base A: 15 samples (3 strides × 5)
+                 Base T: 5 samples  (1 stride × 5)
+                 Base C: 10 samples (2 strides × 5)
+                 Base G: 5 samples  (1 stride × 5)
+    ```
+
+    This mapping allows leech to compute per-base statistics on both the raw signal and dwell times, providing rich features for detecting modifications.
 
 ## Quick Start
 

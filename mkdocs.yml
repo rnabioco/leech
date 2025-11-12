@@ -137,6 +137,7 @@ nav:
     - Model Predictions: guides/05-MODEL_PREDICTIONS.md
     - Dwell Feature Strategies: guides/06-DWELL_FEATURE_STRATEGIES.md
     - Amino Acid Heterogeneity: guides/07-AMINO_ACID_HETEROGENEITY.md
+    - Understanding Move Tables: guides/08-UNDERSTANDING_MOVE_TABLES.md
   - Cluster Setup:
     - Alpine (SLURM): setup/ALPINE_SETUP.md
     - Bodhi (LSF): setup/BODHI_SETUP.md
