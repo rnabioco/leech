@@ -245,7 +245,7 @@ class Trainer:
 
         Args:
             epochs: Number of epochs to train
-            early_stopping_patience: Stop if no improvement for N epochs
+            early_stopping_patience: Stop if validation accuracy doesn't improve for N epochs (0 to disable)
 
         Returns:
             Training history dictionary
@@ -309,8 +309,8 @@ class Trainer:
                     else:
                         patience_counter += 1
 
-                    # Early stopping
-                    if patience_counter >= early_stopping_patience:
+                    # Early stopping (disabled if patience is 0)
+                    if early_stopping_patience > 0 and patience_counter >= early_stopping_patience:
                         console.print(f"[yellow]Early stopping at epoch {epoch}[/yellow]")
                         break
                 else:
