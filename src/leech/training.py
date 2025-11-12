@@ -46,8 +46,8 @@ def compute_class_weights(dataset: Any) -> torch.Tensor | None:
         chunk = dataset.chunks[i]
         labels.append(chunk["label_int"])
 
-    labels = np.array(labels)
-    unique, counts = np.unique(labels, return_counts=True)
+    labels_array = np.array(labels)
+    unique, counts = np.unique(labels_array, return_counts=True)
 
     if len(unique) != 2:
         logger.warning(f"Expected 2 classes, found {len(unique)}. Skipping class weighting.")
@@ -499,7 +499,9 @@ def train_model(
         "device": device,
         "seed": seed,
         "use_class_weights": use_class_weights,
-        "pos_weight": pos_weight if pos_weight is not None else (pos_weight_tensor.item() if pos_weight_tensor is not None else None),
+        "pos_weight": pos_weight
+        if pos_weight is not None
+        else (pos_weight_tensor.item() if pos_weight_tensor is not None else None),
         **model_kwargs,
     }
 

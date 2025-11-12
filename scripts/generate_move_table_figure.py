@@ -142,7 +142,7 @@ def create_figure(output_path: Path):
         "U": "#FFA07A",  # Same as T
     }
     cumsum_pos = 0
-    for i, (base, dwell) in enumerate(zip(sequence, reconstructed_dwells, strict=True)):
+    for _i, (base, dwell) in enumerate(zip(sequence, reconstructed_dwells, strict=True)):
         color = base_colors.get(base, "#CCCCCC")  # Default gray for unknown bases
         ax1.axvspan(cumsum_pos, cumsum_pos + dwell, alpha=0.15, color=color)
         ax1.text(
@@ -280,7 +280,7 @@ def create_figure(output_path: Path):
 
     # Draw bases with dwell times
     cumsum_pos = 0
-    for i, (base, dwell) in enumerate(zip(sequence, reconstructed_dwells, strict=True)):
+    for _i, (base, dwell) in enumerate(zip(sequence, reconstructed_dwells, strict=True)):
         color = base_colors.get(base, "#CCCCCC")  # Use same base_colors mapping from Panel A
 
         # Draw rectangle for base
