@@ -23,10 +23,10 @@
 # evaluation of config values. See workflow rules for --device flag handling.
 
 executor: slurm
-jobs: 100
-max-jobs-per-second: 10
-latency-wait: 60
-restart-times: 3
+jobs: 200
+max-jobs-per-second: 20
+latency-wait: 30 
+restart-times: 2
 rerun-incomplete: true
 keep-going: true
 printshellcmds: true
