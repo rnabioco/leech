@@ -66,7 +66,7 @@ if COMPARE_MODELS:
 else:
     MODEL_ARCHITECTURES = [config.get("model", "ConvLSTMDwell")]
 
-# Pairwise amino acid comparisons from TSV spec file
+# Pairwise comparisons (including charged vs uncharged) from TSV spec file
 AA_PAIRS = []
 AA_PAIR_TO_LABELS = {}  # Maps pair name to (labels_group1, labels_group2)
 
@@ -98,15 +98,6 @@ if comparison_spec_file:
                 pair_name = f"{meta1}_{meta2}"
                 AA_PAIRS.append(pair_name)
                 AA_PAIR_TO_LABELS[pair_name] = (labels1, labels2)
-
-
-def get_charged_samples():
-    """Get samples labeled as charged or uncharged (deprecated)."""
-    return [
-        s
-        for s in SAMPLES
-        if config["samples"][s].get("label") in ["charged", "uncharged"]
-    ]
 
 
 def get_samples_for_aa_pair(pair):
