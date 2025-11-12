@@ -14,8 +14,8 @@ Usage:
 import argparse
 from pathlib import Path
 
-import matplotlib.pyplot as plt
 import matplotlib.patches as patches
+import matplotlib.pyplot as plt
 import numpy as np
 
 
@@ -87,7 +87,7 @@ def create_move_table(dwells: list[int], stride: int = 5, signal_len: int = None
         curr_base_idx = get_base_idx(stride_pos)
 
         # Move if we're on a new base
-        is_move = (curr_base_idx != prev_base_idx)
+        is_move = curr_base_idx != prev_base_idx
         moves.append(1 if is_move else 0)
         prev_base_idx = curr_base_idx
 
@@ -108,7 +108,6 @@ def create_figure(output_path: Path):
 
     # Reconstruct dwell times from move table (what leech does)
     base_positions = []
-    current_pos = 0
     for i, move in enumerate(moves):
         if move == 1:
             base_positions.append(i * stride)
@@ -132,9 +131,18 @@ def create_figure(output_path: Path):
 
     # Annotate signal regions for ALL bases using reconstructed dwells
     # (to ensure alignment with move table and Panel D)
-    colors = ["#FF6B6B", "#4ECDC4", "#45B7D1", "#FFA07A", "#95E1D3", "#F38181", "#AA96DA", "#FCBAD3"]
+    colors = [
+        "#FF6B6B",
+        "#4ECDC4",
+        "#45B7D1",
+        "#FFA07A",
+        "#95E1D3",
+        "#F38181",
+        "#AA96DA",
+        "#FCBAD3",
+    ]
     cumsum_pos = 0
-    for i, (base, dwell) in enumerate(zip(sequence, reconstructed_dwells)):
+    for i, (base, dwell) in enumerate(zip(sequence, reconstructed_dwells, strict=True)):
         ax1.axvspan(cumsum_pos, cumsum_pos + dwell, alpha=0.15, color=colors[i % len(colors)])
         ax1.text(
             cumsum_pos + dwell / 2,
@@ -143,7 +151,7 @@ def create_figure(output_path: Path):
             ha="center",
             va="top",
             fontsize=9,
-            bbox=dict(boxstyle="round,pad=0.3", facecolor=colors[i % len(colors)], alpha=0.3),
+            bbox={"boxstyle": "round,pad=0.3", "facecolor": colors[i % len(colors)], "alpha": 0.3},
         )
         cumsum_pos += dwell
 
@@ -271,7 +279,7 @@ def create_figure(output_path: Path):
 
     # Draw bases with dwell times
     cumsum_pos = 0
-    for i, (base, dwell) in enumerate(zip(sequence, reconstructed_dwells)):
+    for i, (base, dwell) in enumerate(zip(sequence, reconstructed_dwells, strict=True)):
         color = colors[i % len(colors)]
 
         # Draw rectangle for base
@@ -347,7 +355,12 @@ def create_figure(output_path: Path):
         ha="right",
         va="bottom",
         fontsize=9,
-        bbox=dict(boxstyle="round,pad=0.8", facecolor="#FFF9E6", edgecolor="#E6B800", linewidth=2),
+        bbox={
+            "boxstyle": "round,pad=0.8",
+            "facecolor": "#FFF9E6",
+            "edgecolor": "#E6B800",
+            "linewidth": 2,
+        },
     )
 
     plt.tight_layout(rect=[0, 0.03, 1, 0.99])
@@ -378,8 +391,8 @@ def main():
     # Generate figure
     output_path = create_figure(args.output)
 
-    print(f"\nTo use in documentation, add to your markdown:")
-    print(f'![Move Table Diagram](../figures/{output_path.name})')
+    print("\nTo use in documentation, add to your markdown:")
+    print(f"![Move Table Diagram](../figures/{output_path.name})")
 
 
 if __name__ == "__main__":
