@@ -138,7 +138,8 @@ rule aggregate_pairwise_comparisons:
         if AA_PAIRS
         else [],
     output:
-        comparison=METRICS_DIR + "/comparison/aggregate/pairwise_architecture_comparison.tsv",
+        comparison=METRICS_DIR
+        + "/comparison/aggregate/pairwise_architecture_comparison.tsv",
         summary=METRICS_DIR + "/comparison/aggregate/pairwise_architecture_summary.txt",
     run:
         import pandas as pd

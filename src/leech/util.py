@@ -130,13 +130,10 @@ def load_model_from_checkpoint(
     from leech.models import MODEL_REGISTRY
 
     model_class = MODEL_REGISTRY[model_name]
-    model_signature = inspect.signature(model_class.__init__)
+    model_signature = inspect.signature(model_class)
     valid_params = set(model_signature.parameters.keys()) - {"self"}
 
-    filtered_kwargs = {
-        k: v for k, v in model_kwargs.items()
-        if k in valid_params
-    }
+    filtered_kwargs = {k: v for k, v in model_kwargs.items() if k in valid_params}
 
     # Create model with only valid parameters
     model = get_model(
