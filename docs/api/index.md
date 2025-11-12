@@ -65,16 +65,24 @@ uv run leech prepare \
 For programmatic access, use the modular components:
 
 ```python
-from leech.io import BamReader, POD5Reader
+from pathlib import Path
+from leech.io.bam_reader import iter_bam_alignments
+from leech.io.pod5_reader import read_pod5_signal
 from leech.features import MoveTable, compute_dwell_times
 
-# Read BAM and POD5 data
-bam_reader = BamReader("alignments.bam")
-pod5_reader = POD5Reader("reads.pod5")
+# Iterate BAM alignments with filtering
+for alignment in iter_bam_alignments(
+    bam_path=Path("alignments.bam"),
+    min_mapq=10,
+    require_tags=["mv", "ns"]
+):
+    # Get signal from POD5
+    signal, metadata = read_pod5_signal(
+        pod5_path=Path("reads.pod5"),
+        read_id=alignment.query_name
+    )
 
-# Process reads
-for alignment in bam_reader.fetch():
-    signal = pod5_reader.get_signal(alignment.query_name)
+    # Extract dwell times
     move_table = MoveTable.from_bam_tag(alignment.get_tag("mv"))
     dwell_times = compute_dwell_times(move_table, signal)
 ```
