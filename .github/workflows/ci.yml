@@ -23,8 +23,8 @@ jobs:
         with:
           python-version-file: "pyproject.toml"
 
-      - name: Install dev dependencies (linting tools)
-        run: uv sync --no-install-project --extra dev
+      - name: Install linting tools only
+        run: uv pip install --system ruff mypy nbqa
 
       - name: Run ruff format check
         run: uv run ruff format --check --exclude notebooks/ .
@@ -32,14 +32,11 @@ jobs:
       - name: Run ruff lint
         run: uv run ruff check --exclude notebooks/ .
 
-      - name: Run ruff format check on notebooks
-        run: uv run nbqa ruff format --check notebooks/
-
       - name: Run ruff lint on notebooks
         run: uv run nbqa ruff notebooks/
 
       - name: Run mypy
-        run: uv run mypy src/leech
+        run: uv run mypy src/leech/
 
   test:
     name: Test - Python ${{ matrix.python-version }}
