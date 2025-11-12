@@ -67,7 +67,20 @@ uv run leech prepare \
 
 **Note**: By default, `--motif-reference fasta` searches for the motif in the reference sequence (from BAM @SQ header or `--reference-fasta`) and maps to query coordinates using CIGAR. This avoids training data bias from basecalling errors at modification sites. Use `--motif-reference bam` for the old behavior (search in basecalled sequence).
 
-#### 2. Train model
+#### 2. Merge and split data (for multi-sample datasets)
+
+For datasets with multiple samples, merge chunks and split at the read level to prevent data leakage:
+
+```bash
+uv run leech merge-and-split \
+  -i charged=charged_ala.npz \
+  -i uncharged=uncharged_ala.npz \
+  -o merged/
+```
+
+This prevents data leakage that can occur when splitting each sample independently.
+
+#### 3. Train model
 
 ```bash
 uv run leech train \
@@ -77,7 +90,7 @@ uv run leech train \
   --output-dir models/
 ```
 
-#### 3. Test model
+#### 4. Test model
 
 ```bash
 uv run leech test \
@@ -86,7 +99,7 @@ uv run leech test \
   --output metrics.json
 ```
 
-#### 4. Run inference
+#### 5. Run inference
 
 ```bash
 uv run leech infer \
@@ -363,21 +376,30 @@ uv run mypy src/leech/
 ```
 leech/
 ├── src/leech/           # Main package
-│   ├── cli.py          # Command-line interface
+│   ├── cli.py          # Command-line interface (rich-click based)
+│   ├── commands/       # CLI command handlers
+│   ├── io/             # BAM/POD5 reading, reference handling
+│   ├── preparation/    # Data preparation orchestration
+│   ├── chunking/       # Training chunk extraction and serialization
+│   ├── splitting/      # Train/val/test splitting
 │   ├── features.py     # Dwell time & signal feature extraction
-│   ├── data_prep.py    # BAM/POD5 reading and chunking
 │   ├── dataset.py      # PyTorch Dataset classes
 │   ├── training.py     # Training loop with Trainer class
 │   ├── evaluation.py   # Model evaluation and testing
 │   ├── inference.py    # Inference engine
 │   ├── gridsearch.py   # Grid search for hyperparameters
 │   ├── util.py         # Helper functions
-│   └── models/         # PyTorch model architectures
+│   ├── config.py       # Configuration management
+│   ├── constants.py    # Project-wide constants
+│   ├── logging_config.py  # Logging setup
+│   └── models/         # PyTorch model architectures (6 models)
 ├── tests/              # Test suite
 ├── config/             # Pipeline configuration files
 ├── workflow/           # Snakemake workflow
-├── profiles/           # Cluster execution profiles
-├── guides/             # Cluster setup guides
+│   ├── Snakefile       # Main workflow
+│   └── rules/          # Modular rule files
+├── profiles/           # Cluster execution profiles (SLURM/LSF)
+├── docs/               # Documentation site
 └── pyproject.toml      # Project configuration
 ```
 
