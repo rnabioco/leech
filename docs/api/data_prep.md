@@ -14,45 +14,59 @@ The data preparation functionality has been refactored into modular components f
 
 ## I/O Module (`leech.io`)
 
-### BamReader
+### BAM Reading
 
-Reads BAM files and extracts alignment information with move table tags.
+Iterator for reading BAM alignments with filtering.
 
-::: leech.io.bam_reader.BamReader
+::: leech.io.bam_reader.iter_bam_alignments
     options:
       show_root_heading: true
       show_source: false
 
-### POD5Reader
+### POD5 Reading
 
-Reads raw signal from POD5 files.
+Read raw signal from POD5 files.
 
-::: leech.io.pod5_reader.POD5Reader
+::: leech.io.pod5_reader.read_pod5_signal
     options:
       show_root_heading: true
       show_source: false
 
-### MotifSearcher
+### Motif Search
 
-Searches for motifs in reference or basecalled sequences.
+Base class for motif search strategies.
 
 ::: leech.io.motif_search.MotifSearcher
     options:
       show_root_heading: true
       show_source: false
+      members:
+        - find_motif_positions
 
 ## Chunking Module (`leech.chunking`)
 
-### ChunkExtractor
+### LeechRead
 
-Extracts training chunks centered on motifs.
+Container for a single read's data with all features.
 
-::: leech.chunking.extractor.ChunkExtractor
+::: leech.chunking.extractor.LeechRead
+    options:
+      show_root_heading: true
+      show_source: false
+      members:
+        - __init__
+        - get_chunk
+
+### Extract Training Chunks
+
+Extract training chunks centered on motifs.
+
+::: leech.chunking.extractor.extract_training_chunks
     options:
       show_root_heading: true
       show_source: false
 
-### Serialization
+### Chunk Serialization
 
 Save and load training chunks.
 
@@ -68,31 +82,31 @@ Save and load training chunks.
 
 ## Preparation Module (`leech.preparation`)
 
-### Orchestrator
+### Sequential Preparation
 
-Main data preparation orchestration.
+Main data preparation function (sequential).
 
-::: leech.preparation.orchestrator.prepare_chunks
+::: leech.preparation.orchestrator.prepare_training_data
     options:
       show_root_heading: true
       show_source: false
 
-### Parallel Processing
+### Parallel Preparation
 
 Parallel data preparation for large datasets.
 
-::: leech.preparation.parallel.prepare_chunks_parallel
+::: leech.preparation.parallel.prepare_training_data_parallel
     options:
       show_root_heading: true
       show_source: false
 
 ## Splitting Module (`leech.splitting`)
 
-### DataSplitter
+### Split by Read
 
-Split data into train/val/test sets at the read level.
+Split data into train/val/test sets at the read level to prevent data leakage.
 
-::: leech.splitting.splitter.DataSplitter
+::: leech.splitting.splitter.split_chunks_by_read
     options:
       show_root_heading: true
       show_source: false
