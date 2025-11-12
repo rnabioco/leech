@@ -81,6 +81,7 @@ rule test_architecture_pairwise:
         metrics=METRICS_DIR
         + "/comparison/pairwise/{pair}/{architecture}/test_metrics.json",
     params:
+        model_dir=MODELS_DIR + "/comparison/pairwise/{pair}/{architecture}",
         device="cpu" if config.get("use_cpu_training", False) else "cuda",
     resources:
         slurm_partition=lambda wildcards, attempt: (
@@ -101,7 +102,7 @@ rule test_architecture_pairwise:
     shell:
         """
         uv run leech test \
-            --model {input.model} \
+            --model {params.model_dir} \
             --test-data {input.test} \
             --output {output.metrics} \
             --device {params.device} \

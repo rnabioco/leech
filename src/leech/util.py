@@ -4,6 +4,7 @@ Utility functions for leech.
 Includes model loading/saving helpers, metrics computation, and logging utilities.
 """
 
+import inspect
 import json
 import logging
 import random
@@ -125,12 +126,24 @@ def load_model_from_checkpoint(
         if k not in ["model_name", "signal_len", "kmer_len"] and k not in training_params
     }
 
-    # Create model (num_features will be in model_kwargs if present in config)
+    # Filter kwargs to only include parameters the model actually accepts
+    from leech.models import MODEL_REGISTRY
+
+    model_class = MODEL_REGISTRY[model_name]
+    model_signature = inspect.signature(model_class.__init__)
+    valid_params = set(model_signature.parameters.keys()) - {"self"}
+
+    filtered_kwargs = {
+        k: v for k, v in model_kwargs.items()
+        if k in valid_params
+    }
+
+    # Create model with only valid parameters
     model = get_model(
         model_name,
         signal_len=signal_len,
         kmer_len=kmer_len,
-        **model_kwargs,
+        **filtered_kwargs,
     )
 
     # Load checkpoint

@@ -18,6 +18,7 @@ rule infer_pairwise_aa:
         bam=INFER_DIR + "/pairwise/{pair}/{sample}_predictions.bam",
         bai=INFER_DIR + "/pairwise/{pair}/{sample}_predictions.bam.bai",
     params:
+        model_dir=MODELS_DIR + "/pairwise/{pair}",
         batch_size=config.get("infer_batch_size", 256),
         device="cpu" if config.get("use_cpu_training", False) else "cuda",
         samtools_bin=config.get("samtools_bin", "samtools"),
@@ -40,7 +41,7 @@ rule infer_pairwise_aa:
     shell:
         """
         uv run leech infer \
-            --model {input.model} \
+            --model {params.model_dir} \
             --pod5 {input.pod5} \
             --bam {input.bam} \
             --output {output.bam} \
