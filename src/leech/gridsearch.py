@@ -17,7 +17,8 @@ import numpy as np
 from rich.console import Console
 from rich.table import Table
 
-from leech.data_prep import extract_training_chunks, iter_bam_with_pod5, save_chunks
+from leech.chunking import extract_training_chunks, save_chunks
+from leech.preparation import iter_bam_with_pod5
 from leech.training import train_model
 
 logger = logging.getLogger("leech.gridsearch")

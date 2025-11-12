@@ -9,8 +9,8 @@ import pytest
 import torch
 
 from leech.chunking import LeechRead, extract_training_chunks, load_chunks, save_chunks
-from leech.data_prep import encode_kmer, int_to_seq, one_hot_encode_sequence, seq_to_int
 from leech.io.motif_search import find_motif_in_sequence, map_reference_to_query_coords
+from leech.preparation import encode_kmer, int_to_seq, one_hot_encode_sequence, seq_to_int
 from leech.splitting import split_chunks_by_read
 
 
