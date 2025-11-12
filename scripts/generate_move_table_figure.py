@@ -121,6 +121,8 @@ def create_figure(output_path: Path):
     # === Panel A: Raw Signal ===
     ax1 = plt.subplot(4, 1, 1)
     ax1.plot(signal_positions, signal, color="#2E86AB", linewidth=1.2, alpha=0.8)
+    # Add points on top of the signal line
+    ax1.scatter(signal_positions, signal, color="#2E86AB", s=15, alpha=0.6, zorder=3)
     ax1.set_ylabel("Signal (pA)", fontsize=11, fontweight="bold")
     ax1.set_title(
         "A. Raw Nanopore Signal (from POD5 file)", fontsize=12, fontweight="bold", loc="left"
