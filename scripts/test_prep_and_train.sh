@@ -31,12 +31,12 @@ if [ -n "${SLURM_SUBMIT_DIR:-}" ]; then
 else
     # Running directly (testing) - detect from script location
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-    if [[ -f "${SCRIPT_DIR}/workflow/Snakefile" ]]; then
+    if [[ -f "${SCRIPT_DIR}/pipeline/workflow/Snakefile" ]]; then
         WORKDIR="${SCRIPT_DIR}"
-    elif [[ -f "${SCRIPT_DIR}/../workflow/Snakefile" ]]; then
+    elif [[ -f "${SCRIPT_DIR}/../pipeline/workflow/Snakefile" ]]; then
         WORKDIR="$(cd "${SCRIPT_DIR}/.." && pwd -P)"
     else
-        echo "Error: Cannot find workflow/Snakefile."
+        echo "Error: Cannot find pipeline/workflow/Snakefile."
         echo "When running via sbatch, submit from the project root directory:"
         echo "  cd /path/to/leech && sbatch scripts/test_prep_and_train.sh"
         exit 1
@@ -46,8 +46,8 @@ fi
 cd "${WORKDIR}"
 
 # Verify we're in the right place
-if [[ ! -f "workflow/Snakefile" ]]; then
-    echo "Error: Not in project root (cannot find workflow/Snakefile)"
+if [[ ! -f "pipeline/workflow/Snakefile" ]]; then
+    echo "Error: Not in project root (cannot find pipeline/workflow/Snakefile)"
     echo "Current directory: $(pwd)"
     echo "Please submit from project root: sbatch scripts/test_prep_and_train.sh"
     exit 1
@@ -98,14 +98,14 @@ echo ""
 # Unlock directory in case of previous interrupted run
 echo "Step 0: Unlocking workflow directory..."
 echo "---------------------------------------"
-uv run snakemake --profile=cluster/slurm --configfile=config/samples-alpine.yaml --unlock
+uv run snakemake --profile=pipeline/cluster/slurm --configfile=pipeline/config/samples-alpine.yaml --unlock
 
 echo ""
 # Dry run first to check DAG
 echo "Step 1: Testing DAG construction (dry run)..."
 echo "-------------------------------------------"
-uv run snakemake --profile=cluster/slurm \
-  --configfile=config/samples-alpine.yaml \
+uv run snakemake --profile=pipeline/cluster/slurm \
+  --configfile=pipeline/config/samples-alpine.yaml \
   --dry-run \
   --printshellcmds \
   all_prepare -- $TEST_SAMPLES
@@ -124,8 +124,8 @@ echo "You can monitor jobs with: squeue -u $USER"
 echo ""
 
 # Run preparation only for test samples
-uv run snakemake --profile=cluster/slurm \
-  --configfile=config/samples-alpine.yaml \
+uv run snakemake --profile=pipeline/cluster/slurm \
+  --configfile=pipeline/config/samples-alpine.yaml \
   all_prepare -- $TEST_SAMPLES
 
 echo ""
@@ -150,5 +150,5 @@ echo "  sacct -j $SLURM_JOB_ID --format=JobID,JobName,State,ExitCode"
 echo ""
 echo "Next steps:"
 echo "  - To prepare all samples: sbatch scripts/run_prep_and_train.sh"
-echo "  - Or prepare remaining samples with: uv run snakemake --profile=cluster/slurm --configfile=config/samples-alpine.yaml all_prepare"
+echo "  - Or prepare remaining samples with: uv run snakemake --profile=pipeline/cluster/slurm --configfile=pipeline/config/samples-alpine.yaml all_prepare"
 echo "=========================================="

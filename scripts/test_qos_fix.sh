@@ -12,7 +12,7 @@ echo "========================================"
 echo ""
 
 echo "Running dry-run with new config..."
-snakemake --profile cluster/slurm \
+snakemake --profile pipeline/cluster/slurm \
     --dry-run \
     --verbose \
     results/pod5/uncharged_synthetic/uncharged_synthetic.pod5 \

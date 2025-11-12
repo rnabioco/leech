@@ -2,9 +2,11 @@
 Leech Snakemake Pipeline
 ========================
 
-Trains models for:
-1. Charged vs uncharged tRNA classification
-2. Pairwise amino acid classification
+Trains models for pairwise comparisons, including:
+- Charged vs uncharged tRNA classification
+- Amino acid pairwise classification
+
+All comparisons are defined uniformly via TSV spec files (see config/comparisons_*.tsv).
 
 Supports both SLURM and LSF with GPU acceleration.
 
@@ -59,10 +61,7 @@ rule all:
     """Default target: run all analyses."""
     input:
         # Choose based on compare_models setting
-        METRICS_DIR + "/comparison/charged_vs_uncharged_architecture_comparison.tsv"
-        if COMPARE_MODELS
-        else METRICS_DIR + "/charged_vs_uncharged_summary.tsv",
-        METRICS_DIR + "/comparison/pairwise_architecture_comparison.tsv"
+        METRICS_DIR + "/comparison/aggregate/pairwise_architecture_comparison.tsv"
         if COMPARE_MODELS and AA_PAIRS
         else (METRICS_DIR + "/pairwise_summary.tsv" if AA_PAIRS else []),
 
@@ -71,9 +70,7 @@ rule all:
 rule all_single_model:
     """Run single model analysis (default model from config)."""
     input:
-        # Charged vs uncharged
-        METRICS_DIR + "/charged_vs_uncharged/test_metrics.json",
-        # Pairwise amino acid classifiers
+        # Pairwise classifiers (includes charged_uncharged if configured)
         expand(
             METRICS_DIR + "/pairwise/{pair}/test_metrics.json",
             pair=AA_PAIRS,
@@ -81,7 +78,6 @@ rule all_single_model:
         if AA_PAIRS
         else [],
         # Summary reports
-        METRICS_DIR + "/charged_vs_uncharged_summary.tsv",
         METRICS_DIR + "/pairwise_summary.tsv" if AA_PAIRS else [],
 
 
@@ -89,13 +85,11 @@ rule all_single_model:
 rule all_compare_models:
     """Run multi-architecture comparison."""
     input:
-        # Architecture comparison results
-        METRICS_DIR + "/comparison/charged_vs_uncharged_architecture_comparison.tsv",
-        METRICS_DIR + "/comparison/charged_vs_uncharged_architecture_summary.txt",
-        METRICS_DIR + "/comparison/pairwise_architecture_comparison.tsv"
+        # Architecture comparison results (includes charged_uncharged if configured)
+        METRICS_DIR + "/comparison/aggregate/pairwise_architecture_comparison.tsv"
         if AA_PAIRS
         else [],
-        METRICS_DIR + "/comparison/pairwise_architecture_summary.txt"
+        METRICS_DIR + "/comparison/aggregate/pairwise_architecture_summary.txt"
         if AA_PAIRS
         else [],
 
@@ -112,9 +106,6 @@ rule all_prepare:
 rule all_merge:
     """Merge all prepared chunks and split at read level."""
     input:
-        CHUNKS_DIR + "/merged/charged_vs_uncharged/train.npz",
-        CHUNKS_DIR + "/merged/charged_vs_uncharged/val.npz",
-        CHUNKS_DIR + "/merged/charged_vs_uncharged/test.npz",
         expand(CHUNKS_DIR + "/merged/pairwise/{pair}/train.npz", pair=AA_PAIRS)
         if AA_PAIRS
         else [],
@@ -129,7 +120,6 @@ rule all_merge:
 rule all_grid_search:
     """Run all grid searches (single model mode)."""
     input:
-        MODELS_DIR + "/grid_search/charged_vs_uncharged/best_params.json",
         expand(
             MODELS_DIR + "/grid_search/pairwise/{pair}/best_params.json", pair=AA_PAIRS
         )
@@ -140,10 +130,6 @@ rule all_grid_search:
 rule all_grid_search_comparison:
     """Run grid searches for all architectures (comparison mode)."""
     input:
-        expand(
-            MODELS_DIR + "/grid_search/charged_vs_uncharged/{arch}/best_params.json",
-            arch=MODEL_ARCHITECTURES,
-        ),
         expand(
             MODELS_DIR + "/grid_search/pairwise/{pair}/{arch}/best_params.json",
             pair=AA_PAIRS,
@@ -156,7 +142,6 @@ rule all_grid_search_comparison:
 rule all_train:
     """Train all models (single model mode)."""
     input:
-        MODELS_DIR + "/charged_vs_uncharged/model_best.pt",
         expand(MODELS_DIR + "/pairwise/{pair}/model_best.pt", pair=AA_PAIRS)
         if AA_PAIRS
         else [],
@@ -165,10 +150,6 @@ rule all_train:
 rule all_train_comparison:
     """Train all architectures (comparison mode)."""
     input:
-        expand(
-            MODELS_DIR + "/comparison/charged_vs_uncharged/{arch}/model_best.pt",
-            arch=MODEL_ARCHITECTURES,
-        ),
         expand(
             MODELS_DIR + "/comparison/pairwise/{pair}/{arch}/model_best.pt",
             pair=AA_PAIRS,
@@ -181,10 +162,6 @@ rule all_train_comparison:
 rule all_infer:
     """Run all inference."""
     input:
-        expand(
-            INFER_DIR + "/charged_vs_uncharged/{sample}_predictions.bam",
-            sample=SAMPLES,
-        ),
         expand(
             INFER_DIR + "/pairwise/{pair}/{sample}_predictions.bam",
             pair=AA_PAIRS,

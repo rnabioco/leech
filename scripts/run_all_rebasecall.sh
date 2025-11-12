@@ -25,12 +25,12 @@ if [ -n "${SLURM_SUBMIT_DIR:-}" ]; then
 else
     # Running directly (testing) - detect from script location
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-    if [[ -f "${SCRIPT_DIR}/workflow/Snakefile" ]]; then
+    if [[ -f "${SCRIPT_DIR}/pipeline/workflow/Snakefile" ]]; then
         WORKDIR="${SCRIPT_DIR}"
-    elif [[ -f "${SCRIPT_DIR}/../workflow/Snakefile" ]]; then
+    elif [[ -f "${SCRIPT_DIR}/../pipeline/workflow/Snakefile" ]]; then
         WORKDIR="$(cd "${SCRIPT_DIR}/.." && pwd -P)"
     else
-        echo "Error: Cannot find workflow/Snakefile."
+        echo "Error: Cannot find pipeline/workflow/Snakefile."
         echo "When running via sbatch, submit from the project root directory:"
         echo "  cd /path/to/leech && sbatch scripts/run_all_rebasecall.sh"
         exit 1
@@ -40,8 +40,8 @@ fi
 cd "${WORKDIR}"
 
 # Verify we're in the right place
-if [[ ! -f "workflow/Snakefile" ]]; then
-    echo "Error: Not in project root (cannot find workflow/Snakefile)"
+if [[ ! -f "pipeline/workflow/Snakefile" ]]; then
+    echo "Error: Not in project root (cannot find pipeline/workflow/Snakefile)"
     echo "Current directory: $(pwd)"
     echo "Please submit from project root: sbatch scripts/run_all_rebasecall.sh"
     exit 1
@@ -62,9 +62,9 @@ mkdir -p logs/slurm
 
 echo "Samples to process:"
 echo "-------------------"
-grep -A 1 "^  [a-z]" config/samples.yml | grep -v "^--$" | grep "^  [a-z]" | sed 's/://g' | nl
+grep -A 1 "^  [a-z]" pipeline/config/samples.yml | grep -v "^--$" | grep "^  [a-z]" | sed 's/://g' | nl
 echo ""
-echo "Total: $(grep -A 1 "^  [a-z]" config/samples.yml | grep -v "^--$" | grep "^  [a-z]" | wc -l) samples"
+echo "Total: $(grep -A 1 "^  [a-z]" pipeline/config/samples.yml | grep -v "^--$" | grep "^  [a-z]" | wc -l) samples"
 echo ""
 
 # Verify uv is available
@@ -86,7 +86,7 @@ echo ""
 # Dry run first to check DAG
 echo "Step 1: Testing DAG construction (dry run)..."
 echo "-------------------------------------------"
-uv run snakemake --profile cluster/slurm \
+uv run snakemake --profile pipeline/cluster/slurm \
   --dry-run \
   --printshellcmds \
   all_rebasecall
@@ -99,7 +99,7 @@ echo "You can monitor jobs with: squeue -u $USER"
 echo ""
 
 # Run with Slurm executor - will submit GPU jobs for each sample
-uv run snakemake --profile cluster/slurm all_rebasecall
+uv run snakemake --profile pipeline/cluster/slurm all_rebasecall
 
 echo ""
 echo "=========================================="

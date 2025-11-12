@@ -16,14 +16,14 @@
 
 set -euo pipefail
 
-# Determine project root (look for workflow/Snakefile)
+# Determine project root (look for pipeline/workflow/Snakefile)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ -f "${SCRIPT_DIR}/workflow/Snakefile" ]]; then
+if [[ -f "${SCRIPT_DIR}/pipeline/workflow/Snakefile" ]]; then
     WORKDIR="${SCRIPT_DIR}"
-elif [[ -f "${SCRIPT_DIR}/../workflow/Snakefile" ]]; then
+elif [[ -f "${SCRIPT_DIR}/../pipeline/workflow/Snakefile" ]]; then
     WORKDIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 else
-    echo "Error: Cannot find workflow/Snakefile. Run from project root or scripts/ directory."
+    echo "Error: Cannot find pipeline/workflow/Snakefile. Run from project root or scripts/ directory."
     exit 1
 fi
 
@@ -50,8 +50,8 @@ mkdir -p logs/slurm
 TARGET="/scratch/alpine/jhesselberth@xsede.org/leech/synthetic-trna/bam/rebasecall/uncharged_synthetic/uncharged_synthetic.rbc.bam"
 
 echo "Step 1: Testing DAG construction (dry run)..."
-snakemake --profile cluster/slurm-testing \
-  --configfile config/samples-alpine.yaml \
+snakemake --profile pipeline/cluster/slurm-testing \
+  --configfile pipeline/config/samples-alpine.yaml \
   --cores 1 \
   --dry-run \
   --printshellcmds \
@@ -63,7 +63,7 @@ echo "Note: GPU job will be submitted to atesting_a100 partition automatically"
 echo ""
 
 # Run with Slurm executor - will submit GPU job to atesting_a100 partition
-snakemake --profile cluster/slurm-testing --configfile config/samples-alpine.yaml --cores 1 "$TARGET"
+snakemake --profile pipeline/cluster/slurm-testing --configfile pipeline/config/samples-alpine.yaml --cores 1 "$TARGET"
 
 echo ""
 echo "=========================================="

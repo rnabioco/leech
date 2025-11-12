@@ -1,0 +1,14 @@
+# Charged vs Uncharged comparison spec for testing the pipeline
+# Format: meta_label1	label_set1	meta_label2	label_set2
+#
+# NOTE: This is a minimal configuration for testing the pipeline.
+# It uses only Alanine (Ala) as the charged sample to quickly verify
+# the pipeline functionality without processing all amino acid samples.
+#
+# For full analysis with all charged samples, modify label_set1 to include
+# all amino acids: Ala,Arg,Asn,Asp,Cys,Gln,Glu,Gly,His,Ile,Leu,Lys,Met,Phe,Pro,Ser,Thr,Trp,Tyr,Val
+#
+# This comparison will be treated like any other pairwise comparison (e.g., "Ala_Arg")
+# and will create a comparison named "charged_uncharged" that can be used in all
+# pairwise rules (merge, train, test, infer, etc.)
+charged	Ala	uncharged	uncharged

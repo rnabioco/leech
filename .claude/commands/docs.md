@@ -9,7 +9,7 @@ Perform a thorough documentation audit and update for the leech project. Follow 
 First, analyze the current codebase structure:
 - List all Python modules in `src/leech/` and `src/leech/models/`
 - Identify all CLI commands in `cli.py` and their current options
-- Review the Snakemake workflow structure (`workflow/Snakefile` and `workflow/rules/*.smk`)
+- Review the Snakemake workflow structure (`pipeline/workflow/Snakefile` and `pipeline/workflow/rules/*.smk`)
 - Document any new modules, features, or architectural changes
 
 ## 2. API Documentation Review
@@ -43,8 +43,8 @@ Review the `docs/` directory structure:
 ## 5. Snakemake Pipeline Review
 
 Review the Snakemake workflow:
-- Check that `workflow/Snakefile` references are current
-- Verify all rules in `workflow/rules/*.smk` match the current CLI interface
+- Check that `pipeline/workflow/Snakefile` references are current
+- Verify all rules in `pipeline/workflow/rules/*.smk` match the current CLI interface
 - Update any rule descriptions that reference outdated options or modules
 - Check that config file examples match current expected structure
 
