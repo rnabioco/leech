@@ -115,7 +115,7 @@ use_cpu_training: true # Set to true to enable CPU training mode
 motif: "CCATGGC"          # tRNA 3' end motif (CCA + TGG + C adaptor)
 motif_offset: 3           # Focus on the position where amino acid is attached (0-indexed)
 motif_reference: "fasta"  # Search motif in reference ("fasta") or basecalled ("bam") sequence
-reference_fasta: "resources/references/synthetic-trna.fa"  # External reference FASTA
+reference_fasta: "pipeline/resources/references/synthetic-trna.fa"  # External reference FASTA
 skip_motif_indels: true   # Skip reads with indels in motif region
 kmer_len: 3               # K-mer context length (bases on each side of focus base)
 chunk_context: [200, 200] # Signal context (left, right) in samples
@@ -152,7 +152,7 @@ rebasecall_dir: "/scratch/alpine/jhesselberth@xsede.org/leech/bam/rebasecall"
 # Reference genome/transcriptome for alignment
 # Required for aligning rebasecalled reads
 # Example: "references/transcriptome.fasta" or "references/genome.fasta"
-reference: "resources/references/synthetic-trna.fa"
+reference: "pipeline/resources/references/synthetic-trna.fa"
 
 # Dorado binary path
 # Set to "dorado" to use system PATH, or specify full path to binary

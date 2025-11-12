@@ -26,10 +26,10 @@
 #   sbatch scripts/run_model_comparison_batch.sh dry-run    # Preview (safe default)
 #   sbatch scripts/run_model_comparison_batch.sh charged    # Train charged vs uncharged
 #
-# For pairwise comparisons, use the TSV spec workflow directly:
+# For custom comparisons, use the TSV spec workflow directly:
 #   uv run leech merge-and-split \
 #     --input-chunks results/chunks/*_synthetic/*.npz \
-#     --comparison-spec config/comparisons_chemical_properties.tsv \
+#     --comparison-spec pipeline/config/comparisons_chemical_properties.tsv \
 #     --output-dir results/chunks/merged
 
 set -euo pipefail
@@ -45,9 +45,11 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Configuration
-PROFILE="cluster/slurm"
+PROFILE="pipeline/cluster/slurm"
 SAMPLES_CONFIG="pipeline/config/samples-alpine.yaml"
-MAIN_CONFIG="config/config.yaml"
+MAIN_CONFIG="pipeline/config/config.yaml"
+SNAKEFILE="pipeline/workflow/Snakefile"
+CHARGED_SPEC="pipeline/config/comparisons_charged_uncharged.tsv"
 
 # Print with color
 print_info() {
@@ -68,28 +70,27 @@ print_error() {
 
 # Show usage
 show_usage() {
-    cat << EOF
-
-${GREEN}Leech Model Comparison Orchestrator - TSV-Based Workflow${NC}
-
-${YELLOW}IMPORTANT:${NC} Pairwise Snakemake rules have been removed.
-
-${GREEN}Usage:${NC}
-  sbatch $0 charged              # Compare 6 architectures on charged vs uncharged (6 jobs)
-  sbatch $0 pairwise             # Compare 6 architectures on 190 AA pairs (1,140 jobs)
-  sbatch $0 chemical-properties  # Compare 6 architectures on 9 chemical comparisons (54 jobs)
-  sbatch $0 dry-run              # Preview (default if no arg)
-
-${GREEN}Available Comparison Specs:${NC}
-  config/comparisons_all_pairwise.tsv          # All 190 AA pairs
-  config/comparisons_chemical_properties.tsv    # 9 chemical property comparisons
-
-${GREEN}Output:${NC}
-  Orchestrator: logs/orchestrator-{jobid}.{out,err}
-  Comparisons:  results/chunks/merged/<comparison_name>/metadata.json
-  Models:       results/models/<comparison_name>/model_best.pt
-
-EOF
+    echo ""
+    echo -e "${GREEN}Leech Model Comparison Orchestrator - TSV-Based Workflow${NC}"
+    echo ""
+    echo -e "${YELLOW}IMPORTANT:${NC} Pairwise Snakemake rules have been removed."
+    echo ""
+    echo -e "${GREEN}Usage:${NC}"
+    echo "  sbatch $0 charged              # Compare 6 architectures on charged vs uncharged (6 jobs)"
+    echo "  sbatch $0 pairwise             # Compare 6 architectures on 190 AA pairs (1,140 jobs)"
+    echo "  sbatch $0 chemical-properties  # Compare 6 architectures on 9 chemical comparisons (54 jobs)"
+    echo "  sbatch $0 dry-run              # Preview (default if no arg)"
+    echo ""
+    echo -e "${GREEN}Available Comparison Specs:${NC}"
+    echo "  pipeline/config/comparisons_charged_uncharged.tsv   # Charged vs uncharged tRNA"
+    echo "  pipeline/config/comparisons_all_pairwise.tsv         # All 190 AA pairs"
+    echo "  pipeline/config/comparisons_chemical_properties.tsv  # 9 chemical property comparisons"
+    echo ""
+    echo -e "${GREEN}Output:${NC}"
+    echo "  Orchestrator: logs/orchestrator-{jobid}.{out,err}"
+    echo "  Comparisons:  results/chunks/merged/<comparison_name>/metadata.json"
+    echo "  Models:       results/models/<comparison_name>/model_best.pt"
+    echo ""
 }
 
 # Run Snakemake
@@ -100,11 +101,13 @@ run_snakemake() {
         dry-run)
             print_info "Running dry-run for charged vs uncharged..."
             snakemake \
+                --snakefile "$SNAKEFILE" \
                 --profile "$PROFILE" \
                 --configfile "$SAMPLES_CONFIG" \
+                --config comparison_spec_file="$CHARGED_SPEC" \
                 --dryrun \
                 --printshellcmds \
-                compare_architectures_charged
+                all_compare_models
             print_success "Dry-run complete. Check logs/orchestrator-${SLURM_JOB_ID}.out"
             exit 0
             ;;
@@ -114,10 +117,12 @@ run_snakemake() {
             print_info "Orchestrator job ID: $SLURM_JOB_ID"
 
             snakemake \
+                --snakefile "$SNAKEFILE" \
                 --profile "$PROFILE" \
                 --configfile "$SAMPLES_CONFIG" \
+                --config comparison_spec_file="$CHARGED_SPEC" \
                 --printshellcmds \
-                compare_architectures_charged
+                all_compare_models
             ;;
 
         pairwise)
@@ -127,9 +132,10 @@ run_snakemake() {
             print_info "Orchestrator job ID: $SLURM_JOB_ID"
 
             snakemake \
+                --snakefile "$SNAKEFILE" \
                 --profile "$PROFILE" \
                 --configfile "$SAMPLES_CONFIG" \
-                --config comparison_spec_file=config/comparisons_all_pairwise.tsv \
+                --config comparison_spec_file=pipeline/config/comparisons_all_pairwise.tsv \
                 --printshellcmds \
                 all_compare_models
             ;;
@@ -141,9 +147,10 @@ run_snakemake() {
             print_info "Orchestrator job ID: $SLURM_JOB_ID"
 
             snakemake \
+                --snakefile "$SNAKEFILE" \
                 --profile "$PROFILE" \
                 --configfile "$SAMPLES_CONFIG" \
-                --config comparison_spec_file=config/comparisons_chemical_properties.tsv \
+                --config comparison_spec_file=pipeline/config/comparisons_chemical_properties.tsv \
                 --printshellcmds \
                 all_compare_models
             ;;
