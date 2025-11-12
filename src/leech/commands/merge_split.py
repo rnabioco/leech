@@ -24,7 +24,7 @@ def handle_merge_and_split(
     output_dir: Path,
     train_split: float = 0.7,
     val_split: float = 0.15,
-    seed: int = DEFAULT_SEED,
+    seed: int | None = DEFAULT_SEED,
     comparison_spec: Path | None = None,
 ) -> dict[str, Any]:
     """
@@ -70,12 +70,11 @@ def handle_merge_and_split(
     all_files, relabel_tuple, meta_labels = _parse_and_validate_inputs(input_chunks)
 
     logger.info(
-        f"Relabeling for comparison: {meta_labels[0]} = label_int 0, "
-        f"{meta_labels[1]} = label_int 1"
+        f"Relabeling for comparison: {meta_labels[0]} = label_int 0, {meta_labels[1]} = label_int 1"
     )
 
     # Merge and split at read level
-    result = merge_and_split_chunks(
+    split_result = merge_and_split_chunks(
         input_paths=all_files,
         output_dir=output_dir,
         train_frac=train_split,
@@ -85,7 +84,8 @@ def handle_merge_and_split(
     )
 
     # Type narrowing: result is always a dict when output_dir is provided
-    assert isinstance(result, dict)
+    assert isinstance(split_result, dict)
+    result = split_result
 
     # Display statistics
     _display_single_comparison_results(result)
@@ -114,8 +114,8 @@ def _parse_and_validate_inputs(
         ValueError: If input format is invalid or not exactly 2 meta-labels
         FileNotFoundError: If any input file doesn't exist
     """
-    meta_to_files = {}
-    meta_to_chunk_labels = {}
+    meta_to_files: dict[str, list[Path]] = {}
+    meta_to_chunk_labels: dict[str, set[Any]] = {}
     meta_order = []  # Track order for label_int assignment
 
     for chunk_spec in input_chunks:
@@ -125,9 +125,9 @@ def _parse_and_validate_inputs(
                 "Expected format: label=file.npz (e.g., Ala=ala.npz or basic=lys.npz)"
             )
 
-        meta_label, file_path = chunk_spec.split("=", 1)
+        meta_label, file_path_str = chunk_spec.split("=", 1)
         meta_label = meta_label.strip()
-        file_path = Path(file_path.strip())
+        file_path = Path(file_path_str.strip())
 
         if not file_path.exists():
             raise FileNotFoundError(f"Input file not found: {file_path}")

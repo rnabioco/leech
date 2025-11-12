@@ -6,12 +6,10 @@ POD5 and BAM files, including parallel processing, splitting, and result display
 """
 
 import logging
-import sys
 from pathlib import Path
 from typing import Any
 
 from rich.console import Console
-from rich.progress import Progress
 from rich.table import Table
 
 from leech.constants import DEFAULT_SEED
@@ -34,7 +32,7 @@ def handle_prepare(
     feature_set: str = "signal+dwell+levels",
     train_split: float = 0.7,
     val_split: float = 0.15,
-    seed: int = DEFAULT_SEED,
+    seed: int | None = DEFAULT_SEED,
     no_split: bool = False,
     workers: int = 8,
     chunk_size: int = 100,
@@ -146,12 +144,16 @@ def handle_prepare(
             }
     else:
         # Sequential processing with refactored function
-        progress_container = {"progress": None, "task": None}
+        from rich.progress import Progress, TaskID
+
+        progress_container: dict[str, Progress | TaskID | None] = {"progress": None, "task": None}
 
         def update_progress(n_chunks):
-            if progress_container["progress"] is not None:
-                progress_container["progress"].update(
-                    progress_container["task"],
+            prog = progress_container["progress"]
+            task = progress_container["task"]
+            if prog is not None and task is not None and isinstance(prog, Progress):
+                prog.update(
+                    task,  # type: ignore[arg-type]
                     advance=1,
                     description=f"[cyan]Extracted {n_chunks} chunks...",
                 )
@@ -159,6 +161,17 @@ def handle_prepare(
         with Progress(console=console) as progress:
             progress_container["progress"] = progress
             progress_container["task"] = progress.add_task("[cyan]Extracting chunks...", total=None)
+
+            # Ensure seed is int for the function call
+            from leech.constants import generate_random_seed
+
+            actual_seed: int
+            if seed is not None:
+                actual_seed = seed
+            elif DEFAULT_SEED is not None:
+                actual_seed = DEFAULT_SEED
+            else:
+                actual_seed = generate_random_seed()
 
             result = prepare_training_data_with_split(
                 pod5_path=pod5,
@@ -175,12 +188,14 @@ def handle_prepare(
                 feature_set=feature_set,
                 train_split=train_split,
                 val_split=val_split,
-                seed=seed,
+                seed=actual_seed,
                 no_split=no_split,
                 progress_callback=update_progress,
             )
 
-            progress.update(progress_container["task"], completed=True)
+            task_id = progress_container["task"]
+            if task_id is not None:
+                progress.update(task_id, completed=True)  # type: ignore[arg-type]
 
     # Display results
     _display_prepare_results(result, no_split)

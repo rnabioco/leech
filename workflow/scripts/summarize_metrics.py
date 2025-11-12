@@ -118,7 +118,7 @@ def main():
 
         # Track which combinations we have
         if "pair" in df.columns and "model" in df.columns:
-            found_combinations = set(zip(df["pair"], df["model"]))
+            found_combinations = set(zip(df["pair"], df["model"], strict=False))
         else:
             found_combinations = set()
 
@@ -127,7 +127,10 @@ def main():
         missing_combinations = expected_combinations - found_combinations
 
         if missing_combinations:
-            print(f"\nWarning: {len(missing_combinations)} missing pair×model combinations:", file=sys.stderr)
+            print(
+                f"\nWarning: {len(missing_combinations)} missing pair×model combinations:",
+                file=sys.stderr,
+            )
             for pair, model in sorted(missing_combinations):
                 print(f"  - {pair}/{model}", file=sys.stderr)
 
@@ -148,7 +151,9 @@ def main():
             # Append missing rows to dataframe
             if missing_rows:
                 df = pd.concat([df, pd.DataFrame(missing_rows)], ignore_index=True)
-                print(f"\nAdded {len(missing_rows)} placeholder rows for failed jobs", file=sys.stderr)
+                print(
+                    f"\nAdded {len(missing_rows)} placeholder rows for failed jobs", file=sys.stderr
+                )
 
     # Sort columns for better readability
     # Put metadata columns first
