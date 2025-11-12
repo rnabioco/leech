@@ -198,3 +198,36 @@ def sample_predictions():
     y_pred = (y_prob > 0.5).astype(int)
 
     return y_true, y_pred, y_prob
+
+
+@pytest.fixture
+def sample_model(model_config):
+    """Generate a sample model for testing."""
+    from leech.models import get_model
+
+    model = get_model("ConvLSTMDwell", **model_config)
+    return model
+
+
+@pytest.fixture
+def sample_dataloader(temp_chunks_file, model_config):
+    """Generate a sample data loader for testing."""
+    from torch.utils.data import DataLoader
+
+    from leech.dataset import LeechDataset, collate_fn
+
+    dataset = LeechDataset(
+        chunk_path=temp_chunks_file,
+        model_type="ConvLSTMDwell",
+        signal_len=model_config["signal_len"],
+        kmer_len=model_config["kmer_len"],
+    )
+
+    dataloader = DataLoader(
+        dataset,
+        batch_size=2,
+        shuffle=False,
+        collate_fn=collate_fn,
+    )
+
+    return dataloader
