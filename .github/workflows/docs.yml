@@ -44,7 +44,7 @@ jobs:
 
       - name: Build and deploy documentation
         run: |
-          uv run mkdocs gh-deploy --force
+          uv run --only-group docs mkdocs gh-deploy --force
 
       - name: Summary
         run: |
