@@ -40,6 +40,11 @@ dev = [
     "ruff>=0.3.0",  # Modern linter/formatter (replaces black + flake8)
     "mypy>=1.8.0",
 ]
+notebook = [
+    "polars>=1.0.0",
+    "plotnine>=0.13.0",
+    "great_tables>=0.14.0",
+]
 
 [project.scripts]
 leech = "leech.cli:main"
