@@ -247,8 +247,5 @@ data/splits/
 # workflow/config/*.yaml
 *.swp
 
-# claude
-.claude/
-
 # ext repos
 remora/

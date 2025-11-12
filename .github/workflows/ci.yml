@@ -23,16 +23,19 @@ jobs:
         with:
           python-version-file: "pyproject.toml"
 
-      - name: Install dependencies
-        run: uv sync --all-extras
+      - name: Install dev dependencies (linting tools)
+        run: uv sync --no-install-project --extra dev
 
       - name: Run ruff format check
-        run: uv run ruff format --check .
+        run: uv run ruff format --check --exclude notebooks/ .
 
       - name: Run ruff lint
-        run: uv run ruff check .
+        run: uv run ruff check --exclude notebooks/ .
 
-      - name: Run ruff on notebooks
+      - name: Run ruff format check on notebooks
+        run: uv run nbqa ruff format --check notebooks/
+
+      - name: Run ruff lint on notebooks
         run: uv run nbqa ruff notebooks/
 
       - name: Run mypy
