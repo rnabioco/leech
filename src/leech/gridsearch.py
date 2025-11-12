@@ -39,7 +39,7 @@ def parse_context_grid(
     Returns:
         Tuple of (left_contexts_list, right_contexts_list)
 
-    Example:
+    Examples:
         >>> parse_context_grid("200,500,1000")
         ([200, 500, 1000], [200, 500, 1000])
         >>> parse_context_grid("200,500", left_contexts="100,200", right_contexts="300,400")
