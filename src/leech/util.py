@@ -114,6 +114,8 @@ def load_model_from_checkpoint(
         "num_workers",
         "pin_memory",
         "prefetch_factor",
+        "use_class_weights",
+        "pos_weight",
     }
 
     # Extract model-specific kwargs (filter out training params)
