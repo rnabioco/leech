@@ -42,6 +42,10 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
+      - name: Generate move table figure
+        run: |
+          uv run --only-group docs python scripts/generate_move_table_figure.py
+
       - name: Build and deploy documentation
         run: |
           uv run --only-group docs mkdocs gh-deploy --force
