@@ -20,6 +20,90 @@ A Python library for training machine learning models on nanopore signal data, w
 - **Snakemake pipeline**: Production-ready workflow for HPC clusters (SLURM/LSF)
 - **Modern tooling**: Built with uv, ruff, and type hints
 
+## How It Works
+
+Leech integrates three complementary data sources from nanopore sequencing to improve classification accuracy:
+
+```mermaid
+graph TB
+    subgraph "Nanopore Sequencing"
+        A[RNA/DNA molecule<br/>passes through pore] --> B[Raw Signal<br/>POD5 file]
+    end
+
+    subgraph "Basecalling with Move Tables"
+        B --> C[Basecaller<br/>dorado/guppy --emit-moves]
+        C --> D[Sequence<br/>ATCGATCG]
+        C --> E[Move Table<br/>mv tag in BAM]
+    end
+
+    subgraph "Feature Extraction"
+        B --> F[Signal Features<br/>mean, std, median]
+        D --> G[Sequence Context<br/>k-mer encoding]
+        E --> H[Dwell Times<br/>samples per base]
+
+        E -.maps signal<br/>to bases.-> I[Signal-to-Base<br/>Alignment]
+        B --> I
+        I --> H
+        I --> F
+    end
+
+    subgraph "Model Input"
+        F --> J[Multi-branch<br/>Neural Network]
+        G --> J
+        H --> J
+    end
+
+    J --> K[Classification<br/>charged vs uncharged tRNA]
+
+    style B fill:#e1f5ff
+    style D fill:#ffe1e1
+    style H fill:#e1ffe1
+    style J fill:#fff4e1
+    style K fill:#f0e1ff
+```
+
+**Key Insight**: While sequence alone may show basecalling errors at modification sites, and raw signal alone lacks base-level resolution, **dwell time** provides the critical link—revealing how long the nanopore spent measuring each base, which is highly informative for detecting modifications like tRNA aminoacylation.
+
+### The Dwell Time Advantage
+
+```mermaid
+graph LR
+    subgraph "Signal Timeline"
+        S1[Sample 1-15] --> S2[Sample 16-35] --> S3[Sample 36-50] --> S4[Sample 51-80]
+    end
+
+    subgraph "Move Table Decoding"
+        M[stride=5, moves=1,0,0,1,1,0,1]
+        M --> D1[Base A: 15 samples]
+        M --> D2[Base T: 20 samples]
+        M --> D3[Base C: 15 samples]
+        M --> D4[Base G: 30 samples]
+    end
+
+    subgraph "Basecalled Sequence"
+        B[A T C G]
+    end
+
+    S1 -.-> D1
+    S2 -.-> D2
+    S3 -.-> D3
+    S4 -.-> D4
+
+    D1 --> B
+    D2 --> B
+    D3 --> B
+    D4 --> B
+
+    style D1 fill:#e1ffe1
+    style D2 fill:#e1ffe1
+    style D3 fill:#e1ffe1
+    style D4 fill:#e1ffe1
+    style B fill:#ffe1e1
+    style M fill:#fff4e1
+```
+
+Modified bases (like charged tRNAs) often exhibit **different translocation kinetics** through the nanopore, resulting in distinctive dwell time patterns that leech models can learn to recognize.
+
 ## Quick Start
 
 ### Installation
