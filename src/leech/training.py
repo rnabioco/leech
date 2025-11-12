@@ -30,6 +30,47 @@ logger = logging.getLogger("leech.training")
 console = Console()
 
 
+def compute_class_weights(dataset: Any) -> torch.Tensor | None:
+    """
+    Compute pos_weight for BCEWithLogitsLoss from dataset.
+
+    Args:
+        dataset: Dataset with binary labels (0/1)
+
+    Returns:
+        pos_weight tensor for BCEWithLogitsLoss, or None if balanced
+    """
+    # Count class occurrences
+    labels = []
+    for i in range(len(dataset)):
+        chunk = dataset.chunks[i]
+        labels.append(chunk["label_int"])
+
+    labels = np.array(labels)
+    unique, counts = np.unique(labels, return_counts=True)
+
+    if len(unique) != 2:
+        logger.warning(f"Expected 2 classes, found {len(unique)}. Skipping class weighting.")
+        return None
+
+    # Count negatives (0) and positives (1)
+    label_counts = dict(zip(unique, counts, strict=True))
+    neg_count = label_counts.get(0, 0)
+    pos_count = label_counts.get(1, 0)
+
+    if pos_count == 0:
+        logger.warning("No positive samples found. Skipping class weighting.")
+        return None
+
+    # Calculate pos_weight = neg_count / pos_count
+    pos_weight = neg_count / pos_count
+
+    logger.info(f"Class distribution: negative={neg_count}, positive={pos_count}")
+    logger.info(f"Using pos_weight={pos_weight:.4f} for class weighting")
+
+    return torch.tensor([pos_weight], dtype=torch.float32)
+
+
 class Trainer:
     """
     Trainer for leech models.
@@ -46,6 +87,7 @@ class Trainer:
         device: str = "cuda",
         learning_rate: float = 0.001,
         output_dir: Path | None = None,
+        pos_weight: torch.Tensor | None = None,
     ):
         """
         Initialize trainer.
@@ -58,6 +100,7 @@ class Trainer:
             device: Device for training ("cuda" or "cpu")
             learning_rate: Learning rate for optimizer
             output_dir: Directory for saving models and logs
+            pos_weight: Weight for positive class in BCEWithLogitsLoss (None = no weighting)
         """
         # Wrap model with inference wrapper for unified forward pass
         self.model_wrapper = ModelInferenceWrapper(model, model_type)
@@ -70,7 +113,15 @@ class Trainer:
 
         # Setup optimizer and loss
         self.optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-        self.criterion = nn.BCEWithLogitsLoss()
+
+        # Setup loss with optional class weighting
+        if pos_weight is not None:
+            pos_weight = pos_weight.to(device)
+            self.criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+            logger.info(f"Using class weighting with pos_weight={pos_weight.item():.4f}")
+        else:
+            self.criterion = nn.BCEWithLogitsLoss()
+            logger.info("Training without class weighting")
 
         # Track best model
         self.best_val_acc = 0.0
@@ -340,6 +391,8 @@ def train_model(
     device: str = "cuda",
     seed: int | None = None,
     early_stopping_patience: int = 10,
+    use_class_weights: bool = True,
+    pos_weight: float | None = None,
     **model_kwargs,
 ) -> dict[str, Any]:
     """
@@ -358,6 +411,8 @@ def train_model(
         device: Device for training
         seed: Random seed (None = generate random seed)
         early_stopping_patience: Stop training if validation loss doesn't improve for N epochs
+        use_class_weights: Auto-compute class weights from training data (default: True)
+        pos_weight: Manual positive class weight (overrides use_class_weights if provided)
         **model_kwargs: Additional model parameters
 
     Returns:
@@ -409,6 +464,16 @@ def train_model(
     first_batch = next(iter(train_loader))
     num_features = first_batch.get("features", torch.zeros(1, 1, kmer_len)).shape[1]
 
+    # Compute class weights if requested
+    pos_weight_tensor = None
+    if pos_weight is not None:
+        # Manual pos_weight provided
+        pos_weight_tensor = torch.tensor([pos_weight], dtype=torch.float32)
+        logger.info(f"Using manual pos_weight={pos_weight:.4f}")
+    elif use_class_weights:
+        # Auto-compute from training data
+        pos_weight_tensor = compute_class_weights(train_dataset)
+
     # Create model
     # Only pass num_features to models that need it (not ConvLSTMBase)
     model_init_kwargs = {
@@ -433,6 +498,8 @@ def train_model(
         "learning_rate": learning_rate,
         "device": device,
         "seed": seed,
+        "use_class_weights": use_class_weights,
+        "pos_weight": pos_weight if pos_weight is not None else (pos_weight_tensor.item() if pos_weight_tensor is not None else None),
         **model_kwargs,
     }
 
@@ -448,6 +515,7 @@ def train_model(
         device=device,
         learning_rate=learning_rate,
         output_dir=output_dir,
+        pos_weight=pos_weight_tensor,
     )
 
     # Train
