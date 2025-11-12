@@ -1,0 +1,182 @@
+site_name: Leech Documentation
+site_description: Learning Enhanced Aminoacylation Classification from Hanopore signals
+site_url: https://rnabioco.github.io/leech
+repo_url: https://github.com/rnabioco/leech
+repo_name: rnabioco/leech
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  palette:
+    # Palette toggle for light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: teal
+      accent: deep orange
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+
+    # Palette toggle for dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: teal
+      accent: deep orange
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+  features:
+    - navigation.instant
+    - navigation.instant.prefetch
+    - navigation.tracking
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.expand
+    - navigation.path
+    - navigation.indexes
+    - navigation.top
+    - navigation.footer
+    - toc.follow
+    - toc.integrate
+    - search.suggest
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+    - content.tooltips
+
+  icon:
+    logo: material/dna
+    repo: fontawesome/brands/github
+
+plugins:
+  - search:
+      separator: '[\s\-,:!=\[\]()"`/]+|\.(?!\d)|&[lg]t;|(?!\b)(?=[A-Z][a-z])'
+  - mkdocstrings:
+      default_handler: python
+      handlers:
+        python:
+          paths: [src]
+          options:
+            docstring_style: google
+            docstring_section_style: table
+            show_source: true
+            show_root_heading: true
+            show_root_full_path: false
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            members_order: source
+            group_by_category: true
+            show_signature: true
+            show_signature_annotations: true
+            separate_signature: true
+            line_length: 100
+            merge_init_into_class: true
+            docstring_options:
+              ignore_init_summary: true
+            filters:
+              - "!^_"  # Exclude private members
+  - autorefs
+
+markdown_extensions:
+  # Python Markdown
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - toc:
+      permalink: true
+      permalink_title: Anchor link to this section
+      toc_depth: 3
+
+  # Python Markdown Extensions
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.betterem:
+      smart_enable: all
+  - pymdownx.caret
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.mark
+  - pymdownx.smartsymbols
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - Installation: getting-started/installation.md
+    - Quick Start: getting-started/quick-start.md
+    - CLI Usage: getting-started/cli-usage.md
+  - User Guide:
+    - Implementation Guide: guides/01-START_HERE_IMPLEMENTATION_GUIDE.md
+    - tRNA Conditional Classification: guides/02-TRNA_CONDITIONAL_CLASSIFICATION.md
+    - Remora Analysis: guides/03-REMORA_ANALYSIS.md
+    - Amino Acid Discrimination: guides/04-AA_DISCRIMINATION_PRIMARY_TASK.md
+    - Model Predictions: guides/05-MODEL_PREDICTIONS.md
+    - Dwell Feature Strategies: guides/06-DWELL_FEATURE_STRATEGIES.md
+    - Amino Acid Heterogeneity: guides/07-AMINO_ACID_HETEROGENEITY.md
+  - Cluster Setup:
+    - Alpine (SLURM): setup/ALPINE_SETUP.md
+    - Bodhi (LSF): setup/BODHI_SETUP.md
+    - SLURM Cheatsheet: SLURM_CHEATSHEET.md
+  - Grid Search:
+    - Overview: grid-search/grid-search.md
+    - Usage: grid-search/grid-search-usage.md
+  - Architecture:
+    - Alternative Architectures: issue-alternative-architectures.md
+    - Troubleshooting: troubleshooting.md
+  - Architecture Decision Records:
+    - Overview: adr/README.md
+    - Constants Consolidation: adr/0001-constants-consolidation.md
+    - Structured Logging: adr/0002-structured-logging.md
+    - Model Component Abstraction: adr/0003-model-component-abstraction.md
+    - Inference Wrapper Pattern: adr/0004-inference-wrapper-pattern.md
+    - Sequence Encoding Consolidation: adr/0005-sequence-encoding-consolidation.md
+  - API Reference:
+    - Overview: api/index.md
+    - CLI: api/cli.md
+    - Data Preparation: api/data_prep.md
+    - Features: api/features.md
+    - Dataset: api/dataset.md
+    - Models: api/models.md
+    - Training: api/training.md
+    - Evaluation: api/evaluation.md
+    - Inference: api/inference.md
+    - Grid Search: api/gridsearch.md
+    - Utilities: api/util.md
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/rnabioco/leech
+    - icon: fontawesome/brands/python
+      link: https://pypi.org/project/leech/
+  version:
+    provider: mike
+
+extra_css:
+  - stylesheets/extra.css
+
+copyright: Copyright &copy; 2025 aa-tRNA-seq pipeline team
