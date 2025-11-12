@@ -89,3 +89,12 @@ testpaths = ["tests"]
 python_files = "test_*.py"
 python_functions = "test_*"
 addopts = "-v --cov=leech --cov-report=term-missing"
+
+[dependency-groups]
+docs = [
+    "matplotlib>=3.10.7",
+    "mkdocs>=1.6.1",
+    "mkdocs-autorefs>=1.4.3",
+    "mkdocs-material>=9.7.0",
+    "mkdocstrings[python]>=0.30.1",
+]
