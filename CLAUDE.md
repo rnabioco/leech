@@ -98,10 +98,11 @@ uv sync --upgrade
    - Parse move tables to compute per-base dwell times
    - Extract signal level statistics (mean, median, std, range) per base
    - Normalize raw signal using median-MAD
-3. **Data Preparation** (`data_prep.py`):
-   - Iterate BAM + POD5 together via `iter_bam_with_pod5()`
-   - Extract training chunks centered on motifs (e.g., "CCAGGC" for tRNA 3' end)
-   - Create `LeechRead` objects with all features
+3. **Data Preparation** (`io/`, `preparation/`, `chunking/`):
+   - Read BAM + POD5 files (`io/bam_reader.py`, `io/pod5_reader.py`)
+   - Search for motifs in reference or basecalled sequence (`io/motif_search.py`)
+   - Extract training chunks centered on motifs (e.g., "CCAGGC" for tRNA 3' end) (`chunking/extractor.py`)
+   - Serialize chunks for training (`chunking/serialization.py`)
 4. **Model Training**: PyTorch models with three input branches (signal, sequence, dwell/level features)
 5. **Output**: Trained models (.pt files) and predictions (BAM with modification probabilities)
 
@@ -109,9 +110,9 @@ uv sync --upgrade
 
 The `prepare` command supports multiprocessing for large datasets:
 
-**Implementation** (data_prep.py:525-812):
+**Implementation** (`preparation/parallel.py`, `preparation/orchestrator.py`):
 - `collect_read_infos_from_bam()`: First pass to collect lightweight read metadata from BAM
-- `_process_read_chunk_worker()`: Worker function that processes batches of reads in parallel
+- Worker functions: Process batches of reads in parallel
 - `prepare_training_data_parallel()`: Main parallel orchestration with configurable workers and chunk size
 
 **Usage**:
@@ -136,21 +137,29 @@ uv run leech prepare --pod5 data.pod5 --bam alignments.bam \
 
 ### Key Classes and Functions
 
-**`MoveTable` (features.py:15-56)**
+**`MoveTable` (features.py)**
 - Parses move table from BAM `mv` tag
 - `to_seq_to_sig_map()`: converts moves to base→signal index mapping
 - Core data structure for dwell time computation
 
-**`LeechRead` (data_prep.py:27-117)**
-- Container for a single read's full feature set
-- Includes: signal, sequence, dwell times, dwell features, signal features
-- `get_chunk()`: extracts training chunks with signal/sequence/feature context
+**`BamReader` (io/bam_reader.py)**
+- Reads BAM files and extracts alignment information
+- Handles move table tags and quality filtering
+- Coordinates with POD5Reader for signal extraction
 
-**`iter_bam_with_pod5()` (data_prep.py:147-224)**
-- Main data loading function
-- Iterates aligned BAM reads, fetches signal from POD5
-- Yields `LeechRead` objects with all features computed
-- Filters by mapping quality and required BAM tags
+**`POD5Reader` (io/pod5_reader.py)**
+- Reads raw signal from POD5 files
+- Maps read IDs from BAM to POD5 signal data
+
+**`ChunkExtractor` (chunking/extractor.py)**
+- Extracts training chunks centered on motifs
+- Handles signal/sequence/feature context windows
+- Creates chunk dictionaries with all features aligned
+
+**`MotifSearcher` (io/motif_search.py)**
+- Searches for motifs in reference or basecalled sequences
+- Maps motif positions from reference to query coordinates using CIGAR
+- Filters reads with indels in motif regions (optional)
 
 **`ConvLSTMDwell` (models/conv_lstm_dwell.py:13-141)**
 - PyTorch model with three branches:
@@ -164,8 +173,25 @@ uv run leech prepare --pod5 data.pod5 --bam alignments.bam \
 
 ```
 src/leech/           # Main package source
-├── cli.py           # Command-line interface (argparse-based)
-├── data_prep.py     # BAM/POD5 reading, LeechRead, chunk extraction
+├── cli.py           # Command-line interface (rich-click based)
+├── commands/        # CLI command handlers
+│   ├── prepare.py   # Prepare command implementation
+│   └── merge_split.py  # Merge-and-split command
+├── io/              # Input/output operations
+│   ├── bam_reader.py    # BAM file reading
+│   ├── pod5_reader.py   # POD5 signal reading
+│   ├── motif_search.py  # Motif searching in sequences
+│   └── reference.py     # Reference sequence handling
+├── preparation/     # Data preparation orchestration
+│   ├── orchestrator.py  # Main preparation logic
+│   ├── parallel.py      # Parallel processing
+│   ├── reader.py        # Read iteration
+│   └── encoding.py      # Sequence encoding
+├── chunking/        # Training chunk extraction
+│   ├── extractor.py     # Chunk extraction logic
+│   └── serialization.py # Save/load chunks
+├── splitting/       # Data splitting
+│   └── splitter.py  # Train/val/test split
 ├── features.py      # MoveTable, dwell times, signal levels, normalization
 ├── dataset.py       # PyTorch Dataset classes for loading chunks
 ├── training.py      # Training loop with Trainer class
@@ -173,10 +199,19 @@ src/leech/           # Main package source
 ├── inference.py     # Inference engine for predictions
 ├── gridsearch.py    # Grid search for chunk context optimization
 ├── util.py          # Helper functions (model loading, metrics)
+├── config.py        # Configuration management
+├── constants.py     # Project-wide constants
+├── logging_config.py  # Logging setup
 └── models/          # Model architectures
-    ├── __init__.py  # Model registry and get_model()
-    ├── conv_lstm_dwell.py  # ConvLSTMDwell architecture
-    └── conv_lstm_base.py   # ConvLSTMBase architecture
+    ├── __init__.py            # Model registry and get_model()
+    ├── components.py          # Reusable model components
+    ├── inference_wrapper.py   # Inference wrapper pattern
+    ├── conv_lstm_dwell.py     # ConvLSTMDwell architecture
+    ├── conv_lstm_base.py      # ConvLSTMBase architecture
+    ├── transformer_dwell.py   # TransformerDwell architecture
+    ├── tcn_dwell.py           # TCNDwell architecture
+    ├── resnet_dwell.py        # ResNetDwell architecture
+    └── conv_only.py           # ConvOnly architecture
 
 tests/               # pytest tests
 ```
@@ -209,7 +244,14 @@ Training chunks are dictionaries:
 ```
 
 ### Snakemake Integration
-The Snakemake workflow has been moved to a separate repository. The leech library is designed to integrate easily with Snakemake pipelines via its CLI commands.
+The Snakemake workflow is included in this repository under `workflow/`. It provides production-ready pipelines for:
+- Charged vs uncharged tRNA classification
+- Pairwise amino acid classification
+- Grid search optimization
+- Model comparison across architectures
+- HPC cluster integration (SLURM/LSF)
+
+The workflow is designed to integrate with the leech CLI commands and supports both local and cluster execution.
 
 ## Important Constraints
 
@@ -236,14 +278,17 @@ The Snakemake workflow has been moved to a separate repository. The leech librar
 
 The codebase is feature-complete:
 - ✓ Feature extraction fully implemented
-- ✓ Model architectures defined (ConvLSTMDwell, ConvLSTMBase)
-- ✓ CLI interface fully implemented
+- ✓ Model architectures defined (ConvLSTMDwell, ConvLSTMBase, TransformerDwell, TCNDwell, ResNetDwell, ConvOnly)
+- ✓ CLI interface fully implemented with 6 commands (prepare, merge-and-split, train, test, infer, grid-search)
 - ✓ Training loop with Trainer class
 - ✓ Grid search for chunk context optimization
 - ✓ Testing/evaluation with comprehensive metrics
 - ✓ Inference engine with BAM output
-- ✓ Chunk serialization (save_chunks/load_chunks in data_prep.py)
+- ✓ Chunk serialization (chunking/serialization.py)
 - ✓ Model loading utilities (load_model_from_checkpoint in util.py)
 - ✓ Comprehensive tests for features.py
+- ✓ Parallel data preparation with multiprocessing
+- ✓ Reference-based motif search to avoid training bias
+- ✓ Snakemake workflow for production pipelines
 
 All core functionality is implemented and ready for use.

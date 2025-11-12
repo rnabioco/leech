@@ -1,48 +1,112 @@
-# Data Preparation Module
+# Data Preparation Modules
 
 Data loading, feature extraction, and training chunk preparation.
 
 ## Overview
 
-The data_prep module handles reading BAM and POD5 files together, extracting features, and preparing training chunks.
+The data preparation functionality has been refactored into modular components for better maintainability and testing. The previous monolithic `data_prep.py` module has been split into:
 
-## Key Classes
+- **`leech.io`** - Input/output operations (BAM/POD5 reading, motif search, reference handling)
+- **`leech.preparation`** - Data preparation orchestration and parallel processing
+- **`leech.chunking`** - Training chunk extraction and serialization
+- **`leech.splitting`** - Train/val/test data splitting
+- **`leech.commands`** - CLI command implementations
 
-::: leech.data_prep.LeechRead
+## I/O Module (`leech.io`)
+
+### BamReader
+
+Reads BAM files and extracts alignment information with move table tags.
+
+::: leech.io.bam_reader.BamReader
     options:
       show_root_heading: true
-      show_source: true
+      show_source: false
 
-## Key Functions
+### POD5Reader
 
-::: leech.data_prep.iter_bam_with_pod5
+Reads raw signal from POD5 files.
+
+::: leech.io.pod5_reader.POD5Reader
     options:
       show_root_heading: true
-      show_source: true
+      show_source: false
 
-::: leech.data_prep.prepare_training_data
+### MotifSearcher
+
+Searches for motifs in reference or basecalled sequences.
+
+::: leech.io.motif_search.MotifSearcher
     options:
       show_root_heading: true
-      show_source: true
+      show_source: false
 
-::: leech.data_prep.prepare_training_data_parallel
+## Chunking Module (`leech.chunking`)
+
+### ChunkExtractor
+
+Extracts training chunks centered on motifs.
+
+::: leech.chunking.extractor.ChunkExtractor
     options:
       show_root_heading: true
-      show_source: true
+      show_source: false
 
-::: leech.data_prep.collect_read_infos
+### Serialization
+
+Save and load training chunks.
+
+::: leech.chunking.serialization.save_chunks
     options:
       show_root_heading: true
-      show_source: true
+      show_source: false
 
-## Chunk Serialization
-
-::: leech.data_prep.save_chunks
+::: leech.chunking.serialization.load_chunks
     options:
       show_root_heading: true
-      show_source: true
+      show_source: false
 
-::: leech.data_prep.load_chunks
+## Preparation Module (`leech.preparation`)
+
+### Orchestrator
+
+Main data preparation orchestration.
+
+::: leech.preparation.orchestrator.prepare_chunks
     options:
       show_root_heading: true
-      show_source: true
+      show_source: false
+
+### Parallel Processing
+
+Parallel data preparation for large datasets.
+
+::: leech.preparation.parallel.prepare_chunks_parallel
+    options:
+      show_root_heading: true
+      show_source: false
+
+## Splitting Module (`leech.splitting`)
+
+### DataSplitter
+
+Split data into train/val/test sets at the read level.
+
+::: leech.splitting.splitter.DataSplitter
+    options:
+      show_root_heading: true
+      show_source: false
+
+## Usage
+
+For most users, the CLI commands provide the easiest interface:
+
+```bash
+# Prepare data
+uv run leech prepare --pod5 reads.pod5 --bam alignments.bam --output-dir chunks/
+
+# Merge and split (multi-sample)
+uv run leech merge-and-split -i charged=a.npz -i uncharged=b.npz -o merged/
+```
+
+For programmatic access, import the specific modules you need.

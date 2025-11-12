@@ -7,9 +7,18 @@ Welcome to the leech API reference documentation. This section provides detailed
 ### Core Modules
 
 - **[CLI](cli.md)**: Command-line interface
-- **[Data Preparation](data_prep.md)**: BAM/POD5 reading and chunk extraction
 - **[Features](features.md)**: Dwell time and signal feature extraction
 - **[Dataset](dataset.md)**: PyTorch Dataset classes
+
+### I/O and Data Preparation
+
+The data preparation functionality has been refactored into modular components:
+
+- **I/O Operations** (`leech.io`): BAM/POD5 reading, motif search, reference handling
+- **Preparation** (`leech.preparation`): Data preparation orchestration and parallel processing
+- **Chunking** (`leech.chunking`): Training chunk extraction and serialization
+- **Splitting** (`leech.splitting`): Train/val/test data splitting
+- **Commands** (`leech.commands`): CLI command implementations
 
 ### Model Modules
 
@@ -27,35 +36,47 @@ Welcome to the leech API reference documentation. This section provides detailed
 
 ### Key Classes
 
-- `LeechRead` - Container for read features ([data_prep.md](data_prep.md))
 - `MoveTable` - Move table parser ([features.md](features.md))
 - `ConvLSTMDwell` - Main model architecture ([models.md](models.md))
 - `Trainer` - Training orchestration ([training.md](training.md))
+- `ChunkDataset` - PyTorch dataset for training ([dataset.md](dataset.md))
 
 ### Key Functions
 
-- `iter_bam_with_pod5()` - Main data loading iterator ([data_prep.md](data_prep.md))
 - `compute_dwell_times()` - Extract dwell times ([features.md](features.md))
-- `prepare_training_data()` - Prepare training chunks ([data_prep.md](data_prep.md))
+- `normalize_signal()` - Signal normalization ([features.md](features.md))
 - `load_model_from_checkpoint()` - Load trained models ([util.md](util.md))
+- `train_model()` - High-level training function ([training.md](training.md))
 
 ## Usage Examples
 
 ### Loading and Processing Data
 
-```python
-from leech.data_prep import iter_bam_with_pod5
-from leech.features import MoveTable
+Use the CLI commands for data preparation:
 
-# Iterate over BAM reads with POD5 signal
-for leech_read in iter_bam_with_pod5(
-    bam_path="alignments.bam",
-    pod5_path="reads.pod5"
-):
-    # Access features
-    signal = leech_read.signal
-    dwell_times = leech_read.dwell_times
-    sequence = leech_read.sequence
+```bash
+# Prepare training data
+uv run leech prepare \
+  --pod5 reads.pod5 \
+  --bam alignments.bam \
+  --output-dir chunks/
+```
+
+For programmatic access, use the modular components:
+
+```python
+from leech.io import BamReader, POD5Reader
+from leech.features import MoveTable, compute_dwell_times
+
+# Read BAM and POD5 data
+bam_reader = BamReader("alignments.bam")
+pod5_reader = POD5Reader("reads.pod5")
+
+# Process reads
+for alignment in bam_reader.fetch():
+    signal = pod5_reader.get_signal(alignment.query_name)
+    move_table = MoveTable.from_bam_tag(alignment.get_tag("mv"))
+    dwell_times = compute_dwell_times(move_table, signal)
 ```
 
 ### Training a Model
