@@ -18,7 +18,7 @@ snakemake --unlock 2>/dev/null || true
 
 # Run with verbose to capture sbatch command
 # Use timeout and || true to handle potential failures gracefully
-timeout 30 snakemake --profile cluster/slurm \
+timeout 30 snakemake --profile pipeline/cluster/slurm \
     --verbose \
     --jobs 1 \
     results/pod5/uncharged_synthetic/uncharged_synthetic.pod5 \

@@ -16,14 +16,14 @@
 
 set -euo pipefail
 
-# Determine project root (look for workflow/Snakefile)
+# Determine project root (look for pipeline/workflow/Snakefile)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ -f "${SCRIPT_DIR}/workflow/Snakefile" ]]; then
+if [[ -f "${SCRIPT_DIR}/pipeline/workflow/Snakefile" ]]; then
     WORKDIR="${SCRIPT_DIR}"
-elif [[ -f "${SCRIPT_DIR}/../workflow/Snakefile" ]]; then
+elif [[ -f "${SCRIPT_DIR}/../pipeline/workflow/Snakefile" ]]; then
     WORKDIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 else
-    echo "Error: Cannot find workflow/Snakefile. Run from project root or scripts/ directory."
+    echo "Error: Cannot find pipeline/workflow/Snakefile. Run from project root or scripts/ directory."
     exit 1
 fi
 
@@ -44,7 +44,7 @@ mkdir -p logs/slurm
 
 # Test 1: Dry run to check DAG
 echo "Step 1: Testing DAG construction (dry run)..."
-snakemake --profile cluster/slurm \
+snakemake --profile pipeline/cluster/slurm \
   --dry-run \
   --printshellcmds \
   results/pod5/ala_synthetic/ala_synthetic.pod5
@@ -55,7 +55,7 @@ echo "Note: This will submit the actual work as a separate Slurm job"
 echo ""
 
 # Test 2: Run with Slurm executor (submits separate jobs)
-snakemake --profile cluster/slurm \
+snakemake --profile pipeline/cluster/slurm \
   results/pod5/ala_synthetic/ala_synthetic.pod5
 
 echo ""

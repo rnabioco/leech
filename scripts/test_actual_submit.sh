@@ -11,14 +11,14 @@ echo "This will fail but show the sbatch command being used"
 echo ""
 
 # Run with verbosity to see sbatch command
-snakemake --profile cluster/slurm \
+snakemake --profile pipeline/cluster/slurm \
     --verbose \
     results/pod5/uncharged_synthetic/uncharged_synthetic.pod5 \
     2>&1 | grep -A 20 "sbatch" || true
 
 echo ""
 echo "Looking for QoS in the command..."
-snakemake --profile cluster/slurm \
+snakemake --profile pipeline/cluster/slurm \
     --verbose \
     results/pod5/uncharged_synthetic/uncharged_synthetic.pod5 \
     2>&1 | grep -i "qos" || echo "No QoS found in output"

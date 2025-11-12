@@ -15,14 +15,14 @@
 
 set -euo pipefail
 
-# Determine project root (look for workflow/Snakefile)
+# Determine project root (look for pipeline/workflow/Snakefile)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [[ -f "${SCRIPT_DIR}/workflow/Snakefile" ]]; then
+if [[ -f "${SCRIPT_DIR}/pipeline/workflow/Snakefile" ]]; then
     WORKDIR="${SCRIPT_DIR}"
-elif [[ -f "${SCRIPT_DIR}/../workflow/Snakefile" ]]; then
+elif [[ -f "${SCRIPT_DIR}/../pipeline/workflow/Snakefile" ]]; then
     WORKDIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 else
-    echo "Error: Cannot find workflow/Snakefile. Run from project root or scripts/ directory."
+    echo "Error: Cannot find pipeline/workflow/Snakefile. Run from project root or scripts/ directory."
     exit 1
 fi
 
@@ -47,7 +47,7 @@ echo "Each sample will be submitted as a separate Slurm job"
 echo ""
 
 # Run with Slurm executor profile
-snakemake --profile cluster/slurm $TARGET
+snakemake --profile pipeline/cluster/slurm $TARGET
 
 echo ""
 echo "=========================================="

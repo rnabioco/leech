@@ -45,7 +45,7 @@ fi
 # Check 4: Dry run to see if config loads correctly
 echo ""
 echo "4. Testing Snakemake dry-run (checks if config loads)..."
-if snakemake --profile cluster/slurm --dry-run \
+if snakemake --profile pipeline/cluster/slurm --dry-run \
     results/pod5/uncharged_synthetic/uncharged_synthetic.pod5 \
     >/dev/null 2>&1; then
     echo "   ✓ Dry-run successful - config loads correctly"
@@ -62,7 +62,7 @@ echo ""
 echo "The QoS configuration is correct."
 echo ""
 echo "To actually test job submission (will fail fast if QoS still missing):"
-echo "  snakemake --profile cluster/slurm --jobs 1 \\"
+echo "  snakemake --profile pipeline/cluster/slurm --jobs 1 \\"
 echo "    results/pod5/uncharged_synthetic/uncharged_synthetic.pod5"
 echo ""
 echo "To see the sbatch command with --qos flag:"

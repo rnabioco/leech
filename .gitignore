@@ -244,7 +244,7 @@ data/chunks/
 data/splits/
 
 # Experiment configs (optional - uncomment if you want to keep these in git)
-# workflow/config/*.yaml
+# pipeline/config/*.yaml
 *.swp
 
 # ext repos
