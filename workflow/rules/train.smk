@@ -79,7 +79,7 @@ rule train_charged_vs_uncharged:
             "amilan" if config.get("use_cpu_training", False) else "aa100"
         ),
         runtime=lambda wildcards, attempt: (
-            240 if config.get("use_cpu_training", False) else 60
+            480 if config.get("use_cpu_training", False) else 60
         ),
         cpus_per_task=lambda wildcards, attempt: (
             16 if config.get("use_cpu_training", False) else 10
@@ -180,7 +180,7 @@ rule train_pairwise_aa:
             "amilan" if config.get("use_cpu_training", False) else "aa100"
         ),
         runtime=lambda wildcards, attempt: (
-            240 if config.get("use_cpu_training", False) else 60
+            480 if config.get("use_cpu_training", False) else 60
         ),
         cpus_per_task=lambda wildcards, attempt: (
             16 if config.get("use_cpu_training", False) else 10
