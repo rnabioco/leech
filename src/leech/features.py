@@ -155,7 +155,7 @@ def compute_dwell_times(move_table: MoveTable) -> np.ndarray:
     Returns:
         Array of shape (num_bases,) with dwell time for each base in signal samples
 
-    Example:
+    Examples:
         >>> # Move array: [1,1,0,1,0,0,0,1,...] with stride=5
         >>> # Base 0: 1 move = 1 * 5 = 5 samples
         >>> # Base 1: 2 moves (1,1) = 2 * 5 = 10 samples
