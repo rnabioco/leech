@@ -454,7 +454,7 @@ The refactoring enables these future improvements:
 
 - [Architecture Overview](architecture.md)
 - [Data Preparation Guide](data_preparation.md)
-- [API Reference](api_reference.md)
+- [API Reference](api/index.md)
 
 ## Summary
 

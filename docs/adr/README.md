@@ -44,9 +44,9 @@ These ADRs document refactoring work that achieved:
 
 ## Related Documentation
 
-- [PLAN.md](../../PLAN.md) - Overall refactoring plan and task breakdown
-- [CLAUDE.md](../../CLAUDE.md) - Project overview and development guide
-- [docs/](../) - Additional project documentation
+- [Architecture Overview](../architecture.md) - Overall architecture and module structure
+- [Refactoring Guide](../refactoring_guide.md) - Migration guide and refactoring details
+- [Documentation Home](../index.md) - Main documentation index
 
 ## Status Definitions
 

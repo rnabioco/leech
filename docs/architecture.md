@@ -459,6 +459,6 @@ config = DataPrepConfig(**kwargs)
 ## See Also
 
 - [Data Preparation Guide](data_preparation.md)
-- [Model Training Guide](model_training.md)
-- [API Reference](api_reference.md)
-- [Performance Tuning](performance_tuning.md)
+- [API Reference](api/index.md)
+- [Getting Started](getting-started/quick-start.md)
+- [Refactoring Guide](refactoring_guide.md)
