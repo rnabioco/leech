@@ -23,8 +23,8 @@ jobs:
         with:
           python-version-file: "pyproject.toml"
 
-      - name: Install linting tools only
-        run: uv pip install --system ruff mypy nbqa
+      - name: Install dev dependencies (linting tools)
+        run: uv sync --no-install-project --extra dev
 
       - name: Run ruff format check
         run: uv run ruff format --check --exclude notebooks/ .
