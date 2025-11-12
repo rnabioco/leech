@@ -23,7 +23,7 @@ NC='\033[0m' # No Color
 
 # Configuration
 PROFILE="cluster/slurm"
-SAMPLES_CONFIG="config/samples-alpine.yaml"
+SAMPLES_CONFIG="pipeline/config/samples-alpine.yaml"
 MAIN_CONFIG="config/config.yaml"
 
 # Print with color

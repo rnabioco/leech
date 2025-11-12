@@ -16,7 +16,7 @@ echo "Attempting to run merge_pods..."
 echo "This should submit to SLURM and we can check the sbatch command"
 echo ""
 
-snakemake --profile cluster/slurm \
+snakemake --profile pipeline/cluster/slurm \
     --verbose \
     --jobs 1 \
     results/pod5/uncharged_synthetic/uncharged_synthetic.pod5 \

@@ -122,39 +122,40 @@ For production workloads, use the included Snakemake pipeline that handles:
 
 ```
 leech/
-├── config/
-│   ├── config.yaml              # Main configuration file
-│   ├── alpine-config.yaml       # CU Boulder Alpine cluster (SLURM)
-│   └── bodhi-config.yaml        # Local Bodhi cluster (LSF)
-├── workflow/
-│   ├── Snakefile                # Main workflow file
-│   ├── rules/                   # Modular rule files
-│   │   ├── common.smk
-│   │   ├── prepare.smk
-│   │   ├── grid_search.smk
-│   │   ├── train.smk
-│   │   ├── inference.smk
-│   │   ├── evaluate.smk
-│   │   └── compare_models.smk
-│   └── scripts/
-│       ├── summarize_metrics.py
-│       └── compare_architectures.py
-└── profiles/                    # Cluster execution profiles
-    ├── slurm/
-    │   ├── config.yaml
-    │   ├── slurm_submit.sh
-    │   └── slurm_status.py
-    └── lsf/
-        ├── config.yaml
-        ├── lsf_submit.sh
-        └── lsf_status.py
+└── pipeline/
+    ├── config/
+    │   ├── config.yaml              # Main configuration file
+    │   ├── alpine-config.yaml       # CU Boulder Alpine cluster (SLURM)
+    │   └── bodhi-config.yaml        # Local Bodhi cluster (LSF)
+    ├── workflow/
+    │   ├── Snakefile                # Main workflow file
+    │   ├── rules/                   # Modular rule files
+    │   │   ├── common.smk
+    │   │   ├── prepare.smk
+    │   │   ├── grid_search.smk
+    │   │   ├── train.smk
+    │   │   ├── inference.smk
+    │   │   ├── evaluate.smk
+    │   │   └── compare_models.smk
+    │   └── scripts/
+    │       ├── summarize_metrics.py
+    │       └── compare_architectures.py
+    └── cluster/                     # Cluster execution profiles
+        ├── slurm/
+        │   ├── config.yaml
+        │   ├── slurm_submit.sh
+        │   └── slurm_status.py
+        └── lsf/
+            ├── config.yaml
+            ├── lsf_submit.sh
+            └── lsf_status.py
 ```
 
 ### Running the Pipeline
 
 #### Configure Your Samples
 
-Edit `config/config.yaml`:
+Edit `pipeline/config/config.yaml`:
 
 ```yaml
 samples:
@@ -175,20 +176,20 @@ samples:
 
 ```bash
 # Dry run
-snakemake --profile profiles/slurm -n
+snakemake --profile pipeline/cluster/slurm -n
 
 # Execute
-snakemake --profile profiles/slurm
+snakemake --profile pipeline/cluster/slurm
 ```
 
 #### Execute on LSF
 
 ```bash
 # Dry run
-snakemake --profile profiles/lsf -n
+snakemake --profile pipeline/cluster/lsf -n
 
 # Execute
-snakemake --profile profiles/lsf
+snakemake --profile pipeline/cluster/lsf
 ```
 
 #### Local Execution (for testing)
@@ -201,19 +202,19 @@ snakemake --cores 8
 
 **Single Model Mode** (when `compare_models: false`):
 ```bash
-snakemake --profile profiles/slurm all_prepare      # Prepare data only
-snakemake --profile profiles/slurm all_grid_search  # Grid search only
-snakemake --profile profiles/slurm all_train        # Train models only
-snakemake --profile profiles/slurm all_infer        # Run inference only
-snakemake --profile profiles/slurm all_single_model # Single model analysis
+snakemake --profile pipeline/cluster/slurm all_prepare      # Prepare data only
+snakemake --profile pipeline/cluster/slurm all_grid_search  # Grid search only
+snakemake --profile pipeline/cluster/slurm all_train        # Train models only
+snakemake --profile pipeline/cluster/slurm all_infer        # Run inference only
+snakemake --profile pipeline/cluster/slurm all_single_model # Single model analysis
 ```
 
 **Model Comparison Mode** (when `compare_models: true`):
 ```bash
-snakemake --profile profiles/slurm all_prepare                # Prepare data
-snakemake --profile profiles/slurm all_grid_search_comparison # Grid search for all
-snakemake --profile profiles/slurm all_train_comparison       # Train all architectures
-snakemake --profile profiles/slurm all_compare_models         # Full comparison
+snakemake --profile pipeline/cluster/slurm all_prepare                # Prepare data
+snakemake --profile pipeline/cluster/slurm all_grid_search_comparison # Grid search for all
+snakemake --profile pipeline/cluster/slurm all_train_comparison       # Train all architectures
+snakemake --profile pipeline/cluster/slurm all_compare_models         # Full comparison
 ```
 
 ### Cluster Setup Guides
@@ -232,7 +233,7 @@ These guides cover:
 
 ### Pipeline Configuration
 
-Key configuration options in `config/config.yaml`:
+Key configuration options in `pipeline/config/config.yaml`:
 
 ```yaml
 # Model architecture
@@ -394,11 +395,13 @@ leech/
 │   ├── logging_config.py  # Logging setup
 │   └── models/         # PyTorch model architectures (6 models)
 ├── tests/              # Test suite
-├── config/             # Pipeline configuration files
-├── workflow/           # Snakemake workflow
-│   ├── Snakefile       # Main workflow
-│   └── rules/          # Modular rule files
-├── profiles/           # Cluster execution profiles (SLURM/LSF)
+├── pipeline/           # Snakemake pipeline
+│   ├── config/         # Pipeline configuration files
+│   ├── workflow/       # Snakemake workflow
+│   │   ├── Snakefile   # Main workflow
+│   │   └── rules/      # Modular rule files
+│   ├── cluster/        # Cluster execution profiles (SLURM/LSF)
+│   └── resources/      # Pipeline resources
 ├── docs/               # Documentation site
 └── pyproject.toml      # Project configuration
 ```

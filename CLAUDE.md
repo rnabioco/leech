@@ -244,7 +244,7 @@ Training chunks are dictionaries:
 ```
 
 ### Snakemake Integration
-The Snakemake workflow is included in this repository under `workflow/`. It provides production-ready pipelines for:
+The Snakemake workflow is included in this repository under `pipeline/`. It provides production-ready pipelines for:
 - Charged vs uncharged tRNA classification
 - Pairwise amino acid classification
 - Grid search optimization
