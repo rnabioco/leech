@@ -130,11 +130,11 @@ def create_figure(output_path: Path):
     ax1.grid(True, alpha=0.3, linestyle="--")
     ax1.set_xticklabels([])
 
-    # Annotate signal regions for first few bases using reconstructed dwells
+    # Annotate signal regions for ALL bases using reconstructed dwells
     # (to ensure alignment with move table and Panel D)
-    colors = ["#FF6B6B", "#4ECDC4", "#45B7D1", "#FFA07A"]
+    colors = ["#FF6B6B", "#4ECDC4", "#45B7D1", "#FFA07A", "#95E1D3", "#F38181", "#AA96DA", "#FCBAD3"]
     cumsum_pos = 0
-    for i, (base, dwell) in enumerate(zip(sequence[:4], reconstructed_dwells[:4])):
+    for i, (base, dwell) in enumerate(zip(sequence, reconstructed_dwells)):
         ax1.axvspan(cumsum_pos, cumsum_pos + dwell, alpha=0.15, color=colors[i % len(colors)])
         ax1.text(
             cumsum_pos + dwell / 2,
@@ -154,15 +154,37 @@ def create_figure(output_path: Path):
     # === Panel B: Stride Positions ===
     ax2 = plt.subplot(4, 1, 2, sharex=ax1)
 
-    # Include all stride positions up to and including the signal end
-    all_stride_positions = list(stride_positions)
-    if all_stride_positions[-1] < len(signal):
-        all_stride_positions.append(len(signal))
+    # Draw stride intervals as boxes to show they span the x-axis
+    box_height = 0.3
+    for i in range(len(stride_positions)):
+        start_pos = stride_positions[i]
 
-    ax2.eventplot([all_stride_positions], colors="#E63946", linewidths=1.5)
-    ax2.set_ylabel("Stride\nPositions", fontsize=11, fontweight="bold")
+        # Calculate width: use stride for all boxes except possibly the last one
+        if i < len(stride_positions) - 1:
+            box_width = stride
+        else:
+            # Last box extends to end of signal
+            box_width = len(signal) - start_pos
+
+        # Alternate colors for visual clarity
+        color = "#FFE5E5" if i % 2 == 0 else "#FFF0F0"
+        rect = patches.Rectangle(
+            (start_pos, -box_height / 2),
+            box_width,
+            box_height,
+            linewidth=0.5,
+            edgecolor="#E63946",
+            facecolor=color,
+            alpha=0.6,
+        )
+        ax2.add_patch(rect)
+
+    # Draw vertical marks at stride positions
+    ax2.eventplot([stride_positions], colors="#E63946", linewidths=2.0, linelengths=0.6)
+
+    ax2.set_ylabel("Stride\nIntervals", fontsize=11, fontweight="bold")
     ax2.set_title(
-        f"B. Basecaller Stride Positions (stride={stride})",
+        f"B. Basecaller Stride Intervals (stride={stride}, basecaller samples every {stride} signal points)",
         fontsize=12,
         fontweight="bold",
         loc="left",
@@ -173,9 +195,9 @@ def create_figure(output_path: Path):
     ax2.grid(True, alpha=0.3, linestyle="--", axis="x")
     ax2.set_xticklabels([])
 
-    # Annotate some stride positions (excluding the final position if it's not on a stride boundary)
+    # Annotate some stride positions
     for i, pos in enumerate(stride_positions[:8]):
-        ax2.text(pos, 0.3, str(i), ha="center", fontsize=8, color="#E63946")
+        ax2.text(pos, 0.35, str(i), ha="center", fontsize=8, color="#E63946", fontweight="bold")
 
     # Add vertical lines at base boundaries
     for pos in base_positions[:-1]:
