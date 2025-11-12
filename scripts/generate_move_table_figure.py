@@ -130,10 +130,11 @@ def create_figure(output_path: Path):
     ax1.grid(True, alpha=0.3, linestyle="--")
     ax1.set_xticklabels([])
 
-    # Annotate signal regions for first few bases
+    # Annotate signal regions for first few bases using reconstructed dwells
+    # (to ensure alignment with move table and Panel D)
     colors = ["#FF6B6B", "#4ECDC4", "#45B7D1", "#FFA07A"]
     cumsum_pos = 0
-    for i, (base, dwell) in enumerate(zip(sequence[:4], true_dwells[:4])):
+    for i, (base, dwell) in enumerate(zip(sequence[:4], reconstructed_dwells[:4])):
         ax1.axvspan(cumsum_pos, cumsum_pos + dwell, alpha=0.15, color=colors[i % len(colors)])
         ax1.text(
             cumsum_pos + dwell / 2,
@@ -146,9 +147,19 @@ def create_figure(output_path: Path):
         )
         cumsum_pos += dwell
 
+    # Add vertical lines at base boundaries
+    for pos in base_positions[:-1]:
+        ax1.axvline(pos, color="red", linestyle="--", linewidth=1, alpha=0.4)
+
     # === Panel B: Stride Positions ===
     ax2 = plt.subplot(4, 1, 2, sharex=ax1)
-    ax2.eventplot(stride_positions, colors="#E63946", linewidths=1.5)
+
+    # Include all stride positions up to and including the signal end
+    all_stride_positions = list(stride_positions)
+    if all_stride_positions[-1] < len(signal):
+        all_stride_positions.append(len(signal))
+
+    ax2.eventplot([all_stride_positions], colors="#E63946", linewidths=1.5)
     ax2.set_ylabel("Stride\nPositions", fontsize=11, fontweight="bold")
     ax2.set_title(
         f"B. Basecaller Stride Positions (stride={stride})",
@@ -162,9 +173,13 @@ def create_figure(output_path: Path):
     ax2.grid(True, alpha=0.3, linestyle="--", axis="x")
     ax2.set_xticklabels([])
 
-    # Annotate some stride positions
+    # Annotate some stride positions (excluding the final position if it's not on a stride boundary)
     for i, pos in enumerate(stride_positions[:8]):
         ax2.text(pos, 0.3, str(i), ha="center", fontsize=8, color="#E63946")
+
+    # Add vertical lines at base boundaries
+    for pos in base_positions[:-1]:
+        ax2.axvline(pos, color="red", linestyle="--", linewidth=1, alpha=0.4)
 
     # === Panel C: Move Table ===
     ax3 = plt.subplot(4, 1, 3, sharex=ax1)
@@ -174,9 +189,17 @@ def create_figure(output_path: Path):
     for i, move in enumerate(moves):
         pos = i * stride
         color = "#06D6A0" if move == 1 else "#CCCCCC"
+
+        # Calculate width: use stride for all boxes except the last one
+        # Last box extends to the end of the signal
+        if i == len(moves) - 1:
+            box_width = len(signal) - pos
+        else:
+            box_width = stride
+
         rect = patches.Rectangle(
             (pos, -box_height / 2),
-            stride,
+            box_width,
             box_height,
             linewidth=1,
             edgecolor="black",
@@ -188,7 +211,7 @@ def create_figure(output_path: Path):
         # Add move value text
         if i < 20:  # Only annotate first 20
             ax3.text(
-                pos + stride / 2,
+                pos + box_width / 2,
                 0,
                 str(move),
                 ha="center",
@@ -196,6 +219,10 @@ def create_figure(output_path: Path):
                 fontsize=8,
                 fontweight="bold",
             )
+
+    # Add vertical lines at base boundaries to show alignment
+    for pos in base_positions[:-1]:  # Exclude the last position (end of signal)
+        ax3.axvline(pos, color="red", linestyle="--", linewidth=1.5, alpha=0.6)
 
     ax3.set_ylabel("Move Table\n(mv tag)", fontsize=11, fontweight="bold")
     ax3.set_title(
@@ -255,6 +282,10 @@ def create_figure(output_path: Path):
         )
 
         cumsum_pos += dwell
+
+    # Add vertical lines at base boundaries
+    for pos in base_positions[:-1]:
+        ax4.axvline(pos, color="red", linestyle="--", linewidth=1, alpha=0.4)
 
     ax4.set_ylabel("Bases +\nDwell Times", fontsize=11, fontweight="bold")
     ax4.set_title(
