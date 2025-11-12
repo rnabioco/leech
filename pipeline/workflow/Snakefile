@@ -61,7 +61,7 @@ rule all:
     """Default target: run all analyses."""
     input:
         # Choose based on compare_models setting
-        METRICS_DIR + "/comparison/pairwise_architecture_comparison.tsv"
+        METRICS_DIR + "/comparison/aggregate/pairwise_architecture_comparison.tsv"
         if COMPARE_MODELS and AA_PAIRS
         else (METRICS_DIR + "/pairwise_summary.tsv" if AA_PAIRS else []),
 
@@ -86,10 +86,10 @@ rule all_compare_models:
     """Run multi-architecture comparison."""
     input:
         # Architecture comparison results (includes charged_uncharged if configured)
-        METRICS_DIR + "/comparison/pairwise_architecture_comparison.tsv"
+        METRICS_DIR + "/comparison/aggregate/pairwise_architecture_comparison.tsv"
         if AA_PAIRS
         else [],
-        METRICS_DIR + "/comparison/pairwise_architecture_summary.txt"
+        METRICS_DIR + "/comparison/aggregate/pairwise_architecture_summary.txt"
         if AA_PAIRS
         else [],
 
