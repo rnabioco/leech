@@ -21,9 +21,7 @@ import numpy as np
 from pod5 import DatasetReader
 
 from leech.chunking import LeechRead, extract_training_chunks, load_chunks, save_chunks
-from leech.constants import DEFAULT_KMER_CONTEXT, DEFAULT_SIGNAL_CONTEXT
 from leech.features import (
-    MoveTable,
     compute_dwell_features,
     compute_dwell_times,
     compute_signal_features,

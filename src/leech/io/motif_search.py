@@ -99,7 +99,9 @@ def map_reference_to_query_coords(
     return (query_start, query_end)
 
 
-def find_motif_in_sequence(sequence: str, motif: str, start: int = 0, end: int | None = None) -> list[int]:
+def find_motif_in_sequence(
+    sequence: str, motif: str, start: int = 0, end: int | None = None
+) -> list[int]:
     """
     Find all occurrences of motif in sequence.
 
@@ -239,9 +241,7 @@ class ReferenceMotifSearcher(MotifSearcher):
             List of positions where motif starts in query sequence
         """
         if alignment is None:
-            logger.warning(
-                f"Reference-based search requires alignment, but got None for {read_id}"
-            )
+            logger.warning(f"Reference-based search requires alignment, but got None for {read_id}")
             return []
 
         # Get reference sequence

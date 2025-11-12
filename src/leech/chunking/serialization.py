@@ -185,17 +185,17 @@ def get_chunk_statistics(chunks: list[dict]) -> dict:
         }
 
     # Count unique reads
-    unique_reads = set(chunk["read_id"] for chunk in chunks)
+    unique_reads = {chunk["read_id"] for chunk in chunks}
 
     # Label distribution
-    label_counts = {}
+    label_counts: dict[str, int] = {}
     for chunk in chunks:
         label = chunk.get("label")
         if label is not None:
             label_counts[label] = label_counts.get(label, 0) + 1
 
     # Numeric label distribution
-    label_int_counts = {}
+    label_int_counts: dict[int, int] = {}
     for chunk in chunks:
         label_int = chunk.get("label_int")
         if label_int is not None and label_int >= 0:

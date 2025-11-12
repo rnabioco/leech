@@ -48,7 +48,7 @@ class DataPrepConfig(BaseModel):
     # Splitting
     train_split: float = 0.7
     val_split: float = 0.15
-    seed: int = DEFAULT_SEED
+    seed: int | None = DEFAULT_SEED
     no_split: bool = False
 
     # Parallel processing
@@ -89,7 +89,7 @@ class MergeAndSplitConfig(BaseModel):
     # Splitting
     train_split: float = 0.7
     val_split: float = 0.15
-    seed: int = DEFAULT_SEED
+    seed: int | None = DEFAULT_SEED
 
     # Comparison spec (for batch processing)
     comparison_spec: Path | None = None
@@ -140,7 +140,7 @@ class TrainingConfig(BaseModel):
     batch_size: int = DEFAULT_BATCH_SIZE
     learning_rate: float = DEFAULT_LEARNING_RATE
     device: str = DEFAULT_DEVICE
-    seed: int = DEFAULT_SEED
+    seed: int | None = DEFAULT_SEED
     early_stopping_patience: int = 10
 
     @field_validator("epochs", "batch_size")
@@ -230,7 +230,7 @@ class GridSearchConfig(BaseModel):
     batch_size: int = DEFAULT_BATCH_SIZE
     learning_rate: float = DEFAULT_LEARNING_RATE
     device: str = DEFAULT_DEVICE
-    seed: int = DEFAULT_SEED
+    seed: int | None = DEFAULT_SEED
     early_stopping_patience: int = 10
 
     @field_validator("left_contexts", "right_contexts")

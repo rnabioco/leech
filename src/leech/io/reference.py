@@ -84,9 +84,7 @@ def load_reference_fasta(fasta_path: Path) -> dict[str, str]:
     return references
 
 
-def get_reference_sequences(
-    bam_path: Path, fasta_path: Path | None = None
-) -> dict[str, str]:
+def get_reference_sequences(bam_path: Path, fasta_path: Path | None = None) -> dict[str, str]:
     """
     Get reference sequences, trying BAM header first, then FASTA.
 

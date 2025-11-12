@@ -8,19 +8,10 @@ import numpy as np
 import pytest
 import torch
 
-from leech.data_prep import (
-    LeechRead,
-    encode_kmer,
-    extract_training_chunks,
-    find_motif_in_reference,
-    int_to_seq,
-    load_chunks,
-    map_reference_to_query_coords,
-    one_hot_encode_sequence,
-    save_chunks,
-    seq_to_int,
-    split_chunks_by_read,
-)
+from leech.chunking import LeechRead, extract_training_chunks, load_chunks, save_chunks
+from leech.data_prep import encode_kmer, int_to_seq, one_hot_encode_sequence, seq_to_int
+from leech.io.motif_search import find_motif_in_sequence, map_reference_to_query_coords
+from leech.splitting import split_chunks_by_read
 
 
 class TestLeechRead:
@@ -123,11 +114,21 @@ class TestExtractTrainingChunks:
 
     def test_extract_with_motif(self, sample_leech_read):
         """Test extracting chunks with motif filtering."""
+        from leech.io.motif_search import get_motif_searcher
+
         # Use a motif that exists in the sequence
         motif = sample_leech_read.sequence[7:10]  # 3-base motif
 
+        # Create motif searcher
+        motif_searcher = get_motif_searcher(mode="bam")
+
         chunks = extract_training_chunks(
-            sample_leech_read, motif=motif, motif_offset=1, label="uncharged", label_int=0
+            sample_leech_read,
+            motif=motif,
+            motif_offset=1,
+            label="uncharged",
+            label_int=0,
+            motif_searcher=motif_searcher
         )
 
         # Should find at least one occurrence
@@ -137,10 +138,19 @@ class TestExtractTrainingChunks:
 
     def test_extract_with_nonexistent_motif(self, sample_leech_read):
         """Test extracting with a motif that doesn't exist."""
+        from leech.io.motif_search import get_motif_searcher
+
         motif = "ZZZZZ"  # Invalid motif
 
+        # Create motif searcher
+        motif_searcher = get_motif_searcher(mode="bam")
+
         chunks = extract_training_chunks(
-            sample_leech_read, motif=motif, label="uncharged", label_int=0
+            sample_leech_read,
+            motif=motif,
+            label="uncharged",
+            label_int=0,
+            motif_searcher=motif_searcher
         )
 
         # Should find no chunks
@@ -381,27 +391,23 @@ class TestDataPrepEdgeCases:
 class TestReferenceBasedMotifSearch:
     """Test reference-based motif search functions."""
 
-    def test_find_motif_in_reference_basic(self):
+    def test_find_motif_in_sequence_basic(self):
         """Test finding a motif in a reference sequence."""
         ref_seq = "ACGTACGTCCAACGT"
         motif = "CCA"
-        ref_start = 0
-        ref_end = len(ref_seq)
 
-        positions = find_motif_in_reference(ref_seq, motif, ref_start, ref_end)
+        positions = find_motif_in_sequence(ref_seq, motif)
 
         # Should find "CCA" at position 8
         assert 8 in positions
         assert len(positions) >= 1
 
-    def test_find_motif_in_reference_multiple(self):
+    def test_find_motif_in_sequence_multiple(self):
         """Test finding multiple occurrences of motif."""
         ref_seq = "CCAACGTCCAACGTCCA"
         motif = "CCA"
-        ref_start = 0
-        ref_end = len(ref_seq)
 
-        positions = find_motif_in_reference(ref_seq, motif, ref_start, ref_end)
+        positions = find_motif_in_sequence(ref_seq, motif)
 
         # Should find at positions 0, 7, 14
         assert len(positions) == 3
@@ -409,27 +415,25 @@ class TestReferenceBasedMotifSearch:
         assert 7 in positions
         assert 14 in positions
 
-    def test_find_motif_in_reference_region(self):
+    def test_find_motif_in_sequence_region(self):
         """Test finding motif only within specified region."""
         ref_seq = "ACGTCCAACGTCCA"
         motif = "CCA"
         ref_start = 5  # Start after first CCA
         ref_end = len(ref_seq)
 
-        positions = find_motif_in_reference(ref_seq, motif, ref_start, ref_end)
+        positions = find_motif_in_sequence(ref_seq, motif, ref_start, ref_end)
 
         # Should only find the second CCA at position 11
         assert 11 in positions
         assert 4 not in positions  # First CCA is before ref_start
 
-    def test_find_motif_in_reference_not_found(self):
+    def test_find_motif_in_sequence_not_found(self):
         """Test when motif is not found."""
         ref_seq = "ACGTACGTACGT"
         motif = "TTT"
-        ref_start = 0
-        ref_end = len(ref_seq)
 
-        positions = find_motif_in_reference(ref_seq, motif, ref_start, ref_end)
+        positions = find_motif_in_sequence(ref_seq, motif)
 
         assert len(positions) == 0
 

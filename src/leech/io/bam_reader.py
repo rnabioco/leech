@@ -77,6 +77,9 @@ class ReadInfo:
     Used for passing read metadata to workers without heavy alignment objects.
     """
 
+    read_id: str
+    sequence: str
+
     def __init__(self, aln: pysam.AlignedSegment):
         """
         Extract read info from alignment.
@@ -84,6 +87,10 @@ class ReadInfo:
         Args:
             aln: BAM alignment
         """
+        # These should not be None for properly aligned reads
+        assert aln.query_name is not None, "Read ID is None"
+        assert aln.query_sequence is not None, "Sequence is None"
+
         self.read_id = aln.query_name
         self.sequence = aln.query_sequence
         self.mapping_quality = aln.mapping_quality
@@ -94,9 +101,12 @@ class ReadInfo:
         self.cigar_tuples = aln.cigartuples
 
         # Extract move table data
+        # mv_tag is an array: [stride, move1, move2, ...]
         mv_tag = aln.get_tag("mv")
-        self.stride = int(mv_tag[0])
-        self.moves = mv_tag[1:]
+        # Type narrowing: we know mv_tag is array-like
+        assert hasattr(mv_tag, "__getitem__"), "mv tag must be indexable"
+        self.stride = int(mv_tag[0])  # type: ignore[index]
+        self.moves = mv_tag[1:]  # type: ignore[index]
         self.num_samples = int(aln.get_tag("ns"))
         self.trim_offset = int(aln.get_tag("ts")) if aln.has_tag("ts") else 0
 
