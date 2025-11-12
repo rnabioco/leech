@@ -51,23 +51,45 @@ def generate_synthetic_signal(bases: str, mean_dwell: int = 10, noise_level: flo
     return np.array(signal), true_dwells
 
 
-def create_move_table(dwells: list[int], stride: int = 5):
+def create_move_table(dwells: list[int], stride: int = 5, signal_len: int = None):
     """Create a move table from dwell times.
 
     Args:
         dwells: List of dwell times (samples per base)
         stride: Basecaller stride (downsampling factor)
+        signal_len: Total signal length (to ensure moves span full axis)
 
     Returns:
         moves: Binary move array (1 = new base, 0 = same base)
     """
-    moves = []
+    # Calculate cumulative positions for each base
+    base_starts = [0]
     for dwell in dwells:
-        # First position is a move
-        moves.append(1)
-        # Remaining positions are non-moves
-        num_strides = (dwell // stride) - 1
-        moves.extend([0] * num_strides)
+        base_starts.append(base_starts[-1] + dwell)
+
+    # Determine total number of stride positions
+    if signal_len is None:
+        signal_len = sum(dwells)
+    num_stride_positions = (signal_len + stride - 1) // stride
+
+    # For each stride position, find which base it belongs to
+    def get_base_idx(stride_pos):
+        for idx, start in enumerate(base_starts[:-1]):
+            if start <= stride_pos < base_starts[idx + 1]:
+                return idx
+        return len(base_starts) - 2  # Last base
+
+    # Create moves: 1 if first stride position of a base, 0 otherwise
+    moves = []
+    prev_base_idx = -1
+    for stride_idx in range(num_stride_positions):
+        stride_pos = stride_idx * stride
+        curr_base_idx = get_base_idx(stride_pos)
+
+        # Move if we're on a new base
+        is_move = (curr_base_idx != prev_base_idx)
+        moves.append(1 if is_move else 0)
+        prev_base_idx = curr_base_idx
 
     return moves
 
@@ -78,7 +100,7 @@ def create_figure(output_path: Path):
     sequence = "ATCGATCG"
     stride = 5
     signal, true_dwells = generate_synthetic_signal(sequence, mean_dwell=12)
-    moves = create_move_table(true_dwells, stride=stride)
+    moves = create_move_table(true_dwells, stride=stride, signal_len=len(signal))
 
     # Calculate positions
     signal_positions = np.arange(len(signal))
@@ -149,10 +171,11 @@ def create_figure(output_path: Path):
 
     # Draw move table as colored boxes
     box_height = 0.6
-    for i, (pos, move) in enumerate(zip(stride_positions[: len(moves)], moves)):
+    for i, move in enumerate(moves):
+        pos = i * stride
         color = "#06D6A0" if move == 1 else "#CCCCCC"
         rect = patches.Rectangle(
-            (pos - stride / 2, -box_height / 2),
+            (pos, -box_height / 2),
             stride,
             box_height,
             linewidth=1,
@@ -165,7 +188,13 @@ def create_figure(output_path: Path):
         # Add move value text
         if i < 20:  # Only annotate first 20
             ax3.text(
-                pos, 0, str(move), ha="center", va="center", fontsize=8, fontweight="bold"
+                pos + stride / 2,
+                0,
+                str(move),
+                ha="center",
+                va="center",
+                fontsize=8,
+                fontweight="bold",
             )
 
     ax3.set_ylabel("Move Table\n(mv tag)", fontsize=11, fontweight="bold")
