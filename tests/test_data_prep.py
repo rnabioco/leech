@@ -128,7 +128,7 @@ class TestExtractTrainingChunks:
             motif_offset=1,
             label="uncharged",
             label_int=0,
-            motif_searcher=motif_searcher
+            motif_searcher=motif_searcher,
         )
 
         # Should find at least one occurrence
@@ -150,7 +150,7 @@ class TestExtractTrainingChunks:
             motif=motif,
             label="uncharged",
             label_int=0,
-            motif_searcher=motif_searcher
+            motif_searcher=motif_searcher,
         )
 
         # Should find no chunks
