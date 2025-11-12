@@ -25,7 +25,7 @@ def setup_logging(
     Returns:
         Configured logger for the 'leech' package
 
-    Example:
+    Examples:
         >>> from leech.logging_config import setup_logging
         >>> import logging
         >>> logger = setup_logging(level=logging.DEBUG, log_file=Path("leech.log"))
@@ -75,7 +75,7 @@ def get_logger(name: str) -> logging.Logger:
     Returns:
         Logger instance for the module
 
-    Example:
+    Examples:
         >>> from leech.logging_config import get_logger
         >>> logger = get_logger(__name__)
         >>> logger.info("Processing read")

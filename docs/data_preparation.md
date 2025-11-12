@@ -575,5 +575,6 @@ merge_and_split_chunks(
 ## See Also
 
 - [Architecture Overview](architecture.md)
-- [Model Training Guide](model_training.md)
-- [API Reference](api_reference.md)
+- [API Reference](api/index.md)
+- [Getting Started](getting-started/quick-start.md)
+- [CLI Usage](getting-started/cli-usage.md)

@@ -30,7 +30,7 @@ The data_prep module handles reading BAM and POD5 files together, extracting fea
       show_root_heading: true
       show_source: true
 
-::: leech.data_prep.collect_read_infos_from_bam
+::: leech.data_prep.collect_read_infos
     options:
       show_root_heading: true
       show_source: true

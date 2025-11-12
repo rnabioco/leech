@@ -30,7 +30,7 @@ def map_reference_to_query_coords(
         Tuple of (query_start, query_end) or None if mapping fails
         or indels detected (when skip_indels=True)
 
-    Example:
+    Examples:
         >>> # Map reference positions 100-106 to query coordinates
         >>> query_coords = map_reference_to_query_coords(aln, 100, 106)
         >>> if query_coords:
@@ -114,7 +114,7 @@ def find_motif_in_sequence(
     Returns:
         List of positions where motif starts (0-based)
 
-    Example:
+    Examples:
         >>> positions = find_motif_in_sequence("ACGTCCAGGCTTCCAGGC", "CCAGGC")
         >>> print(positions)  # [4, 12]
     """
@@ -165,7 +165,7 @@ class BasecalledMotifSearcher(MotifSearcher):
     This is the original behavior - search directly in the basecalled sequence.
     May be affected by basecalling errors at modification sites.
 
-    Example:
+    Examples:
         >>> searcher = BasecalledMotifSearcher()
         >>> positions = searcher.find_motif_positions(
         ...     read_id="read_001",
@@ -201,7 +201,7 @@ class ReferenceMotifSearcher(MotifSearcher):
     This avoids basecalling errors at modification sites by searching in the
     reference sequence and mapping positions to the query via CIGAR.
 
-    Example:
+    Examples:
         >>> searcher = ReferenceMotifSearcher(
         ...     reference_sequences={"chr1": "ACGTCCAGGCTT..."},
         ...     skip_indels=True
@@ -306,7 +306,7 @@ def get_motif_searcher(
     Raises:
         ValueError: If mode is invalid or required args missing
 
-    Example:
+    Examples:
         >>> # Basecalled search
         >>> searcher = get_motif_searcher("bam")
         >>>

@@ -143,6 +143,9 @@ nav:
     - Overview: grid-search/grid-search.md
     - Usage: grid-search/grid-search-usage.md
   - Architecture:
+    - Overview: architecture.md
+    - Data Preparation: data_preparation.md
+    - Refactoring Guide: refactoring_guide.md
     - Alternative Architectures: issue-alternative-architectures.md
     - Troubleshooting: troubleshooting.md
   - Architecture Decision Records:
