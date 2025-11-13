@@ -249,3 +249,6 @@ data/splits/
 
 # ext repos
 remora/
+
+# alpine-specific stuff
+.nfs*

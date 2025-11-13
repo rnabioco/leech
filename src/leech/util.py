@@ -17,6 +17,7 @@ from rich.console import Console
 from rich.table import Table
 from sklearn.metrics import (
     accuracy_score,
+    average_precision_score,
     confusion_matrix,
     f1_score,
     precision_score,
@@ -171,7 +172,8 @@ def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray, y_prob: np.ndarray) 
         - precision: Precision score
         - recall: Recall score
         - f1: F1 score
-        - auc: ROC AUC score
+        - auroc: ROC AUC score (area under receiver operating characteristic curve)
+        - auprc: Average precision score (area under precision-recall curve)
         - confusion_matrix: 2x2 confusion matrix as list
 
     Raises:
@@ -193,11 +195,13 @@ def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray, y_prob: np.ndarray) 
         "f1": float(f1_score(y_true, y_pred, zero_division=0)),
     }
 
-    # AUC only if we have both classes
+    # AUROC and AUPRC only if we have both classes
     if len(np.unique(y_true)) > 1:
-        metrics["auc"] = float(roc_auc_score(y_true, y_prob))
+        metrics["auroc"] = float(roc_auc_score(y_true, y_prob))
+        metrics["auprc"] = float(average_precision_score(y_true, y_prob))
     else:
-        metrics["auc"] = 0.0
+        metrics["auroc"] = 0.0
+        metrics["auprc"] = 0.0
 
     # Confusion matrix
     cm = confusion_matrix(y_true, y_pred)
@@ -238,7 +242,15 @@ def print_metrics(metrics: dict) -> None:
     table.add_row("Precision", f"{metrics['precision']:.4f}")
     table.add_row("Recall", f"{metrics['recall']:.4f}")
     table.add_row("F1 Score", f"{metrics['f1']:.4f}")
-    table.add_row("ROC AUC", f"{metrics['auc']:.4f}")
+
+    # Handle both old (auc) and new (auroc) formats
+    if "auroc" in metrics:
+        table.add_row("AUROC", f"{metrics['auroc']:.4f}")
+        if "auprc" in metrics:
+            table.add_row("AUPRC", f"{metrics['auprc']:.4f}")
+    elif "auc" in metrics:
+        # Backward compatibility with old format
+        table.add_row("ROC AUC", f"{metrics['auc']:.4f}")
 
     console.print(table)
 

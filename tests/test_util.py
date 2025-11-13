@@ -34,7 +34,8 @@ class TestComputeMetrics:
         assert metrics["precision"] == 1.0
         assert metrics["recall"] == 1.0
         assert metrics["f1"] == 1.0
-        assert metrics["auc"] > 0.9  # Should be high for perfect predictions
+        assert metrics["auroc"] > 0.9  # Should be high for perfect predictions
+        assert metrics["auprc"] > 0.9  # Should be high for perfect predictions
 
     def test_random_predictions(self, sample_predictions):
         """Test metrics with random predictions."""
@@ -46,15 +47,17 @@ class TestComputeMetrics:
         assert "precision" in metrics
         assert "recall" in metrics
         assert "f1" in metrics
-        assert "auc" in metrics
+        assert "auroc" in metrics
+        assert "auprc" in metrics
         assert "confusion_matrix" in metrics
 
-        # All metrics should be between 0 and 1
+        # All metrics should be between 0 and 1 (with small numerical tolerance)
         assert 0 <= metrics["accuracy"] <= 1
         assert 0 <= metrics["precision"] <= 1
         assert 0 <= metrics["recall"] <= 1
         assert 0 <= metrics["f1"] <= 1
-        assert 0 <= metrics["auc"] <= 1
+        assert 0 <= metrics["auroc"] <= 1 + 1e-10  # Allow small numerical error
+        assert 0 <= metrics["auprc"] <= 1 + 1e-10  # Allow small numerical error
 
     def test_confusion_matrix_structure(self, sample_predictions):
         """Test that confusion matrix has correct structure."""
@@ -92,8 +95,9 @@ class TestComputeMetrics:
 
         metrics = compute_metrics(y_true, y_pred, y_prob)
 
-        # AUC should be 0 when only one class present
-        assert metrics["auc"] == 0.0
+        # AUROC and AUPRC should be 0 when only one class present
+        assert metrics["auroc"] == 0.0
+        assert metrics["auprc"] == 0.0
         assert metrics["accuracy"] == 1.0
 
     def test_all_wrong_predictions(self):
@@ -159,7 +163,8 @@ class TestSaveLoadMetrics:
         assert "precision" in loaded
         assert "recall" in loaded
         assert "f1" in loaded
-        assert "auc" in loaded
+        assert "auroc" in loaded
+        assert "auprc" in loaded
         assert "confusion_matrix" in loaded
 
 
@@ -186,7 +191,8 @@ class TestPrintMetrics:
             "precision": 0.92,
             "recall": 0.89,
             "f1": 0.90,
-            "auc": 0.93,
+            "auroc": 0.93,
+            "auprc": 0.91,
         }
 
         print_metrics(metrics)
