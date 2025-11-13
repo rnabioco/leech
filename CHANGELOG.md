@@ -7,57 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-- Initial project structure
-- Feature extraction from POD5 and BAM files
-  - Move table parsing for dwell time computation
-  - Per-base signal level statistics (mean, median, std, range)
-  - Multiple normalization methods (median-MAD, z-score, quantile)
-- PyTorch model architectures
-  - `ConvLSTMDwell`: Multi-branch model with dwell features
-  - `ConvLSTMBase`: Baseline model without dwell features
-- Complete training pipeline
-  - `Trainer` class with training loop, validation, and checkpointing
-  - `train_model()` high-level training function
-  - Early stopping and best model tracking
-- Grid search functionality
-  - Systematic optimization over signal window sizes (left/right context)
-  - CSV output with performance metrics for each configuration
-- Model evaluation and testing
-  - `evaluate_model()` function with comprehensive metrics
-  - Accuracy, precision, recall, F1, ROC AUC, confusion matrix
-  - JSON output for test results
-- Inference engine
-  - `run_inference()` for predictions on new data
-  - BAM output with modification probability tags (MP/ML)
-  - Motif-based filtering for targeted predictions
-- Utility functions (`util.py`)
-  - `load_model_from_checkpoint()`: Load trained models with configs
-  - `compute_metrics()`: Calculate classification metrics
-  - `save_metrics()` and `print_metrics()`: Metrics I/O
-- PyTorch Dataset classes
-  - `LeechDataset`: Load and preprocess training chunks
-  - Custom collate function for batching
-- Chunk serialization (save/load .npz format)
-- CLI interface with fully implemented subcommands:
-  - `prepare`: Extract training chunks from POD5/BAM
-  - `train`: Train models with hyperparameter support
-  - `test`: Evaluate models on test data
-  - `infer`: Run inference and write BAM predictions
-  - `grid-search`: Optimize chunk context parameters
-- Comprehensive test suite (8 tests for feature extraction)
-- Development tooling:
-  - `uv` for dependency management
-  - `ruff` for linting and formatting
-  - `mypy` for type checking
-  - GitHub Actions CI/CD pipeline
-  - Dependabot for automated dependency updates
-- Documentation:
-  - README.md with quickstart guide
-  - CLAUDE.md for AI assistant guidance
-  - Grid search documentation (docs/grid-search.md, docs/grid-search-usage.md)
-  - Comprehensive docstrings throughout
+## [0.1.0-alpha] - 2025-11-13
 
-## [0.1.0] - 2025-01-XX
+Initial alpha release of leech for aa-tRNA-seq nanopore signal classification.
 
-Initial development release.
+### Features
+
+- Complete CLI with 6 commands: `prepare`, `merge-and-split`, `train`, `test`, `infer`, `grid-search`
+- Feature extraction from POD5 and BAM files with move table parsing for dwell time computation
+- Six model architectures: ConvLSTMDwell, ConvLSTMBase, TransformerDwell, ConvOnly, TCNDwell, ResNetDwell
+- Parallel data preparation with multiprocessing support (8 workers default)
+- Reference-based motif search to prevent training bias from basecalling errors
+- Read-level data splitting to prevent leakage in multi-sample datasets
+- Class weighting for imbalanced datasets
+- CPU/GPU training support with automatic device detection
+- Rich CLI with progress bars and modern interface
+- Grid search for chunk context optimization
+- Automated GitHub release workflow
+
+### Data Preparation
+
+- Multi-sample merge-and-split with label=file syntax
+- TSV-based comparison specifications for batch processing
+- Parallel POD5/BAM processing with configurable workers and chunk size
+- Reference-based and basecalled motif search strategies
+- Optional indel filtering at motif sites
+
+### Training & Evaluation
+
+- Training with early stopping, checkpointing, and validation
+- Comprehensive metrics: accuracy, precision, recall, F1, ROC AUC, confusion matrix
+- Grid search over signal context parameters
+- Model checkpoint management with best model tracking
+
+### Documentation
+
+- Complete MkDocs documentation site with API reference
+- CLI usage guide with all commands documented
+- Architecture documentation and ADRs (Architecture Decision Records)
+- Guides for cluster setup (Alpine/SLURM, Bodhi/LSF)
+- Troubleshooting and implementation guides
+
+### Development
+
+- Complete test suite with pytest
+- Modern tooling: uv for dependencies, ruff for linting, mypy for type checking
+- GitHub Actions CI/CD with linting, testing, and documentation deployment
+- Snakemake pipeline for production workflows

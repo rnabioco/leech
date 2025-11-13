@@ -318,5 +318,5 @@ rule grid_search:
 ## See Also
 
 - [Grid Search Strategy](grid-search.md) - Full methodology and statistical analysis
-- [CLAUDE.md](../CLAUDE.md) - Project overview and architecture
-- [README.md](../README.md) - Installation and quick start
+- [Architecture](../architecture.md) - Project overview and architecture
+- [Getting Started](../getting-started/quick-start.md) - Installation and quick start

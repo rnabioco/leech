@@ -40,13 +40,13 @@ MODEL_REGISTRY = {
 }
 
 
-def get_model(model_name: str, **kwargs):
+def get_model(model_name: str, **kwargs) -> object:
     """
     Get model by name.
 
     Args:
         model_name: Name of model architecture
-        **kwargs: Model-specific parameters
+        **kwargs: Model-specific parameters (passed to model constructor)
 
     Returns:
         Instantiated model

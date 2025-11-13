@@ -76,6 +76,8 @@ plugins:
               ignore_init_summary: true
             filters:
               - "!^_"  # Exclude private members
+          inventories:
+            - https://docs.python.org/3/objects.inv
   - autorefs
 
 markdown_extensions:
