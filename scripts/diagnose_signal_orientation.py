@@ -16,51 +16,59 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pysam
 
-from leech.features import MoveTable
-from leech.io.bam_reader import BamReader
+from leech.features import MoveTable, extract_move_table
+from leech.io.bam_reader import BAMReader
 from leech.io.pod5_reader import POD5Reader
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
-def check_move_table_monotonicity(bam_path: str, n_reads: int = 100) -> dict:
+def check_move_table_monotonicity(bam_path: str, n_reads: int = 100, min_mapq: int = 10) -> dict:
     """
     Check if move table mappings are monotonically increasing.
 
-    If signal is 3'→5' but sequence is 5'→3' without correction,
-    the seq_to_sig_map should DECREASE, not increase.
+    The move table creates a mapping from base positions to signal indices.
+    For correctly oriented data:
+    - Base 0 should map to early signal indices (e.g., 0-100)
+    - Base 1 should map to later signal indices (e.g., 100-200)
+    - The mapping should be monotonically INCREASING
+
+    If signal and sequence are in opposite orientations (signal reversed):
+    - Base 0 would map to late signal indices (e.g., 9900-10000)
+    - Base 1 would map to earlier signal indices (e.g., 9800-9900)
+    - The mapping would be monotonically DECREASING
+
+    This diagnostic checks whether the seq-to-sig mapping is increasing or decreasing
+    to detect potential signal reversal issues.
     """
-    reader = BamReader(bam_path)
+    reader = BAMReader(Path(bam_path), min_mapq=min_mapq)
     results = {"increasing": 0, "decreasing": 0, "mixed": 0, "total": 0}
 
-    for i, aln in enumerate(reader):
-        if i >= n_reads:
-            break
-        if aln.is_unmapped or not aln.has_tag("mv"):
-            continue
+    with reader:
+        for i, aln in enumerate(reader.iter_alignments()):
+            if i >= n_reads:
+                break
+            if aln.is_unmapped or not aln.has_tag("mv"):
+                continue
 
-        try:
-            move_table = MoveTable.from_bam_tag(
-                mv_tag=aln.get_tag("mv"),
-                ns_tag=aln.get_tag("ns"),
-                seq_len=aln.query_length,
-            )
-            seq_to_sig = move_table.to_seq_to_sig_map()
+            try:
+                move_table = extract_move_table(aln)
+                seq_to_sig = move_table.to_seq_to_sig_map()
 
-            # Check if monotonically increasing or decreasing
-            diffs = np.diff(seq_to_sig)
-            if np.all(diffs >= 0):
-                results["increasing"] += 1
-            elif np.all(diffs <= 0):
-                results["decreasing"] += 1
-            else:
-                results["mixed"] += 1
-            results["total"] += 1
+                # Check if monotonically increasing or decreasing
+                diffs = np.diff(seq_to_sig)
+                if np.all(diffs >= 0):
+                    results["increasing"] += 1
+                elif np.all(diffs <= 0):
+                    results["decreasing"] += 1
+                else:
+                    results["mixed"] += 1
+                results["total"] += 1
 
-        except Exception as e:
-            logger.warning(f"Failed to process read {aln.query_name}: {e}")
-            continue
+            except Exception as e:
+                logger.warning(f"Failed to process read {aln.query_name}: {e}")
+                continue
 
     return results
 
@@ -70,6 +78,7 @@ def extract_motif_chunk_with_signal(
     pod5_path: str,
     motif: str = "CCAGGC",
     n_reads: int = 5,
+    min_mapq: int = 10,
 ) -> list[dict]:
     """
     Extract chunks around motifs and their corresponding signal.
@@ -80,68 +89,65 @@ def extract_motif_chunk_with_signal(
     - signal_means: per-base mean signal
     - seq_to_sig_map: mapping from bases to signal indices
     """
-    bam_reader = BamReader(bam_path)
-    pod5_reader = POD5Reader(pod5_path)
+    bam_reader = BAMReader(Path(bam_path), min_mapq=min_mapq)
+    pod5_reader = POD5Reader(Path(pod5_path))
     chunks = []
 
-    for aln in bam_reader:
-        if len(chunks) >= n_reads:
-            break
-        if aln.is_unmapped or not aln.has_tag("mv"):
-            continue
+    with bam_reader, pod5_reader:
+        for aln in bam_reader.iter_alignments():
+            if len(chunks) >= n_reads:
+                break
+            if aln.is_unmapped or not aln.has_tag("mv"):
+                continue
 
-        # Find motif in sequence
-        seq = aln.query_sequence
-        if seq is None:
-            continue
-        motif_pos = seq.find(motif)
-        if motif_pos == -1:
-            continue
+            # Find motif in sequence
+            seq = aln.query_sequence
+            if seq is None:
+                continue
+            motif_pos = seq.find(motif)
+            if motif_pos == -1:
+                continue
 
-        try:
-            # Get move table and signal
-            move_table = MoveTable.from_bam_tag(
-                mv_tag=aln.get_tag("mv"),
-                ns_tag=aln.get_tag("ns"),
-                seq_len=aln.query_length,
-            )
-            seq_to_sig = move_table.to_seq_to_sig_map()
-            signal = pod5_reader.get_signal(aln.query_name)
+            try:
+                # Get move table and signal
+                move_table = extract_move_table(aln)
+                seq_to_sig = move_table.to_seq_to_sig_map()
+                signal, _ = pod5_reader.get_signal(aln.query_name)
 
-            # Extract context around motif
-            context = 10
-            start = max(0, motif_pos - context)
-            end = min(len(seq), motif_pos + len(motif) + context)
+                # Extract context around motif
+                context = 10
+                start = max(0, motif_pos - context)
+                end = min(len(seq), motif_pos + len(motif) + context)
 
-            chunk_seq = seq[start:end]
-            chunk_sig_start = seq_to_sig[start]
-            chunk_sig_end = seq_to_sig[end - 1] if end < len(seq_to_sig) else len(signal)
+                chunk_seq = seq[start:end]
+                chunk_sig_start = seq_to_sig[start]
+                chunk_sig_end = seq_to_sig[end - 1] if end < len(seq_to_sig) else len(signal)
 
-            chunk_signal = signal[chunk_sig_start:chunk_sig_end]
-            chunk_seq_to_sig = seq_to_sig[start:end] - chunk_sig_start
+                chunk_signal = signal[chunk_sig_start:chunk_sig_end]
+                chunk_seq_to_sig = seq_to_sig[start:end] - chunk_sig_start
 
-            # Compute per-base mean signal
-            per_base_means = []
-            for i in range(len(chunk_seq)):
-                sig_start = chunk_seq_to_sig[i]
-                sig_end = chunk_seq_to_sig[i + 1] if i + 1 < len(chunk_seq_to_sig) else len(chunk_signal)
-                base_signal = chunk_signal[sig_start:sig_end]
-                per_base_means.append(np.mean(base_signal) if len(base_signal) > 0 else 0)
+                # Compute per-base mean signal
+                per_base_means = []
+                for i in range(len(chunk_seq)):
+                    sig_start = chunk_seq_to_sig[i]
+                    sig_end = chunk_seq_to_sig[i + 1] if i + 1 < len(chunk_seq_to_sig) else len(chunk_signal)
+                    base_signal = chunk_signal[sig_start:sig_end]
+                    per_base_means.append(np.mean(base_signal) if len(base_signal) > 0 else 0)
 
-            chunks.append(
-                {
-                    "read_id": aln.query_name,
-                    "sequence": chunk_seq,
-                    "signal": chunk_signal,
-                    "per_base_means": np.array(per_base_means),
-                    "seq_to_sig_map": chunk_seq_to_sig,
-                    "motif_start": motif_pos - start,
-                }
-            )
+                chunks.append(
+                    {
+                        "read_id": aln.query_name,
+                        "sequence": chunk_seq,
+                        "signal": chunk_signal,
+                        "per_base_means": np.array(per_base_means),
+                        "seq_to_sig_map": chunk_seq_to_sig,
+                        "motif_start": motif_pos - start,
+                    }
+                )
 
-        except Exception as e:
-            logger.warning(f"Failed to extract chunk from {aln.query_name}: {e}")
-            continue
+            except Exception as e:
+                logger.warning(f"Failed to extract chunk from {aln.query_name}: {e}")
+                continue
 
     return chunks
 
@@ -215,6 +221,8 @@ def main():
     parser.add_argument("--pod5", required=True, help="POD5 file with raw signal")
     parser.add_argument("--motif", default="CCAGGC", help="Motif to search for")
     parser.add_argument("--output", default="signal_diagnosis.png", help="Output plot")
+    parser.add_argument("--min-mapq", type=int, default=10, help="Minimum mapping quality (default: 10)")
+    parser.add_argument("--n-reads", type=int, default=500, help="Number of reads to analyze for monotonicity check (default: 500)")
     args = parser.parse_args()
 
     logger.info("=" * 80)
@@ -222,8 +230,11 @@ def main():
     logger.info("=" * 80)
 
     # Test 1: Check move table monotonicity
-    logger.info("\n1. Checking move table monotonicity...")
-    monotonicity = check_move_table_monotonicity(args.bam, n_reads=100)
+    logger.info("")
+    logger.info("1. Checking move table monotonicity...")
+    logger.info(f"   Filtering reads with MAPQ >= {args.min_mapq}")
+    logger.info(f"   Analyzing up to {args.n_reads} reads")
+    monotonicity = check_move_table_monotonicity(args.bam, n_reads=args.n_reads, min_mapq=args.min_mapq)
     logger.info(f"   Results from {monotonicity['total']} reads:")
     logger.info(f"   - Increasing: {monotonicity['increasing']} reads")
     logger.info(f"   - Decreasing: {monotonicity['decreasing']} reads")
@@ -237,32 +248,37 @@ def main():
         logger.info("   ✓ All mappings are increasing (expected)")
 
     # Test 2: Extract and visualize chunks
-    logger.info(f"\n2. Extracting chunks around motif '{args.motif}'...")
-    chunks = extract_motif_chunk_with_signal(args.bam, args.pod5, motif=args.motif, n_reads=5)
+    logger.info("")
+    logger.info(f"2. Extracting chunks around motif '{args.motif}'...")
+    chunks = extract_motif_chunk_with_signal(args.bam, args.pod5, motif=args.motif, n_reads=5, min_mapq=args.min_mapq)
     logger.info(f"   Extracted {len(chunks)} chunks")
 
     if len(chunks) > 0:
         # Test 3: Plot signal alignment
-        logger.info("\n3. Plotting signal alignment...")
+        logger.info("")
+        logger.info("3. Plotting signal alignment...")
         plot_signal_alignment(chunks, args.output)
 
         # Test 4: Base-signal correlations
-        logger.info("\n4. Computing base-signal correlations...")
+        logger.info("")
+        logger.info("4. Computing base-signal correlations...")
         base_means = compute_base_signal_correlation(chunks)
         logger.info("   Mean signal per base:")
         for base in sorted(base_means.keys()):
             logger.info(f"   - {base}: {base_means[base]:.2f} pA")
 
-    logger.info("\n" + "=" * 80)
+    logger.info("")
+    logger.info("=" * 80)
     logger.info("INTERPRETATION:")
     logger.info("=" * 80)
-    logger.info(
-        "• If move table mappings are DECREASING, signal and sequence are reversed"
-    )
-    logger.info("• Check the plot: bases should align with signal features")
-    logger.info(
-        "• If bases appear 'backwards' relative to signal transitions, need reversal"
-    )
+    logger.info("• Move table mappings should be INCREASING:")
+    logger.info("  - The seq-to-sig map should map base 0→signal_start, base 1→signal_mid, etc.")
+    logger.info("  - If mappings DECREASE (base 0→signal_end, base 1→signal_start), this indicates")
+    logger.info("    that signal and sequence are in opposite orientations (signal reversed)")
+    logger.info("")
+    logger.info("• Visual check:")
+    logger.info("  - Bases should align with corresponding signal features in the plot")
+    logger.info("  - If bases appear 'backwards' relative to signal transitions, signal may be reversed")
     logger.info("=" * 80)
 
 
