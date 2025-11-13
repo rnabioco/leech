@@ -51,7 +51,7 @@ def generate_synthetic_signal(bases: str, mean_dwell: int = 10, noise_level: flo
     return np.array(signal), true_dwells
 
 
-def create_move_table(dwells: list[int], stride: int = 5, signal_len: int = None):
+def create_move_table(dwells: list[int], stride: int = 5, signal_len: int | None = None):
     """Create a move table from dwell times.
 
     Args:

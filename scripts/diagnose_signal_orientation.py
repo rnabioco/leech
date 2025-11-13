@@ -14,9 +14,8 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
-import pysam
 
-from leech.features import MoveTable, extract_move_table
+from leech.features import extract_move_table
 from leech.io.bam_reader import BAMReader
 from leech.io.pod5_reader import POD5Reader
 
@@ -112,6 +111,11 @@ def extract_motif_chunk_with_signal(
                 # Get move table and signal
                 move_table = extract_move_table(aln)
                 seq_to_sig = move_table.to_seq_to_sig_map()
+
+                # Skip if query_name is None
+                if aln.query_name is None:
+                    continue
+
                 signal, _ = pod5_reader.get_signal(aln.query_name)
 
                 # Extract context around motif
@@ -130,7 +134,11 @@ def extract_motif_chunk_with_signal(
                 per_base_means = []
                 for i in range(len(chunk_seq)):
                     sig_start = chunk_seq_to_sig[i]
-                    sig_end = chunk_seq_to_sig[i + 1] if i + 1 < len(chunk_seq_to_sig) else len(chunk_signal)
+                    sig_end = (
+                        chunk_seq_to_sig[i + 1]
+                        if i + 1 < len(chunk_seq_to_sig)
+                        else len(chunk_signal)
+                    )
                     base_signal = chunk_signal[sig_start:sig_end]
                     per_base_means.append(np.mean(base_signal) if len(base_signal) > 0 else 0)
 
@@ -179,7 +187,9 @@ def plot_signal_alignment(chunks: list[dict], output_path: str):
                     ax.get_ylim()[1] * 0.9,
                     chunk["sequence"][j],
                     fontsize=8,
-                    color="red" if j >= chunk["motif_start"] and j < chunk["motif_start"] + 6 else "black",
+                    color="red"
+                    if j >= chunk["motif_start"] and j < chunk["motif_start"] + 6
+                    else "black",
                 )
 
         ax.set_title(f"Read: {chunk['read_id']}")
@@ -200,7 +210,7 @@ def compute_base_signal_correlation(chunks: list[dict]) -> dict:
     base_signals = {"A": [], "C": [], "G": [], "T": [], "U": []}
 
     for chunk in chunks:
-        for base, mean_sig in zip(chunk["sequence"], chunk["per_base_means"]):
+        for base, mean_sig in zip(chunk["sequence"], chunk["per_base_means"], strict=False):
             if base in base_signals:
                 base_signals[base].append(mean_sig)
 
@@ -214,15 +224,20 @@ def compute_base_signal_correlation(chunks: list[dict]) -> dict:
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Diagnose signal orientation in RNA nanopore data"
-    )
+    parser = argparse.ArgumentParser(description="Diagnose signal orientation in RNA nanopore data")
     parser.add_argument("--bam", required=True, help="BAM file with move tables")
     parser.add_argument("--pod5", required=True, help="POD5 file with raw signal")
     parser.add_argument("--motif", default="CCAGGC", help="Motif to search for")
     parser.add_argument("--output", default="signal_diagnosis.png", help="Output plot")
-    parser.add_argument("--min-mapq", type=int, default=10, help="Minimum mapping quality (default: 10)")
-    parser.add_argument("--n-reads", type=int, default=500, help="Number of reads to analyze for monotonicity check (default: 500)")
+    parser.add_argument(
+        "--min-mapq", type=int, default=10, help="Minimum mapping quality (default: 10)"
+    )
+    parser.add_argument(
+        "--n-reads",
+        type=int,
+        default=500,
+        help="Number of reads to analyze for monotonicity check (default: 500)",
+    )
     args = parser.parse_args()
 
     logger.info("=" * 80)
@@ -234,23 +249,25 @@ def main():
     logger.info("1. Checking move table monotonicity...")
     logger.info(f"   Filtering reads with MAPQ >= {args.min_mapq}")
     logger.info(f"   Analyzing up to {args.n_reads} reads")
-    monotonicity = check_move_table_monotonicity(args.bam, n_reads=args.n_reads, min_mapq=args.min_mapq)
+    monotonicity = check_move_table_monotonicity(
+        args.bam, n_reads=args.n_reads, min_mapq=args.min_mapq
+    )
     logger.info(f"   Results from {monotonicity['total']} reads:")
     logger.info(f"   - Increasing: {monotonicity['increasing']} reads")
     logger.info(f"   - Decreasing: {monotonicity['decreasing']} reads")
     logger.info(f"   - Mixed: {monotonicity['mixed']} reads")
 
     if monotonicity["decreasing"] > 0:
-        logger.warning(
-            "   ⚠️  FOUND DECREASING MAPPINGS! This suggests signal reversal issue."
-        )
+        logger.warning("   ⚠️  FOUND DECREASING MAPPINGS! This suggests signal reversal issue.")
     elif monotonicity["increasing"] == monotonicity["total"]:
         logger.info("   ✓ All mappings are increasing (expected)")
 
     # Test 2: Extract and visualize chunks
     logger.info("")
     logger.info(f"2. Extracting chunks around motif '{args.motif}'...")
-    chunks = extract_motif_chunk_with_signal(args.bam, args.pod5, motif=args.motif, n_reads=5, min_mapq=args.min_mapq)
+    chunks = extract_motif_chunk_with_signal(
+        args.bam, args.pod5, motif=args.motif, n_reads=5, min_mapq=args.min_mapq
+    )
     logger.info(f"   Extracted {len(chunks)} chunks")
 
     if len(chunks) > 0:
@@ -278,7 +295,9 @@ def main():
     logger.info("")
     logger.info("• Visual check:")
     logger.info("  - Bases should align with corresponding signal features in the plot")
-    logger.info("  - If bases appear 'backwards' relative to signal transitions, signal may be reversed")
+    logger.info(
+        "  - If bases appear 'backwards' relative to signal transitions, signal may be reversed"
+    )
     logger.info("=" * 80)
 
 

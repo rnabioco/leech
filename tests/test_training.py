@@ -523,7 +523,7 @@ class TestTrainingEdgeCases:
         model = get_model("ConvLSTMDwell", **model_config)
 
         # Create minimal dataset
-        class DummyDataset:
+        class DummyDataset(torch.utils.data.Dataset):
             def __len__(self):
                 return 4
 

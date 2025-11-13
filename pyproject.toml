@@ -80,6 +80,9 @@ ignore = [
     "E501",  # line too long (handled by formatter)
 ]
 
+[tool.ruff.lint.per-file-ignores]
+"*.ipynb" = ["E402"]  # Allow imports anywhere in notebooks
+
 [tool.ruff.lint.isort]
 known-first-party = ["leech"]
 
@@ -99,6 +102,18 @@ testpaths = ["tests"]
 python_files = "test_*.py"
 python_functions = "test_*"
 addopts = "-v --cov=leech --cov-report=term-missing"
+
+[tool.nbqa.addopts]
+ruff = ["--ignore=E402"]
+
+[tool.ty.rules]
+# Ignore PyTorch nn.Module attribute assignment false positives
+# PyTorch uses custom __setattr__ which ty doesn't understand
+unresolved-attribute = "ignore"
+unresolved-import = "ignore"
+# Ignore false positives from PyTorch Dataset iteration and numpy arrays
+possibly-missing-attribute = "ignore"
+invalid-argument-type = "ignore"
 
 [dependency-groups]
 docs = [

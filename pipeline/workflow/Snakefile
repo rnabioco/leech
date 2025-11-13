@@ -214,5 +214,7 @@ rule all_diagnose:
     input:
         expand(
             METRICS_DIR + "/diagnostics/{sample}/signal_orientation.png",
-            sample=[s for s in SAMPLES if config["samples"][s].get("label") != "uncharged"],
+            sample=[
+                s for s in SAMPLES if config["samples"][s].get("label") != "uncharged"
+            ],
         ),
