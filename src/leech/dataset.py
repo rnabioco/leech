@@ -33,6 +33,7 @@ Example:
     >>> print(batch.keys())  # ['signal', 'sequence', 'features', 'label'] for feature models
 """
 
+import random
 from pathlib import Path
 
 import numpy as np
@@ -50,6 +51,14 @@ FEATURE_MODELS = {
     "ConvOnly",
     "TCNDwell",
     "ResNetDwell",
+    "ConvLSTMSignalFeatures",
+    "TCNSignalFeatures",
+}
+
+# Models that do NOT require sequence input (signal + features only)
+SIGNAL_FEATURES_MODELS = {
+    "ConvLSTMSignalFeatures",
+    "TCNSignalFeatures",
 }
 
 
@@ -66,6 +75,7 @@ class LeechDataset(Dataset):
         signal_len: int = 400,
         kmer_len: int = 11,
         model_type: str = "ConvLSTMDwell",
+        mask_sequence_prob: float = 0.0,
     ):
         """
         Initialize dataset.
@@ -75,11 +85,13 @@ class LeechDataset(Dataset):
             signal_len: Expected signal length (will pad/truncate)
             kmer_len: Expected k-mer length
             model_type: Model architecture name (e.g., "ConvLSTMDwell", "TransformerDwell")
+            mask_sequence_prob: Probability of randomizing sequence (data augmentation)
         """
         self.chunk_path = chunk_path
         self.signal_len = signal_len
         self.kmer_len = kmer_len
         self.model_type = model_type
+        self.mask_sequence_prob = mask_sequence_prob
 
         # Load chunks
         self.chunks = load_chunks(chunk_path)
@@ -101,7 +113,7 @@ class LeechDataset(Dataset):
         Returns:
             Dictionary with:
             - signal: (signal_len,) tensor
-            - sequence: (4, kmer_len) one-hot encoded tensor
+            - sequence: (4, kmer_len) one-hot encoded tensor (if model requires sequence)
             - features: (num_features, kmer_len) tensor (if model requires features)
             - label: (1,) tensor
         """
@@ -119,10 +131,16 @@ class LeechDataset(Dataset):
 
         signal_tensor = torch.from_numpy(signal)
 
-        # Process sequence - one-hot encode
+        # Process sequence - one-hot encode (skip for signal-features models)
         sequence = chunk["sequence"]
         if len(sequence) != self.kmer_len:
             raise ValueError(f"Expected k-mer length {self.kmer_len}, got {len(sequence)}")
+
+        # Apply sequence masking if enabled (data augmentation)
+        if self.mask_sequence_prob > 0 and random.random() < self.mask_sequence_prob:
+            # Replace sequence with random bases to force model to ignore sequence
+            sequence = "".join(random.choice("ACGT") for _ in range(len(sequence)))
+
         sequence_tensor = encode_kmer(sequence)
 
         # Process features (for ConvLSTMDwell)
@@ -138,9 +156,12 @@ class LeechDataset(Dataset):
 
         result = {
             "signal": signal_tensor,
-            "sequence": sequence_tensor,
             "label": label,
         }
+
+        # Include sequence for models that require it (all except signal-features models)
+        if self.model_type not in SIGNAL_FEATURES_MODELS:
+            result["sequence"] = sequence_tensor
 
         # Include features for models that require them
         if self.model_type in FEATURE_MODELS:
@@ -161,14 +182,17 @@ def collate_fn(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
     """
     # Stack all tensors
     signals = torch.stack([item["signal"] for item in batch])
-    sequences = torch.stack([item["sequence"] for item in batch])
     labels = torch.stack([item["label"] for item in batch])
 
     result = {
         "signal": signals,
-        "sequence": sequences,
         "label": labels,
     }
+
+    # Add sequence if present (not for signal-features models)
+    if "sequence" in batch[0]:
+        sequences = torch.stack([item["sequence"] for item in batch])
+        result["sequence"] = sequences
 
     # Add features if present
     if "features" in batch[0]:

@@ -1,0 +1,25 @@
+# ConvLSTMBase: Baseline model (signal + sequence only, no features)
+# Use this as baseline to measure the impact of dwell/level features
+
+model_name: "ConvLSTMBase"
+description: "Baseline model with signal and sequence branches (no dwell/level features)"
+
+# Model architecture parameters
+model_kwargs:
+  # Use default architecture parameters
+  # conv_channels: [4, 16, 256]
+  # lstm_hidden: 96
+  # dropout: 0.1
+
+# Training hyperparameters
+training:
+  epochs: 50
+  batch_size: 128
+  learning_rate: 0.001
+  early_stopping_patience: 10
+  use_class_weights: true
+  mask_sequence_prob: 0.0  # No sequence masking for baseline
+
+# Expected use case:
+# - Control experiment to quantify feature contribution
+# - Should underperform models with dwell/level features for tRNA classification

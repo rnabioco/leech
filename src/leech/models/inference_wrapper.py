@@ -27,13 +27,21 @@ class ModelInferenceWrapper:
         logits = wrapper.forward_batch(batch, device)
     """
 
-    # Models that require dwell/signal features as third input
+    # Models that require dwell/signal features as input
     FEATURE_MODELS = {
         "ConvLSTMDwell",
         "TransformerDwell",
         "ConvOnly",
         "TCNDwell",
         "ResNetDwell",
+        "ConvLSTMSignalFeatures",
+        "TCNSignalFeatures",
+    }
+
+    # Models that do NOT require sequence input (signal + features only)
+    SIGNAL_FEATURES_MODELS = {
+        "ConvLSTMSignalFeatures",
+        "TCNSignalFeatures",
     }
 
     def __init__(self, model: nn.Module, model_type: str):
@@ -47,6 +55,7 @@ class ModelInferenceWrapper:
         self.model = model
         self.model_type = model_type
         self.requires_features = model_type in self.FEATURE_MODELS
+        self.requires_sequence = model_type not in self.SIGNAL_FEATURES_MODELS
 
     def forward_batch(self, batch: dict, device: str) -> torch.Tensor:
         """
@@ -55,21 +64,30 @@ class ModelInferenceWrapper:
         Automatically moves tensors to device and calls model with correct arguments.
 
         Args:
-            batch: Batch dict with "signal", "sequence", and optionally "features"
+            batch: Batch dict with "signal", optionally "sequence", and optionally "features"
             device: Device to move tensors to
 
         Returns:
             Model logits
         """
         signal = batch["signal"].to(device)
-        sequence = batch["sequence"].to(device)
 
         output: torch.Tensor
-        if self.requires_features:
+
+        # Signal + Features only models (no sequence)
+        if not self.requires_sequence:
+            features = batch["features"].to(device)
+            output = self.model(signal, features)
+        # Signal + Sequence + Features models
+        elif self.requires_features:
+            sequence = batch["sequence"].to(device)
             features = batch["features"].to(device)
             output = self.model(signal, sequence, features)
+        # Signal + Sequence only models (baseline)
         else:
+            sequence = batch["sequence"].to(device)
             output = self.model(signal, sequence)
+
         return output
 
     def __call__(self, *args, **kwargs) -> torch.Tensor:

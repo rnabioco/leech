@@ -1,0 +1,28 @@
+# ConvLSTMDwell with sequence masking: Full model with data augmentation
+# Tests whether sequence masking prevents overfitting to constant sequences
+
+model_name: "ConvLSTMDwell"
+description: "Full model with sequence masking (50% probability)"
+
+# Model architecture parameters
+model_kwargs:
+  # Use default architecture parameters
+  # conv_channels: [4, 16, 256]
+  # lstm_hidden: 96
+  # dropout: 0.1
+  # num_features: auto-detected from training data
+
+# Training hyperparameters
+training:
+  epochs: 50
+  batch_size: 128
+  learning_rate: 0.001
+  early_stopping_patience: 10
+  use_class_weights: true
+  mask_sequence_prob: 0.5  # Randomize sequence 50% of the time
+
+# Expected use case:
+# - Alternative approach to signal-features models for constant sequences
+# - Forces model to ignore sequence branch
+# - Keeps sequence branch for potential variable-sequence applications
+# - Should approach TCNSignalFeatures performance if masking is effective

@@ -392,6 +392,7 @@ def train_model(
     early_stopping_patience: int = 10,
     use_class_weights: bool = True,
     pos_weight: float | None = None,
+    mask_sequence_prob: float = 0.0,
     **model_kwargs,
 ) -> dict[str, Any]:
     """
@@ -412,6 +413,7 @@ def train_model(
         early_stopping_patience: Stop training if validation loss doesn't improve for N epochs
         use_class_weights: Auto-compute class weights from training data (default: True)
         pos_weight: Manual positive class weight (overrides use_class_weights if provided)
+        mask_sequence_prob: Probability of masking sequence during training (data augmentation)
         **model_kwargs: Additional model parameters (passed to model constructor)
 
     Returns:
@@ -439,13 +441,21 @@ def train_model(
 
     # Create datasets
     train_dataset = LeechDataset(
-        train_data_path, signal_len=signal_len, kmer_len=kmer_len, model_type=model_name
+        train_data_path,
+        signal_len=signal_len,
+        kmer_len=kmer_len,
+        model_type=model_name,
+        mask_sequence_prob=mask_sequence_prob,  # Only apply masking to training data
     )
 
     val_dataset = None
     if val_data_path is not None:
         val_dataset = LeechDataset(
-            val_data_path, signal_len=signal_len, kmer_len=kmer_len, model_type=model_name
+            val_data_path,
+            signal_len=signal_len,
+            kmer_len=kmer_len,
+            model_type=model_name,
+            mask_sequence_prob=0.0,  # No masking for validation
         )
 
     # Create data loaders

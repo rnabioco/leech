@@ -1,0 +1,28 @@
+# TCNSignalFeatures: Signal + features only (optimized for constant sequences)
+# Best-performing architecture (TCN) without sequence branch
+
+model_name: "TCNSignalFeatures"
+description: "TCN model with signal and features branches only (no sequence)"
+
+# Model architecture parameters
+model_kwargs:
+  # TCN-specific parameters
+  hidden_channels: 64
+  num_layers: 6
+  kernel_size: 3
+  dropout: 0.1
+
+# Training hyperparameters
+training:
+  epochs: 50
+  batch_size: 128
+  learning_rate: 0.001
+  early_stopping_patience: 10
+  use_class_weights: true
+  mask_sequence_prob: 0.0  # Not applicable (no sequence branch)
+
+# Expected use case:
+# - OPTIMAL for tRNA aminoacylation (constant CCAGGC motif)
+# - Faster training (fewer parameters)
+# - No sequence overfitting risk
+# - Should match or outperform TCNDwell for constant-sequence applications

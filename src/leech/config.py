@@ -143,6 +143,9 @@ class TrainingConfig(BaseModel):
     seed: int | None = DEFAULT_SEED
     early_stopping_patience: int = 10
 
+    # Data augmentation
+    mask_sequence_prob: float = 0.0  # Probability of masking sequence (0.0 = disabled)
+
     @field_validator("epochs", "batch_size")
     @classmethod
     def validate_positive(cls, v: int) -> int:
@@ -165,6 +168,14 @@ class TrainingConfig(BaseModel):
         """Ensure device is valid."""
         if v not in ["cuda", "cpu"]:
             raise ValueError(f"Device must be 'cuda' or 'cpu', got {v}")
+        return v
+
+    @field_validator("mask_sequence_prob")
+    @classmethod
+    def validate_mask_sequence_prob(cls, v: float) -> float:
+        """Ensure mask probability is between 0 and 1."""
+        if not 0 <= v <= 1:
+            raise ValueError(f"mask_sequence_prob must be between 0 and 1, got {v}")
         return v
 
 

@@ -1,0 +1,27 @@
+# ConvLSTMDwell: Full model with signal + sequence + features
+# Standard architecture with all three branches
+
+model_name: "ConvLSTMDwell"
+description: "Full model with signal, sequence, and dwell/level feature branches"
+
+# Model architecture parameters
+model_kwargs:
+  # Use default architecture parameters
+  # conv_channels: [4, 16, 256]
+  # lstm_hidden: 96
+  # dropout: 0.1
+  # num_features: auto-detected from training data
+
+# Training hyperparameters
+training:
+  epochs: 50
+  batch_size: 128
+  learning_rate: 0.001
+  early_stopping_patience: 10
+  use_class_weights: true
+  mask_sequence_prob: 0.0  # No sequence masking
+
+# Expected use case:
+# - General-purpose model for both constant and variable sequence contexts
+# - Comparison point for sequence masking and signal-features variants
+# - May waste capacity on constant sequences (tRNA use case)

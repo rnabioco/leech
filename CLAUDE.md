@@ -66,15 +66,37 @@ uv run leech prepare --pod5 reads.pod5 --bam alignments.bam --output-dir chunks/
 uv run leech prepare --pod5 reads.pod5 --bam alignments.bam --output-dir chunks/ \
   --workers 8 --chunk-size 100
 
-# Train model
+# Train model (choose architecture based on use case)
+# For constant-sequence tRNA: TCNSignalFeatures (recommended)
 uv run leech train --train-data chunks/train.json --val-data chunks/val.json \
-  --model ConvLSTMDwell --output-dir models/
+  --model TCNSignalFeatures --output-dir models/tcn_signal_features/
+
+# For variable-sequence: TCNDwell
+uv run leech train --train-data chunks/train.json --val-data chunks/val.json \
+  --model TCNDwell --output-dir models/tcn_dwell/
+
+# With sequence masking (for constant sequences)
+uv run leech train --train-data chunks/train.json --val-data chunks/val.json \
+  --model ConvLSTMDwell --mask-sequence-prob 0.5 --output-dir models/dwell_masked/
 
 # Test model
 uv run leech test --model models/model_best.pt --test-data chunks/test.json --output metrics.json
 
 # Run inference
 uv run leech infer --model models/model_best.pt --pod5 reads.pod5 --bam alignments.bam --output predictions.bam
+
+# Analysis commands
+# Compare multiple models
+uv run leech analyze compare -m models/base/ -m models/tcn_signal_features/ \
+  -t chunks/test.npz -o analysis/comparison/
+
+# Compute feature importance
+uv run leech analyze feature-importance -m models/tcn_signal_features/model_best.pt \
+  -t chunks/test.npz -o analysis/feature_importance/
+
+# Test sequence ablation
+uv run leech analyze sequence-ablation -m models/tcn_dwell/model_best.pt \
+  -t chunks/test.npz -o analysis/sequence_ablation/
 ```
 
 ### Adding Dependencies
@@ -169,14 +191,28 @@ uv run leech prepare --pod5 data.pod5 --bam alignments.bam \
 - Branches merge → BiLSTM → FC output
 - Compare with `ConvLSTMBase` (no dwell features) to measure impact
 
+**`TCNSignalFeatures` (models/tcn_signal_features.py)**
+- Optimized for constant-sequence applications (e.g., tRNA)
+- Two branches: Signal + Features only (no sequence)
+- Temporal Convolutional Network with dilated convolutions
+- Avoids overfitting to constant sequences
+- Best performance for tRNA aminoacylation
+
+**`ConvLSTMSignalFeatures` (models/conv_lstm_signal_features.py)**
+- Alternative signal+features model
+- Two branches: Signal + Features only (no sequence)
+- Conv + BiLSTM architecture
+- Simpler than TCN, good for constant-sequence tasks
+
 ### Module Organization
 
 ```
 src/leech/           # Main package source
 ├── cli.py           # Command-line interface (rich-click based)
 ├── commands/        # CLI command handlers
-│   ├── prepare.py   # Prepare command implementation
-│   └── merge_split.py  # Merge-and-split command
+│   ├── prepare.py      # Prepare command implementation
+│   ├── merge_split.py  # Merge-and-split command
+│   └── analyze.py      # Analysis command handlers (comparison, feature importance, ablation)
 ├── io/              # Input/output operations
 │   ├── bam_reader.py    # BAM file reading
 │   ├── pod5_reader.py   # POD5 signal reading
@@ -202,6 +238,11 @@ src/leech/           # Main package source
 ├── config.py        # Configuration management
 ├── constants.py     # Project-wide constants
 ├── logging_config.py  # Logging setup
+├── analysis/        # Analysis tools
+│   ├── comparison.py          # Model comparison utilities
+│   ├── feature_importance.py  # Gradient-based feature importance
+│   ├── sequence_ablation.py   # Test sequence branch contribution
+│   └── visualization.py       # Plotting utilities
 └── models/          # Model architectures
     ├── __init__.py            # Model registry and get_model()
     ├── components.py          # Reusable model components
@@ -274,21 +315,37 @@ The workflow is designed to integrate with the leech CLI commands and supports b
 - **pydantic**: Config validation
 - **ruff**: Linting and formatting (replaces black/flake8)
 
+## Model Selection for tRNA Applications
+
+**IMPORTANT**: For tRNA aminoacylation with constant CCAGGC motif:
+
+- **Use**: `TCNSignalFeatures` or `ConvLSTMSignalFeatures`
+- **Why**: Sequence is constant across all examples → sequence branch will overfit
+- **Benefit**:
+  - No sequence overfitting
+  - Faster training (fewer parameters)
+  - Better generalization
+  - Focuses on discriminative features (signal + dwell/levels)
+
+**Alternative Approach**: Use `ConvLSTMDwell` or `TCNDwell` with `--mask-sequence-prob 0.5`
+- Randomizes sequences during training
+- Forces model to ignore sequence branch
+- Keeps architecture flexible for future variable-sequence use
+
+See `docs/model_selection.md` for detailed guidance.
+
 ## Current Status
 
 The codebase is feature-complete:
 - ✓ Feature extraction fully implemented
-- ✓ Model architectures defined (ConvLSTMDwell, ConvLSTMBase, TransformerDwell, TCNDwell, ResNetDwell, ConvOnly)
-- ✓ CLI interface fully implemented with 6 commands (prepare, merge-and-split, train, test, infer, grid-search)
-- ✓ Training loop with Trainer class
-- ✓ Grid search for chunk context optimization
-- ✓ Testing/evaluation with comprehensive metrics
-- ✓ Inference engine with BAM output
-- ✓ Chunk serialization (chunking/serialization.py)
-- ✓ Model loading utilities (load_model_from_checkpoint in util.py)
-- ✓ Comprehensive tests for features.py
+- ✓ Model architectures (8 variants including signal-features models)
+- ✓ CLI with 7 command groups (prepare, merge-and-split, train, test, infer, grid-search, analyze)
+- ✓ Analysis tools (model comparison, feature importance, sequence ablation)
+- ✓ Data augmentation (sequence masking)
 - ✓ Parallel data preparation with multiprocessing
-- ✓ Reference-based motif search to avoid training bias
+- ✓ Reference-based motif search
+- ✓ Comprehensive testing and type checking
 - ✓ Snakemake workflow for production pipelines
+- ✓ Model comparison infrastructure
 
 All core functionality is implemented and ready for use.

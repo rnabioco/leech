@@ -84,9 +84,11 @@ LOGO = """
 MODEL_CHOICES = [
     "ConvLSTMDwell",
     "ConvLSTMBase",
+    "ConvLSTMSignalFeatures",
     "TransformerDwell",
     "ConvOnly",
     "TCNDwell",
+    "TCNSignalFeatures",
     "ResNetDwell",
 ]
 
@@ -406,6 +408,12 @@ def merge_and_split(input_chunks, output_dir, train_split, val_split, seed, comp
     default=None,
     help="Manual positive class weight for BCEWithLogitsLoss (overrides --use-class-weights)",
 )
+@click.option(
+    "--mask-sequence-prob",
+    type=float,
+    default=0.0,
+    help="Probability of randomizing sequence during training (data augmentation, 0.0-1.0)",
+)
 def train(
     train_data,
     val_data,
@@ -420,6 +428,7 @@ def train(
     early_stopping,
     use_class_weights,
     pos_weight,
+    mask_sequence_prob,
 ):
     """Train a model on prepared data."""
     from leech.training import train_model
@@ -450,6 +459,7 @@ def train(
         early_stopping_patience=early_stopping,
         use_class_weights=use_class_weights,
         pos_weight=pos_weight,
+        mask_sequence_prob=mask_sequence_prob,
         **model_kwargs,
     )
 
@@ -713,6 +723,169 @@ def grid_search(
 
     console.print("[bold green]Grid search complete![/bold green]")
     logger.info(f"Results saved to: {summary_path}")
+
+
+# ===================================================================
+# Analysis Commands
+# ===================================================================
+
+
+@cli.group()
+def analyze():
+    """Analyze trained models (comparison, feature importance, ablation)."""
+    pass
+
+
+@analyze.command("compare")
+@click.option(
+    "--model-dirs",
+    "-m",
+    required=True,
+    multiple=True,
+    type=click.Path(exists=True, path_type=Path),
+    help="Model directories to compare (can specify multiple)",
+)
+@click.option(
+    "--test-data",
+    "-t",
+    required=True,
+    type=click.Path(exists=True, path_type=Path),
+    help="Test dataset for evaluation",
+)
+@click.option(
+    "--output-dir",
+    "-o",
+    required=True,
+    type=click.Path(path_type=Path),
+    help="Output directory for comparison results",
+)
+@click.option(
+    "--device",
+    type=click.Choice(["cuda", "cpu"]),
+    default=DEFAULT_DEVICE,
+    help="Device for evaluation",
+)
+@click.option(
+    "--no-plot",
+    is_flag=True,
+    help="Skip generating plots",
+)
+def compare_models_cmd(model_dirs, test_data, output_dir, device, no_plot):
+    """Compare multiple trained models on the same test set."""
+    from leech.commands.analyze import handle_compare
+
+    handle_compare(
+        model_dirs=list(model_dirs),
+        test_data=test_data,
+        output_dir=output_dir,
+        device=device,
+        plot=not no_plot,
+    )
+
+    console.print("[bold green]Model comparison complete![/bold green]")
+
+
+@analyze.command("feature-importance")
+@click.option(
+    "--model",
+    "-m",
+    required=True,
+    type=click.Path(exists=True, path_type=Path),
+    help="Path to trained model checkpoint",
+)
+@click.option(
+    "--test-data",
+    "-t",
+    required=True,
+    type=click.Path(exists=True, path_type=Path),
+    help="Test dataset for analysis",
+)
+@click.option(
+    "--output-dir",
+    "-o",
+    required=True,
+    type=click.Path(path_type=Path),
+    help="Output directory for results",
+)
+@click.option(
+    "--device",
+    type=click.Choice(["cuda", "cpu"]),
+    default=DEFAULT_DEVICE,
+    help="Device for computation",
+)
+@click.option(
+    "--method",
+    type=click.Choice(["gradient", "integrated_gradients"]),
+    default="gradient",
+    help="Feature importance method",
+)
+@click.option(
+    "--no-plot",
+    is_flag=True,
+    help="Skip generating plots",
+)
+def feature_importance_cmd(model, test_data, output_dir, device, method, no_plot):
+    """Compute feature importance scores."""
+    from leech.commands.analyze import handle_feature_importance
+
+    handle_feature_importance(
+        model_path=model,
+        test_data=test_data,
+        output_dir=output_dir,
+        device=device,
+        method=method,
+        plot=not no_plot,
+    )
+
+    console.print("[bold green]Feature importance analysis complete![/bold green]")
+
+
+@analyze.command("sequence-ablation")
+@click.option(
+    "--model",
+    "-m",
+    required=True,
+    type=click.Path(exists=True, path_type=Path),
+    help="Path to trained model checkpoint",
+)
+@click.option(
+    "--test-data",
+    "-t",
+    required=True,
+    type=click.Path(exists=True, path_type=Path),
+    help="Test dataset for analysis",
+)
+@click.option(
+    "--output-dir",
+    "-o",
+    required=True,
+    type=click.Path(path_type=Path),
+    help="Output directory for results",
+)
+@click.option(
+    "--device",
+    type=click.Choice(["cuda", "cpu"]),
+    default=DEFAULT_DEVICE,
+    help="Device for computation",
+)
+@click.option(
+    "--no-plot",
+    is_flag=True,
+    help="Skip generating plots",
+)
+def sequence_ablation_cmd(model, test_data, output_dir, device, no_plot):
+    """Test model performance with sequence ablation."""
+    from leech.commands.analyze import handle_sequence_ablation
+
+    handle_sequence_ablation(
+        model_path=model,
+        test_data=test_data,
+        output_dir=output_dir,
+        device=device,
+        plot=not no_plot,
+    )
+
+    console.print("[bold green]Sequence ablation test complete![/bold green]")
 
 
 def main():
