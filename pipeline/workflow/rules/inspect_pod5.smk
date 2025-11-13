@@ -43,7 +43,7 @@ rule inspect_sample_pod5s:
     Runs pod5 inspect on each file and aggregates the results.
     """
     output:
-        report="results/pod5_inspection/{sample}/inspection_report.tsv",
+        report="results/pod5_inspection/{sample}/inspection_report.tsv.gz",
     params:
         pod5_files=get_sample_pod5_files,
     log:
@@ -51,12 +51,13 @@ rule inspect_sample_pod5s:
     run:
         import subprocess
         import os
+        import gzip
 
         # Create output directory
         os.makedirs(os.path.dirname(output.report), exist_ok=True)
 
-        # Open output file
-        with open(output.report, "w") as out:
+        # Open output file with gzip compression
+        with gzip.open(output.report, "wt") as out:
             # Write header
             out.write(
                 "sample\tfile\tstatus\tnum_reads\tfile_size_mb\tavg_read_length\tmin_read_length\tmax_read_length\terror_message\n"
@@ -147,11 +148,11 @@ rule aggregate_all_inspections:
     """
     input:
         reports=expand(
-            "results/pod5_inspection/{sample}/inspection_report.tsv",
+            "results/pod5_inspection/{sample}/inspection_report.tsv.gz",
             sample=config["samples"].keys(),
         ),
     output:
-        master_report="results/pod5_inspection/pod5_inspection_master_report.tsv",
+        master_report="results/pod5_inspection/pod5_inspection_master_report.tsv.gz",
         summary="results/pod5_inspection/pod5_inspection_summary.txt",
     run:
         import pandas as pd
@@ -159,13 +160,13 @@ rule aggregate_all_inspections:
         # Combine all sample reports
         all_data = []
         for report_file in input.reports:
-            df = pd.read_csv(report_file, sep="\t")
+            df = pd.read_csv(report_file, sep="\t", compression='gzip')
             all_data.append(df)
 
         combined = pd.concat(all_data, ignore_index=True)
 
-        # Save master report
-        combined.to_csv(output.master_report, sep="\t", index=False)
+        # Save compressed master report
+        combined.to_csv(output.master_report, sep="\t", index=False, compression='gzip')
 
         # Generate summary statistics
         with open(output.summary, "w") as f:

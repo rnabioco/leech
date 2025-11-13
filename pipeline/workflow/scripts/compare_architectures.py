@@ -221,8 +221,8 @@ def main():
     # Create comparison table
     comparison = create_comparison_table(df_agg)
 
-    # Write comparison table
-    comparison.to_csv(output_comparison, sep="\t", index=False)
+    # Write compressed comparison table
+    comparison.to_csv(output_comparison, sep="\t", index=False, compression='gzip')
     print(f"Wrote comparison table to {output_comparison}")
 
     # Create and write summary
