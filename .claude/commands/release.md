@@ -64,13 +64,20 @@ If found, ask user what to do:
    - Doc update descriptions
    ```
 
-4. **Prepend to CHANGELOG.md**: Insert the new entry at the top (after the header), keeping existing entries below
+4. **Show changelog to user**: Display the generated changelog entry and inform user they can:
+   - Edit CHANGELOG.md directly before confirming
+   - Review and modify any entries
+   - Add additional context or details
+
+5. **Prepend to CHANGELOG.md**: Insert the new entry at the top (after the header), keeping existing entries below
 
 **Style guidelines**:
 - Focus on user-facing changes (what users will notice)
 - Be concise but informative
 - Skip purely internal changes unless they affect users
 - Use present tense ("Add feature" not "Added feature")
+
+**Note**: This changelog is for the project's CHANGELOG.md. GitHub release notes will be auto-generated from commits/PRs when you push the tag (configured in `.github/release.yml`). You can edit those on GitHub after the release is created.
 
 ## Phase 4: Quality Assurance
 
@@ -124,8 +131,13 @@ Wait for user confirmation before proceeding.
    Next steps:
    1. Review the commit: git show
    2. Push to GitHub: git push origin main --follow-tags
-   3. GitHub Actions will automatically create the release
-   4. Optional: Publish to PyPI with `uv publish`
+   3. GitHub Actions will automatically:
+      - Create a GitHub Release
+      - Mark releases with -alpha/-beta/-rc as pre-releases
+      - Auto-generate release notes from commits/PRs
+      - Include your CHANGELOG.md entry in the release
+   4. Edit release notes on GitHub if needed (optional)
+   5. Optional: Publish to PyPI with `uv publish`
    ```
 
 ## Important Notes
@@ -147,8 +159,10 @@ If any step fails:
 ## Post-Release Checklist
 
 After user pushes to GitHub, remind them to:
-- [ ] Verify GitHub Actions workflow completes
-- [ ] Check GitHub Releases page for new release
+- [ ] Verify GitHub Actions release workflow completes successfully
+- [ ] Check GitHub Releases page for the new release (auto-created)
+- [ ] Review auto-generated release notes and edit if needed
+- [ ] Verify pre-release status is correct (if using -alpha/-beta/-rc suffixes)
 - [ ] Consider publishing to PyPI if package is public: `uv publish`
 - [ ] Update any dependent projects or documentation
 - [ ] Announce release (if applicable)
