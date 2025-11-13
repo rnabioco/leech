@@ -6,6 +6,32 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `leech` (**L**earning **E**nhanc**e**d **C**lassification from **H**anopore signals) is a Python library for training machine learning models on nanopore signal data. It extends [Remora](https://github.com/nanoporetech/remora) with dwell time features extracted from move tables (`mv` tag in BAM files) to classify modified bases, specifically for distinguishing charged vs. uncharged tRNAs in aa-tRNA-seq experiments.
 
+## Documentation Structure
+
+**IMPORTANT**: When creating implementation guides, feature documentation, or workflow guides, they MUST be organized in `docs/guides/` with numbered prefixes:
+
+- **Location**: `docs/guides/`
+- **Naming**: `##-DESCRIPTIVE_NAME.md` (e.g., `09-TRNA_OPTIMIZATION_IMPLEMENTATION.md`)
+- **Numbering**: Continue from the highest existing number in the directory
+- **Purpose**: Keeps all guides organized in one place, prevents scattered documentation
+
+**Types of guides**:
+- Implementation summaries (when adding major features)
+- Workflow documentation (Snakemake, analysis pipelines)
+- User guides (model selection, troubleshooting)
+- Technical deep-dives (architecture, algorithms)
+
+**Do NOT create**:
+- Root-level markdown files (except CLAUDE.md, README.md, CHANGELOG.md)
+- Implementation summaries in random locations
+- Duplicate documentation in multiple places
+
+**Existing guides** (as of this writing):
+- 01-08: Historical implementation and analysis guides
+- 09: tRNA optimization implementation summary
+- 10: Model selection guide
+- 11: tRNA optimization Snakemake workflow
+
 ## Development Commands
 
 This project uses [uv](https://docs.astral.sh/uv/) for fast, reliable Python package management.
@@ -332,7 +358,7 @@ The workflow is designed to integrate with the leech CLI commands and supports b
 - Forces model to ignore sequence branch
 - Keeps architecture flexible for future variable-sequence use
 
-See `docs/model_selection.md` for detailed guidance.
+See `docs/guides/10-MODEL_SELECTION_GUIDE.md` for detailed guidance.
 
 ## Current Status
 

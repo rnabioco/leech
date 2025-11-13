@@ -384,7 +384,7 @@ After running the workflow:
 
 ## References
 
-- Implementation details: `IMPLEMENTATION_SUMMARY.md`
-- Model selection guide: `docs/model_selection.md`
+- Implementation details: `docs/guides/09-TRNA_OPTIMIZATION_IMPLEMENTATION.md`
+- Model selection guide: `docs/guides/10-MODEL_SELECTION_GUIDE.md`
 - CLI documentation: `CLAUDE.md`
 - Comparison configs: `configs/comparison/README.md`

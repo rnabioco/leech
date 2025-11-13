@@ -210,7 +210,7 @@ snakemake --profile profiles/slurm \
 ```
 
 #### Documentation
-**File**: `pipeline/tRNA_OPTIMIZATION.md`
+**File**: `docs/guides/11-TRNA_OPTIMIZATION_WORKFLOW.md`
 
 Comprehensive workflow documentation:
 - Rule descriptions and wildcards
@@ -250,11 +250,11 @@ Comprehensive workflow documentation:
 
 **Snakemake Workflow** (2):
 - `pipeline/workflow/rules/tRNA_optimization.smk`
-- `pipeline/tRNA_OPTIMIZATION.md`
+- `docs/guides/11-TRNA_OPTIMIZATION_WORKFLOW.md`
 
 **Documentation** (3):
-- `docs/model_selection.md`
-- `IMPLEMENTATION_SUMMARY.md` (this file)
+- `docs/guides/10-MODEL_SELECTION_GUIDE.md`
+- `docs/guides/09-TRNA_OPTIMIZATION_IMPLEMENTATION.md` (this file)
 - `configs/comparison/README.md` (listed above)
 
 ### Files Modified (9):
@@ -362,7 +362,7 @@ else:
 
 ### User-Facing Docs
 
-1. **`docs/model_selection.md`** (NEW)
+1. **`docs/guides/10-MODEL_SELECTION_GUIDE.md`** (NEW)
    - Decision tree for model selection
    - Detailed model descriptions
    - Usage examples for each model
@@ -523,12 +523,12 @@ Infrastructure:
 - Add visualization utilities for analysis results
 
 Documentation:
-- Add docs/model_selection.md guide
+- Add docs/guides/10-MODEL_SELECTION_GUIDE.md guide
 - Update CLAUDE.md with new features
 - Add comparison config README
 
 All changes are backward compatible.
-See IMPLEMENTATION_SUMMARY.md for full details.
+See docs/guides/09-TRNA_OPTIMIZATION_IMPLEMENTATION.md for full details.
 ```
 
 ---
@@ -536,7 +536,7 @@ See IMPLEMENTATION_SUMMARY.md for full details.
 ## 📧 Contact & Questions
 
 For questions about this implementation:
-- Review `docs/model_selection.md` for usage guidance
+- Review `docs/guides/10-MODEL_SELECTION_GUIDE.md` for usage guidance
 - Check `CLAUDE.md` for technical details
 - See `configs/comparison/README.md` for experiment templates
 - Examine analysis module docstrings for API details
