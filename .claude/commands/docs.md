@@ -65,7 +65,25 @@ Based on your findings, update the following files:
 - Guide docs in `docs/getting-started/` and `docs/guides/`: Update steps, commands, and explanations
 - `CLAUDE.md`: Reflect current architecture and remove obsolete references
 
-## 8. Report Summary
+## 8. Build Test
+
+After making updates, verify the documentation builds successfully:
+
+1. **Run mkdocs build**: Execute `uv run mkdocs build --strict` to build the documentation site
+   - The `--strict` flag treats warnings as errors, ensuring high quality
+2. **Check for errors**: If the build fails, report:
+   - Build errors (syntax issues, invalid configuration)
+   - Broken internal links between documentation pages
+   - Missing files referenced in navigation
+   - Invalid mkdocstrings references or malformed API docs
+3. **Fix build issues**: If errors are found, fix them and rebuild until `mkdocs build --strict` succeeds
+4. **Report build status**:
+   - ✓ Documentation builds successfully
+   - ✗ Build failed - list errors that need fixing
+
+**IMPORTANT**: The documentation MUST build successfully before completing the `/docs` command. Do not proceed to the report summary if the build fails.
+
+## 9. Report Summary
 
 After completing the review and updates, provide a summary report with:
 - **Files Updated**: List all documentation files that were modified
