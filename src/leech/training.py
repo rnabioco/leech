@@ -118,7 +118,6 @@ class Trainer:
         if pos_weight is not None:
             pos_weight = pos_weight.to(device)
             self.criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-            logger.info(f"Using class weighting with pos_weight={pos_weight.item():.4f}")
         else:
             self.criterion = nn.BCEWithLogitsLoss()
             logger.info("Training without class weighting")

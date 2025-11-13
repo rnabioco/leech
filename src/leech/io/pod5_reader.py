@@ -132,8 +132,8 @@ class POD5Reader:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Close POD5 file."""
-        if self._reader is not None:
-            self._reader.close()
+        # DatasetReader handles cleanup via its own context manager
+        self._reader = None
 
     def get_signal(self, read_id: str) -> tuple[np.ndarray, dict]:
         """
