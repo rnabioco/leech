@@ -51,7 +51,7 @@ rule summarize_pairwise:
         if AA_PAIRS
         else [],
     output:
-        summary=METRICS_DIR + "/pairwise_summary.tsv",
+        summary=METRICS_DIR + "/pairwise_summary.tsv.gz",
     params:
         metrics_dir=METRICS_DIR + "/pairwise",
     script:

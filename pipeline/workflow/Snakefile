@@ -62,9 +62,9 @@ rule all:
     """Default target: run all analyses."""
     input:
         # Choose based on compare_models setting
-        METRICS_DIR + "/comparison/aggregate/pairwise_architecture_comparison.tsv"
+        METRICS_DIR + "/comparison/aggregate/pairwise_architecture_comparison.tsv.gz"
         if COMPARE_MODELS and AA_PAIRS
-        else (METRICS_DIR + "/pairwise_summary.tsv" if AA_PAIRS else []),
+        else (METRICS_DIR + "/pairwise_summary.tsv.gz" if AA_PAIRS else []),
 
 
 # Single model mode (compare_models: false)
@@ -79,7 +79,7 @@ rule all_single_model:
         if AA_PAIRS
         else [],
         # Summary reports
-        METRICS_DIR + "/pairwise_summary.tsv" if AA_PAIRS else [],
+        METRICS_DIR + "/pairwise_summary.tsv.gz" if AA_PAIRS else [],
 
 
 # Multi-architecture comparison mode (compare_models: true)
@@ -87,7 +87,7 @@ rule all_compare_models:
     """Run multi-architecture comparison."""
     input:
         # Architecture comparison results (includes charged_uncharged if configured)
-        METRICS_DIR + "/comparison/aggregate/pairwise_architecture_comparison.tsv"
+        METRICS_DIR + "/comparison/aggregate/pairwise_architecture_comparison.tsv.gz"
         if AA_PAIRS
         else [],
         METRICS_DIR + "/comparison/aggregate/pairwise_architecture_summary.txt"
@@ -205,7 +205,7 @@ rule all_align:
 rule all_inspect_pod5:
     """Inspect all raw POD5 files for corruption/errors."""
     input:
-        "results/pod5_inspection/pod5_inspection_master_report.tsv",
+        "results/pod5_inspection/pod5_inspection_master_report.tsv.gz",
         "results/pod5_inspection/pod5_inspection_summary.txt",
 
 
