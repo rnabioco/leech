@@ -155,15 +155,83 @@ Heavy lifting logic for analysis commands (keeps CLI thin):
 
 ---
 
+### **Option 5: Snakemake Workflow Automation** ⭐
+
+#### Workflow Rules
+**Location**: `pipeline/workflow/rules/tRNA_optimization.smk`
+
+Automated Snakemake workflow for training and comparing all tRNA variants:
+
+**Training Rules**:
+- `train_tRNA_variant_pairwise`: Train specific variant for pairwise comparison
+- `test_tRNA_variant_pairwise`: Evaluate variant on test set
+
+**Analysis Rules**:
+- `compare_tRNA_variants_pairwise`: Compare all 4 variants using `leech analyze compare`
+- `feature_importance_tRNA_pairwise`: Compute feature importance for best variant
+- `sequence_ablation_tRNA_pairwise`: Test sequence contribution for full model
+
+**Aggregate Rules**:
+- `aggregate_tRNA_comparison`: Combine results across all pairwise tasks
+
+**Convenience Rules**:
+- `all_tRNA_optimization`: Run complete analysis (train + evaluate + compare + analysis)
+- `all_tRNA_train`: Train all variants only
+- `all_tRNA_compare`: Compare all variants (assumes trained)
+- `tRNA_optimization_full_analysis`: Complete analysis for single pair
+
+#### Workflow Integration
+**File**: `pipeline/workflow/Snakefile`
+
+Added include statement and target rules:
+```python
+include: "rules/tRNA_optimization.smk"
+
+rule all_tRNA_optimization:
+    """Run complete tRNA optimization analysis for all configured pairs."""
+```
+
+#### Usage Examples
+
+Train and compare all 4 variants:
+```bash
+# Complete workflow
+snakemake --profile profiles/slurm all_tRNA_optimization
+
+# Just training
+snakemake --profile profiles/slurm all_tRNA_train
+
+# Just comparison (after training)
+snakemake --profile profiles/slurm all_tRNA_compare
+
+# Single pair analysis
+snakemake --profile profiles/slurm \
+  results/metrics/tRNA_optimization/pairwise/charged_uncharged/comparison_results.json
+```
+
+#### Documentation
+**File**: `pipeline/tRNA_OPTIMIZATION.md`
+
+Comprehensive workflow documentation:
+- Rule descriptions and wildcards
+- Configuration requirements
+- Usage examples (dry runs, local testing, GPU/CPU)
+- Output structure
+- Expected results and performance
+- Troubleshooting guide
+- Integration with existing workflows
+
+---
+
 ## 📁 Files Modified
 
-### New Files Created (21 files)
+### New Files Created (24 files)
 
 **Model Architectures** (2):
 - `src/leech/models/conv_lstm_signal_features.py`
 - `src/leech/models/tcn_signal_features.py`
 
-**Analysis Modules** (4):
+**Analysis Modules** (5):
 - `src/leech/analysis/__init__.py`
 - `src/leech/analysis/comparison.py`
 - `src/leech/analysis/feature_importance.py`
@@ -180,11 +248,16 @@ Heavy lifting logic for analysis commands (keeps CLI thin):
 - `configs/comparison/dwell_masked.yaml`
 - `configs/comparison/README.md`
 
-**Documentation** (2):
+**Snakemake Workflow** (2):
+- `pipeline/workflow/rules/tRNA_optimization.smk`
+- `pipeline/tRNA_OPTIMIZATION.md`
+
+**Documentation** (3):
 - `docs/model_selection.md`
 - `IMPLEMENTATION_SUMMARY.md` (this file)
+- `configs/comparison/README.md` (listed above)
 
-### Files Modified (8):
+### Files Modified (9):
 
 **Core Infrastructure**:
 - `src/leech/models/__init__.py`: Register new models, fix return types
@@ -194,9 +267,11 @@ Heavy lifting logic for analysis commands (keeps CLI thin):
 - `src/leech/training.py`: Pass masking to datasets
 - `src/leech/cli.py`: Add `--mask-sequence-prob` flag, `analyze` command group
 
+**Snakemake Workflow**:
+- `pipeline/workflow/Snakefile`: Include tRNA_optimization.smk, add target rules
+
 **Documentation**:
 - `CLAUDE.md`: Document new models, features, analysis tools
-- `README.md`: (if needed)
 
 ---
 
@@ -417,12 +492,11 @@ uv run leech analyze compare \
 
 ## 🔮 Future Work
 
-Potential extensions (not implemented):
-1. **Snakemake comparison workflow**: Automated multi-model training
-2. **Unit tests**: Test new models and analysis functions
-3. **Integration tests**: End-to-end comparison workflow tests
-4. **Benchmarking**: Performance profiling of new models
-5. **Additional analysis**: Attention visualization, gradient flow
+Potential extensions (not yet implemented):
+1. **Unit tests**: Test new models and analysis functions
+2. **Integration tests**: End-to-end comparison workflow tests
+3. **Benchmarking**: Performance profiling of new models
+4. **Additional analysis**: Attention visualization, gradient flow
 
 ---
 

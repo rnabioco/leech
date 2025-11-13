@@ -51,6 +51,7 @@ include: "rules/inference.smk"
 include: "rules/evaluate.smk"
 include: "rules/compare_models.smk"
 include: "rules/diagnose.smk"
+include: "rules/tRNA_optimization.smk"
 
 
 # ============================================================================
@@ -218,3 +219,34 @@ rule all_diagnose:
                 s for s in SAMPLES if config["samples"][s].get("label") != "uncharged"
             ],
         ),
+
+
+rule all_tRNA_optimization:
+    """Run complete tRNA optimization analysis for all configured pairs."""
+    input:
+        METRICS_DIR + "/tRNA_optimization/aggregate/variant_comparison.tsv"
+        if AA_PAIRS
+        else [],
+
+
+rule all_tRNA_train:
+    """Train all tRNA optimization variants for all pairs."""
+    input:
+        expand(
+            MODELS_DIR + "/tRNA_optimization/pairwise/{pair}/{variant}/model_best.pt",
+            pair=AA_PAIRS,
+            variant=TRNA_VARIANTS,
+        )
+        if AA_PAIRS
+        else [],
+
+
+rule all_tRNA_compare:
+    """Compare tRNA optimization variants for all pairs."""
+    input:
+        expand(
+            METRICS_DIR + "/tRNA_optimization/pairwise/{pair}/comparison_results.json",
+            pair=AA_PAIRS,
+        )
+        if AA_PAIRS
+        else [],
