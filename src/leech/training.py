@@ -451,7 +451,12 @@ def train_model(
     # Create data loaders
     # Use drop_last=True for training to avoid BatchNorm issues with batch_size=1
     train_loader = DataLoader(
-        train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn, num_workers=2, drop_last=True
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        collate_fn=collate_fn,
+        num_workers=2,
+        drop_last=True,
     )
 
     val_loader = None
