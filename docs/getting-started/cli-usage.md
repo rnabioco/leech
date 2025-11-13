@@ -4,12 +4,14 @@ Complete reference for the `leech` command-line interface.
 
 ## Overview
 
-The `leech` CLI provides four main commands:
+The `leech` CLI provides six main commands:
 
 - `prepare`: Extract features from POD5/BAM files
+- `merge-and-split`: Merge multi-sample data and split at read level
 - `train`: Train a model on prepared data
 - `test`: Evaluate a trained model
 - `infer`: Run inference on new data
+- `grid-search`: Optimize chunk context hyperparameters
 
 ## Global Options
 
@@ -132,6 +134,64 @@ leech prepare \
   --feature-set signal+dwell \
   --signal-context 300 \
   --kmer-context 7
+```
+
+## merge-and-split
+
+Merge multiple chunk files from different samples and split at the read level to prevent data leakage. This is the correct workflow for multi-sample datasets.
+
+### Synopsis
+
+```bash
+leech merge-and-split [OPTIONS] -i LABEL=FILE -i LABEL=FILE -o DIR
+```
+
+### Required Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `-i, --input-chunks` | Input chunks with labels (format: `label=file.npz`) |
+| `-o, --output-dir` | Output directory for split chunks |
+
+### Optional Arguments
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--train-split` | 0.7 | Fraction of reads for training |
+| `--val-split` | 0.15 | Fraction of reads for validation |
+| `--seed` | 42 | Random seed for reproducibility |
+| `--comparison-spec` | - | TSV file with comparison specifications |
+
+### Examples
+
+#### Pairwise amino acid comparison
+
+```bash
+leech merge-and-split \
+  -i Ala=ala.npz \
+  -i Gly=gly.npz \
+  -o merged/
+```
+
+#### Multi-label comparison (chemical properties)
+
+```bash
+leech merge-and-split \
+  -i basic=lys.npz \
+  -i basic=arg.npz \
+  -i acidic=asp.npz \
+  -i acidic=glu.npz \
+  -o merged/
+```
+
+#### Batch processing with comparison spec
+
+```bash
+leech merge-and-split \
+  -i chunks/dir1 \
+  -i chunks/dir2 \
+  --comparison-spec comparisons.tsv \
+  -o merged/
 ```
 
 ## train
@@ -270,6 +330,62 @@ leech infer \
   --pod5 new_reads.pod5 \
   --bam new_alignments.bam \
   --output predictions.bam
+```
+
+## grid-search
+
+Run grid search over chunk context parameters to optimize model performance.
+
+### Synopsis
+
+```bash
+leech grid-search [OPTIONS] --train-data FILE --output-dir DIR --context-grid VALUES
+```
+
+### Required Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `--train-data FILE` | Training dataset (.npz file) |
+| `-o, --output-dir DIR` | Output directory for grid results |
+| `--context-grid VALUES` | Comma-separated context values (e.g., `200,500,1000`) |
+
+### Optional Arguments
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--val-data FILE` | - | Validation dataset (.npz) |
+| `--model MODEL` | `ConvLSTMDwell` | Model architecture |
+| `--left-contexts VALUES` | Uses `--context-grid` | Override left contexts |
+| `--right-contexts VALUES` | Uses `--context-grid` | Override right contexts |
+| `--kmer-context INT` | 5 | K-mer context for sequence |
+| `--epochs INT` | 50 | Number of training epochs |
+| `--batch-size INT` | 128 | Batch size |
+| `--learning-rate FLOAT` | 0.001 | Learning rate |
+| `--device STR` | `cuda` if available | Device: `cuda` or `cpu` |
+| `--seed INT` | 42 | Random seed |
+| `--early-stopping INT` | 5 | Early stopping patience (0 to disable) |
+
+### Examples
+
+#### Basic grid search
+
+```bash
+leech grid-search \
+  --train-data chunks/train.npz \
+  --val-data chunks/val.npz \
+  --output-dir grid_results/ \
+  --context-grid 200,500,1000,2000
+```
+
+#### Asymmetric context search
+
+```bash
+leech grid-search \
+  --train-data chunks/train.npz \
+  --output-dir grid_results/ \
+  --left-contexts 200,500,1000 \
+  --right-contexts 100,200,500
 ```
 
 ## Environment Variables

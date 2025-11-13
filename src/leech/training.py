@@ -412,10 +412,10 @@ def train_model(
         early_stopping_patience: Stop training if validation loss doesn't improve for N epochs
         use_class_weights: Auto-compute class weights from training data (default: True)
         pos_weight: Manual positive class weight (overrides use_class_weights if provided)
-        **model_kwargs: Additional model parameters
+        **model_kwargs: Additional model parameters (passed to model constructor)
 
     Returns:
-        Training history dictionary
+        Training history dictionary with metrics
     """
     from leech.constants import generate_random_seed
 
