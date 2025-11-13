@@ -1,8 +1,9 @@
 """
 Tests for model architectures.
 
-Tests all 6 model architectures: ConvLSTMBase, ConvLSTMDwell,
-TransformerDwell, ConvOnly, TCNDwell, ResNetDwell.
+Tests all 8 model architectures: ConvLSTMBase, ConvLSTMDwell,
+ConvLSTMSignalFeatures, TCNSignalFeatures, TransformerDwell,
+ConvOnly, TCNDwell, ResNetDwell.
 """
 
 import pytest
@@ -28,6 +29,8 @@ class TestModelRegistry:
         expected_models = {
             "ConvLSTMBase",
             "ConvLSTMDwell",
+            "ConvLSTMSignalFeatures",
+            "TCNSignalFeatures",
             "TransformerDwell",
             "ConvOnly",
             "TCNDwell",
