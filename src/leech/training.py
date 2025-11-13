@@ -450,12 +450,14 @@ def train_model(
         )
 
     # Create data loaders
+    # Use drop_last=True for training to avoid BatchNorm issues with batch_size=1
     train_loader = DataLoader(
-        train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn, num_workers=2
+        train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_fn, num_workers=2, drop_last=True
     )
 
     val_loader = None
     if val_dataset is not None:
+        # No need to drop last for validation since model is in eval mode
         val_loader = DataLoader(
             val_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn, num_workers=2
         )
