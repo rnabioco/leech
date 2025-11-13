@@ -119,7 +119,7 @@ rule compare_architectures_pairwise:
         ),
     output:
         comparison=METRICS_DIR
-        + "/comparison/pairwise/{pair}/architecture_comparison.tsv",
+        + "/comparison/pairwise/{pair}/architecture_comparison.tsv.gz",
         summary=METRICS_DIR + "/comparison/pairwise/{pair}/architecture_summary.txt",
     params:
         metrics_dir=METRICS_DIR + "/comparison/pairwise/{pair}",
@@ -132,14 +132,14 @@ rule aggregate_pairwise_comparisons:
     """Aggregate architecture comparisons across all pairwise tasks."""
     input:
         expand(
-            METRICS_DIR + "/comparison/pairwise/{pair}/architecture_comparison.tsv",
+            METRICS_DIR + "/comparison/pairwise/{pair}/architecture_comparison.tsv.gz",
             pair=AA_PAIRS,
         )
         if AA_PAIRS
         else [],
     output:
         comparison=METRICS_DIR
-        + "/comparison/aggregate/pairwise_architecture_comparison.tsv",
+        + "/comparison/aggregate/pairwise_architecture_comparison.tsv.gz",
         summary=METRICS_DIR + "/comparison/aggregate/pairwise_architecture_summary.txt",
     run:
         import pandas as pd
@@ -154,13 +154,13 @@ rule aggregate_pairwise_comparisons:
             dfs = []
             for pair_file in input:
                 pair_name = Path(pair_file).parent.name
-                df = pd.read_csv(pair_file, sep="\t")
+                df = pd.read_csv(pair_file, sep="\t", compression='gzip')
                 df.insert(0, "pair", pair_name)
                 dfs.append(df)
 
                 # Concatenate and save
             combined = pd.concat(dfs, ignore_index=True)
-            combined.to_csv(output.comparison, sep="\t", index=False)
+            combined.to_csv(output.comparison, sep="\t", index=False, compression='gzip')
 
             # Create summary
             with open(output.summary, "w") as f:
