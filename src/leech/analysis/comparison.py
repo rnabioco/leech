@@ -48,7 +48,7 @@ def compare_models(
         # Run evaluation
         metrics_path = output_dir / f"{model_name}_metrics.json"
         metrics = evaluate_model(
-            model_path=model_path,
+            model_path=model_dir,  # Pass directory, not .pt file
             test_data_path=test_data_path,
             output_path=metrics_path,
             device=device,
