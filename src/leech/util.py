@@ -88,6 +88,13 @@ def load_model_from_checkpoint(
     """
     checkpoint_path = Path(checkpoint_path)
 
+    # Handle device: force CPU if CUDA requested but not available
+    if device == "cuda" and not torch.cuda.is_available():
+        logger.warning(
+            "CUDA requested but not available. Loading model on CPU instead."
+        )
+        device = "cpu"
+
     # Load config
     config_file = checkpoint_path / "config.json"
     if not config_file.exists():
