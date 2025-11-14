@@ -197,9 +197,9 @@ rule feature_importance_tRNA_pairwise:
         test=CHUNKS_DIR + "/merged/pairwise/{pair}/test.npz",
     output:
         importance=METRICS_DIR
-        + "/tRNA_optimization/pairwise/{pair}/feature_importance/importance_scores.npz",
+        + "/tRNA_optimization/pairwise/{pair}/feature_importance/feature_importance.npz",
         plot=METRICS_DIR
-        + "/tRNA_optimization/pairwise/{pair}/feature_importance/importance_plot.png",
+        + "/tRNA_optimization/pairwise/{pair}/feature_importance/feature_importance_plot.png",
     params:
         model_dir=MODELS_DIR + "/tRNA_optimization/pairwise/{pair}/tcn_signal_features",
         output_dir=METRICS_DIR + "/tRNA_optimization/pairwise/{pair}/feature_importance",
@@ -235,9 +235,9 @@ rule sequence_ablation_tRNA_pairwise:
         test=CHUNKS_DIR + "/merged/pairwise/{pair}/test.npz",
     output:
         ablation=METRICS_DIR
-        + "/tRNA_optimization/pairwise/{pair}/sequence_ablation/ablation_results.json",
+        + "/tRNA_optimization/pairwise/{pair}/sequence_ablation/sequence_ablation.json",
         plot=METRICS_DIR
-        + "/tRNA_optimization/pairwise/{pair}/sequence_ablation/ablation_plot.png",
+        + "/tRNA_optimization/pairwise/{pair}/sequence_ablation/sequence_ablation_plot.png",
     params:
         model_dir=MODELS_DIR + "/tRNA_optimization/pairwise/{pair}/dwell",
         output_dir=METRICS_DIR + "/tRNA_optimization/pairwise/{pair}/sequence_ablation",
@@ -366,9 +366,9 @@ rule tRNA_optimization_full_analysis:
         comparison=METRICS_DIR
         + "/tRNA_optimization/pairwise/{pair}/comparison_results.json",
         feature_importance=METRICS_DIR
-        + "/tRNA_optimization/pairwise/{pair}/feature_importance/importance_scores.npz",
+        + "/tRNA_optimization/pairwise/{pair}/feature_importance/feature_importance.npz",
         sequence_ablation=METRICS_DIR
-        + "/tRNA_optimization/pairwise/{pair}/sequence_ablation/ablation_results.json",
+        + "/tRNA_optimization/pairwise/{pair}/sequence_ablation/sequence_ablation.json",
 
 
 rule tRNA_optimization_all:
@@ -382,14 +382,14 @@ rule tRNA_optimization_all:
         else [],
         expand(
             METRICS_DIR
-            + "/tRNA_optimization/pairwise/{pair}/feature_importance/importance_scores.npz",
+            + "/tRNA_optimization/pairwise/{pair}/feature_importance/feature_importance.npz",
             pair=AA_PAIRS,
         )
         if AA_PAIRS
         else [],
         expand(
             METRICS_DIR
-            + "/tRNA_optimization/pairwise/{pair}/sequence_ablation/ablation_results.json",
+            + "/tRNA_optimization/pairwise/{pair}/sequence_ablation/sequence_ablation.json",
             pair=AA_PAIRS,
         )
         if AA_PAIRS
