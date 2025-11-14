@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=leech-orchestrator
+#SBATCH --comment=leech-orchestrator
 #SBATCH --partition=amilan
 #SBATCH --qos=normal
 #SBATCH --account=amc-general
