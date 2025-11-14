@@ -4,11 +4,11 @@ Command-line interface for leech.
 Designed for Snakemake integration with clear input/output paths.
 """
 
-import json
 import logging
 from pathlib import Path
 
 import rich_click as click
+import yaml
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -443,7 +443,12 @@ def train(
     model_kwargs = {}
     if model_config is not None:
         with open(model_config) as f:
-            model_kwargs = json.load(f)
+            config_data = yaml.safe_load(f)
+            # Extract model_kwargs from the config if present
+            if config_data and "model_kwargs" in config_data:
+                model_kwargs = config_data["model_kwargs"] or {}
+            elif config_data:
+                model_kwargs = config_data
 
     # Train model
     history = train_model(
