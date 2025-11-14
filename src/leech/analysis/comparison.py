@@ -150,7 +150,7 @@ def compare_training_curves(
     Compare training curves across models.
 
     Args:
-        model_dirs: List of model directories with training_history.json
+        model_dirs: List of model directories with metrics.json
         output_path: Path to save comparison plot
     """
     import matplotlib.pyplot as plt
@@ -158,7 +158,7 @@ def compare_training_curves(
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
 
     for model_dir in model_dirs:
-        history_path = model_dir / "training_history.json"
+        history_path = model_dir / "metrics.json"
         if not history_path.exists():
             continue
 

@@ -50,7 +50,7 @@ rule train_tRNA_variant_pairwise:
         checkpoint=MODELS_DIR
         + "/tRNA_optimization/pairwise/{pair}/{variant}/model_last.pt",
         history=MODELS_DIR
-        + "/tRNA_optimization/pairwise/{pair}/{variant}/training_history.json",
+        + "/tRNA_optimization/pairwise/{pair}/{variant}/metrics.json",
     params:
         output_dir=MODELS_DIR + "/tRNA_optimization/pairwise/{pair}/{variant}",
         model_name=lambda wildcards: VARIANT_TO_MODEL[wildcards.variant],

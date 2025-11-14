@@ -287,8 +287,8 @@ results/
 │   │   └── pairwise/{pair}/
 │   ├── charged_vs_uncharged/    # Trained models
 │   │   ├── model_best.pt
-│   │   ├── model_checkpoint.pt
-│   │   └── training_history.json
+│   │   ├── model_last.pt
+│   │   └── metrics.json
 │   └── pairwise/{pair}/
 │       └── ...
 ├── inference/                   # Prediction BAM files

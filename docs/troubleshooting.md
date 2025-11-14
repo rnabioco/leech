@@ -116,7 +116,7 @@ set-resources:
 snakemake --profile cluster/slurm all_grid_search
 
 # Check training metrics
-cat results/models/charged_vs_uncharged/training_history.json
+cat results/models/charged_vs_uncharged/metrics.json
 ```
 
 ### Model Loading Errors

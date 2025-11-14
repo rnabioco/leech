@@ -31,7 +31,7 @@ Trains a specific variant for a pairwise comparison.
 **Output:**
 - `results/models/tRNA_optimization/pairwise/{pair}/{variant}/model_best.pt`
 - `results/models/tRNA_optimization/pairwise/{pair}/{variant}/model_last.pt`
-- `results/models/tRNA_optimization/pairwise/{pair}/{variant}/training_history.json`
+- `results/models/tRNA_optimization/pairwise/{pair}/{variant}/metrics.json`
 
 **Features:**
 - Uses configuration files from `configs/comparison/{variant}.yaml`
@@ -253,7 +253,7 @@ results/
 │               ├── base/
 │               │   ├── model_best.pt
 │               │   ├── model_last.pt
-│               │   └── training_history.json
+│               │   └── metrics.json
 │               ├── dwell/
 │               ├── tcn_signal_features/
 │               └── dwell_masked/

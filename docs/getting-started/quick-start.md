@@ -88,8 +88,9 @@ uv run leech train \
 The training process will save:
 
 - `model_best.pt`: Best model checkpoint (by validation loss)
-- `model_checkpoint.pt`: Latest checkpoint
-- `training_history.json`: Training metrics over time
+- `model_last.pt`: Latest checkpoint
+- `metrics.json`: Training metrics over time
+- `summary.json`: Training summary statistics
 
 ## Step 3: Test the Model
 
