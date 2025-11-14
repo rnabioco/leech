@@ -242,6 +242,8 @@ models_to_compare:
   - "ConvOnly"           # Priority 1
   - "TCNDwell"           # Priority 2
   - "ResNetDwell"        # Priority 2
+  - "TCNSignalFeatures"  # no sequence
+  - "ConvLSTMSignalFeatures" # no sequence
 
 # Training hyperparameters (used if use_grid_search: false)
 epochs: 50

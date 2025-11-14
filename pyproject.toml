@@ -116,6 +116,9 @@ possibly-missing-attribute = "ignore"
 invalid-argument-type = "ignore"
 
 [dependency-groups]
+dev = [
+    "types-pyyaml>=6.0.12.20250915",
+]
 docs = [
     "matplotlib>=3.10.7",
     "mkdocs>=1.6.1",

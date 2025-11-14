@@ -201,6 +201,7 @@ rule feature_importance_tRNA_pairwise:
         plot=METRICS_DIR
         + "/tRNA_optimization/pairwise/{pair}/feature_importance/importance_plot.png",
     params:
+        model_dir=MODELS_DIR + "/tRNA_optimization/pairwise/{pair}/tcn_signal_features",
         output_dir=METRICS_DIR + "/tRNA_optimization/pairwise/{pair}/feature_importance",
         device="cpu" if config.get("use_cpu_training", False) else "cuda",
     resources:
@@ -219,7 +220,7 @@ rule feature_importance_tRNA_pairwise:
     shell:
         """
         uv run leech analyze feature-importance \
-            -m {input.model} \
+            -m {params.model_dir} \
             -t {input.test} \
             -o {params.output_dir} \
             --device {params.device} \
@@ -238,6 +239,7 @@ rule sequence_ablation_tRNA_pairwise:
         plot=METRICS_DIR
         + "/tRNA_optimization/pairwise/{pair}/sequence_ablation/ablation_plot.png",
     params:
+        model_dir=MODELS_DIR + "/tRNA_optimization/pairwise/{pair}/dwell",
         output_dir=METRICS_DIR + "/tRNA_optimization/pairwise/{pair}/sequence_ablation",
         device="cpu" if config.get("use_cpu_training", False) else "cuda",
     resources:
@@ -256,7 +258,7 @@ rule sequence_ablation_tRNA_pairwise:
     shell:
         """
         uv run leech analyze sequence-ablation \
-            -m {input.model} \
+            -m {params.model_dir} \
             -t {input.test} \
             -o {params.output_dir} \
             --device {params.device} \
