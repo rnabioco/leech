@@ -40,7 +40,7 @@ rule infer_pairwise_aa:
         INFER_DIR + "/pairwise/{pair}/{sample}_infer.log",
     shell:
         """
-        uv run leech infer \
+        uv run leech predict \
             --model {params.model_dir} \
             --pod5 {input.pod5} \
             --bam {input.bam} \

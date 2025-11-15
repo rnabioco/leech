@@ -56,25 +56,45 @@ uv run mypy src/leech/
 ```
 
 ### Running the CLI
+
+The CLI is organized into workflow-based command groups:
+- `leech data` - Prepare and process training data
+- `leech model` - Train and optimize models
+- `leech eval` - Evaluate and analyze models
+- `leech predict` - Run inference on new data
+
 ```bash
 # Prepare training data (sequential)
-uv run leech prepare --pod5 reads.pod5 --bam alignments.bam --output-dir chunks/
+uv run leech data prepare --pod5 reads.pod5 --bam alignments.bam --output-dir chunks/
 
 # Prepare training data (parallel - recommended for large datasets)
 # Use --workers to specify number of parallel processes
 # Use --chunk-size to control batch size (default: 100 reads per batch)
-uv run leech prepare --pod5 reads.pod5 --bam alignments.bam --output-dir chunks/ \
+uv run leech data prepare --pod5 reads.pod5 --bam alignments.bam --output-dir chunks/ \
   --workers 8 --chunk-size 100
 
+# Merge and split data
+uv run leech data merge -i label1=file1.npz -i label2=file2.npz --output-dir merged/
+
 # Train model
-uv run leech train --train-data chunks/train.json --val-data chunks/val.json \
+uv run leech model train --train-data chunks/train.json --val-data chunks/val.json \
   --model ConvLSTMDwell --output-dir models/
 
-# Test model
-uv run leech test --model models/model_best.pt --test-data chunks/test.json --output metrics.json
+# Optimize hyperparameters
+uv run leech model optimize --train-data chunks/train.npz --val-data chunks/val.npz \
+  --context-grid 200,500,1000 --output-dir grid_results/
+
+# Evaluate model
+uv run leech eval test --model models/model_best.pt --test-data chunks/test.json --output metrics.json
+
+# Compare models
+uv run leech eval compare -m models/model1/ -m models/model2/ -t chunks/test.npz -o comparison/
+
+# Analyze feature importance
+uv run leech eval importance -m models/model_best.pt -t chunks/test.npz -o importance/
 
 # Run inference
-uv run leech infer --model models/model_best.pt --pod5 reads.pod5 --bam alignments.bam --output predictions.bam
+uv run leech predict --model models/model_best.pt --pod5 reads.pod5 --bam alignments.bam --output predictions.bam
 ```
 
 ### Adding Dependencies

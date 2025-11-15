@@ -57,7 +57,7 @@ rule train_architecture_pairwise:
         MODELS_DIR + "/comparison/pairwise/{pair}/{architecture}/train.log",
     shell:
         """
-        uv run leech train \
+        uv run leech model train \
             --train-data {input.train} \
             --val-data {input.val} \
             --model {wildcards.architecture} \
@@ -101,7 +101,7 @@ rule test_architecture_pairwise:
         METRICS_DIR + "/comparison/pairwise/{pair}/{architecture}/test.log",
     shell:
         """
-        uv run leech test \
+        uv run leech eval test \
             --model {params.model_dir} \
             --test-data {input.test} \
             --output {output.metrics} \
@@ -234,7 +234,7 @@ rule grid_search_architecture_pairwise:
         MODELS_DIR + "/grid_search/pairwise/{pair}/{architecture}/grid_search.log",
     shell:
         """
-        uv run leech grid-search \
+        uv run leech model optimize \
             --train-data {input.train} \
             --val-data {input.val} \
             --model {wildcards.architecture} \
