@@ -81,6 +81,26 @@ uv run ruff check --fix .
 uv run mypy src/leech/
 ```
 
+### Python Coding Standards
+
+**IMPORTANT**: When writing Python code, follow these standards to pass ruff linting:
+
+1. **Always use `strict=True` with `zip()`** (Python 3.10+)
+   ```python
+   # ❌ Bad - silently truncates to shortest iterable (triggers B905)
+   for a, b in zip(list1, list2):
+       ...
+
+   # ✅ Good - raises ValueError if lengths differ
+   for a, b in zip(list1, list2, strict=True):
+       ...
+   ```
+   This prevents silent data loss when iterables have mismatched lengths.
+
+2. **Type hints**: Use type annotations for function signatures
+3. **Docstrings**: Include docstrings for all public functions/classes
+4. **Error handling**: Use specific exception types, not bare `except:`
+
 ### Running the CLI
 ```bash
 # Prepare training data (sequential)
