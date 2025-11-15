@@ -1,0 +1,193 @@
+# Leech Pipeline - Biological tRNA Sample Configuration
+# ======================================================
+# Configuration for biological tRNA samples used to train discriminative models
+#
+# Each biological sample should have:
+#   - pod5: path to POD5 file or directory
+#   - bam: path to basecalled BAM file (with move tables)
+#   - label: "biological" (or other descriptive label)
+#   - amino_acids: list of expected amino acids (optional, will be detected from alignment)
+#
+# Note: The workflow will:
+# 1. Align reads to tRNA reference database to identify amino acid
+# 2. Classify charging status using pre-trained model
+# 3. Split reads by AA + charging status
+# 4. Train discriminative models
+
+# ============================================================================
+# Project Name
+# ============================================================================
+# Project name for organizing biological tRNA workflow outputs
+# This creates subdirectories like:
+#   /scratch/alpine/user/leech/bio-trna/bam/{sample}/
+#   /scratch/alpine/user/leech/bio-trna/chunks/{sample}/
+#   etc.
+project_name: "bio-trna"
+
+# ============================================================================
+# tRNA Reference Database
+# ============================================================================
+# Path to tRNA reference database (FASTA format)
+# Reference names should follow format: tRNA-{AA}-{anticodon}-{number}
+# Examples: tRNA-Ala-AGC-1-1, tRNA-Arg-ACG-1-1, etc.
+#
+# Recommended sources:
+# - GtRNAdb: http://gtrnadb.ucsc.edu/ (genomic tRNAs)
+# - tRNAscan-SE output
+# - Custom synthetic tRNA sequences
+trna_reference: "pipeline/resources/references/trna-reference.fa"
+
+# ============================================================================
+# Pre-trained Charging Classification Model
+# ============================================================================
+# Path to pre-trained model for classifying charged vs uncharged status
+# This should be a model trained on synthetic samples using the main pipeline
+#
+# To generate this model, first run the synthetic pipeline:
+#   snakemake --configfile config/samples-alpine.yaml \
+#             --config comparison_spec_file=config/comparisons_charged_uncharged.tsv \
+#             --profile profiles/slurm
+#
+# Then point to the trained model:
+charging_model: "results/models/pairwise/charged_uncharged/model_best.pt"
+
+# Probability threshold for charging classification (0.0-1.0)
+# Reads with P(charged) >= threshold are classified as charged
+charging_threshold: 0.5
+
+# ============================================================================
+# Biological Sample Comparisons
+# ============================================================================
+# Specify which comparisons to run for biological samples
+#
+# Pairwise amino acid discrimination (190 comparisons)
+bio_aa_comparison_spec_file: "config/comparisons_bio_pairwise_aa.tsv"
+#
+# Per-amino acid charging discrimination (20 comparisons)
+bio_charging_comparison_spec_file: "config/comparisons_bio_per_aa_charging.tsv"
+
+# ============================================================================
+# Output Directories for Biological Workflow
+# ============================================================================
+# All biological outputs are kept separate from synthetic workflow
+# If project_name is set, these will be organized under:
+#   /scratch/alpine/user/leech/bio-trna/...
+bio_bam_dir: "/scratch/alpine/jhesselberth@xsede.org/leech/bam/bio"
+bio_chunks_dir: "/scratch/alpine/jhesselberth@xsede.org/leech/chunks/bio"
+bio_models_dir: "/scratch/alpine/jhesselberth@xsede.org/leech/models/bio"
+bio_inference_dir: "/scratch/alpine/jhesselberth@xsede.org/leech/inference/bio"
+bio_metrics_dir: "/scratch/alpine/jhesselberth@xsede.org/leech/metrics/bio"
+
+# ============================================================================
+# Biological Samples
+# ============================================================================
+# Define biological tRNA samples here
+# Each sample represents a biological experiment with mixed tRNAs
+#
+# Example configurations for different experimental setups:
+
+bio_samples:
+  # Example 1: E. coli biological sample (single replicate)
+  # ecoli_bio_rep1:
+  #   pod5: "/path/to/ecoli_bio_rep1/pod5_pass"
+  #   bam: "/path/to/ecoli_bio_rep1/basecalls.bam"
+  #   label: "biological"
+  #   description: "E. coli biological sample, replicate 1"
+  #   # Optional: Specify expected amino acids (will be auto-detected if omitted)
+  #   # amino_acids: ["Ala", "Arg", "Asn", "Asp", "Cys", "Gln", "Glu", "Gly", "His", "Ile", "Leu", "Lys", "Met", "Phe", "Pro", "Ser", "Thr", "Trp", "Tyr", "Val"]
+
+  # Example 2: Human biological sample (multiple replicates)
+  # human_bio_rep1:
+  #   pod5: "/path/to/human_bio_rep1/pod5_pass"
+  #   bam: "/path/to/human_bio_rep1/basecalls.bam"
+  #   label: "biological"
+  #   description: "Human biological sample, replicate 1"
+  #
+  # human_bio_rep2:
+  #   pod5: "/path/to/human_bio_rep2/pod5_pass"
+  #   bam: "/path/to/human_bio_rep2/basecalls.bam"
+  #   label: "biological"
+  #   description: "Human biological sample, replicate 2"
+
+  # Example 3: Yeast biological sample with expected subset of amino acids
+  # yeast_bio:
+  #   pod5: "/path/to/yeast_bio/pod5_pass"
+  #   bam: "/path/to/yeast_bio/basecalls.bam"
+  #   label: "biological"
+  #   description: "S. cerevisiae biological sample"
+  #   amino_acids: ["Ala", "Gly", "Leu", "Val"]  # Specify if only subset expected
+
+  # ========================================================================
+  # TEMPLATE: Add your biological samples here
+  # ========================================================================
+  # Replace the paths below with your actual data paths
+
+  # your_sample_name:
+  #   pod5: "/path/to/your/pod5/directory"
+  #   bam: "/path/to/your/basecalls.bam"
+  #   label: "biological"
+  #   description: "Your sample description"
+  #   # amino_acids: []  # Optional: list expected amino acids
+
+# ============================================================================
+# Data Preparation Parameters
+# ============================================================================
+# These parameters control how training chunks are extracted from biological samples
+# They should match the parameters used for training the charging classification model
+
+motif: "CCATGGC"          # tRNA 3' end motif (CCA + adapter sequence)
+motif_offset: 3           # Focus on amino acid attachment position (0-indexed)
+motif_reference: "fasta"  # Search motif in reference ("fasta") or basecalled ("bam") sequence
+skip_motif_indels: true   # Skip reads with indels in motif region
+kmer_len: 3               # K-mer context length (bases on each side of focus base)
+chunk_context: [200, 200] # Signal context (left, right) in samples
+
+# Training/validation/test split ratios
+train_split: 0.7          # Training set fraction
+val_split: 0.15           # Validation set fraction (test = 1 - train - val)
+
+# Parallel processing for data preparation
+workers: 8                # Number of parallel workers
+chunk_size: 100           # Number of reads per batch for parallel processing
+
+# ============================================================================
+# Model Configuration
+# ============================================================================
+# Model architecture and training hyperparameters for biological models
+
+model: "ConvLSTMDwell"    # Model architecture: ConvLSTMDwell, ConvLSTMBase, etc.
+
+# Training hyperparameters
+epochs: 50
+batch_size: 128
+learning_rate: 0.001
+early_stopping_patience: 5
+
+# Inference parameters
+infer_batch_size: 256
+
+# Device configuration
+use_cpu_training: true    # Set to true for CPU training, false for GPU
+
+# ============================================================================
+# Notes
+# ============================================================================
+#
+# Workflow Steps:
+# 1. Align biological reads to tRNA reference database
+# 2. Classify reads by charging status using pre-trained model
+# 3. Split reads into groups: {AA}_{charged|uncharged}
+# 4. Extract training chunks for each group
+# 5a. Train pairwise AA models (Ala vs Arg, Ala vs Asn, etc.)
+# 5b. Train per-AA charging models (Ala-charged vs Ala-uncharged, etc.)
+#
+# Usage:
+#   # Run full biological workflow
+#   snakemake --configfile config/samples-bio-trna.yaml --profile profiles/slurm
+#
+#   # Run specific steps
+#   snakemake --configfile config/samples-bio-trna.yaml --profile profiles/slurm all_bio_align
+#   snakemake --configfile config/samples-bio-trna.yaml --profile profiles/slurm all_bio_prepare
+#   snakemake --configfile config/samples-bio-trna.yaml --profile profiles/slurm all_bio_train_pairwise_aa
+#   snakemake --configfile config/samples-bio-trna.yaml --profile profiles/slurm all_bio_train_charging
+#

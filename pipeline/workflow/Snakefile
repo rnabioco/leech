@@ -52,6 +52,7 @@ include: "rules/inference.smk"
 include: "rules/evaluate.smk"
 include: "rules/compare_models.smk"
 include: "rules/diagnose.smk"
+include: "rules/bio_trna.smk"
 
 
 # ============================================================================
@@ -229,3 +230,102 @@ rule all_diagnose:
                 s for s in SAMPLES if config["samples"][s].get("label") != "uncharged"
             ],
         ),
+
+
+# ============================================================================
+# Biological tRNA Workflow Target Rules
+# ============================================================================
+
+
+rule all_bio_align:
+    """Align all biological samples to tRNA reference database."""
+    input:
+        expand(
+            BIO_BAM_DIR + "/{sample}/{sample}.aligned.bam",
+            sample=BIO_SAMPLES,
+        )
+        if BIO_SAMPLES
+        else [],
+
+
+rule all_bio_classify:
+    """Classify charging status for all biological samples."""
+    input:
+        expand(
+            BIO_BAM_DIR + "/{sample}/{sample}.charging_predictions.bam",
+            sample=BIO_SAMPLES,
+        )
+        if BIO_SAMPLES
+        else [],
+
+
+rule all_bio_split:
+    """Split all biological samples by amino acid and charging status."""
+    input:
+        expand(
+            BIO_BAM_DIR + "/{sample}/split.done",
+            sample=BIO_SAMPLES,
+        )
+        if BIO_SAMPLES
+        else [],
+
+
+rule all_bio_prepare:
+    """Prepare all biological tRNA chunks (per AA + charging group)."""
+    input:
+        # This will be populated dynamically based on what's in the split BAMs
+        # For now, we use the split.done stamp as a dependency
+        expand(
+            BIO_BAM_DIR + "/{sample}/split.done",
+            sample=BIO_SAMPLES,
+        )
+        if BIO_SAMPLES
+        else [],
+
+
+rule all_bio_train_pairwise_aa:
+    """Train all pairwise amino acid discrimination models."""
+    input:
+        expand(
+            BIO_MODELS_DIR + "/pairwise_aa/{pair}/model_best.pt",
+            pair=BIO_AA_PAIRS,
+        )
+        if BIO_AA_PAIRS
+        else [],
+
+
+rule all_bio_train_charging:
+    """Train all per-amino acid charging discrimination models."""
+    input:
+        expand(
+            BIO_MODELS_DIR + "/per_aa_charging/{aa}/model_best.pt",
+            aa=BIO_CHARGING_PAIRS,
+        )
+        if BIO_CHARGING_PAIRS
+        else [],
+
+
+rule all_bio:
+    """Run complete biological tRNA discriminative model workflow."""
+    input:
+        # Alignment and classification
+        expand(
+            BIO_BAM_DIR + "/{sample}/split.done",
+            sample=BIO_SAMPLES,
+        )
+        if BIO_SAMPLES
+        else [],
+        # Pairwise AA models
+        expand(
+            BIO_MODELS_DIR + "/pairwise_aa/{pair}/model_best.pt",
+            pair=BIO_AA_PAIRS,
+        )
+        if BIO_AA_PAIRS
+        else [],
+        # Per-AA charging models
+        expand(
+            BIO_MODELS_DIR + "/per_aa_charging/{aa}/model_best.pt",
+            aa=BIO_CHARGING_PAIRS,
+        )
+        if BIO_CHARGING_PAIRS
+        else [],

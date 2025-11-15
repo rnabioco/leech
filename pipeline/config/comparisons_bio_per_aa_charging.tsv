@@ -1,0 +1,34 @@
+# Biological tRNA Per-Amino Acid Charging Status Comparisons
+# Format: meta_label1	label_set1	meta_label2	label_set2
+#
+# This file defines charging status comparisons for each amino acid.
+# Each comparison trains a model to discriminate charged vs uncharged
+# status for a specific amino acid type.
+#
+# For each amino acid (e.g., Ala_charged_uncharged), the workflow will:
+# 1. Merge all Ala_charged reads with label "charged"
+# 2. Merge all Ala_uncharged reads with label "uncharged"
+# 3. Train a binary classifier to discriminate charged vs uncharged
+#
+# This creates 20 charging status classifiers (one per amino acid)
+# Format: Ala_charged	Ala	Ala_uncharged	Ala creates comparison "Ala_charged_Ala_uncharged"
+Ala_charged	Ala	Ala_uncharged	Ala
+Arg_charged	Arg	Arg_uncharged	Arg
+Asn_charged	Asn	Asn_uncharged	Asn
+Asp_charged	Asp	Asp_uncharged	Asp
+Cys_charged	Cys	Cys_uncharged	Cys
+Gln_charged	Gln	Gln_uncharged	Gln
+Glu_charged	Glu	Glu_uncharged	Glu
+Gly_charged	Gly	Gly_uncharged	Gly
+His_charged	His	His_uncharged	His
+Ile_charged	Ile	Ile_uncharged	Ile
+Leu_charged	Leu	Leu_uncharged	Leu
+Lys_charged	Lys	Lys_uncharged	Lys
+Met_charged	Met	Met_uncharged	Met
+Phe_charged	Phe	Phe_uncharged	Phe
+Pro_charged	Pro	Pro_uncharged	Pro
+Ser_charged	Ser	Ser_uncharged	Ser
+Thr_charged	Thr	Thr_uncharged	Thr
+Trp_charged	Trp	Trp_uncharged	Trp
+Tyr_charged	Tyr	Tyr_uncharged	Tyr
+Val_charged	Val	Val_uncharged	Val
