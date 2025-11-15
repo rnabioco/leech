@@ -185,3 +185,46 @@ def build_merge_input_args(pair, chunk_files):
                 args.append(f"-i {label}={chunk_file}")
 
         return " ".join(args)
+
+
+def get_project_root():
+    """Get the root directory for the current project.
+
+    Returns the base directory where project outputs are stored,
+    accounting for project_name if configured.
+
+    Examples:
+        Without project_name:
+            "/scratch/alpine/user/leech"
+
+        With project_name: "synthetic-trna"
+            "/scratch/alpine/user/leech/synthetic-trna"
+
+    Returns:
+        Path to project root directory
+    """
+    # Use chunks_dir as reference since it's always configured
+    chunks_base = config.get("chunks_dir", "results/chunks")
+    project_name = config.get("project_name", "")
+
+    # If project_name is set, find the parent of project_name in the path
+    if project_name:
+        chunks_path = Path(chunks_base)
+        parts = list(chunks_path.parts)
+
+        try:
+            # Find project_name in path and return path up to and including it
+            project_idx = parts.index(project_name)
+            return str(Path(*parts[:project_idx + 1]))
+        except ValueError:
+            # project_name not in path, use parent of chunks_dir
+            return str(chunks_path.parent)
+    else:
+        # No project_name, return parent of chunks_dir
+        chunks_path = Path(chunks_base)
+        return str(chunks_path.parent)
+
+
+# Project root directory for run documentation
+PROJECT_ROOT = get_project_root()
+RUN_SUMMARY_FILE = str(Path(PROJECT_ROOT) / "run_summary.md")

@@ -42,6 +42,7 @@ if "samples" in config:
 # Include common variables and functions
 include: "rules/common.smk"
 # Include modular rule files
+include: "rules/documentation.smk"
 include: "rules/dorado.smk"
 include: "rules/inspect_pod5.smk"
 include: "rules/prepare.smk"
@@ -61,6 +62,8 @@ include: "rules/diagnose.smk"
 rule all:
     """Default target: run all analyses."""
     input:
+        # Run summary document (generated first)
+        RUN_SUMMARY_FILE,
         # Choose based on compare_models setting
         METRICS_DIR + "/comparison/aggregate/pairwise_architecture_comparison.tsv.gz"
         if COMPARE_MODELS and AA_PAIRS
@@ -71,6 +74,8 @@ rule all:
 rule all_single_model:
     """Run single model analysis (default model from config)."""
     input:
+        # Run summary document (generated first)
+        RUN_SUMMARY_FILE,
         # Pairwise classifiers (includes charged_uncharged if configured)
         expand(
             METRICS_DIR + "/pairwise/{pair}/test_metrics.json",
@@ -86,6 +91,8 @@ rule all_single_model:
 rule all_compare_models:
     """Run multi-architecture comparison."""
     input:
+        # Run summary document (generated first)
+        RUN_SUMMARY_FILE,
         # Architecture comparison results (includes charged_uncharged if configured)
         METRICS_DIR + "/comparison/aggregate/pairwise_architecture_comparison.tsv.gz"
         if AA_PAIRS
@@ -98,6 +105,8 @@ rule all_compare_models:
 rule all_prepare:
     """Prepare all training chunks (without splitting)."""
     input:
+        # Run summary document (generated first)
+        RUN_SUMMARY_FILE,
         expand(
             CHUNKS_DIR + "/{sample}/all.npz",
             sample=SAMPLES,
@@ -107,6 +116,8 @@ rule all_prepare:
 rule all_merge:
     """Merge all prepared chunks and split at read level."""
     input:
+        # Run summary document (generated first)
+        RUN_SUMMARY_FILE,
         expand(CHUNKS_DIR + "/merged/pairwise/{pair}/train.npz", pair=AA_PAIRS)
         if AA_PAIRS
         else [],
