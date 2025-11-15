@@ -75,7 +75,7 @@ plugins:
             docstring_options:
               ignore_init_summary: true
             filters:
-              - "!^_"  # Exclude private members
+              - "!^_" # Exclude private members
           inventories:
             - https://docs.python.org/3/objects.inv
   - autorefs
@@ -125,50 +125,50 @@ markdown_extensions:
 nav:
   - Home: index.md
   - Getting Started:
-    - Installation: getting-started/installation.md
-    - Quick Start: getting-started/quick-start.md
-    - CLI Usage: getting-started/cli-usage.md
+      - Installation: getting-started/installation.md
+      - Quick Start: getting-started/quick-start.md
+      - CLI Usage: getting-started/cli-usage.md
   - User Guide:
-    - Implementation Guide: guides/01-START_HERE_IMPLEMENTATION_GUIDE.md
-    - tRNA Conditional Classification: guides/02-TRNA_CONDITIONAL_CLASSIFICATION.md
-    - Remora Analysis: guides/03-REMORA_ANALYSIS.md
-    - Amino Acid Discrimination: guides/04-AA_DISCRIMINATION_PRIMARY_TASK.md
-    - Model Predictions: guides/05-MODEL_PREDICTIONS.md
-    - Dwell Feature Strategies: guides/06-DWELL_FEATURE_STRATEGIES.md
-    - Amino Acid Heterogeneity: guides/07-AMINO_ACID_HETEROGENEITY.md
-    - Understanding Move Tables: guides/08-UNDERSTANDING_MOVE_TABLES.md
+      - Implementation Guide: guides/01-START_HERE_IMPLEMENTATION_GUIDE.md
+      - tRNA Conditional Classification: guides/02-TRNA_CONDITIONAL_CLASSIFICATION.md
+      - Remora Analysis: guides/03-REMORA_ANALYSIS.md
+      - Amino Acid Discrimination: guides/04-AA_DISCRIMINATION_PRIMARY_TASK.md
+      - Model Predictions: guides/05-MODEL_PREDICTIONS.md
+      - Dwell Feature Strategies: guides/06-DWELL_FEATURE_STRATEGIES.md
+      - Amino Acid Heterogeneity: guides/07-AMINO_ACID_HETEROGENEITY.md
+      - Understanding Move Tables: guides/08-UNDERSTANDING_MOVE_TABLES.md
   - Cluster Setup:
-    - Alpine (SLURM): setup/ALPINE_SETUP.md
-    - Bodhi (LSF): setup/BODHI_SETUP.md
-    - SLURM Cheatsheet: SLURM_CHEATSHEET.md
+      - Alpine (SLURM): setup/ALPINE_SETUP.md
+      - Bodhi (LSF): setup/BODHI_SETUP.md
+      - SLURM Cheatsheet: SLURM_CHEATSHEET.md
   - Grid Search:
-    - Overview: grid-search/grid-search.md
-    - Usage: grid-search/grid-search-usage.md
+      - Overview: grid-search/grid-search.md
+      - Usage: grid-search/grid-search-usage.md
   - Architecture:
-    - Overview: architecture.md
-    - Data Preparation: data_preparation.md
-    - Refactoring Guide: refactoring_guide.md
-    - Alternative Architectures: issue-alternative-architectures.md
-    - Troubleshooting: troubleshooting.md
+      - Overview: architecture.md
+      - Data Preparation: data_preparation.md
+      - Refactoring Guide: refactoring_guide.md
+      - Alternative Architectures: issue-alternative-architectures.md
+      - Troubleshooting: troubleshooting.md
   - Architecture Decision Records:
-    - Overview: adr/README.md
-    - Constants Consolidation: adr/0001-constants-consolidation.md
-    - Structured Logging: adr/0002-structured-logging.md
-    - Model Component Abstraction: adr/0003-model-component-abstraction.md
-    - Inference Wrapper Pattern: adr/0004-inference-wrapper-pattern.md
-    - Sequence Encoding Consolidation: adr/0005-sequence-encoding-consolidation.md
+      - Overview: adr/README.md
+      - Constants Consolidation: adr/0001-constants-consolidation.md
+      - Structured Logging: adr/0002-structured-logging.md
+      - Model Component Abstraction: adr/0003-model-component-abstraction.md
+      - Inference Wrapper Pattern: adr/0004-inference-wrapper-pattern.md
+      - Sequence Encoding Consolidation: adr/0005-sequence-encoding-consolidation.md
   - API Reference:
-    - Overview: api/index.md
-    - CLI: api/cli.md
-    - Data Preparation: api/data_prep.md
-    - Features: api/features.md
-    - Dataset: api/dataset.md
-    - Models: api/models.md
-    - Training: api/training.md
-    - Evaluation: api/evaluation.md
-    - Inference: api/inference.md
-    - Grid Search: api/gridsearch.md
-    - Utilities: api/util.md
+      - Overview: api/index.md
+      - CLI: api/cli.md
+      - Data Preparation: api/data_prep.md
+      - Features: api/features.md
+      - Dataset: api/dataset.md
+      - Models: api/models.md
+      - Training: api/training.md
+      - Evaluation: api/evaluation.md
+      - Inference: api/inference.md
+      - Grid Search: api/gridsearch.md
+      - Utilities: api/util.md
 
 extra:
   social:
