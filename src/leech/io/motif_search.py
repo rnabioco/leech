@@ -247,6 +247,7 @@ class ReferenceMotifSearcher(MotifSearcher):
         reference_sequences: dict[str, str],
         skip_indels: bool = True,
         allow_edge_indels: bool = False,
+        debug: bool = False,
     ):
         """
         Initialize reference-based motif searcher.
@@ -255,10 +256,30 @@ class ReferenceMotifSearcher(MotifSearcher):
             reference_sequences: Dict mapping reference name to sequence
             skip_indels: If True, skip motif positions with indels in region
             allow_edge_indels: If True, only reject indels in core motif (not ±1bp edges)
+            debug: If True, collect and log detailed statistics
         """
         self.reference_sequences = reference_sequences
         self.skip_indels = skip_indels
         self.allow_edge_indels = allow_edge_indels
+        self.debug = debug
+
+        # Debug statistics
+        self.stats = {
+            "motifs_in_reference": 0,
+            "failed_cigar_mapping": 0,
+            "failed_indels": 0,
+            "failed_length_check": 0,
+            "successful": 0,
+        }
+
+    def get_stats(self):
+        """Return accumulated statistics."""
+        return self.stats.copy()
+
+    def reset_stats(self):
+        """Reset statistics counters."""
+        for key in self.stats:
+            self.stats[key] = 0
 
     def find_motif_positions(
         self, read_id: str, sequence: str, alignment: pysam.AlignedSegment | None, motif: str
@@ -296,6 +317,10 @@ class ReferenceMotifSearcher(MotifSearcher):
 
         motif_positions = find_motif_in_sequence(ref_seq, motif, ref_start, ref_end)
 
+        # Track statistics
+        if self.debug:
+            self.stats["motifs_in_reference"] += len(motif_positions)
+
         # Map each motif position to query coordinates
         query_positions = []
         motif_len = len(motif)
@@ -312,6 +337,16 @@ class ReferenceMotifSearcher(MotifSearcher):
             )
 
             if query_coords is None:
+                if self.debug:
+                    # Check if it failed due to indels or other reasons
+                    # Try again without skip_indels to see if indels were the issue
+                    test_coords = map_reference_to_query_coords(
+                        alignment, ref_motif_start, ref_motif_end, skip_indels=False
+                    )
+                    if test_coords is None:
+                        self.stats["failed_cigar_mapping"] += 1
+                    else:
+                        self.stats["failed_indels"] += 1
                 continue  # Skip if indels or mapping failed
 
             query_start, query_end = query_coords
@@ -319,7 +354,11 @@ class ReferenceMotifSearcher(MotifSearcher):
             # Sanity check: ensure we mapped a region of the expected length
             if query_end - query_start == motif_len:
                 query_positions.append(query_start)
+                if self.debug:
+                    self.stats["successful"] += 1
             else:
+                if self.debug:
+                    self.stats["failed_length_check"] += 1
                 logger.debug(
                     f"Read {read_id}: Mapped motif has unexpected length "
                     f"({query_end - query_start} != {motif_len}), skipping"
@@ -333,6 +372,7 @@ def get_motif_searcher(
     reference_sequences: dict[str, str] | None = None,
     skip_indels: bool = True,
     allow_edge_indels: bool = False,
+    debug: bool = False,
 ) -> MotifSearcher:
     """
     Factory function for creating motif searchers.
@@ -342,6 +382,7 @@ def get_motif_searcher(
         reference_sequences: Dict of reference sequences (required for "fasta" mode)
         skip_indels: Whether to skip motif positions with indels (for "fasta" mode)
         allow_edge_indels: If True, only reject indels in core motif (for "fasta" mode)
+        debug: If True, enable detailed statistics collection
 
     Returns:
         MotifSearcher instance
@@ -362,6 +403,6 @@ def get_motif_searcher(
     elif mode == "fasta":
         if reference_sequences is None:
             raise ValueError("reference_sequences required for reference-based motif search")
-        return ReferenceMotifSearcher(reference_sequences, skip_indels, allow_edge_indels)
+        return ReferenceMotifSearcher(reference_sequences, skip_indels, allow_edge_indels, debug)
     else:
         raise ValueError(f"Invalid motif search mode: {mode}. Must be 'bam' or 'fasta'")
