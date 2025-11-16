@@ -231,6 +231,10 @@ rule align_rebasecalled:
 
     The -T '*' flag in samtools fastq preserves all auxiliary tags.
     The -y flag in minimap2 copies tags from input to aligned output.
+
+    IMPORTANT: This rule adds reference sequences to @SQ headers via SQ:Z: tags
+    to enable reference-based motif search in leech. This avoids training bias
+    from basecalling errors at modification sites.
     """
     input:
         bam=rules.rebasecall.output.bam,
@@ -250,10 +254,47 @@ rule align_rebasecalled:
         """
         # Convert BAM to FASTQ preserving all tags (-T '*')
         # Align with minimap2 copying tags to output (-y)
-        # Sort and index the aligned BAM
+        # Sort the aligned BAM (temporary output without reference sequences in header)
         {params.samtools_bin} fastq -T '*' {input.bam} | \
         {params.minimap2_bin} -ax map-ont -y {input.reference} - | \
-        {params.samtools_bin} sort -@ {threads} -o {output.bam} - 2> {log}
+        {params.samtools_bin} sort -@ {threads} -o {output.bam}.tmp - 2> {log}
+
+        # Add reference sequences to @SQ header tags for leech reference-based motif search
+        echo "Adding reference sequences to @SQ headers..." >> {log}
+        python3 -c "
+import pysam
+import sys
+
+# Read reference sequences
+ref_seqs = {{}}
+with pysam.FastaFile('{input.reference}') as fasta:
+    for ref_name in fasta.references:
+        ref_seqs[ref_name] = fasta.fetch(ref_name)
+
+# Read BAM and update header
+with pysam.AlignmentFile('{output.bam}.tmp', 'rb') as bam_in:
+    header = bam_in.header.to_dict()
+
+    # Add SQ:Z: tags to @SQ header lines
+    if 'SQ' in header:
+        for sq in header['SQ']:
+            ref_name = sq['SN']
+            if ref_name in ref_seqs:
+                sq['SQ'] = ref_seqs[ref_name]
+                print(f'Added sequence for {{ref_name}} ({{len(ref_seqs[ref_name])}} bp)', file=sys.stderr)
+            else:
+                print(f'WARNING: Reference {{ref_name}} not found in FASTA', file=sys.stderr)
+
+    # Write BAM with updated header
+    with pysam.AlignmentFile('{output.bam}', 'wb', header=header) as bam_out:
+        for read in bam_in:
+            bam_out.write(read)
+
+print('Successfully added reference sequences to BAM header', file=sys.stderr)
+" 2>> {log}
+
+        # Remove temporary file
+        rm -f {output.bam}.tmp
 
         # Index the aligned BAM
         {params.samtools_bin} index {output.bam}
@@ -262,4 +303,8 @@ rule align_rebasecalled:
         echo "Verifying critical tags (mv, ns, MM, ML) in aligned BAM..." >> {log}
         {params.samtools_bin} view {output.bam} | head -n 1 | grep -o "mv:B:[^[:space:]]*" >> {log} || echo "WARNING: mv tag not found" >> {log}
         {params.samtools_bin} view {output.bam} | head -n 1 | grep -o "ns:i:[^[:space:]]*" >> {log} || echo "WARNING: ns tag not found" >> {log}
+
+        # Verify @SQ headers contain sequences
+        echo "Verifying @SQ headers contain reference sequences..." >> {log}
+        {params.samtools_bin} view -H {output.bam} | grep "@SQ" | head -n 1 >> {log}
         """
