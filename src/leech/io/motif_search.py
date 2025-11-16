@@ -352,7 +352,17 @@ class ReferenceMotifSearcher(MotifSearcher):
             query_start, query_end = query_coords
 
             # Sanity check: ensure we mapped a region of the expected length
-            if query_end - query_start == motif_len:
+            # When skip_indels=False, accept motifs within ±3bp (indels change length)
+            # When skip_indels=True, require exact length (no indels should be present)
+            mapped_len = query_end - query_start
+            if self.skip_indels:
+                # Strict check when filtering indels - must be exact length
+                length_ok = mapped_len == motif_len
+            else:
+                # Lenient check when accepting indels - within ±3bp tolerance
+                length_ok = abs(mapped_len - motif_len) <= 3
+
+            if length_ok:
                 query_positions.append(query_start)
                 if self.debug:
                     self.stats["successful"] += 1
@@ -361,7 +371,7 @@ class ReferenceMotifSearcher(MotifSearcher):
                     self.stats["failed_length_check"] += 1
                 logger.debug(
                     f"Read {read_id}: Mapped motif has unexpected length "
-                    f"({query_end - query_start} != {motif_len}), skipping"
+                    f"({mapped_len} != {motif_len}), skipping"
                 )
 
         return query_positions
