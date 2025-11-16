@@ -76,9 +76,12 @@ def map_reference_to_query_coords(
         elif op == 1:  # BAM_CINS
             # Check if indel is in region (or core region if allow_edge_indels)
             if allow_edge_indels:
-                # Only check core region (exclude ±1bp edges)
-                core_start = ref_start + 1
-                core_end = ref_end - 1
+                # Only check core region (exclude ±3bp edges for 7bp motif)
+                # For CCATGGC (7bp), this checks only middle position (amino acid site)
+                motif_len = ref_end - ref_start
+                edge_tolerance = min(3, motif_len // 2)  # ±3bp or half motif length
+                core_start = ref_start + edge_tolerance
+                core_end = ref_end - edge_tolerance
                 if ref_pos >= core_start and ref_pos < core_end:
                     has_indel_in_region = True
             else:
@@ -91,9 +94,11 @@ def map_reference_to_query_coords(
         elif op == 2:  # BAM_CDEL
             # Check if indel is in region (or core region if allow_edge_indels)
             if allow_edge_indels:
-                # Only check core region (exclude ±1bp edges)
-                core_start = ref_start + 1
-                core_end = ref_end - 1
+                # Only check core region (exclude ±3bp edges for 7bp motif)
+                motif_len = ref_end - ref_start
+                edge_tolerance = min(3, motif_len // 2)  # ±3bp or half motif length
+                core_start = ref_start + edge_tolerance
+                core_end = ref_end - edge_tolerance
                 if ref_pos >= core_start and ref_pos + length > core_start:
                     has_indel_in_region = True
             else:
