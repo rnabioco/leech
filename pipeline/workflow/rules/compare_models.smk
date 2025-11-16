@@ -154,13 +154,15 @@ rule aggregate_pairwise_comparisons:
             dfs = []
             for pair_file in input:
                 pair_name = Path(pair_file).parent.name
-                df = pd.read_csv(pair_file, sep="\t", compression='gzip')
+                df = pd.read_csv(pair_file, sep="\t", compression="gzip")
                 df.insert(0, "pair", pair_name)
                 dfs.append(df)
 
                 # Concatenate and save
             combined = pd.concat(dfs, ignore_index=True)
-            combined.to_csv(output.comparison, sep="\t", index=False, compression='gzip')
+            combined.to_csv(
+                output.comparison, sep="\t", index=False, compression="gzip"
+            )
 
             # Create summary
             with open(output.summary, "w") as f:
