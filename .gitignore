@@ -249,6 +249,7 @@ data/splits/
 
 # ext repos
 remora/
+aa-tRNA-seq/
 
 # alpine-specific stuff
 .nfs*
