@@ -74,8 +74,8 @@ click.rich_click.USE_CLICK_SHORT_HELP = True
 LOGO = """
    ___
   (O O)    LEECH
-  <VVV>    Learning Enhanced Aminoacylation
-   |||     Classification from Hanopore signals
+  <VVV>    Learning Enhanced Electrical 
+   |||     Classifiers from Hanopore signals
    |||
     V
 """
@@ -99,7 +99,7 @@ def display_logo():
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
 @click.version_option(version="0.1.0", prog_name="leech")
 def cli():
-    """LEECH - Learning Enhanced Aminoacylation Classification from Hanopore signals
+    """LEECH - Learning Enhanced Electrical Classifiers from Hanopore signals
 
     Enhanced classification from nanopore signals for aa-tRNA-seq experiments.
     """
