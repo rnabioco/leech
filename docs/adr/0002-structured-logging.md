@@ -84,13 +84,13 @@ logger.info(f"Loss: {loss:.4f}")
 ### Usage
 ```bash
 # Normal output
-leech train --train-data data.npz --model ConvLSTMDwell
+leech model train --train-data data.npz --model ConvLSTMDwell
 
 # Debug output
-leech train --train-data data.npz --model ConvLSTMDwell --log-level DEBUG
+leech model train --train-data data.npz --model ConvLSTMDwell --log-level DEBUG
 
 # Log to file
-leech train --train-data data.npz --model ConvLSTMDwell --log-file train.log
+leech model train --train-data data.npz --model ConvLSTMDwell --log-file train.log
 ```
 
 ## Notes

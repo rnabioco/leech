@@ -29,7 +29,7 @@ Data preparation in leech involves:
 
 ```bash
 # Prepare data with default settings
-uv run leech prepare \
+uv run leech data prepare \
     --pod5 reads.pod5 \
     --bam alignments.bam \
     --output-dir chunks/ \
@@ -46,7 +46,7 @@ This will:
 
 ```bash
 # Use 8 workers for faster processing
-uv run leech prepare \
+uv run leech data prepare \
     --pod5 reads.pod5 \
     --bam alignments.bam \
     --output-dir chunks/ \
@@ -225,12 +225,12 @@ positions = searcher.find_motif_positions(
 
 ```bash
 # Basecalled search
-uv run leech prepare \
+uv run leech data prepare \
     --motif CCAGGC \
     --motif-reference bam
 
 # Reference-based search (default)
-uv run leech prepare \
+uv run leech data prepare \
     --motif CCAGGC \
     --motif-reference fasta \
     --reference-fasta reference.fasta
@@ -369,14 +369,14 @@ result = process_comparison_spec(
 
 ```bash
 # Pairwise comparison
-uv run leech merge-and-split \
+uv run leech data merge \
     -i Ala=ala.npz \
     -i Gly=gly.npz \
     -o comparisons/Ala_vs_Gly/ \
     --seed 42
 
 # Batch processing
-uv run leech merge-and-split \
+uv run leech data merge \
     -i chunks/dir1 \
     -i chunks/dir2 \
     --comparison-spec comparisons.tsv \
@@ -465,7 +465,7 @@ Extracted 0 training chunks
 
 ```bash
 # Use all CPU cores
-uv run leech prepare \
+uv run leech data prepare \
     --workers $(nproc) \
     --chunk-size 100 \
     ...

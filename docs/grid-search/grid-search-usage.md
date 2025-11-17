@@ -1,6 +1,6 @@
 # Grid Search Usage Guide
 
-This guide shows how to use the `leech grid-search` command to optimize chunk context parameters for model training.
+This guide shows how to use the `leech model optimize` command to optimize chunk context parameters for model training.
 
 ## Overview
 
@@ -17,7 +17,7 @@ First, prepare your training and validation chunks:
 
 ```bash
 # Prepare training data (e.g., charged tRNAs)
-uv run leech prepare \
+uv run leech data prepare \
   --pod5 charged_reads.pod5 \
   --bam charged_alignments.bam \
   --output-dir data/train/ \
@@ -26,7 +26,7 @@ uv run leech prepare \
   --label 1
 
 # Prepare validation data
-uv run leech prepare \
+uv run leech data prepare \
   --pod5 val_charged_reads.pod5 \
   --bam val_charged_alignments.bam \
   --output-dir data/val/ \
@@ -40,7 +40,7 @@ uv run leech prepare \
 Run a coarse grid search to explore the parameter space:
 
 ```bash
-uv run leech grid-search \
+uv run leech model optimize \
   --train-data data/train/chunks.npz \
   --val-data data/val/chunks.npz \
   --model ConvLSTMDwell \
@@ -75,7 +75,7 @@ left_context,right_context,signal_len,best_val_acc,best_val_auc,best_epoch,train
 If your best result is at the edge of the grid, run a fine-grained search:
 
 ```bash
-uv run leech grid-search \
+uv run leech model optimize \
   --train-data data/train/chunks.npz \
   --val-data data/val/chunks.npz \
   --model ConvLSTMDwell \
@@ -91,7 +91,7 @@ uv run leech grid-search \
 ### Basic Usage
 
 ```bash
-leech grid-search \
+leech model optimize \
   --train-data <path> \
   --val-data <path> \
   --context-grid <values> \
@@ -126,7 +126,7 @@ leech grid-search \
 Test different left vs right contexts:
 
 ```bash
-uv run leech grid-search \
+uv run leech model optimize \
   --train-data data/train/chunks.npz \
   --val-data data/val/chunks.npz \
   --left-contexts 5000,7500,10000 \
@@ -140,7 +140,7 @@ uv run leech grid-search \
 For rapid prototyping, use fewer epochs:
 
 ```bash
-uv run leech grid-search \
+uv run leech model optimize \
   --train-data data/train/chunks.npz \
   --val-data data/val/chunks.npz \
   --context-grid 200,1000,5000 \
@@ -152,7 +152,7 @@ uv run leech grid-search \
 ### CPU Training (No GPU Available)
 
 ```bash
-uv run leech grid-search \
+uv run leech model optimize \
   --train-data data/train/chunks.npz \
   --val-data data/val/chunks.npz \
   --context-grid 200,500,1000 \
@@ -305,7 +305,7 @@ rule grid_search:
         gpu = 1
     shell:
         """
-        leech grid-search \
+        leech model optimize \
             --train-data {input.train} \
             --val-data {input.val} \
             --context-grid {params.contexts} \
