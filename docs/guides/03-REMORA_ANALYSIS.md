@@ -427,3 +427,233 @@ To validate our novel contribution:
 - **Validation**: Compare ConvLSTMDwell vs ConvLSTMBase performance
 
 **The implementation is ready for training and evaluation.**
+
+---
+
+## 9. Signal Mapping Refinement Analysis
+
+**Date Added**: 2025-11-17
+**Question**: Should leech adopt Remora's `refine_signal_map` strategy?
+**Answer**: **NO** - Not necessary for leech's use case with modern basecallers.
+
+### What is Signal Mapping Refinement?
+
+Remora includes an **optional** signal mapping refinement system (`SigMapRefiner` class) that corrects basecaller move table errors through two mechanisms:
+
+#### 1. Rough Rescaling (`--refine-rough-rescale`)
+
+**Purpose**: Corrects poor initial signal normalization
+
+**Method**:
+- Compares signal quantiles to expected k-mer level quantiles
+- Recalibrates shift/scale normalization parameters
+- Uses least-squares or Theil-Sen estimator (robust to outliers)
+
+**When beneficial**: Legacy data with poor initial calibration
+
+#### 2. Signal Mapping Refinement (`--refine-kmer-level-table`, `--refine-scale-iters`)
+
+**Purpose**: Corrects errors in basecaller's base-to-signal alignment
+
+**Method**:
+- Uses k-mer model (lookup table: k-mer → expected signal level)
+- Applies **dynamic programming** to iteratively refine `seq_to_sig_map`
+- Banded DP constrains search space for efficiency
+- Short dwell penalties avoid unrealistic base assignments
+
+**When beneficial**:
+- Early/inaccurate basecaller move tables
+- High signal noise causing alignment errors
+- Misaligned signal-to-sequence correspondence
+
+### Leech's Current Approach
+
+```python
+# src/leech/preparation/reader.py:86-106
+move_table = extract_move_table(aln)           # From basecaller
+seq_to_sig_map = move_table.to_seq_to_sig_map()  # Direct conversion - NO REFINEMENT
+dwells = compute_dwell_times(move_table)       # Trust basecaller alignment
+```
+
+**Leech trusts basecaller move tables directly** - no iterative refinement.
+
+### Comparison
+
+| Aspect | Remora | Leech |
+|--------|--------|-------|
+| **Signal normalization** | Median-MAD + optional rescale | Median-MAD only |
+| **seq_to_sig_map** | Basecaller + optional DP refinement | Basecaller only |
+| **K-mer model** | Uses k-mer level table | Not used |
+| **Alignment correction** | Iterative DP refinement (optional) | None |
+| **Complexity** | Higher (optional features) | Lower (direct extraction) |
+| **Default behavior** | Most users don't enable refinement | N/A |
+
+### Decision: Do NOT Implement Refinement
+
+#### Reasons Against ❌
+
+1. **Modern basecallers are highly accurate**
+   - Dorado SUP/HAC models produce excellent move tables
+   - Guppy 6.x+ also very accurate
+   - Move table quality improved significantly since early Remora development
+   - Refinement was more important for older basecallers (2018-2020)
+
+2. **Leech's value proposition is different**
+   - Innovation = **explicit dwell time features** (novel contribution)
+   - Focus on spatiotemporal characterization, not alignment correction
+   - Core hypothesis: charged/uncharged tRNAs differ in translocation kinetics
+
+3. **Feature engineering provides robustness**
+   - Windowed statistics smooth over small alignment errors
+   - `dwell_mean`, `dwell_std` aggregate local context
+   - `dwell_ratio` normalizes away systematic biases
+   - Log transforms handle distribution skew
+   - Small alignment errors unlikely to impact aggregate features significantly
+
+4. **Added complexity not justified**
+   - Requires: k-mer model, DP implementation, additional hyperparameters
+   - Maintenance burden for marginal benefit
+   - Computational cost (iterative refinement)
+   - Extra dependencies (k-mer level tables)
+
+5. **No evidence of problems**
+   - Current implementation works well
+   - Tests pass (test_move_table_signal_temporal.py)
+   - No reported move table accuracy issues
+
+6. **Reference-based motif search already handles basecall errors**
+   - Leech defaults to reference-based motif search (`--motif-reference fasta`)
+   - Avoids bias from basecalling errors at modification sites
+   - Orthogonal to signal mapping quality
+
+7. **Remora's refinement is optional**
+   - Not enabled by default in Remora
+   - Most users don't use it
+   - Special-purpose feature for edge cases
+
+#### Weak Arguments For ⚠️
+
+1. **Could help legacy data** (older basecalls pre-2022)
+   - But: most users will use modern basecallers
+   - Can handle edge cases if they arise
+
+2. **Theoretical accuracy improvement**
+   - Might marginally improve dwell estimates
+   - Likely negligible with Dorado/modern Guppy
+
+3. **Very noisy reads**
+   - Poor signal quality might benefit
+   - But: filtered by MAPQ anyway
+
+### Recommendations
+
+#### Option 1: Do Nothing (CHOSEN) ✅
+
+**Continue using basecaller move tables directly**
+
+**Rationale**:
+- Simplest approach
+- Works well with modern basecallers (Dorado, Guppy 6+)
+- Maintains focus on dwell time innovation
+- Lower maintenance burden
+- Aligns with Remora's typical usage (refinement rarely needed)
+
+**When to revisit**:
+- Evidence of systematic alignment errors in validation
+- User reports with legacy basecall data
+- Anomalous dwell time distributions
+- Ablation studies show refinement helps performance
+
+#### Option 2: Diagnostic Analysis First (If Issues Arise)
+
+**Before implementing refinement, validate the need**:
+
+```python
+# scripts/analyze_alignment_quality.py
+# Compare:
+# 1. Dwell distributions: basecaller vs. k-mer model expectations
+# 2. Signal level agreement with k-mer predictions
+# 3. Alignment quality metrics (mean absolute error)
+# 4. Impact on model performance (with/without simulated refinement)
+```
+
+**Data-driven approach**: Only implement if diagnostics show benefit.
+
+#### Option 3: Implement as Optional Feature (Only If Needed)
+
+**If evidence emerges that refinement helps**:
+
+1. Add `--refine-signal-map` flag to `leech prepare`
+2. Vendor Remora's `refine_signal_map` module
+3. Make opt-in (default: disabled)
+4. Document when to enable (legacy data, poor signal quality)
+
+**Estimated effort**: 2-3 days implementation + testing
+
+**Required**:
+- K-mer level table (5-mer or 6-mer model)
+- DP refinement algorithm
+- CLI parameter additions
+- Performance benchmarking (with/without refinement)
+
+### Technical Details
+
+#### How Remora's Refinement Works
+
+```python
+# In remora/data_chunks.py RemoraRead class
+def refine_signal_mapping(self, sig_map_refiner):
+    """Optional refinement of seq_to_sig_map"""
+    if not sig_map_refiner.is_loaded:
+        return  # Skip if not configured
+
+    # Step 1: Rough rescale (optional)
+    if sig_map_refiner.do_rough_rescale:
+        self.shift, self.scale = sig_map_refiner.rough_rescale(
+            self.signal, self.shift, self.scale
+        )
+
+    # Step 2: Iterative DP refinement (optional)
+    if sig_map_refiner.scale_iters >= 0:
+        self.seq_to_sig_map = sig_map_refiner.refine_sig_map(
+            signal=self.signal,
+            sequence=self.sequence,
+            initial_map=self.seq_to_sig_map,
+            iterations=sig_map_refiner.scale_iters
+        )
+
+    # Step 3: Reset cached computations
+    self._reset_signal_features()
+```
+
+#### Key Components
+
+1. **K-mer Model**: Lookup table mapping k-mers to expected signal levels
+2. **Dynamic Programming**: Banded DP for efficient alignment search
+3. **Dwell Penalties**: Quadratic penalties for unrealistically short dwells
+4. **Iterative Refinement**: Multiple passes to converge on best alignment
+
+### Conclusion
+
+**Leech should NOT implement signal mapping refinement at this time.**
+
+**Current approach is sound**:
+- ✅ Correctly extracts basecaller move tables
+- ✅ Properly computes seq_to_sig_map
+- ✅ Accurately calculates dwell times and features
+- ✅ Robust feature engineering handles small errors
+- ✅ Modern basecallers provide high-quality alignments
+
+**Better focus areas**:
+1. **Model validation**: ConvLSTMDwell vs ConvLSTMBase performance
+2. **Feature importance**: Which dwell features matter most?
+3. **Biological validation**: Charged vs uncharged dwell signatures
+4. **Production deployment**: Snakemake workflows, documentation
+
+**If refinement becomes necessary** (unlikely):
+- Implement as optional feature (`--refine-signal-map`)
+- Use diagnostic analysis to validate benefit first
+- Vendor Remora's implementation (don't reinvent)
+- Default: disabled (opt-in for special cases)
+
+**Final verdict**: Signal mapping refinement is an **optional enhancement** in Remora for edge cases. Leech's focus on dwell time features is orthogonal and more impactful than alignment refinement with modern basecallers.
