@@ -32,7 +32,7 @@ rule test_pairwise_aa:
         METRICS_DIR + "/pairwise/{pair}/test.log",
     shell:
         """
-        uv run leech test \
+        uv run leech eval test \
             --model {params.model_dir} \
             --test-data {input.test} \
             --output {output.metrics} \

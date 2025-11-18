@@ -101,12 +101,28 @@ def display_logo():
 def cli():
     """LEECH - Learning Enhanced Electrical Classifiers from Hanopore signals
 
-    Enhanced classification from nanopore signals for aa-tRNA-seq experiments.
+    A workflow-based CLI for nanopore signal classification:
+
+    • leech data     - Prepare and process training data
+    • leech model    - Train and optimize models
+    • leech eval     - Evaluate and analyze models
+    • leech predict  - Run inference on new data
     """
     setup_logging(level=logging.INFO)
 
 
-@cli.command()
+# ============================================================================
+# DATA PREPARATION COMMANDS
+# ============================================================================
+
+
+@cli.group()
+def data():
+    """Prepare and process training data from POD5/BAM files."""
+    pass
+
+
+@data.command()
 @click.option(
     "--pod5",
     required=True,
@@ -255,7 +271,18 @@ def prepare(
     )
 
 
-@cli.command()
+# ============================================================================
+# MODEL TRAINING COMMANDS
+# ============================================================================
+
+
+@cli.group()
+def model():
+    """Train and optimize models."""
+    pass
+
+
+@data.command()
 @click.option(
     "--input-chunks",
     "-i",
@@ -295,7 +322,7 @@ def prepare(
     default=None,
     help="TSV file with comparison specifications (4 columns: meta_label1, label_set1, meta_label2, label_set2). When provided, input-chunks should be directories.",
 )
-def merge_and_split(input_chunks, output_dir, train_split, val_split, seed, comparison_spec):
+def merge(input_chunks, output_dir, train_split, val_split, seed, comparison_spec):
     """Merge multiple chunk files and split at read level to prevent data leakage.
 
     This command implements the correct workflow for multi-sample datasets:
@@ -307,13 +334,13 @@ def merge_and_split(input_chunks, output_dir, train_split, val_split, seed, comp
 
     Examples:
         # Pairwise comparison with single labels
-        leech merge-and-split -i Ala=ala.npz -i Gly=gly.npz -o merged/
+        leech data merge -i Ala=ala.npz -i Gly=gly.npz -o merged/
 
         # Multi-label comparison (chemical properties)
-        leech merge-and-split -i basic=lys.npz -i basic=arg.npz -i acidic=asp.npz -o merged/
+        leech data merge -i basic=lys.npz -i basic=arg.npz -i acidic=asp.npz -o merged/
 
         # Batch processing from TSV spec
-        leech merge-and-split -i chunks/dir1 -i chunks/dir2 --comparison-spec spec.tsv -o merged/
+        leech data merge -i chunks/dir1 -i chunks/dir2 --comparison-spec spec.tsv -o merged/
     """
     from leech.commands import handle_merge_and_split
 
@@ -327,7 +354,7 @@ def merge_and_split(input_chunks, output_dir, train_split, val_split, seed, comp
     )
 
 
-@cli.command()
+@model.command()
 @click.option(
     "--train-data",
     required=True,
@@ -470,110 +497,7 @@ def train(
     console.print(table)
 
 
-@cli.command()
-@click.option(
-    "--model",
-    required=True,
-    type=click.Path(exists=True, path_type=Path),
-    help="Trained model file (.pt)",
-)
-@click.option(
-    "--test-data",
-    required=True,
-    type=click.Path(exists=True, path_type=Path),
-    help="Test dataset config (JSON)",
-)
-@click.option(
-    "--output",
-    "-o",
-    required=True,
-    type=click.Path(path_type=Path),
-    help="Output metrics file (JSON)",
-)
-@click.option(
-    "--device",
-    type=click.Choice(["cuda", "cpu"]),
-    default=DEFAULT_DEVICE,
-    help="Device for inference",
-)
-def test(model, test_data, output, device):
-    """Test a trained model."""
-    from leech.evaluation import evaluate_model
-
-    # display_logo()
-
-    logger.info(f"Testing model: {model}")
-    logger.info(f"Test data: {test_data}")
-    logger.info(f"Output: {output}")
-
-    # Run evaluation
-    evaluate_model(
-        model_path=model,
-        test_data_path=test_data,
-        output_path=output,
-        device=device,
-    )
-
-    console.print("[bold green]Testing complete![/bold green]")
-    logger.info(f"Results saved to {output}")
-
-
-@cli.command()
-@click.option(
-    "--model",
-    required=True,
-    type=click.Path(exists=True, path_type=Path),
-    help="Trained model file (.pt)",
-)
-@click.option(
-    "--pod5",
-    required=True,
-    type=click.Path(exists=True, path_type=Path),
-    help="POD5 file with raw signal",
-)
-@click.option(
-    "--bam",
-    required=True,
-    type=click.Path(exists=True, path_type=Path),
-    help="BAM file with alignments",
-)
-@click.option(
-    "--output",
-    "-o",
-    required=True,
-    type=click.Path(path_type=Path),
-    help="Output BAM with predictions",
-)
-@click.option(
-    "--device",
-    type=click.Choice(["cuda", "cpu"]),
-    default=DEFAULT_DEVICE,
-    help="Device for inference",
-)
-def infer(model, pod5, bam, output, device):
-    """Run inference on new data."""
-    from leech.inference import run_inference
-
-    # display_logo()
-
-    logger.info(f"Running inference with model: {model}")
-    logger.info(f"Input: {pod5}, {bam}")
-    logger.info(f"Output: {output}")
-
-    # Run inference
-    run_inference(
-        model_path=model,
-        pod5_path=pod5,
-        bam_path=bam,
-        output_path=output,
-        device=device,
-    )
-
-    console.print("[bold green]Inference complete![/bold green]")
-    logger.info(f"Predictions saved to {output}")
-
-
-@cli.command(name="grid-search")
+@model.command()
 @click.option(
     "--train-data",
     required=True,
@@ -659,7 +583,7 @@ def infer(model, pod5, bam, output, device):
     default=10,
     help="Patience for early stopping: stop training if validation accuracy doesn't improve for N epochs (set to 0 to disable)",
 )
-def grid_search(
+def optimize(
     train_data,
     val_data,
     model,
@@ -675,10 +599,8 @@ def grid_search(
     seed,
     early_stopping,
 ):
-    """Run grid search over chunk contexts for model optimization."""
+    """Optimize model hyperparameters using grid search over chunk contexts."""
     from leech.gridsearch import GridSearchConfig, parse_context_grid, run_grid_search
-
-    # display_logo()
 
     # Parse context grids
     left_contexts_list, right_contexts_list = parse_context_grid(
@@ -713,6 +635,275 @@ def grid_search(
 
     console.print("[bold green]Grid search complete![/bold green]")
     logger.info(f"Results saved to: {summary_path}")
+
+
+# ============================================================================
+# MODEL EVALUATION COMMANDS
+# ============================================================================
+
+
+@cli.group()
+def eval():
+    """Evaluate and analyze trained models."""
+    pass
+
+
+@eval.command()
+@click.option(
+    "--model",
+    required=True,
+    type=click.Path(exists=True, path_type=Path),
+    help="Trained model file (.pt)",
+)
+@click.option(
+    "--test-data",
+    required=True,
+    type=click.Path(exists=True, path_type=Path),
+    help="Test dataset config (JSON)",
+)
+@click.option(
+    "--output",
+    "-o",
+    required=True,
+    type=click.Path(path_type=Path),
+    help="Output metrics file (JSON)",
+)
+@click.option(
+    "--device",
+    type=click.Choice(["cuda", "cpu"]),
+    default=DEFAULT_DEVICE,
+    help="Device for inference",
+)
+def test(model, test_data, output, device):
+    """Test a trained model on a holdout test set."""
+    from leech.evaluation import evaluate_model
+
+    logger.info(f"Testing model: {model}")
+    logger.info(f"Test data: {test_data}")
+    logger.info(f"Output: {output}")
+
+    # Run evaluation
+    evaluate_model(
+        model_path=model,
+        test_data_path=test_data,
+        output_path=output,
+        device=device,
+    )
+
+    console.print("[bold green]Testing complete![/bold green]")
+    logger.info(f"Results saved to {output}")
+
+
+@eval.command()
+@click.option(
+    "--model-dirs",
+    "-m",
+    required=True,
+    multiple=True,
+    type=click.Path(exists=True, path_type=Path),
+    help="Model directories to compare (can specify multiple)",
+)
+@click.option(
+    "--test-data",
+    "-t",
+    required=True,
+    type=click.Path(exists=True, path_type=Path),
+    help="Test dataset for evaluation",
+)
+@click.option(
+    "--output-dir",
+    "-o",
+    required=True,
+    type=click.Path(path_type=Path),
+    help="Output directory for comparison results",
+)
+@click.option(
+    "--device",
+    type=click.Choice(["cuda", "cpu"]),
+    default=DEFAULT_DEVICE,
+    help="Device for evaluation",
+)
+@click.option(
+    "--no-plot",
+    is_flag=True,
+    help="Skip generating plots",
+)
+def compare(model_dirs, test_data, output_dir, device, no_plot):
+    """Compare multiple trained models on the same test set."""
+    from leech.commands.analyze import handle_compare
+
+    handle_compare(
+        model_dirs=list(model_dirs),
+        test_data=test_data,
+        output_dir=output_dir,
+        device=device,
+        plot=not no_plot,
+    )
+
+    console.print("[bold green]Model comparison complete![/bold green]")
+
+
+@eval.command()
+@click.option(
+    "--model",
+    "-m",
+    required=True,
+    type=click.Path(exists=True, path_type=Path),
+    help="Path to trained model checkpoint",
+)
+@click.option(
+    "--test-data",
+    "-t",
+    required=True,
+    type=click.Path(exists=True, path_type=Path),
+    help="Test dataset for analysis",
+)
+@click.option(
+    "--output-dir",
+    "-o",
+    required=True,
+    type=click.Path(path_type=Path),
+    help="Output directory for results",
+)
+@click.option(
+    "--device",
+    type=click.Choice(["cuda", "cpu"]),
+    default=DEFAULT_DEVICE,
+    help="Device for computation",
+)
+@click.option(
+    "--method",
+    type=click.Choice(["gradient", "integrated_gradients"]),
+    default="gradient",
+    help="Feature importance method",
+)
+@click.option(
+    "--no-plot",
+    is_flag=True,
+    help="Skip generating plots",
+)
+def importance(model, test_data, output_dir, device, method, no_plot):
+    """Compute feature importance scores for a trained model."""
+    from leech.commands.analyze import handle_feature_importance
+
+    handle_feature_importance(
+        model_path=model,
+        test_data=test_data,
+        output_dir=output_dir,
+        device=device,
+        method=method,
+        plot=not no_plot,
+    )
+
+    console.print("[bold green]Feature importance analysis complete![/bold green]")
+
+
+@eval.command()
+@click.option(
+    "--model",
+    "-m",
+    required=True,
+    type=click.Path(exists=True, path_type=Path),
+    help="Path to trained model checkpoint",
+)
+@click.option(
+    "--test-data",
+    "-t",
+    required=True,
+    type=click.Path(exists=True, path_type=Path),
+    help="Test dataset for analysis",
+)
+@click.option(
+    "--output-dir",
+    "-o",
+    required=True,
+    type=click.Path(path_type=Path),
+    help="Output directory for results",
+)
+@click.option(
+    "--device",
+    type=click.Choice(["cuda", "cpu"]),
+    default=DEFAULT_DEVICE,
+    help="Device for computation",
+)
+@click.option(
+    "--no-plot",
+    is_flag=True,
+    help="Skip generating plots",
+)
+def ablation(model, test_data, output_dir, device, no_plot):
+    """Test model performance with sequence ablation."""
+    from leech.commands.analyze import handle_sequence_ablation
+
+    handle_sequence_ablation(
+        model_path=model,
+        test_data=test_data,
+        output_dir=output_dir,
+        device=device,
+        plot=not no_plot,
+    )
+
+    console.print("[bold green]Sequence ablation test complete![/bold green]")
+
+
+# ============================================================================
+# INFERENCE COMMAND
+# ============================================================================
+
+
+@cli.command()
+@click.option(
+    "--model",
+    required=True,
+    type=click.Path(exists=True, path_type=Path),
+    help="Trained model file (.pt)",
+)
+@click.option(
+    "--pod5",
+    required=True,
+    type=click.Path(exists=True, path_type=Path),
+    help="POD5 file with raw signal",
+)
+@click.option(
+    "--bam",
+    required=True,
+    type=click.Path(exists=True, path_type=Path),
+    help="BAM file with alignments",
+)
+@click.option(
+    "--output",
+    "-o",
+    required=True,
+    type=click.Path(path_type=Path),
+    help="Output BAM with predictions",
+)
+@click.option(
+    "--device",
+    type=click.Choice(["cuda", "cpu"]),
+    default=DEFAULT_DEVICE,
+    help="Device for inference",
+)
+def predict(model, pod5, bam, output, device):
+    """Run inference on new data to generate predictions."""
+    from leech.inference import run_inference
+
+    logger.info(f"Running inference with model: {model}")
+    logger.info(f"Input: {pod5}, {bam}")
+    logger.info(f"Output: {output}")
+
+    # Run inference
+    run_inference(
+        model_path=model,
+        pod5_path=pod5,
+        bam_path=bam,
+        output_path=output,
+        device=device,
+    )
+
+    console.print("[bold green]Inference complete![/bold green]")
+    logger.info(f"Predictions saved to {output}")
+
+
 
 
 def main():

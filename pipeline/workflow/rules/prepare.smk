@@ -51,7 +51,7 @@ rule prepare_chunks:
         CHUNKS_DIR + "/{sample}/prepare.log",
     shell:
         """
-        uv run leech prepare \
+        uv run leech data prepare \
             --pod5 {input.pod5} \
             --bam {input.bam} \
             --output-dir {params.output_dir} \

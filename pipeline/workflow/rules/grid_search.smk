@@ -41,7 +41,7 @@ rule grid_search_pairwise_aa:
         MODELS_DIR + "/grid_search/pairwise/{pair}/grid_search.log",
     shell:
         """
-        uv run leech grid-search \
+        uv run leech model optimize \
             --train-data {input.train} \
             --val-data {input.val} \
             --output-dir {params.output_dir} \

@@ -4,14 +4,20 @@ Complete reference for the `leech` command-line interface.
 
 ## Overview
 
-The `leech` CLI provides six main commands:
+The `leech` CLI is organized into workflow-based command groups that mirror the machine learning pipeline:
 
-- `prepare`: Extract features from POD5/BAM files
-- `merge-and-split`: Merge multi-sample data and split at read level
-- `train`: Train a model on prepared data
-- `test`: Evaluate a trained model
-- `infer`: Run inference on new data
-- `grid-search`: Optimize chunk context hyperparameters
+- **`leech data`** - Prepare and process training data
+  - `prepare`: Extract features from POD5/BAM files
+  - `merge`: Merge multi-sample data and split at read level
+- **`leech model`** - Train and optimize models
+  - `train`: Train a model on prepared data
+  - `optimize`: Optimize hyperparameters via grid search
+- **`leech eval`** - Evaluate and analyze models
+  - `test`: Evaluate a trained model on test data
+  - `compare`: Compare multiple models
+  - `importance`: Analyze feature importance
+  - `ablation`: Test sequence ablation
+- **`leech predict`** - Run inference on new data
 
 ## Global Options
 
@@ -20,17 +26,19 @@ leech --help      # Show help message
 leech --version   # Show version number
 ```
 
-## prepare
+## Data Preparation Commands
+
+### leech data prepare
 
 Extract training chunks from POD5 and BAM files.
 
-### Synopsis
+#### Synopsis
 
 ```bash
-leech prepare [OPTIONS] --pod5 FILE --bam FILE --output-dir DIR
+leech data prepare [OPTIONS] --pod5 FILE --bam FILE --output-dir DIR
 ```
 
-### Required Arguments
+#### Required Arguments
 
 | Argument | Description |
 |----------|-------------|
@@ -38,7 +46,7 @@ leech prepare [OPTIONS] --pod5 FILE --bam FILE --output-dir DIR
 | `--bam FILE` | Path to BAM file with alignments and move tables |
 | `--output-dir DIR` | Directory to save training chunks |
 
-### Optional Arguments
+#### Optional Arguments
 
 | Argument | Default | Description |
 |----------|---------|-------------|
@@ -51,12 +59,15 @@ leech prepare [OPTIONS] --pod5 FILE --bam FILE --output-dir DIR
 | `--skip-motif-indels` | False | Skip motif sites with indels |
 | `--signal-context INT` | 200 | Signal samples before/after |
 | `--kmer-context INT` | 5 | K-mer bases before/after |
-| `--min-mapping-quality INT` | 0 | Minimum MAPQ filter |
-| `--workers INT` | 1 | Number of parallel workers |
+| `--min-mapq INT` | 10 | Minimum MAPQ filter |
+| `--workers INT` | 8 | Number of parallel workers |
 | `--chunk-size INT` | 100 | Reads per batch (for parallel) |
-| `--split-train-val-test` | `0.7,0.15,0.15` | Dataset split ratios |
+| `--train-split FLOAT` | 0.7 | Fraction for training |
+| `--val-split FLOAT` | 0.15 | Fraction for validation |
+| `--no-split` | False | Skip splitting (for later merge) |
+| `--seed INT` | 42 | Random seed |
 
-### Feature Sets
+#### Feature Sets
 
 Combine features with `+`:
 
@@ -69,14 +80,12 @@ Examples:
 - `signal+dwell`
 - `signal` (baseline)
 
-### Motif Search Strategies
+#### Motif Search Strategies
 
-#### Reference-based (default)
-
-Search in reference sequence and map to query via CIGAR:
+**Reference-based (default)** - Search in reference sequence and map to query via CIGAR:
 
 ```bash
-leech prepare \
+leech data prepare \
   --motif CCAGGC \
   --motif-reference fasta \
   --reference-fasta genome.fa \
@@ -87,34 +96,30 @@ leech prepare \
 - Avoids bias from basecalling errors at modification sites
 - More accurate for trained models
 
-#### Basecalled search
-
-Search directly in basecalled sequence:
+**Basecalled search** - Search directly in basecalled sequence:
 
 ```bash
-leech prepare \
+leech data prepare \
   --motif CCAGGC \
   --motif-reference bam
 ```
 
 **Use case:** Backward compatibility or when reference is unavailable
 
-### Examples
+#### Examples
 
-#### Basic usage
-
+Basic usage:
 ```bash
-leech prepare \
+leech data prepare \
   --pod5 reads.pod5 \
   --bam alignments.bam \
   --output-dir chunks/ \
   --label 1
 ```
 
-#### With parallel processing
-
+With parallel processing:
 ```bash
-leech prepare \
+leech data prepare \
   --pod5 reads.pod5 \
   --bam alignments.bam \
   --output-dir chunks/ \
@@ -122,10 +127,9 @@ leech prepare \
   --chunk-size 100
 ```
 
-#### Custom motif and features
-
+Custom motif and features:
 ```bash
-leech prepare \
+leech data prepare \
   --pod5 reads.pod5 \
   --bam alignments.bam \
   --output-dir chunks/ \
@@ -136,24 +140,24 @@ leech prepare \
   --kmer-context 7
 ```
 
-## merge-and-split
+### leech data merge
 
 Merge multiple chunk files from different samples and split at the read level to prevent data leakage. This is the correct workflow for multi-sample datasets.
 
-### Synopsis
+#### Synopsis
 
 ```bash
-leech merge-and-split [OPTIONS] -i LABEL=FILE -i LABEL=FILE -o DIR
+leech data merge [OPTIONS] -i LABEL=FILE -i LABEL=FILE -o DIR
 ```
 
-### Required Arguments
+#### Required Arguments
 
 | Argument | Description |
 |----------|-------------|
 | `-i, --input-chunks` | Input chunks with labels (format: `label=file.npz`) |
 | `-o, --output-dir` | Output directory for split chunks |
 
-### Optional Arguments
+#### Optional Arguments
 
 | Argument | Default | Description |
 |----------|---------|-------------|
@@ -162,21 +166,19 @@ leech merge-and-split [OPTIONS] -i LABEL=FILE -i LABEL=FILE -o DIR
 | `--seed` | 42 | Random seed for reproducibility |
 | `--comparison-spec` | - | TSV file with comparison specifications |
 
-### Examples
+#### Examples
 
-#### Pairwise amino acid comparison
-
+Pairwise amino acid comparison:
 ```bash
-leech merge-and-split \
+leech data merge \
   -i Ala=ala.npz \
   -i Gly=gly.npz \
   -o merged/
 ```
 
-#### Multi-label comparison (chemical properties)
-
+Multi-label comparison (chemical properties):
 ```bash
-leech merge-and-split \
+leech data merge \
   -i basic=lys.npz \
   -i basic=arg.npz \
   -i acidic=asp.npz \
@@ -184,27 +186,28 @@ leech merge-and-split \
   -o merged/
 ```
 
-#### Batch processing with comparison spec
-
+Batch processing with comparison spec:
 ```bash
-leech merge-and-split \
+leech data merge \
   -i chunks/dir1 \
   -i chunks/dir2 \
   --comparison-spec comparisons.tsv \
   -o merged/
 ```
 
-## train
+## Model Training Commands
+
+### leech model train
 
 Train a model on prepared training data.
 
-### Synopsis
+#### Synopsis
 
 ```bash
-leech train [OPTIONS] --train-data FILES --val-data FILES --model MODEL --output-dir DIR
+leech model train [OPTIONS] --train-data FILES --val-data FILES --model MODEL --output-dir DIR
 ```
 
-### Required Arguments
+#### Required Arguments
 
 | Argument | Description |
 |----------|-------------|
@@ -213,19 +216,20 @@ leech train [OPTIONS] --train-data FILES --val-data FILES --model MODEL --output
 | `--model MODEL` | Model architecture name |
 | `--output-dir DIR` | Directory to save model checkpoints |
 
-### Optional Arguments
+#### Optional Arguments
 
 | Argument | Default | Description |
 |----------|---------|-------------|
 | `--epochs INT` | 50 | Number of training epochs |
 | `--batch-size INT` | 128 | Batch size |
 | `--learning-rate FLOAT` | 0.001 | Learning rate |
-| `--weight-decay FLOAT` | 0.0001 | L2 regularization |
-| `--early-stopping-patience INT` | 5 | Stop if no improvement after N epochs |
 | `--device STR` | `cuda` if available | Device: `cuda` or `cpu` |
 | `--seed INT` | 42 | Random seed for reproducibility |
+| `--early-stopping INT` | 10 | Stop if no improvement after N epochs (0 to disable) |
+| `--use-class-weights` | True | Auto-compute class weights for imbalance |
+| `--pos-weight FLOAT` | - | Manual positive class weight (overrides auto) |
 
-### Available Models
+#### Available Models
 
 - `ConvLSTMDwell`: Conv-LSTM with dwell features (recommended)
 - `ConvLSTMBase`: Baseline without dwell features
@@ -234,22 +238,20 @@ leech train [OPTIONS] --train-data FILES --val-data FILES --model MODEL --output
 - `TCNDwell`: Temporal Convolutional Network
 - `ResNetDwell`: Residual network
 
-### Examples
+#### Examples
 
-#### Basic training
-
+Basic training:
 ```bash
-leech train \
+leech model train \
   --train-data chunks/train.json \
   --val-data chunks/val.json \
   --model ConvLSTMDwell \
   --output-dir models/
 ```
 
-#### With hyperparameters
-
+With hyperparameters:
 ```bash
-leech train \
+leech model train \
   --train-data data/*/train.json \
   --val-data data/*/val.json \
   --model ConvLSTMDwell \
@@ -257,92 +259,20 @@ leech train \
   --epochs 100 \
   --batch-size 256 \
   --learning-rate 0.0001 \
-  --early-stopping-patience 10
+  --early-stopping 10
 ```
 
-## test
-
-Evaluate a trained model.
-
-### Synopsis
-
-```bash
-leech test [OPTIONS] --model FILE --test-data FILES --output FILE
-```
-
-### Required Arguments
-
-| Argument | Description |
-|----------|-------------|
-| `--model FILE` | Path to trained model (.pt file) |
-| `--test-data FILES` | Test data JSON files |
-| `--output FILE` | Output metrics JSON file |
-
-### Optional Arguments
-
-| Argument | Default | Description |
-|----------|---------|-------------|
-| `--batch-size INT` | 128 | Batch size for evaluation |
-| `--device STR` | `cuda` if available | Device: `cuda` or `cpu` |
-
-### Examples
-
-```bash
-leech test \
-  --model models/model_best.pt \
-  --test-data chunks/test.json \
-  --output metrics.json
-```
-
-## infer
-
-Run inference on new data.
-
-### Synopsis
-
-```bash
-leech infer [OPTIONS] --model FILE --pod5 FILE --bam FILE --output FILE
-```
-
-### Required Arguments
-
-| Argument | Description |
-|----------|-------------|
-| `--model FILE` | Path to trained model (.pt file) |
-| `--pod5 FILE` | POD5 file with signal data |
-| `--bam FILE` | BAM file with alignments |
-| `--output FILE` | Output BAM file with predictions |
-
-### Optional Arguments
-
-| Argument | Default | Description |
-|----------|---------|-------------|
-| `--batch-size INT` | 128 | Batch size for inference |
-| `--device STR` | `cuda` if available | Device: `cuda` or `cpu` |
-| `--motif STR` | Model default | Override motif |
-| `--motif-offset INT` | Model default | Override motif offset |
-
-### Examples
-
-```bash
-leech infer \
-  --model models/model_best.pt \
-  --pod5 new_reads.pod5 \
-  --bam new_alignments.bam \
-  --output predictions.bam
-```
-
-## grid-search
+### leech model optimize
 
 Run grid search over chunk context parameters to optimize model performance.
 
-### Synopsis
+#### Synopsis
 
 ```bash
-leech grid-search [OPTIONS] --train-data FILE --output-dir DIR --context-grid VALUES
+leech model optimize [OPTIONS] --train-data FILE --output-dir DIR --context-grid VALUES
 ```
 
-### Required Arguments
+#### Required Arguments
 
 | Argument | Description |
 |----------|-------------|
@@ -350,7 +280,7 @@ leech grid-search [OPTIONS] --train-data FILE --output-dir DIR --context-grid VA
 | `-o, --output-dir DIR` | Output directory for grid results |
 | `--context-grid VALUES` | Comma-separated context values (e.g., `200,500,1000`) |
 
-### Optional Arguments
+#### Optional Arguments
 
 | Argument | Default | Description |
 |----------|---------|-------------|
@@ -364,28 +294,204 @@ leech grid-search [OPTIONS] --train-data FILE --output-dir DIR --context-grid VA
 | `--learning-rate FLOAT` | 0.001 | Learning rate |
 | `--device STR` | `cuda` if available | Device: `cuda` or `cpu` |
 | `--seed INT` | 42 | Random seed |
-| `--early-stopping INT` | 5 | Early stopping patience (0 to disable) |
+| `--early-stopping INT` | 10 | Early stopping patience (0 to disable) |
 
-### Examples
+#### Examples
 
-#### Basic grid search
-
+Basic grid search:
 ```bash
-leech grid-search \
+leech model optimize \
   --train-data chunks/train.npz \
   --val-data chunks/val.npz \
   --output-dir grid_results/ \
   --context-grid 200,500,1000,2000
 ```
 
-#### Asymmetric context search
-
+Asymmetric context search:
 ```bash
-leech grid-search \
+leech model optimize \
   --train-data chunks/train.npz \
   --output-dir grid_results/ \
   --left-contexts 200,500,1000 \
   --right-contexts 100,200,500
+```
+
+## Model Evaluation Commands
+
+### leech eval test
+
+Evaluate a trained model on a holdout test set.
+
+#### Synopsis
+
+```bash
+leech eval test [OPTIONS] --model FILE --test-data FILES --output FILE
+```
+
+#### Required Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `--model FILE` | Path to trained model (.pt file) |
+| `--test-data FILES` | Test data JSON files |
+| `--output FILE` | Output metrics JSON file |
+
+#### Optional Arguments
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--device STR` | `cuda` if available | Device: `cuda` or `cpu` |
+
+#### Examples
+
+```bash
+leech eval test \
+  --model models/model_best.pt \
+  --test-data chunks/test.json \
+  --output metrics.json
+```
+
+### leech eval compare
+
+Compare multiple trained models on the same test set.
+
+#### Synopsis
+
+```bash
+leech eval compare [OPTIONS] -m DIR -m DIR -t FILE -o DIR
+```
+
+#### Required Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `-m, --model-dirs` | Model directories to compare (specify multiple) |
+| `-t, --test-data` | Test dataset for evaluation |
+| `-o, --output-dir` | Output directory for comparison results |
+
+#### Optional Arguments
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--device STR` | `cuda` if available | Device: `cuda` or `cpu` |
+| `--no-plot` | False | Skip generating plots |
+
+#### Examples
+
+```bash
+leech eval compare \
+  -m models/model1/ \
+  -m models/model2/ \
+  -m models/model3/ \
+  -t chunks/test.npz \
+  -o comparison/
+```
+
+### leech eval importance
+
+Compute feature importance scores for a trained model.
+
+#### Synopsis
+
+```bash
+leech eval importance [OPTIONS] -m FILE -t FILE -o DIR
+```
+
+#### Required Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `-m, --model` | Path to trained model checkpoint |
+| `-t, --test-data` | Test dataset for analysis |
+| `-o, --output-dir` | Output directory for results |
+
+#### Optional Arguments
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--device STR` | `cuda` if available | Device: `cuda` or `cpu` |
+| `--method STR` | `gradient` | Method: `gradient` or `integrated_gradients` |
+| `--no-plot` | False | Skip generating plots |
+
+#### Examples
+
+```bash
+leech eval importance \
+  -m models/model_best.pt \
+  -t chunks/test.npz \
+  -o importance/ \
+  --method gradient
+```
+
+### leech eval ablation
+
+Test model performance with sequence ablation.
+
+#### Synopsis
+
+```bash
+leech eval ablation [OPTIONS] -m FILE -t FILE -o DIR
+```
+
+#### Required Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `-m, --model` | Path to trained model checkpoint |
+| `-t, --test-data` | Test dataset for analysis |
+| `-o, --output-dir` | Output directory for results |
+
+#### Optional Arguments
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--device STR` | `cuda` if available | Device: `cuda` or `cpu` |
+| `--no-plot` | False | Skip generating plots |
+
+#### Examples
+
+```bash
+leech eval ablation \
+  -m models/model_best.pt \
+  -t chunks/test.npz \
+  -o ablation/
+```
+
+## Inference Command
+
+### leech predict
+
+Run inference on new data to generate predictions.
+
+#### Synopsis
+
+```bash
+leech predict [OPTIONS] --model FILE --pod5 FILE --bam FILE --output FILE
+```
+
+#### Required Arguments
+
+| Argument | Description |
+|----------|-------------|
+| `--model FILE` | Path to trained model (.pt file) |
+| `--pod5 FILE` | POD5 file with signal data |
+| `--bam FILE` | BAM file with alignments |
+| `--output FILE` | Output BAM file with predictions |
+
+#### Optional Arguments
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--device STR` | `cuda` if available | Device: `cuda` or `cpu` |
+
+#### Examples
+
+```bash
+leech predict \
+  --model models/model_best.pt \
+  --pod5 new_reads.pod5 \
+  --bam new_alignments.bam \
+  --output predictions.bam
 ```
 
 ## Environment Variables
@@ -393,7 +499,7 @@ leech grid-search \
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `LEECH_DEVICE` | Default device (cuda/cpu) | Auto-detect |
-| `LEECH_WORKERS` | Default number of workers | 1 |
+| `LEECH_WORKERS` | Default number of workers | 8 |
 | `CUDA_VISIBLE_DEVICES` | Restrict GPU usage | All |
 
 ## Exit Codes
@@ -406,7 +512,89 @@ leech grid-search \
 | 3 | File not found |
 | 4 | Data format error |
 
+## Typical Workflows
+
+### Single-sample workflow
+
+```bash
+# 1. Prepare data
+leech data prepare \
+  --pod5 reads.pod5 \
+  --bam alignments.bam \
+  --output-dir chunks/
+
+# 2. Train model
+leech model train \
+  --train-data chunks/train.json \
+  --val-data chunks/val.json \
+  --model ConvLSTMDwell \
+  --output-dir models/
+
+# 3. Evaluate
+leech eval test \
+  --model models/model_best.pt \
+  --test-data chunks/test.json \
+  --output metrics.json
+
+# 4. Predict
+leech predict \
+  --model models/model_best.pt \
+  --pod5 new_reads.pod5 \
+  --bam new_alignments.bam \
+  --output predictions.bam
+```
+
+### Multi-sample comparison workflow
+
+```bash
+# 1. Prepare each sample (no splitting)
+leech data prepare --pod5 sample1.pod5 --bam sample1.bam --output-dir chunks/sample1/ --no-split --label 0
+leech data prepare --pod5 sample2.pod5 --bam sample2.bam --output-dir chunks/sample2/ --no-split --label 1
+
+# 2. Merge and split at read level
+leech data merge \
+  -i label0=chunks/sample1/all.npz \
+  -i label1=chunks/sample2/all.npz \
+  -o merged/
+
+# 3. Train model
+leech model train \
+  --train-data merged/train.json \
+  --val-data merged/val.json \
+  --model ConvLSTMDwell \
+  --output-dir models/
+
+# 4. Evaluate
+leech eval test \
+  --model models/model_best.pt \
+  --test-data merged/test.json \
+  --output metrics.json
+```
+
+### Hyperparameter optimization workflow
+
+```bash
+# 1. Prepare data
+leech data prepare --pod5 reads.pod5 --bam alignments.bam --output-dir chunks/
+
+# 2. Optimize hyperparameters
+leech model optimize \
+  --train-data chunks/train.npz \
+  --val-data chunks/val.npz \
+  --context-grid 200,500,1000,2000 \
+  --output-dir grid_results/
+
+# 3. Train with best parameters (from grid_results/best_params.json)
+leech model train \
+  --train-data chunks/train.json \
+  --val-data chunks/val.json \
+  --model ConvLSTMDwell \
+  --output-dir models/ \
+  --model-config grid_results/best_params.json
+```
+
 ## Next Steps
 
+- [Quick Start](quick-start.md): Get started quickly
 - [API Reference](../api/index.md): Python API documentation
-- [Grid Search](../grid-search/grid-search-usage.md): Hyperparameter optimization
+- [Grid Search Guide](../grid-search/grid-search-usage.md): Hyperparameter optimization details

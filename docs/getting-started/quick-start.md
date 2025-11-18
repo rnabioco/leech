@@ -24,7 +24,7 @@ graph LR
 Extract features from your POD5 and BAM files:
 
 ```bash
-uv run leech prepare \
+uv run leech data prepare \
   --pod5 reads.pod5 \
   --bam alignments.bam \
   --output-dir chunks/ \
@@ -49,7 +49,7 @@ uv run leech prepare \
 For large datasets, use parallel processing:
 
 ```bash
-uv run leech prepare \
+uv run leech data prepare \
   --pod5 reads.pod5 \
   --bam alignments.bam \
   --output-dir chunks/ \
@@ -64,7 +64,7 @@ This will process reads in parallel across 8 CPU cores.
 Train a model on your prepared data:
 
 ```bash
-uv run leech train \
+uv run leech model train \
   --train-data chunks/train.json \
   --val-data chunks/val.json \
   --model ConvLSTMDwell \
@@ -96,7 +96,7 @@ The training process will save:
 Evaluate your trained model:
 
 ```bash
-uv run leech test \
+uv run leech eval test \
   --model models/model_best.pt \
   --test-data chunks/test.json \
   --output metrics.json
@@ -127,7 +127,7 @@ This will output:
 Apply your model to new data:
 
 ```bash
-uv run leech infer \
+uv run leech predict \
   --model models/model_best.pt \
   --pod5 new_reads.pod5 \
   --bam new_alignments.bam \
@@ -142,7 +142,7 @@ Here's a complete example workflow:
 
 ```bash
 # 1. Prepare charged tRNA data
-uv run leech prepare \
+uv run leech data prepare \
   --pod5 charged_ala.pod5 \
   --bam charged_ala.bam \
   --output-dir data/charged \
@@ -150,7 +150,7 @@ uv run leech prepare \
   --workers 8
 
 # 2. Prepare uncharged tRNA data
-uv run leech prepare \
+uv run leech data prepare \
   --pod5 uncharged_ala.pod5 \
   --bam uncharged_ala.bam \
   --output-dir data/uncharged \
@@ -158,7 +158,7 @@ uv run leech prepare \
   --workers 8
 
 # 3. Train model
-uv run leech train \
+uv run leech model train \
   --train-data data/*/train.json \
   --val-data data/*/val.json \
   --model ConvLSTMDwell \
@@ -166,13 +166,13 @@ uv run leech train \
   --epochs 50
 
 # 4. Test model
-uv run leech test \
+uv run leech eval test \
   --model models/model_best.pt \
   --test-data data/*/test.json \
   --output results/metrics.json
 
 # 5. Run inference on new data
-uv run leech infer \
+uv run leech predict \
   --model models/model_best.pt \
   --pod5 new_sample.pod5 \
   --bam new_sample.bam \

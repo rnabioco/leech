@@ -48,12 +48,19 @@ pip install -e .
 
 ### CLI Usage
 
+The CLI is organized into workflow-based command groups:
+
+- `leech data` - Prepare and process training data
+- `leech model` - Train and optimize models
+- `leech eval` - Evaluate and analyze models
+- `leech predict` - Run inference on new data
+
 #### 1. Prepare training data
 
 Extract features from POD5 and BAM files:
 
 ```bash
-uv run leech prepare \
+uv run leech data prepare \
   --pod5 reads.pod5 \
   --bam alignments.bam \
   --output-dir chunks/ \
@@ -72,7 +79,7 @@ uv run leech prepare \
 For datasets with multiple samples, merge chunks and split at the read level to prevent data leakage:
 
 ```bash
-uv run leech merge-and-split \
+uv run leech data merge \
   -i charged=charged_ala.npz \
   -i uncharged=uncharged_ala.npz \
   -o merged/
@@ -83,17 +90,17 @@ This prevents data leakage that can occur when splitting each sample independent
 #### 3. Train model
 
 ```bash
-uv run leech train \
+uv run leech model train \
   --train-data chunks/train.json \
   --val-data chunks/val.json \
   --model ConvLSTMDwell \
   --output-dir models/
 ```
 
-#### 4. Test model
+#### 4. Evaluate model
 
 ```bash
-uv run leech test \
+uv run leech eval test \
   --model models/model_best.pt \
   --test-data chunks/test.json \
   --output metrics.json
@@ -102,11 +109,34 @@ uv run leech test \
 #### 5. Run inference
 
 ```bash
-uv run leech infer \
+uv run leech predict \
   --model models/model_best.pt \
   --pod5 new_reads.pod5 \
   --bam new_alignments.bam \
   --output predictions.bam
+```
+
+#### 6. Advanced: Model comparison and analysis
+
+```bash
+# Compare multiple models
+uv run leech eval compare \
+  -m models/model1/ -m models/model2/ \
+  -t chunks/test.npz \
+  -o comparison/
+
+# Analyze feature importance
+uv run leech eval importance \
+  -m models/model_best.pt \
+  -t chunks/test.npz \
+  -o importance/
+
+# Optimize hyperparameters
+uv run leech model optimize \
+  --train-data chunks/train.npz \
+  --val-data chunks/val.npz \
+  --context-grid 200,500,1000,2000 \
+  -o grid_results/
 ```
 
 ## Snakemake Pipeline

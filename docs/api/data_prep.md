@@ -117,10 +117,10 @@ For most users, the CLI commands provide the easiest interface:
 
 ```bash
 # Prepare data
-uv run leech prepare --pod5 reads.pod5 --bam alignments.bam --output-dir chunks/
+uv run leech data prepare --pod5 reads.pod5 --bam alignments.bam --output-dir chunks/
 
 # Merge and split (multi-sample)
-uv run leech merge-and-split -i charged=a.npz -i uncharged=b.npz -o merged/
+uv run leech data merge -i charged=a.npz -i uncharged=b.npz -o merged/
 ```
 
 For programmatic access, import the specific modules you need.

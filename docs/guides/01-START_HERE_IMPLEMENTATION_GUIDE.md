@@ -145,7 +145,7 @@ def iter_bam_with_pod5(...):
 
 ```bash
 # Re-generate training chunks with tRNA identity
-uv run leech prepare \
+uv run leech data prepare \
     --pod5 synthetic_reads.pod5 \
     --bam synthetic_alignments.bam \
     --output-dir chunks_with_trna/

@@ -36,7 +36,7 @@ rule merge_chunks_pairwise:
         CHUNKS_DIR + "/merged/pairwise/{pair}/merge_and_split.log",
     shell:
         """
-        uv run leech merge-and-split \
+        uv run leech data merge \
             {params.input_args} \
             --output-dir {params.output_dir} \
             --train-split {params.train_split} \
@@ -90,7 +90,7 @@ rule train_pairwise_aa:
         MODELS_DIR + "/pairwise/{pair}/train.log",
     shell:
         """
-        uv run leech train \
+        uv run leech model train \
             --train-data {input.train} \
             --val-data {input.val} \
             --model {params.model_type} \
