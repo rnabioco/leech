@@ -56,7 +56,7 @@ Use the CLI commands for data preparation:
 
 ```bash
 # Prepare training data
-uv run leech prepare \
+uv run leech data prepare \
   --pod5 reads.pod5 \
   --bam alignments.bam \
   --output-dir chunks/

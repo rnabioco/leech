@@ -128,7 +128,7 @@ Requires Python 3.10+
 Extract features from POD5 and BAM files:
 
 ```bash
-uv run leech prepare \
+uv run leech data prepare \
   --pod5 reads.pod5 \
   --bam alignments.bam \
   --output-dir chunks/ \
@@ -141,7 +141,7 @@ uv run leech prepare \
 #### 2. Train model
 
 ```bash
-uv run leech train \
+uv run leech model train \
   --train-data chunks/train.json \
   --val-data chunks/val.json \
   --model ConvLSTMDwell \
@@ -151,7 +151,7 @@ uv run leech train \
 #### 3. Test model
 
 ```bash
-uv run leech test \
+uv run leech eval test \
   --model models/model_best.pt \
   --test-data chunks/test.json \
   --output metrics.json
@@ -160,7 +160,7 @@ uv run leech test \
 #### 4. Run inference
 
 ```bash
-uv run leech infer \
+uv run leech predict \
   --model models/model_best.pt \
   --pod5 new_reads.pod5 \
   --bam new_alignments.bam \

@@ -163,7 +163,7 @@ modifications: "m5C_2OmeC,m6A_DRACH,inosine_m6A_2OmeA,pseU_2OmeU,2OmeG"
    - `MM`: Modified base positions/types
    - `ML`: Modified base probabilities
 2. **Move tables required**: The `--emit-moves` flag is REQUIRED for leech to extract dwell time features
-3. **Use aligned BAM**: Always use the `.aligned.bam` file for leech prepare/inference, not the `.rbc.bam`
+3. **Use aligned BAM**: Always use the `.aligned.bam` file for leech data prepare/predict, not the `.rbc.bam`
 4. **Reference required**: A reference transcriptome/genome is required for alignment
 5. **GPU recommended**: Dorado basecalling is much faster with GPU acceleration
 6. **Storage**: POD5 and BAM files can be large; ensure adequate storage space
