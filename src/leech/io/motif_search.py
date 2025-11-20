@@ -15,7 +15,11 @@ logger = logging.getLogger("leech.io.motif_search")
 
 
 def map_reference_to_query_coords(
-    aln: pysam.AlignedSegment, ref_start: int, ref_end: int, skip_indels: bool = True
+    aln: pysam.AlignedSegment,
+    ref_start: int,
+    ref_end: int,
+    skip_indels: bool = True,
+    allow_edge_indels: bool = False,
 ) -> tuple[int, int] | None:
     """
     Map reference coordinates to query coordinates using CIGAR string.
@@ -25,6 +29,7 @@ def map_reference_to_query_coords(
         ref_start: Start position in reference (0-based)
         ref_end: End position in reference (0-based, exclusive)
         skip_indels: If True, return None if indels found in region
+        allow_edge_indels: If True, only check for indels in core region (±1bp from edges)
 
     Returns:
         Tuple of (query_start, query_end) or None if mapping fails
@@ -69,14 +74,37 @@ def map_reference_to_query_coords(
 
         # I: insertion (consumes query only)
         elif op == 1:  # BAM_CINS
-            if ref_pos >= ref_start and ref_pos < ref_end:
-                has_indel_in_region = True
+            # Check if indel is in region (or core region if allow_edge_indels)
+            if allow_edge_indels:
+                # Only check core region (exclude ±3bp edges for 7bp motif)
+                # For CCATGGC (7bp), this checks only middle position (amino acid site)
+                motif_len = ref_end - ref_start
+                edge_tolerance = min(3, motif_len // 2)  # ±3bp or half motif length
+                core_start = ref_start + edge_tolerance
+                core_end = ref_end - edge_tolerance
+                if ref_pos >= core_start and ref_pos < core_end:
+                    has_indel_in_region = True
+            else:
+                # Check entire region
+                if ref_pos >= ref_start and ref_pos < ref_end:
+                    has_indel_in_region = True
             query_pos += length
 
         # D: deletion (consumes reference only)
         elif op == 2:  # BAM_CDEL
-            if ref_pos >= ref_start and ref_pos + length > ref_start:
-                has_indel_in_region = True
+            # Check if indel is in region (or core region if allow_edge_indels)
+            if allow_edge_indels:
+                # Only check core region (exclude ±3bp edges for 7bp motif)
+                motif_len = ref_end - ref_start
+                edge_tolerance = min(3, motif_len // 2)  # ±3bp or half motif length
+                core_start = ref_start + edge_tolerance
+                core_end = ref_end - edge_tolerance
+                if ref_pos >= core_start and ref_pos + length > core_start:
+                    has_indel_in_region = True
+            else:
+                # Check entire region
+                if ref_pos >= ref_start and ref_pos + length > ref_start:
+                    has_indel_in_region = True
             ref_pos += length
 
         # S: soft clip (consumes query only, not aligned)
@@ -214,16 +242,44 @@ class ReferenceMotifSearcher(MotifSearcher):
         ... )
     """
 
-    def __init__(self, reference_sequences: dict[str, str], skip_indels: bool = True):
+    def __init__(
+        self,
+        reference_sequences: dict[str, str],
+        skip_indels: bool = True,
+        allow_edge_indels: bool = False,
+        debug: bool = False,
+    ):
         """
         Initialize reference-based motif searcher.
 
         Args:
             reference_sequences: Dict mapping reference name to sequence
             skip_indels: If True, skip motif positions with indels in region
+            allow_edge_indels: If True, only reject indels in core motif (not ±1bp edges)
+            debug: If True, collect and log detailed statistics
         """
         self.reference_sequences = reference_sequences
         self.skip_indels = skip_indels
+        self.allow_edge_indels = allow_edge_indels
+        self.debug = debug
+
+        # Debug statistics
+        self.stats = {
+            "motifs_in_reference": 0,
+            "failed_cigar_mapping": 0,
+            "failed_indels": 0,
+            "failed_length_check": 0,
+            "successful": 0,
+        }
+
+    def get_stats(self):
+        """Return accumulated statistics."""
+        return self.stats.copy()
+
+    def reset_stats(self):
+        """Reset statistics counters."""
+        for key in self.stats:
+            self.stats[key] = 0
 
     def find_motif_positions(
         self, read_id: str, sequence: str, alignment: pysam.AlignedSegment | None, motif: str
@@ -261,6 +317,10 @@ class ReferenceMotifSearcher(MotifSearcher):
 
         motif_positions = find_motif_in_sequence(ref_seq, motif, ref_start, ref_end)
 
+        # Track statistics
+        if self.debug:
+            self.stats["motifs_in_reference"] += len(motif_positions)
+
         # Map each motif position to query coordinates
         query_positions = []
         motif_len = len(motif)
@@ -269,28 +329,60 @@ class ReferenceMotifSearcher(MotifSearcher):
             # Map the motif region to query
             ref_motif_end = ref_motif_start + motif_len
             query_coords = map_reference_to_query_coords(
-                alignment, ref_motif_start, ref_motif_end, skip_indels=self.skip_indels
+                alignment,
+                ref_motif_start,
+                ref_motif_end,
+                skip_indels=self.skip_indels,
+                allow_edge_indels=self.allow_edge_indels,
             )
 
             if query_coords is None:
+                if self.debug:
+                    # Check if it failed due to indels or other reasons
+                    # Try again without skip_indels to see if indels were the issue
+                    test_coords = map_reference_to_query_coords(
+                        alignment, ref_motif_start, ref_motif_end, skip_indels=False
+                    )
+                    if test_coords is None:
+                        self.stats["failed_cigar_mapping"] += 1
+                    else:
+                        self.stats["failed_indels"] += 1
                 continue  # Skip if indels or mapping failed
 
             query_start, query_end = query_coords
 
             # Sanity check: ensure we mapped a region of the expected length
-            if query_end - query_start == motif_len:
-                query_positions.append(query_start)
+            # When skip_indels=False, accept motifs within ±3bp (indels change length)
+            # When skip_indels=True, require exact length (no indels should be present)
+            mapped_len = query_end - query_start
+            if self.skip_indels:
+                # Strict check when filtering indels - must be exact length
+                length_ok = mapped_len == motif_len
             else:
+                # Lenient check when accepting indels - within ±3bp tolerance
+                length_ok = abs(mapped_len - motif_len) <= 3
+
+            if length_ok:
+                query_positions.append(query_start)
+                if self.debug:
+                    self.stats["successful"] += 1
+            else:
+                if self.debug:
+                    self.stats["failed_length_check"] += 1
                 logger.debug(
                     f"Read {read_id}: Mapped motif has unexpected length "
-                    f"({query_end - query_start} != {motif_len}), skipping"
+                    f"({mapped_len} != {motif_len}), skipping"
                 )
 
         return query_positions
 
 
 def get_motif_searcher(
-    mode: str, reference_sequences: dict[str, str] | None = None, skip_indels: bool = True
+    mode: str,
+    reference_sequences: dict[str, str] | None = None,
+    skip_indels: bool = True,
+    allow_edge_indels: bool = False,
+    debug: bool = False,
 ) -> MotifSearcher:
     """
     Factory function for creating motif searchers.
@@ -299,6 +391,8 @@ def get_motif_searcher(
         mode: Search mode ("bam" for basecalled, "fasta" for reference)
         reference_sequences: Dict of reference sequences (required for "fasta" mode)
         skip_indels: Whether to skip motif positions with indels (for "fasta" mode)
+        allow_edge_indels: If True, only reject indels in core motif (for "fasta" mode)
+        debug: If True, enable detailed statistics collection
 
     Returns:
         MotifSearcher instance
@@ -319,6 +413,6 @@ def get_motif_searcher(
     elif mode == "fasta":
         if reference_sequences is None:
             raise ValueError("reference_sequences required for reference-based motif search")
-        return ReferenceMotifSearcher(reference_sequences, skip_indels)
+        return ReferenceMotifSearcher(reference_sequences, skip_indels, allow_edge_indels, debug)
     else:
         raise ValueError(f"Invalid motif search mode: {mode}. Must be 'bam' or 'fasta'")

@@ -177,7 +177,7 @@ def main():
     df = df.sort_values(sort_cols)
 
     # Write to compressed TSV
-    df.to_csv(output_file, sep="\t", index=False, compression='gzip')
+    df.to_csv(output_file, sep="\t", index=False, compression="gzip")
 
     print(f"\nWrote {len(df)} metric rows to {output_file}", file=sys.stderr)
 
