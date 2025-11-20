@@ -160,13 +160,13 @@ rule aggregate_all_inspections:
         # Combine all sample reports
         all_data = []
         for report_file in input.reports:
-            df = pd.read_csv(report_file, sep="\t", compression='gzip')
+            df = pd.read_csv(report_file, sep="\t", compression="gzip")
             all_data.append(df)
 
         combined = pd.concat(all_data, ignore_index=True)
 
         # Save compressed master report
-        combined.to_csv(output.master_report, sep="\t", index=False, compression='gzip')
+        combined.to_csv(output.master_report, sep="\t", index=False, compression="gzip")
 
         # Generate summary statistics
         with open(output.summary, "w") as f:

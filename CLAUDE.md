@@ -109,6 +109,37 @@ uv add --dev package-name
 uv sync --upgrade
 ```
 
+## Jupyter Notebook Conventions
+
+**IMPORTANT**: When working with Jupyter notebooks in this project:
+
+1. **Plotting library**: Use **plotnine** (ggplot2 for Python) for ALL visualizations
+   - ❌ DO NOT use matplotlib
+   - ❌ DO NOT use seaborn
+   - ✓ Use plotnine exclusively
+
+2. **Display plots**: Use `plot.show()` to display plots inline
+   - ✓ `plot.show()` - displays plot inline in notebook
+   - ❌ `print(plot)` - DO NOT use
+   - ❌ `plt.savefig()` - DO NOT save to PNG files in notebooks
+
+3. **Example**:
+   ```python
+   import plotnine as p9
+
+   plot = (
+       p9.ggplot(data, p9.aes(x="position", y="value"))
+       + p9.geom_line()
+       + p9.labs(title="My Plot")
+   )
+   plot.show()  # Display inline - DO NOT use print(plot)
+   ```
+
+4. **Rationale**:
+   - Plotnine provides consistent, declarative grammar of graphics
+   - Better suited for publication-quality scientific plots
+   - Easier to maintain consistent styling across notebooks
+
 ## Architecture
 
 ### Core Data Flow

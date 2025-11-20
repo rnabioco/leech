@@ -21,7 +21,29 @@ Quick Start:
 For full documentation, see https://github.com/rnabioco/leech
 """
 
-__version__ = "0.1.0"
+import subprocess
+from pathlib import Path
+
+
+def _get_git_revision():
+    """Get the current git commit hash for version tracking."""
+    try:
+        repo_dir = Path(__file__).parent.parent.parent
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            timeout=1,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return "unknown"
+
+
+__version__ = f"0.1.0-alpha+{_get_git_revision()}"
 
 from leech.evaluation import evaluate_model
 from leech.features import (
