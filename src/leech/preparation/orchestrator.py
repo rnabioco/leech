@@ -14,6 +14,7 @@ import numpy as np
 
 from leech.chunking import extract_training_chunks, save_chunks
 from leech.io import get_motif_searcher, get_reference_sequences
+from leech.io.bed_reader import BedRegionSearcher, load_bed_regions
 from leech.preparation.reader import iter_bam_with_pod5
 from leech.splitting import split_chunks_by_read
 
@@ -123,6 +124,7 @@ def prepare_training_data_with_split(
     motif_reference: str = "fasta",
     reference_fasta: Path | None = None,
     skip_motif_indels: bool = True,
+    bed_path: Path | None = None,
     label: str | None = None,
     label_int: int | None = None,
     min_mapq: int = 10,
@@ -147,11 +149,12 @@ def prepare_training_data_with_split(
         pod5_path: Path to POD5 file
         bam_path: Path to BAM file
         output_dir: Directory for output files
-        motif: Sequence motif to extract
+        motif: Sequence motif to extract (mutually exclusive with bed_path)
         motif_offset: Offset within motif for focus base
         motif_reference: Where to search for motif ("fasta" or "bam")
         reference_fasta: External reference FASTA file
         skip_motif_indels: Skip reads with indels in motif region
+        bed_path: Path to BED file for region-based extraction (mutually exclusive with motif)
         label: String label identifier (e.g., "Ala", "Gly", "charged", "uncharged")
         label_int: Optional numeric label (0, 1) - assigned during merge for pairwise comparisons
         min_mapq: Minimum mapping quality
@@ -170,6 +173,9 @@ def prepare_training_data_with_split(
         - n_test: Number of test chunks (0 if no_split=True)
         - output_files: Dict mapping split names to file paths
 
+    Raises:
+        ValueError: If both motif and bed_path are provided
+
     Examples:
         >>> result = prepare_training_data_with_split(
         ...     pod5_path=Path("reads.pod5"),
@@ -181,17 +187,41 @@ def prepare_training_data_with_split(
         ...     seed=42
         ... )
         >>> print(f"Saved {result['n_train']} train chunks to {result['output_files']['train']}")
+
+        >>> # BED-based extraction
+        >>> result = prepare_training_data_with_split(
+        ...     pod5_path=Path("reads.pod5"),
+        ...     bam_path=Path("alignments.bam"),
+        ...     output_dir=Path("chunks/"),
+        ...     bed_path=Path("regions.bed"),
+        ...     label="default_label",  # Fallback if BED name is '.'
+        ... )
     """
     from leech.util import setup_random_seed
+
+    # Validate mutual exclusivity
+    if motif is not None and bed_path is not None:
+        raise ValueError("Cannot specify both --motif and --bed. Choose one selection method.")
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Setup seed
     setup_random_seed(seed, output_dir)
 
-    # Load reference sequences if needed
+    # Setup for BED-based extraction
+    bed_searcher = None
+    if bed_path is not None:
+        logger.info(f"Loading BED regions from {bed_path}")
+        bed_index = load_bed_regions(bed_path)
+        bed_searcher = BedRegionSearcher(
+            bed_index=bed_index,
+            skip_indels=skip_motif_indels,
+            default_label=label,
+        )
+
+    # Load reference sequences if needed (for motif-based fasta search)
     reference_sequences = None
-    if motif_reference == "fasta":
+    if motif_reference == "fasta" and motif is not None:
         logger.info("Loading reference sequences for reference-based motif search")
         reference_sequences = get_reference_sequences(bam_path, reference_fasta)
 
@@ -208,14 +238,29 @@ def prepare_training_data_with_split(
     logger.info("Extracting chunks...")
     chunks = []
     for read in iter_bam_with_pod5(bam_path, pod5_path, min_mapq=min_mapq):
-        read_chunks = extract_training_chunks(
-            read,
-            motif=motif,
-            motif_offset=motif_offset,
-            label=label,
-            label_int=label_int,
-            motif_searcher=motif_searcher,
-        )
+        if bed_searcher is not None:
+            # BED-based extraction
+            alignment = read.metadata.get("alignment")
+            focus_positions = bed_searcher.find_positions_with_labels(
+                read_id=read.read_id,
+                sequence=read.sequence,
+                alignment=alignment,
+            )
+            read_chunks = extract_training_chunks(
+                read,
+                label_int=label_int,
+                focus_positions=focus_positions,
+            )
+        else:
+            # Motif-based extraction (or all bases if no motif)
+            read_chunks = extract_training_chunks(
+                read,
+                motif=motif,
+                motif_offset=motif_offset,
+                label=label,
+                label_int=label_int,
+                motif_searcher=motif_searcher,
+            )
         chunks.extend(read_chunks)
 
         # Progress callback

@@ -27,6 +27,7 @@ def handle_prepare(
     motif_reference: str = "fasta",
     reference_fasta: Path | None = None,
     skip_motif_indels: bool = True,
+    bed: Path | None = None,
     label: str | None = None,
     min_mapq: int = 10,
     feature_set: str = "signal+dwell+levels",
@@ -44,12 +45,13 @@ def handle_prepare(
         pod5: Path to POD5 file with raw signal
         bam: Path to BAM file with alignments and mv tags
         output_dir: Output directory for training chunks
-        motif: Sequence motif to extract (e.g., "CCAGGC")
+        motif: Sequence motif to extract (e.g., "CCAGGC"). Mutually exclusive with bed.
         motif_offset: Offset within motif for focus base
         motif_reference: Where to search for motif ("fasta" or "bam")
         reference_fasta: External reference FASTA file
         skip_motif_indels: Skip reads with indels in motif region
-        label: Label identifier for this sample
+        bed: Path to BED file for region-based extraction. Mutually exclusive with motif.
+        label: Label identifier for this sample (or fallback for BED regions without names)
         min_mapq: Minimum mapping quality
         feature_set: Feature set to extract
         train_split: Fraction of data for training
@@ -61,6 +63,9 @@ def handle_prepare(
 
     Returns:
         Dictionary with extraction statistics
+
+    Raises:
+        ValueError: If both motif and bed are provided
     """
     from leech.chunking import save_chunks
     from leech.io import get_reference_sequences
@@ -68,16 +73,23 @@ def handle_prepare(
     from leech.splitting import split_chunks_by_read
     from leech.util import setup_random_seed
 
+    # Validate mutual exclusivity
+    if motif is not None and bed is not None:
+        raise ValueError("Cannot specify both --motif and --bed. Choose one selection method.")
+
     logger.info(f"Preparing data from {pod5} and {bam}")
-    logger.info(f"Motif reference mode: {motif_reference}")
+    if bed is not None:
+        logger.info(f"BED-based extraction from: {bed}")
+    else:
+        logger.info(f"Motif reference mode: {motif_reference}")
     if workers > 1:
         logger.info(f"Parallel mode: {workers} workers, {chunk_size} reads per batch")
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Load reference sequences if using reference-based motif search
+    # Load reference sequences if using reference-based motif search (not needed for BED)
     reference_sequences = None
-    if motif_reference == "fasta":
+    if motif_reference == "fasta" and motif is not None:
         logger.info("Loading reference sequences for reference-based motif search")
         reference_sequences = get_reference_sequences(bam, reference_fasta)
 
@@ -96,6 +108,7 @@ def handle_prepare(
             motif_reference=motif_reference,
             reference_sequences=reference_sequences,
             skip_motif_indels=skip_motif_indels,
+            bed_path=bed,
             num_workers=workers,
             chunk_size=chunk_size,
         )
@@ -182,6 +195,7 @@ def handle_prepare(
                 motif_reference=motif_reference,
                 reference_fasta=reference_fasta,
                 skip_motif_indels=skip_motif_indels,
+                bed_path=bed,
                 label=label,
                 label_int=None,  # Will be assigned during merge-and-split
                 min_mapq=min_mapq,

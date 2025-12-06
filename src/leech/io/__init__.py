@@ -6,6 +6,7 @@ support for batched access and filtering.
 """
 
 from leech.io.bam_reader import BAMReader, ReadInfo, collect_read_infos, iter_bam_alignments
+from leech.io.bed_reader import BedIndex, BedRegion, BedRegionSearcher, load_bed_regions
 from leech.io.motif_search import (
     BasecalledMotifSearcher,
     MotifSearcher,
@@ -44,4 +45,9 @@ __all__ = [
     "get_motif_searcher",
     "find_motif_in_sequence",
     "map_reference_to_query_coords",
+    # BED region search
+    "BedRegion",
+    "BedIndex",
+    "BedRegionSearcher",
+    "load_bed_regions",
 ]

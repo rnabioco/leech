@@ -134,9 +134,10 @@ def extract_training_chunks(
     label: str | None = None,
     label_int: int | None = None,
     motif_searcher: MotifSearcher | None = None,
+    focus_positions: list[tuple[int, str | None]] | None = None,
 ) -> list[dict[str, np.ndarray | str | int | None]]:
     """
-    Extract all training chunks from a read, optionally filtered by motif.
+    Extract all training chunks from a read, optionally filtered by motif or BED regions.
 
     Args:
         leech_read: LeechRead object
@@ -145,6 +146,8 @@ def extract_training_chunks(
         label: String label identifier (e.g., "Ala", "Gly", "charged", "uncharged")
         label_int: Optional numeric label (0, 1) - assigned during merge for pairwise comparisons
         motif_searcher: MotifSearcher instance (required if motif is provided)
+        focus_positions: Pre-computed list of (base_idx, label) tuples from BED regions.
+            If provided, motif/motif_searcher are ignored and per-position labels are used.
 
     Returns:
         List of chunk dictionaries
@@ -160,6 +163,10 @@ def extract_training_chunks(
         ...     motif_searcher=searcher
         ... )
         >>> print(f"Extracted {len(chunks)} chunks")
+
+        >>> # BED-based extraction with per-position labels
+        >>> positions = [(50, "charged"), (100, "uncharged")]
+        >>> chunks = extract_training_chunks(read, focus_positions=positions)
     """
     chunks: list[dict] = []
 
@@ -167,10 +174,13 @@ def extract_training_chunks(
     if label_int is not None:
         leech_read.labels = np.full(leech_read.num_bases, label_int, dtype=np.int64)
 
-    # Find focus bases (either all or motif matches)
-    if motif is None:
-        # No motif - use all bases (avoiding edges)
-        focus_bases = list(range(5, leech_read.num_bases - 5))
+    # Determine focus bases and their labels
+    if focus_positions is not None:
+        # BED-based: use pre-computed positions with per-position labels
+        focus_items: list[tuple[int, str | None]] = focus_positions
+    elif motif is None:
+        # No motif - use all bases (avoiding edges) with global label
+        focus_items = [(i, label) for i in range(5, leech_read.num_bases - 5)]
     else:
         # Motif-based search
         if motif_searcher is None:
@@ -187,18 +197,18 @@ def extract_training_chunks(
             motif=motif,
         )
 
-        # Apply offset to get focus bases
-        focus_bases = [pos + motif_offset for pos in motif_positions]
+        # Apply offset to get focus bases, all with global label
+        focus_items = [(pos + motif_offset, label) for pos in motif_positions]
 
     # Extract chunks
-    for base_idx in focus_bases:
+    for base_idx, chunk_label in focus_items:
         chunk = leech_read.get_chunk(base_idx)
         if chunk is not None:
             chunk["read_id"] = leech_read.read_id
             # Rename numeric "label" from get_chunk() to "label_int"
             chunk["label_int"] = chunk.pop("label", None)
-            # Add string label
-            chunk["label"] = label
+            # Add string label (per-position for BED, global for motif)
+            chunk["label"] = chunk_label
             chunks.append(chunk)
 
     return chunks

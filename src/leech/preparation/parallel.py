@@ -22,6 +22,7 @@ from leech.features import (
     normalize_signal,
 )
 from leech.io import ReadInfo, collect_read_infos, get_motif_searcher
+from leech.io.bed_reader import BedIndex, BedRegionSearcher
 
 logger = logging.getLogger("leech.preparation.parallel")
 
@@ -37,6 +38,7 @@ def _process_read_chunk_worker(
         str,
         dict[str, str] | None,
         bool,
+        dict[str, list] | None,  # BED index regions (serialized)
     ],
 ) -> list[dict[str, np.ndarray | str | int | None]]:
     """
@@ -44,7 +46,7 @@ def _process_read_chunk_worker(
 
     Args:
         args: Tuple of (read_infos, pod5_path, motif, motif_offset, label, label_int,
-                        motif_reference, reference_sequences, skip_motif_indels)
+                        motif_reference, reference_sequences, skip_motif_indels, bed_regions)
 
     Returns:
         List of extracted chunks from all reads in this chunk
@@ -59,17 +61,39 @@ def _process_read_chunk_worker(
         motif_reference,
         reference_sequences,
         skip_motif_indels,
+        bed_regions,
     ) = args
 
-    # Get motif searcher
-    if motif is not None:
+    # Get position finder (either motif or BED-based)
+    bed_searcher = None
+    motif_searcher = None
+
+    if bed_regions is not None:
+        # Reconstruct BedIndex from serialized regions
+        from leech.io.bed_reader import BedRegion
+
+        bed_index = BedIndex()
+        for chrom, region_dicts in bed_regions.items():
+            for rd in region_dicts:
+                region = BedRegion(
+                    chrom=rd["chrom"],
+                    start=rd["start"],
+                    end=rd["end"],
+                    name=rd["name"],
+                )
+                bed_index.add_region(region)
+
+        bed_searcher = BedRegionSearcher(
+            bed_index=bed_index,
+            skip_indels=skip_motif_indels,
+            default_label=label,
+        )
+    elif motif is not None:
         motif_searcher = get_motif_searcher(
             mode=motif_reference,
             reference_sequences=reference_sequences,
             skip_indels=skip_motif_indels,
         )
-    else:
-        motif_searcher = None
 
     all_chunks = []
 
@@ -121,8 +145,8 @@ def _process_read_chunk_worker(
                     "is_reverse": read_info.is_reverse,
                 }
 
-                # For reference-based motif search, create a mock alignment object
-                if motif_reference == "fasta" and reference_sequences is not None:
+                # For reference-based motif search or BED-based search, create a mock alignment object
+                if (motif_reference == "fasta" and reference_sequences is not None) or bed_searcher is not None:
                     # Create minimal mock alignment for CIGAR parsing
                     class MockAlignment:
                         def __init__(self, read_info: ReadInfo):
@@ -147,14 +171,29 @@ def _process_read_chunk_worker(
                 )
 
                 # Extract training chunks
-                read_chunks = extract_training_chunks(
-                    leech_read,
-                    motif=motif,
-                    motif_offset=motif_offset,
-                    label=label,
-                    label_int=label_int,
-                    motif_searcher=motif_searcher,
-                )
+                if bed_searcher is not None:
+                    # BED-based extraction
+                    alignment = leech_read.metadata.get("alignment")
+                    focus_positions = bed_searcher.find_positions_with_labels(
+                        read_id=read_info.read_id,
+                        sequence=read_info.sequence,
+                        alignment=alignment,
+                    )
+                    read_chunks = extract_training_chunks(
+                        leech_read,
+                        label_int=label_int,
+                        focus_positions=focus_positions,
+                    )
+                else:
+                    # Motif-based extraction (or all bases if no motif)
+                    read_chunks = extract_training_chunks(
+                        leech_read,
+                        motif=motif,
+                        motif_offset=motif_offset,
+                        label=label,
+                        label_int=label_int,
+                        motif_searcher=motif_searcher,
+                    )
 
                 all_chunks.extend(read_chunks)
 
@@ -176,6 +215,7 @@ def prepare_training_data_parallel(
     motif_reference: str = "bam",
     reference_sequences: dict[str, str] | None = None,
     skip_motif_indels: bool = True,
+    bed_path: Path | None = None,
     num_workers: int = 8,
     chunk_size: int = 100,
 ) -> tuple[list[dict[str, np.ndarray | str | int | None]], dict[str, int]]:
@@ -189,7 +229,7 @@ def prepare_training_data_parallel(
     Args:
         bam_path: Path to BAM file with alignments
         pod5_path: Path to POD5 file with signal
-        motif: Optional sequence motif to filter
+        motif: Optional sequence motif to filter (mutually exclusive with bed_path)
         motif_offset: Offset within motif for focus base
         label: String label identifier (e.g., "Ala", "Gly", "charged", "uncharged")
         label_int: Optional numeric label (0, 1) - assigned during merge for pairwise comparisons
@@ -197,6 +237,7 @@ def prepare_training_data_parallel(
         motif_reference: Where to search for motif ("bam" or "fasta")
         reference_sequences: Dict of reference sequences (for motif_reference="fasta")
         skip_motif_indels: Skip reads with indels in motif region
+        bed_path: Path to BED file for region-based extraction (mutually exclusive with motif)
         num_workers: Number of parallel workers
         chunk_size: Number of reads to process per worker batch
 
@@ -206,6 +247,9 @@ def prepare_training_data_parallel(
         - reads_with_motif: Approximate count of reads with motif matches
         - reads_without_motif: Approximate count without matches
         - total_chunks: Total number of chunks extracted
+
+    Raises:
+        ValueError: If both motif and bed_path are provided
 
     Examples:
         >>> chunks, stats = prepare_training_data_parallel(
@@ -217,7 +261,27 @@ def prepare_training_data_parallel(
         ... )
         >>> print(f"Extracted {stats['total_chunks']} chunks from {stats['total_reads']} reads")
     """
+    # Validate mutual exclusivity
+    if motif is not None and bed_path is not None:
+        raise ValueError("Cannot specify both --motif and --bed. Choose one selection method.")
+
     logger.info(f"Starting parallel data preparation with {num_workers} workers")
+
+    # Load and serialize BED regions if provided
+    bed_regions_serialized: dict[str, list] | None = None
+    if bed_path is not None:
+        from leech.io.bed_reader import load_bed_regions
+
+        logger.info(f"Loading BED regions from {bed_path}")
+        bed_index = load_bed_regions(bed_path)
+
+        # Serialize BedIndex to a picklable format for workers
+        bed_regions_serialized = {}
+        for chrom, regions in bed_index.regions.items():
+            bed_regions_serialized[chrom] = [
+                {"chrom": r.chrom, "start": r.start, "end": r.end, "name": r.name}
+                for r in regions
+            ]
 
     # First pass: collect read info from BAM (lightweight, sequential)
     logger.info("Pass 1: Collecting read info from BAM...")
@@ -249,6 +313,7 @@ def prepare_training_data_parallel(
             motif_reference,
             reference_sequences,
             skip_motif_indels,
+            bed_regions_serialized,
         )
         for chunk in read_chunks
     ]

@@ -173,10 +173,20 @@ def data():
     help="Skip reads with indels in motif region (for motif-reference=fasta)",
 )
 @click.option(
+    "--bed",
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
+    help="BED file with regions for chunk extraction. Region centers become focus bases. "
+    "Name field (column 4) provides labels; use --label for regions with '.' or missing names. "
+    "Mutually exclusive with --motif.",
+)
+@click.option(
     "--label",
     type=str,
     default=None,
-    help="Label identifier for this sample (e.g., 'Ala', 'Gly', 'charged', 'uncharged'). Numeric labels (0/1) are assigned during merge-and-split for pairwise comparisons.",
+    help="Label identifier for this sample (e.g., 'Ala', 'Gly', 'charged', 'uncharged'). "
+    "For BED-based extraction, serves as fallback when BED name field is '.' or missing. "
+    "Numeric labels (0/1) are assigned during merge-and-split for pairwise comparisons.",
 )
 @click.option(
     "--min-mapq",
@@ -235,6 +245,7 @@ def prepare(
     motif_reference,
     reference_fasta,
     skip_motif_indels,
+    bed,
     label,
     min_mapq,
     feature_set,
@@ -259,6 +270,7 @@ def prepare(
         motif_reference=motif_reference,
         reference_fasta=reference_fasta,
         skip_motif_indels=skip_motif_indels,
+        bed=bed,
         label=label,
         min_mapq=min_mapq,
         feature_set=feature_set,
