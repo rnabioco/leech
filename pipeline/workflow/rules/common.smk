@@ -50,8 +50,8 @@ def get_project_path(base_dir):
             return str(Path(project_name) / path.name)
 
 
-# Extract sample names
-SAMPLES = list(config["samples"].keys())
+# Extract sample names (may be empty for bio-only workflows)
+SAMPLES = list(config.get("samples", {}).keys())
 
 # Output directories (with optional project_name support)
 CHUNKS_DIR = get_project_path(config.get("chunks_dir", "results/chunks"))

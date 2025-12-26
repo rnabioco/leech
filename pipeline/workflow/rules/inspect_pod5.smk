@@ -149,7 +149,7 @@ rule aggregate_all_inspections:
     input:
         reports=expand(
             "results/pod5_inspection/{sample}/inspection_report.tsv.gz",
-            sample=config["samples"].keys(),
+            sample=SAMPLES,
         ),
     output:
         master_report="results/pod5_inspection/pod5_inspection_master_report.tsv.gz",

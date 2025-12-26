@@ -127,8 +127,8 @@ BIO_MODELS_DIR = get_project_path(config.get("bio_models_dir", "results/models/b
 BIO_INFER_DIR = get_project_path(config.get("bio_inference_dir", "results/inference/bio"))
 BIO_METRICS_DIR = get_project_path(config.get("bio_metrics_dir", "results/metrics/bio"))
 
-# Biological samples
-BIO_SAMPLES = list(config.get("bio_samples", {}).keys())
+# Biological samples (handle None when all entries are commented out)
+BIO_SAMPLES = list((config.get("bio_samples") or {}).keys())
 
 # tRNA reference database
 TRNA_REFERENCE = config.get("trna_reference", "pipeline/resources/references/trna-reference.fa")
