@@ -904,8 +904,6 @@ def predict(model, pod5, bam, output, device):
     logger.info(f"Predictions saved to {output}")
 
 
-
-
 def main():
     """Main CLI entry point."""
     cli()
