@@ -110,6 +110,7 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "*.ipynb" = ["E402"]  # Allow imports anywhere in notebooks
+"__init__.py" = ["E402"]  # Allow imports after version definition
 
 [tool.ruff.lint.isort]
 known-first-party = ["leech"]

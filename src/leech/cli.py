@@ -74,7 +74,7 @@ click.rich_click.USE_CLICK_SHORT_HELP = True
 LOGO = """
    ___
   (O O)    LEECH
-  <VVV>    Learning Enhanced Electrical 
+  <VVV>    Learning Enhanced Electrical
    |||     Classifiers from Hanopore signals
    |||
     V
