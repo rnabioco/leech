@@ -7,6 +7,7 @@ CLI commands in cli.py should delegate to these functions.
 
 import logging
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger("leech.commands.analyze")
 
@@ -17,7 +18,7 @@ def handle_compare(
     output_dir: Path,
     device: str = "cuda",
     plot: bool = True,
-) -> dict:
+) -> dict[str, Any]:
     """
     Handle model comparison command.
 
@@ -65,7 +66,7 @@ def handle_feature_importance(
     device: str = "cuda",
     method: str = "gradient",
     plot: bool = True,
-) -> dict:
+) -> dict[str, Any]:
     """
     Handle feature importance analysis command.
 
@@ -112,7 +113,7 @@ def handle_sequence_ablation(
     output_dir: Path,
     device: str = "cuda",
     plot: bool = True,
-) -> dict:
+) -> dict[str, Any]:
     """
     Handle sequence ablation test command.
 

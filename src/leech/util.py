@@ -150,9 +150,9 @@ def load_model_from_checkpoint(
         raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_file}")
 
     checkpoint = torch.load(checkpoint_file, map_location=device)
-    model.load_state_dict(checkpoint["model_state_dict"])
-    model = model.to(device)
-    model.eval()
+    model.load_state_dict(checkpoint["model_state_dict"])  # type: ignore[attr-defined]
+    model = model.to(device)  # type: ignore[attr-defined]
+    model.eval()  # type: ignore[attr-defined]
 
     return model, config
 
