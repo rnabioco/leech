@@ -1,209 +1,147 @@
 # LSF Cluster Profile for Leech Pipeline (Bodhi Cluster)
 # ========================================================
-# Configured for Bodhi cluster using LSF scheduler
+# Uses snakemake-executor-plugin-lsf
+# https://github.com/BEFH/snakemake-executor-plugin-lsf
 #
-# RECOMMENDED: Use modern executor plugin for better performance:
-#   uv pip install snakemake-executor-plugin-lsf
-#   https://github.com/BEFH/snakemake-executor-plugin-lsf
-#
-# Usage with executor plugin:
-#   snakemake --executor lsf --configfile config/bodhi-config.yaml --default-resources lsf_queue=gpuqueue
-#
-# Usage with traditional approach (legacy):
-#   snakemake --profile profiles/lsf --configfile config/bodhi-config.yaml
+# Usage:
+#   snakemake --profile cluster/lsf --configfile config/config.yaml
 
-# ============================================================================
-# Traditional Cluster Execution (legacy, still supported)
-# ============================================================================
-cluster: "bsub"
-cluster-status: "profiles/lsf/lsf_status.py"
-cluster-cancel: "bkill"
-
-# ============================================================================
-# Executor Plugin Configuration (recommended)
-# ============================================================================
-# When using --executor lsf, these settings are used:
-# executor: lsf
-# default-resources:
-#   - lsf_queue=gpuqueue
-#   - lsf_extra=""
-
-# Job submission
+executor: lsf
 jobs: 100
-latency-wait: 60
 
-# Rerun settings
-restart-times: 3
-max-jobs-per-second: 10
-
-# Default resources for rules without explicit resources
+# N.B. GB values should be passed to mem_mb
 default-resources:
-  - queue="gpuqueue"        # Traditional LSF queue name
-  - lsf_queue="gpuqueue"    # For executor plugin
-  - lsf_extra=""            # Additional LSF directives for executor plugin
-  - mem_mb=8000
-  - runtime=120
-  - gpu=0
-  - gpu_model="a100"        # GPU model for resource selection
+  - 'mem_mb=8'
+  - 'lsf_queue=rna'
+  - 'lsf_project=leech'
+  - 'lsf_extra=""'
 
-# Resource mapping from Snakemake resources to LSF directives
+resources:
+  - ngpu=12
+
+# set rule specific requirements
 set-resources:
   # ============================================================================
   # POD5 Processing Rules
   # ============================================================================
-  - merge_pods:runtime=120
-  - merge_pods:mem_mb=16000
-  - merge_pods:threads=12
+  - merge_pods:mem_mb=16
 
-  - inspect_merged_pod5:runtime=30
-  - inspect_merged_pod5:mem_mb=4000
-  - inspect_merged_pod5:threads=4
+  - inspect_merged_pod5:mem_mb=4
 
-  - inspect_sample_pod5s:runtime=60
-  - inspect_sample_pod5s:mem_mb=4000
-  - inspect_sample_pod5s:threads=4
-
-  - aggregate_all_inspections:runtime=5
-  - aggregate_all_inspections:mem_mb=1000
-  - aggregate_all_inspections:threads=1
+  - inspect_sample_pod5s:mem_mb=4
 
   # ============================================================================
-  # Basecalling and Alignment Rules
+  # Basecalling and Alignment Rules (GPU)
   # ============================================================================
-  - rebasecall:runtime=480
-  - rebasecall:mem_mb=16000
-  - rebasecall:threads=4
-  - rebasecall:gpu=1
+  - rebasecall:lsf_queue="gpu"
+  - rebasecall:lsf_extra="-gpu num=1:j_exclusive=yes"
+  - rebasecall:ngpu=1
+  - rebasecall:mem_mb=16
 
-  - align_rebasecalled:runtime=240
-  - align_rebasecalled:mem_mb=16000
-  - align_rebasecalled:threads=8
+  - align_rebasecalled:mem_mb=16
 
   # ============================================================================
   # Data Preparation Rules
   # ============================================================================
-  - prepare_chunks:runtime=60
-  - prepare_chunks:mem_mb=8000
-  - prepare_chunks:threads=4
+  - prepare_chunks:mem_mb=8
 
-  - merge_chunks_charged:runtime=60
-  - merge_chunks_charged:mem_mb=16000
-  - merge_chunks_charged:threads=4
+  - merge_chunks_charged:mem_mb=16
 
-  - merge_chunks_pairwise:runtime=60
-  - merge_chunks_pairwise:mem_mb=16000
-  - merge_chunks_pairwise:threads=4
+  - merge_chunks_pairwise:mem_mb=16
 
   # ============================================================================
-  # Grid Search Rules
+  # Grid Search Rules (GPU)
   # ============================================================================
-  - grid_search_charged_vs_uncharged:runtime=240
-  - grid_search_charged_vs_uncharged:gpu=1
-  - grid_search_charged_vs_uncharged:mem_mb=16000
-  - grid_search_charged_vs_uncharged:threads=4
+  - grid_search_charged_vs_uncharged:lsf_queue="gpu"
+  - grid_search_charged_vs_uncharged:lsf_extra="-gpu num=1:j_exclusive=yes"
+  - grid_search_charged_vs_uncharged:ngpu=1
+  - grid_search_charged_vs_uncharged:mem_mb=16
 
-  - grid_search_pairwise_aa:runtime=240
-  - grid_search_pairwise_aa:gpu=1
-  - grid_search_pairwise_aa:mem_mb=16000
-  - grid_search_pairwise_aa:threads=4
+  - grid_search_pairwise_aa:lsf_queue="gpu"
+  - grid_search_pairwise_aa:lsf_extra="-gpu num=1:j_exclusive=yes"
+  - grid_search_pairwise_aa:ngpu=1
+  - grid_search_pairwise_aa:mem_mb=16
 
-  - grid_search_architecture_charged:runtime=1440
-  - grid_search_architecture_charged:gpu=1
-  - grid_search_architecture_charged:mem_mb=16000
-  - grid_search_architecture_charged:threads=4
+  - grid_search_architecture_charged:lsf_queue="gpu"
+  - grid_search_architecture_charged:lsf_extra="-gpu num=1:j_exclusive=yes"
+  - grid_search_architecture_charged:ngpu=1
+  - grid_search_architecture_charged:mem_mb=16
 
-  - grid_search_architecture_pairwise:runtime=1440
-  - grid_search_architecture_pairwise:gpu=1
-  - grid_search_architecture_pairwise:mem_mb=16000
-  - grid_search_architecture_pairwise:threads=4
-
-  # ============================================================================
-  # Training Rules
-  # ============================================================================
-  - train_charged_vs_uncharged:runtime=60
-  - train_charged_vs_uncharged:gpu=1
-  - train_charged_vs_uncharged:mem_mb=76000
-  - train_charged_vs_uncharged:threads=4
-
-  - train_pairwise_aa:runtime=60
-  - train_pairwise_aa:gpu=1
-  - train_pairwise_aa:mem_mb=76000
-  - train_pairwise_aa:threads=4
-
-  - train_architecture_charged:runtime=240
-  - train_architecture_charged:gpu=1
-  - train_architecture_charged:mem_mb=16000
-  - train_architecture_charged:threads=4
-
-  - train_architecture_pairwise:runtime=240
-  - train_architecture_pairwise:gpu=1
-  - train_architecture_pairwise:mem_mb=16000
-  - train_architecture_pairwise:threads=4
+  - grid_search_architecture_pairwise:lsf_queue="gpu"
+  - grid_search_architecture_pairwise:lsf_extra="-gpu num=1:j_exclusive=yes"
+  - grid_search_architecture_pairwise:ngpu=1
+  - grid_search_architecture_pairwise:mem_mb=16
 
   # ============================================================================
-  # Inference Rules
+  # Training Rules (GPU)
   # ============================================================================
-  - infer_charged_vs_uncharged:runtime=240
-  - infer_charged_vs_uncharged:gpu=1
-  - infer_charged_vs_uncharged:mem_mb=8000
-  - infer_charged_vs_uncharged:threads=4
+  - train_charged_vs_uncharged:lsf_queue="gpu"
+  - train_charged_vs_uncharged:lsf_extra="-gpu num=1:j_exclusive=yes"
+  - train_charged_vs_uncharged:ngpu=1
+  - train_charged_vs_uncharged:mem_mb=76
 
-  - infer_pairwise_aa:runtime=240
-  - infer_pairwise_aa:gpu=1
-  - infer_pairwise_aa:mem_mb=8000
-  - infer_pairwise_aa:threads=4
+  - train_pairwise_aa:lsf_queue="gpu"
+  - train_pairwise_aa:lsf_extra="-gpu num=1:j_exclusive=yes"
+  - train_pairwise_aa:ngpu=1
+  - train_pairwise_aa:mem_mb=76
+
+  - train_architecture_charged:lsf_queue="gpu"
+  - train_architecture_charged:lsf_extra="-gpu num=1:j_exclusive=yes"
+  - train_architecture_charged:ngpu=1
+  - train_architecture_charged:mem_mb=16
+
+  - train_architecture_pairwise:lsf_queue="gpu"
+  - train_architecture_pairwise:lsf_extra="-gpu num=1:j_exclusive=yes"
+  - train_architecture_pairwise:ngpu=1
+  - train_architecture_pairwise:mem_mb=16
 
   # ============================================================================
-  # Testing/Evaluation Rules
+  # Inference Rules (GPU)
   # ============================================================================
-  - test_charged_vs_uncharged:runtime=60
-  - test_charged_vs_uncharged:gpu=1
-  - test_charged_vs_uncharged:mem_mb=4000
-  - test_charged_vs_uncharged:threads=2
+  - infer_charged_vs_uncharged:lsf_queue="gpu"
+  - infer_charged_vs_uncharged:lsf_extra="-gpu num=1:j_exclusive=yes"
+  - infer_charged_vs_uncharged:ngpu=1
+  - infer_charged_vs_uncharged:mem_mb=8
 
-  - test_pairwise_aa:runtime=60
-  - test_pairwise_aa:gpu=1
-  - test_pairwise_aa:mem_mb=4000
-  - test_pairwise_aa:threads=2
+  - infer_pairwise_aa:lsf_queue="gpu"
+  - infer_pairwise_aa:lsf_extra="-gpu num=1:j_exclusive=yes"
+  - infer_pairwise_aa:ngpu=1
+  - infer_pairwise_aa:mem_mb=8
 
-  - test_architecture_charged:runtime=60
-  - test_architecture_charged:gpu=1
-  - test_architecture_charged:mem_mb=4000
-  - test_architecture_charged:threads=2
+  # ============================================================================
+  # Testing/Evaluation Rules (GPU)
+  # ============================================================================
+  - test_charged_vs_uncharged:lsf_queue="gpu"
+  - test_charged_vs_uncharged:lsf_extra="-gpu num=1:j_exclusive=yes"
+  - test_charged_vs_uncharged:ngpu=1
+  - test_charged_vs_uncharged:mem_mb=4
 
-  - test_architecture_pairwise:runtime=60
-  - test_architecture_pairwise:gpu=1
-  - test_architecture_pairwise:mem_mb=4000
-  - test_architecture_pairwise:threads=2
+  - test_pairwise_aa:lsf_queue="gpu"
+  - test_pairwise_aa:lsf_extra="-gpu num=1:j_exclusive=yes"
+  - test_pairwise_aa:ngpu=1
+  - test_pairwise_aa:mem_mb=4
+
+  - test_architecture_charged:lsf_queue="gpu"
+  - test_architecture_charged:lsf_extra="-gpu num=1:j_exclusive=yes"
+  - test_architecture_charged:ngpu=1
+  - test_architecture_charged:mem_mb=4
+
+  - test_architecture_pairwise:lsf_queue="gpu"
+  - test_architecture_pairwise:lsf_extra="-gpu num=1:j_exclusive=yes"
+  - test_architecture_pairwise:ngpu=1
+  - test_architecture_pairwise:mem_mb=4
 
   # ============================================================================
   # Comparison and Summary Rules (CPU only)
   # ============================================================================
-  - compare_architectures_charged:runtime=10
-  - compare_architectures_charged:mem_mb=2000
-  - compare_architectures_charged:threads=1
+  - compare_architectures_charged:mem_mb=2
 
-  - compare_architectures_pairwise:runtime=10
-  - compare_architectures_pairwise:mem_mb=2000
-  - compare_architectures_pairwise:threads=1
+  - compare_architectures_pairwise:mem_mb=2
 
-  - summarize_charged_vs_uncharged:runtime=5
-  - summarize_charged_vs_uncharged:mem_mb=1000
-  - summarize_charged_vs_uncharged:threads=1
+  - summarize_charged_vs_uncharged:mem_mb=1
 
-  - summarize_pairwise:runtime=5
-  - summarize_pairwise:mem_mb=1000
-  - summarize_pairwise:threads=1
+  - summarize_pairwise:mem_mb=1
 
-# LSF submission script template
-# Variables available:
-# - {resources.mem_mb}: memory in MB
-# - {resources.runtime}: time in minutes
-# - {resources.gpu}: number of GPUs
-# - {resources.gpu_mem_mb}: GPU memory in MB
-# - {threads}: number of threads/CPUs
-# - {rule}: rule name
-# - {jobid}: job ID
-# - {log}: log file path
-
-jobscript: "profiles/lsf/lsf_submit.sh"
+printshellcmds: True
+show-failed-logs: True
+latency-wait: 15
