@@ -887,6 +887,7 @@ dependencies = [
     { name = "scikit-learn" },
     { name = "snakefmt" },
     { name = "snakemake" },
+    { name = "snakemake-executor-plugin-lsf" },
     { name = "snakemake-executor-plugin-slurm" },
     { name = "torch" },
 ]
@@ -937,6 +938,7 @@ requires-dist = [
     { name = "seaborn", marker = "extra == 'notebook'", specifier = ">=0.13.0" },
     { name = "snakefmt", specifier = ">=0.10.3" },
     { name = "snakemake", specifier = ">=9.0.0" },
+    { name = "snakemake-executor-plugin-lsf", specifier = ">=0.2.5" },
     { name = "snakemake-executor-plugin-slurm", specifier = ">=1.9.2" },
     { name = "statsmodels", marker = "extra == 'notebook'", specifier = ">=0.14.0" },
     { name = "tabulate", marker = "extra == 'notebook'", specifier = ">=0.9.0" },
@@ -2490,6 +2492,34 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/31/0a/f7891925554c0387b0ae7ee628ee122aad26fc21982cb6e70e8771f2c86c/snakemake-9.13.7.tar.gz", hash = "sha256:c9e64fe5b8b57330680d4acc7ffd4e3d78c053379f940942dd3016281bc05383", size = 6738639, upload-time = "2025-11-07T15:53:17.021Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ce/f6/a41d07b132497d9fad2cbb261cdec2f28f8974d1a8450be3c91cf3790902/snakemake-9.13.7-py3-none-any.whl", hash = "sha256:054f193b2522e92a9d8966acf6b2f3ca3751dbddf6cf859ea458a3047eeb2859", size = 1131490, upload-time = "2025-11-07T15:53:14.843Z" },
+]
+
+[[package]]
+name = "snakemake-executor-plugin-lsf"
+version = "0.2.6"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "snakemake-executor-plugin-lsf-jobstep" },
+    { name = "snakemake-interface-common" },
+    { name = "snakemake-interface-executor-plugins" },
+    { name = "throttler" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/60/3a/7d891f9dcdc663d230c05ac7a41f548cbd1d0794f72b5266a14a793e6aa2/snakemake_executor_plugin_lsf-0.2.6.tar.gz", hash = "sha256:ddd4205c3a6da299d0962b6d3e689131ace1fd8547b528ab628543dd865f608d", size = 13210, upload-time = "2024-06-03T14:47:21.481Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/41/da/4a210bfa7b9bad082b084873ec122d7b65b16fe46b824c5c20dbd5af4cc2/snakemake_executor_plugin_lsf-0.2.6-py3-none-any.whl", hash = "sha256:8ddbd53c20a48c2447ff72cb65e95f3fd12b293c5f5348fc15e8a29dc8069823", size = 11908, upload-time = "2024-06-03T14:47:19.778Z" },
+]
+
+[[package]]
+name = "snakemake-executor-plugin-lsf-jobstep"
+version = "0.1.10"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "snakemake-interface-common" },
+    { name = "snakemake-interface-executor-plugins" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b8/02/c75d3da26c2942bc0073a8aafc8da3a74dd9b281157aa52e7b0c647dc839/snakemake_executor_plugin_lsf_jobstep-0.1.10.tar.gz", hash = "sha256:72d29f3cd22061a61f138bba0ab6803b3fb7017f9475276acfa40ad20d23f44d", size = 3736, upload-time = "2024-03-11T20:50:34.285Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/48/ef/a5e169cbf32c1e677a1c6ab25210d4380cc6f09c4746f226e60798e6a446/snakemake_executor_plugin_lsf_jobstep-0.1.10-py3-none-any.whl", hash = "sha256:e231e6e41649c528813133959536956a0a0d2b9d0a0bb76ad568d389b8ccba23", size = 4381, upload-time = "2024-03-11T20:50:31.333Z" },
 ]
 
 [[package]]
