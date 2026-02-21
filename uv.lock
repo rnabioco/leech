@@ -907,6 +907,7 @@ notebook = [
 
 [package.dev-dependencies]
 docs = [
+    { name = "ghp-import" },
     { name = "matplotlib" },
     { name = "mkdocstrings", extra = ["python"] },
     { name = "zensical" },
@@ -943,6 +944,7 @@ provides-extras = ["dev", "notebook"]
 
 [package.metadata.requires-dev]
 docs = [
+    { name = "ghp-import" },
     { name = "matplotlib", specifier = ">=3.10.7" },
     { name = "mkdocstrings", extras = ["python"], specifier = ">=0.30.1" },
     { name = "zensical" },

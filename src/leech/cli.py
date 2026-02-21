@@ -74,7 +74,7 @@ click.rich_click.USE_CLICK_SHORT_HELP = True
 LOGO = """
    ___
   (O O)    LEECH
-  <VVV>    Learning Enhanced Electrical 
+  <VVV>    Learning Enhanced Electrical
    |||     Classifiers from Hanopore signals
    |||
     V
@@ -902,8 +902,6 @@ def predict(model, pod5, bam, output, device):
 
     console.print("[bold green]Inference complete![/bold green]")
     logger.info(f"Predictions saved to {output}")
-
-
 
 
 def main():

@@ -24,7 +24,7 @@ jobs:
           python-version-file: "pyproject.toml"
 
       - name: Install linting tools only
-        run: uv pip install --system ruff mypy nbqa
+        run: uv pip install --system ruff nbqa
 
       - name: Run ruff format check
         run: ruff format --check --exclude notebooks/ .
@@ -35,8 +35,8 @@ jobs:
       - name: Run ruff lint on notebooks
         run: nbqa ruff notebooks/
 
-      - name: Run mypy
-        run: mypy src/leech/
+      - name: Run type check
+        run: uvx ty check src/leech/
 
   test:
     name: Test - Python ${{ matrix.python-version }}
