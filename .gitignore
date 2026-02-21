@@ -253,3 +253,4 @@ aa-tRNA-seq/
 
 # alpine-specific stuff
 .nfs*
+ext/

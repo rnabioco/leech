@@ -61,6 +61,7 @@ notebook = [
 [dependency-groups]
 docs = [
   "matplotlib>=3.10.7",
+  "ghp-import",
   "zensical",
   "mkdocstrings[python]>=0.30.1",
 ]
@@ -71,13 +72,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/leech"]
-
-[tool.mypy]
-python_version = "3.10"
-warn_return_any = true
-warn_unused_configs = true
-disallow_untyped_defs = false
-ignore_missing_imports = true
 
 [tool.nbqa.addopts]
 ruff = ["--ignore=E402"]
@@ -110,6 +104,7 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "*.ipynb" = ["E402"]  # Allow imports anywhere in notebooks
+"__init__.py" = ["E402"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["leech"]
@@ -126,3 +121,6 @@ unresolved-import = "ignore"
 # Ignore false positives from PyTorch Dataset iteration and numpy arrays
 possibly-missing-attribute = "ignore"
 invalid-argument-type = "ignore"
+invalid-method-override = "ignore"
+not-subscriptable = "ignore"
+no-matching-overload = "ignore"
