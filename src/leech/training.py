@@ -392,7 +392,7 @@ def train_model(
     early_stopping_patience: int = 10,
     use_class_weights: bool = True,
     pos_weight: float | None = None,
-    **model_kwargs,
+    **model_kwargs: Any,
 ) -> dict[str, Any]:
     """
     High-level training function.

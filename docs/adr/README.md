@@ -45,7 +45,7 @@ These ADRs document refactoring work that achieved:
 ## Related Documentation
 
 - [Architecture Overview](../architecture.md) - Overall architecture and module structure
-- [Refactoring Guide](../refactoring_guide.md) - Migration guide and refactoring details
+- [Refactoring Guide](https://github.com/rnabioco/leech/blob/main/dev-notes/refactoring_guide.md) - Migration guide and refactoring details
 - [Documentation Home](../index.md) - Main documentation index
 
 ## Status Definitions

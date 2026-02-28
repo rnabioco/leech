@@ -577,4 +577,4 @@ merge_and_split_chunks(
 - [Architecture Overview](architecture.md)
 - [API Reference](api/index.md)
 - [Getting Started](getting-started/quick-start.md)
-- [CLI Usage](getting-started/cli-usage.md)
+- [CLI Reference](reference/cli.md)

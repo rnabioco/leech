@@ -2,25 +2,28 @@
 
 <b>L</b>earning <b>E</b>nhanced <b>A</b>minoacylation <b>C</b>lassification from <b>H</b>anopore signals
 
-A Python library for training machine learning models on nanopore signal data, with a focus on integrating dwell time features for modified base detection.
-
 [![CI](https://github.com/rnabioco/leech/actions/workflows/ci.yml/badge.svg)](https://github.com/rnabioco/leech/actions/workflows/ci.yml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-## Overview
+## What leech does
 
-`leech` extends [Remora](https://github.com/nanoporetech/remora) with dwell time features extracted from move tables (`mv` tag in BAM files) to classify modified bases, specifically for distinguishing charged vs. uncharged tRNAs in aa-tRNA-seq experiments.
+In aminoacyl-tRNA sequencing (aa-tRNA-seq), the key biological question is
+whether a tRNA molecule is **charged** (carrying an amino acid) or
+**uncharged**. Charged tRNAs can further be classified by which amino acid is
+attached. Oxford Nanopore sequencing captures these differences as subtle
+changes in electrical signal as the tRNA passes through the pore, but
+standard basecalling discards the timing information needed to detect them.
 
-### Key Features
+Leech recovers that timing information. It reads **move tables** (the `mv`
+tag in BAM files produced by Dorado) to compute how long the pore dwells on
+each base, then feeds dwell times alongside the raw signal and sequence
+context into a multi-branch neural network. This combination of signal,
+sequence, and dwell features is what separates leech from tools like
+[Remora](https://github.com/nanoporetech/remora) that operate on signal
+alone.
 
-- **Dwell time integration**: Extract per-base dwell times from move tables
-- **Signal level features**: Compute signal statistics (mean, median, std, range) per base
-- **PyTorch models**: Conv-LSTM architectures with multi-branch inputs (signal + sequence + dwell features)
-- **Snakemake pipeline**: Production-ready workflow for HPC clusters (SLURM/LSF)
-- **Modern tooling**: Built with uv, ruff, and type hints
-
-## How It Works
+## How it works
 
 Leech integrates three complementary data sources from nanopore sequencing to improve classification accuracy:
 
@@ -64,158 +67,21 @@ graph TB
 
 **Key Insight**: While sequence alone may show basecalling errors at modification sites, and raw signal alone lacks base-level resolution, **dwell time** provides the critical link—revealing how long the nanopore spent measuring each base, which is highly informative for detecting modifications like tRNA aminoacylation.
 
-### The Dwell Time Advantage
+## Key capabilities
 
-The figure below illustrates how leech extracts dwell times from move tables:
+- **[Move table decoding](guides/move-tables.md)** — parse the BAM `mv` tag to map raw signal to individual bases
+- **[Dwell time features](guides/dwell-features.md)** — extract per-base dwell times and signal-level statistics that capture modification signatures
+- **[Classification tasks](guides/classification-tasks.md)** — charged vs. uncharged tRNAs, pairwise amino acid discrimination, and chemical property grouping
+- **[Multiple model architectures](architecture.md)** — Conv-LSTM, Transformer, TCN, ResNet, and CNN variants, all with multi-branch inputs
+- **[Parallel data preparation](data_preparation.md)** — multiprocessing support for large datasets with 3--6x speedup
+- **[Snakemake pipeline](grid-search/grid-search.md)** — production-ready workflows for HPC clusters (SLURM/LSF)
 
-![Move Table Decoding](figures/move_table_diagram.png)
+## Get started
 
-**Panel A** shows the raw nanopore signal with colored regions indicating different bases. **Panel B** displays stride positions where the basecaller samples the signal. **Panel C** shows the move table (from BAM `mv` tag) with 1s indicating new bases and 0s indicating the pore is still reading the same base. **Panel D** combines the sequence with per-base dwell times calculated from the move table.
+Install leech and run through the four-step workflow—prepare, train, test, predict—in about ten minutes:
 
-Modified bases (like charged tRNAs) often exhibit **different translocation kinetics** through the nanopore, resulting in distinctive dwell time patterns that leech models can learn to recognize.
-
-??? note "Technical Details: Move Table Format"
-
-    The move table is stored in the BAM `mv` tag with format: `[stride, move_0, move_1, ..., move_n]`
-
-    ```
-    Raw signal:  [s0, s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, ...]
-                  ↓   ↓   ↓   ↓   ↓   ↓   ↓   ↓   ↓   ↓    ↓
-    Stride=5:    [0        ][1        ][2        ][3         ]...
-
-    Move table:  [5, 1, 0, 0, 1, 1, 0, 1, ...]
-                     ↑  ↑  ↑  ↑  ↑  ↑  ↑
-                     A  A  A  T  C  C  G  ... (bases)
-
-    Dwell times: Base A: 15 samples (3 strides × 5)
-                 Base T: 5 samples  (1 stride × 5)
-                 Base C: 10 samples (2 strides × 5)
-                 Base G: 5 samples  (1 stride × 5)
-    ```
-
-    This mapping allows leech to compute per-base statistics on both the raw signal and dwell times, providing rich features for detecting modifications.
-
-## Quick Start
-
-### Installation
-
-Requires Python 3.10+
-
-=== "Using uv (recommended)"
-
-    ```bash
-    # Install uv if you don't have it
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-
-    # Clone and install
-    git clone https://github.com/rnabioco/leech.git
-    cd leech
-    uv sync
-    ```
-
-=== "Using pip"
-
-    ```bash
-    git clone https://github.com/rnabioco/leech.git
-    cd leech
-    pip install -e .
-    ```
-
-### Basic Usage
-
-#### 1. Prepare training data
-
-Extract features from POD5 and BAM files:
-
-```bash
-uv run leech data prepare \
-  --pod5 reads.pod5 \
-  --bam alignments.bam \
-  --output-dir chunks/ \
-  --feature-set signal+dwell+levels \
-  --motif CCAGGC \
-  --motif-offset 2 \
-  --label 1
-```
-
-#### 2. Train model
-
-```bash
-uv run leech model train \
-  --train-data chunks/train.json \
-  --val-data chunks/val.json \
-  --model ConvLSTMDwell \
-  --output-dir models/
-```
-
-#### 3. Test model
-
-```bash
-uv run leech eval test \
-  --model models/model_best.pt \
-  --test-data chunks/test.json \
-  --output metrics.json
-```
-
-#### 4. Run inference
-
-```bash
-uv run leech predict \
-  --model models/model_best.pt \
-  --pod5 new_reads.pod5 \
-  --bam new_alignments.bam \
-  --output predictions.bam
-```
-
-## Documentation
-
-- **[Getting Started](getting-started/installation.md)**: Installation and setup instructions
-- **[User Guide](guides/move-tables.md)**: Understanding move tables, dwell features, and classification tasks
-- **[Cluster Setup](setup/ALPINE_SETUP.md)**: HPC cluster configuration (SLURM/LSF)
-- **[API Reference](api/index.md)**: Detailed API documentation
-
-## Architecture
-
-### Data Flow
-
-```mermaid
-graph LR
-    A[POD5 + BAM] --> B[Feature Extraction]
-    B --> C[Training Chunks]
-    C --> D[Model Training]
-    D --> E[Predictions]
-
-    B --> F[Dwell Times]
-    B --> G[Signal Levels]
-
-    F --> C
-    G --> C
-```
-
-### Model Architectures
-
-- **ConvLSTMDwell**: Multi-branch model with dwell time features (recommended)
-- **ConvLSTMBase**: Baseline model without dwell features (for comparison)
-- **TransformerDwell**: Transformer-based with multi-head self-attention
-- **ConvOnly**: Pure CNN with multi-scale convolutions
-- **TCNDwell**: Temporal Convolutional Network with dilated convolutions
-- **ResNetDwell**: Deep residual network with skip connections
-
-## Requirements
-
-### Input Data
-
-- **POD5 files**: Raw nanopore signal (from ONT sequencing)
-- **BAM files**: Basecalls with move table tags (`mv`, `ns`, `ts`)
-  - Generated by dorado/guppy basecaller with `--emit-moves` flag
-
-### Software Dependencies
-
-- **PyTorch**: Neural network training
-- **pod5**: Reading ONT POD5 format
-- **pysam**: BAM file parsing
-- **polars**: Fast dataframe operations
-- **numpy/scipy/scikit-learn**: Numerical operations and ML utilities
+1. **[Installation](getting-started/installation.md)** — set up leech with uv or pip
+2. **[Quick Start](getting-started/quick-start.md)** — walk through a complete classification workflow
 
 ## Citation
 

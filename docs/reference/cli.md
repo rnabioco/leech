@@ -593,8 +593,8 @@ leech model train \
   --model-config grid_results/best_params.json
 ```
 
-## Next Steps
+## See Also
 
-- [Quick Start](quick-start.md): Get started quickly
+- [Quick Start](../getting-started/quick-start.md): Get started quickly
 - [API Reference](../api/index.md): Python API documentation
 - [Grid Search Guide](../grid-search/grid-search-usage.md): Hyperparameter optimization details

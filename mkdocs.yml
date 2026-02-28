@@ -127,11 +127,12 @@ nav:
   - Getting Started:
       - Installation: getting-started/installation.md
       - Quick Start: getting-started/quick-start.md
-      - CLI Usage: getting-started/cli-usage.md
   - User Guide:
       - Understanding Move Tables: guides/move-tables.md
       - Dwell Time Features: guides/dwell-features.md
       - Classification Tasks: guides/classification-tasks.md
+  - Reference:
+      - CLI: reference/cli.md
   - Cluster Setup:
       - Alpine (SLURM): setup/ALPINE_SETUP.md
       - Bodhi (LSF): setup/BODHI_SETUP.md

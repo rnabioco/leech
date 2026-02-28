@@ -8,9 +8,9 @@ This guide will walk you through using leech for the first time.
 - POD5 file with nanopore signal data
 - BAM file with basecalls and move tables (from dorado/guppy with `--emit-moves`)
 
-## Workflow Overview
+## What you will do
 
-The typical leech workflow consists of four steps:
+The leech workflow has four steps, each handled by a dedicated CLI command:
 
 ```mermaid
 graph LR
@@ -18,6 +18,11 @@ graph LR
     B --> C[Test Model]
     C --> D[Run Inference]
 ```
+
+1. **Prepare** (`leech data prepare`) — read raw signal from a POD5 file and alignments from a BAM file, extract dwell times and signal statistics centered on a sequence motif, and split the resulting chunks into train/val/test sets at the read level.
+2. **Train** (`leech model train`) — fit a multi-branch neural network that takes signal, sequence, and dwell features as separate inputs and learns to classify modification state.
+3. **Test** (`leech eval test`) — evaluate the trained model on a held-out test set and report accuracy, precision, recall, F1, and AUC.
+4. **Predict** (`leech predict`) — apply the model to new POD5/BAM data and write modification probabilities into an output BAM file.
 
 ## Step 1: Prepare Training Data
 
@@ -136,51 +141,13 @@ uv run leech predict \
 
 The output BAM file will contain modification probability tags for each base.
 
-## Complete Example
+## Beyond single-sample workflows
 
-Here's a complete example workflow:
-
-```bash
-# 1. Prepare charged tRNA data
-uv run leech data prepare \
-  --pod5 charged_ala.pod5 \
-  --bam charged_ala.bam \
-  --output-dir data/charged \
-  --label 1 \
-  --workers 8
-
-# 2. Prepare uncharged tRNA data
-uv run leech data prepare \
-  --pod5 uncharged_ala.pod5 \
-  --bam uncharged_ala.bam \
-  --output-dir data/uncharged \
-  --label 0 \
-  --workers 8
-
-# 3. Train model
-uv run leech model train \
-  --train-data data/*/train.json \
-  --val-data data/*/val.json \
-  --model ConvLSTMDwell \
-  --output-dir models/ \
-  --epochs 50
-
-# 4. Test model
-uv run leech eval test \
-  --model models/model_best.pt \
-  --test-data data/*/test.json \
-  --output results/metrics.json
-
-# 5. Run inference on new data
-uv run leech predict \
-  --model models/model_best.pt \
-  --pod5 new_sample.pod5 \
-  --bam new_sample.bam \
-  --output predictions.bam
-```
+The steps above cover a single-sample classification. For multi-sample experiments (e.g., preparing charged and uncharged data separately, then merging), see `leech data merge` in the [CLI Reference](../reference/cli.md). The merge command handles read-level splitting across samples to prevent data leakage.
 
 ## Next Steps
 
-- [CLI Usage](cli-usage.md): Detailed documentation of all commands
-- [User Guide](../guides/move-tables.md): Understanding move tables, dwell features, and classification tasks
-- [Grid Search](../grid-search/grid-search-usage.md): Hyperparameter optimization
+- **[Understanding Move Tables](../guides/move-tables.md)** — learn how leech decodes the BAM `mv` tag into per-base dwell times, the foundation of its feature extraction
+- **[Dwell Time Features](../guides/dwell-features.md)** — explore the signal statistics and dwell features that give leech its classification edge
+- **[Classification Tasks](../guides/classification-tasks.md)** — set up charged vs. uncharged, pairwise amino acid, and chemical property comparisons
+- **[Grid Search](../grid-search/grid-search-usage.md)** — optimize signal context and hyperparameters

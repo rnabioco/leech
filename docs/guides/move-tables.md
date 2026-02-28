@@ -5,6 +5,16 @@ They encode how raw nanopore signal maps to basecalled sequence, enabling
 computation of per-base dwell times that distinguish charged from uncharged
 tRNAs.
 
+## Move table overview
+
+The figure below illustrates how leech extracts dwell times from move tables:
+
+![Move Table Decoding](../figures/move_table_diagram.png)
+
+**Panel A** shows the raw nanopore signal with colored regions indicating different bases. **Panel B** displays stride positions where the basecaller samples the signal. **Panel C** shows the move table (from BAM `mv` tag) with 1s indicating new bases and 0s indicating the pore is still reading the same base. **Panel D** combines the sequence with per-base dwell times calculated from the move table.
+
+Modified bases (like charged tRNAs) often exhibit **different translocation kinetics** through the nanopore, resulting in distinctive dwell time patterns that leech models can learn to recognize.
+
 ## Nanopore signal and basecalling
 
 Oxford Nanopore sequencers sample ionic current at 4000 Hz as a nucleic acid
