@@ -10,6 +10,8 @@ Available models:
 - ResNetDwell: Residual Network with skip connections (Priority 2)
 """
 
+from typing import Any
+
 from leech.models.conv_lstm_base import ConvLSTMBase
 from leech.models.conv_lstm_dwell import ConvLSTMDwell
 from leech.models.conv_only import ConvOnly
@@ -40,7 +42,7 @@ MODEL_REGISTRY = {
 }
 
 
-def get_model(model_name: str, **kwargs) -> object:
+def get_model(model_name: str, **kwargs: Any) -> object:
     """
     Get model by name.
 

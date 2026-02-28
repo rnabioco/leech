@@ -138,4 +138,3 @@ If you get permission errors during installation, avoid using `sudo`. Instead:
 ## Next Steps
 
 - [Quick Start](quick-start.md): Run your first leech command
-- [CLI Usage](cli-usage.md): Learn about all available commands
