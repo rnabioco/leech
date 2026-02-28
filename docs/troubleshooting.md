@@ -13,13 +13,13 @@ specifying a QoS is now required.
 **Solution:**
 Ensure `cluster/slurm/config.yaml` has `slurm-qos` (with hyphen) as a top-level parameter:
 
-```yaml
+```yaml title="YAML" linenums="1"
 # Correct configuration
 slurm-qos: "normal"
 ```
 
 NOT as a resource with underscore:
-```yaml
+```yaml title="YAML" linenums="1"
 # INCORRECT
 default-resources:
   slurm_qos: "normal"  # Wrong - this doesn't work
@@ -35,7 +35,7 @@ LockException: Error: Directory cannot be locked
 ```
 
 **Solution:**
-```bash
+```bash title="Bash" linenums="1"
 snakemake --unlock
 ```
 
@@ -77,7 +77,7 @@ KeyError: 'mv' tag not found in BAM file
 **Solution:**
 BAM files must be basecalled with dorado or guppy to include move table tags (`mv` and `ns`). Re-basecall if necessary:
 
-```bash
+```bash title="Bash" linenums="1"
 snakemake --profile cluster/slurm all_rebasecall
 ```
 
@@ -94,7 +94,7 @@ CUDA out of memory
 3. Request more GPU memory in SLURM config
 
 Edit `cluster/slurm/config.yaml`:
-```yaml
+```yaml title="YAML" linenums="1"
 set-resources:
   train_model:
     mem_mb: 64000  # Increase from 32000
@@ -111,7 +111,7 @@ set-resources:
 4. Verify feature normalization
 
 **Debug:**
-```bash
+```bash title="Bash" linenums="1"
 # Run grid search to optimize chunk context
 snakemake --profile cluster/slurm all_grid_search
 
@@ -131,7 +131,7 @@ RuntimeError: Error loading model checkpoint
 2. Check PyTorch version compatibility
 3. Ensure model file is not corrupted
 
-```bash
+```bash title="Bash" linenums="1"
 # Verify checkpoint integrity
 uv run python -c "import torch; print(torch.load('path/to/model.pt').keys())"
 ```
@@ -147,7 +147,7 @@ Could not find profile: cluster/slurm
 
 **Solution:**
 Run from project root directory where `cluster/` exists, or specify full path:
-```bash
+```bash title="Bash" linenums="1"
 snakemake --profile /full/path/to/cluster/slurm target
 ```
 
@@ -161,13 +161,13 @@ CondaError: environment not found
 **Solution:**
 Snakemake uses apptainer (singularity) for containerized execution. Ensure apptainer cache directory is accessible:
 
-```yaml
+```yaml title="YAML" linenums="1"
 # In cluster/slurm/config.yaml
 apptainer-prefix: '/scratch/alpine/username/apptainer_cache'
 ```
 
 Create the directory if it doesn't exist:
-```bash
+```bash title="Bash" linenums="1"
 mkdir -p /scratch/alpine/$USER/apptainer_cache
 ```
 

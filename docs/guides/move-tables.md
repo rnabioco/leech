@@ -93,7 +93,7 @@ kinetics at each sequence context.
 
 In leech, the `MoveTable` class in `features.py` handles this conversion:
 
-```python
+```python title="Python" linenums="1"
 from leech.features import MoveTable
 
 move_table = MoveTable(mv_tag=[5, 1, 0, 0, 1, 1, 0, 1])

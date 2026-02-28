@@ -115,7 +115,7 @@ Split data into train/val/test sets at the read level to prevent data leakage.
 
 For most users, the CLI commands provide the easiest interface:
 
-```bash
+```bash title="Bash" linenums="1"
 # Prepare data
 uv run leech data prepare --pod5 reads.pod5 --bam alignments.bam --output-dir chunks/
 

@@ -54,7 +54,7 @@ The data preparation functionality has been refactored into modular components:
 
 Use the CLI commands for data preparation:
 
-```bash
+```bash title="Bash" linenums="1"
 # Prepare training data
 uv run leech data prepare \
   --pod5 reads.pod5 \
@@ -64,7 +64,7 @@ uv run leech data prepare \
 
 For programmatic access, use the modular components:
 
-```python
+```python title="Python" linenums="1"
 from pathlib import Path
 from leech.io.bam_reader import iter_bam_alignments
 from leech.io.pod5_reader import read_pod5_signal
@@ -89,7 +89,7 @@ for alignment in iter_bam_alignments(
 
 ### Training a Model
 
-```python
+```python title="Python" linenums="1"
 from leech.training import Trainer
 from leech.models import get_model
 
@@ -111,7 +111,7 @@ history = trainer.train(epochs=50)
 
 ### Running Inference
 
-```python
+```python title="Python" linenums="1"
 from leech.inference import InferenceEngine
 from leech.util import load_model_from_checkpoint
 
@@ -133,7 +133,7 @@ predictions = engine.predict_bam(
 
 All leech modules use Python type hints for better IDE support and type checking. We recommend using [mypy](http://mypy-lang.org/) for static type checking:
 
-```bash
+```bash title="Bash" linenums="1"
 mypy src/leech/
 ```
 

@@ -27,7 +27,7 @@ Data preparation in leech involves:
 
 ### Basic Usage
 
-```bash
+```bash title="Bash" linenums="1"
 # Prepare data with default settings
 uv run leech data prepare \
     --pod5 reads.pod5 \
@@ -44,7 +44,7 @@ This will:
 
 ### Parallel Processing
 
-```bash
+```bash title="Bash" linenums="1"
 # Use 8 workers for faster processing
 uv run leech data prepare \
     --pod5 reads.pod5 \
@@ -61,7 +61,7 @@ Expected speedup: 3-6x on typical multi-core machines.
 
 ### Python API
 
-```python
+```python title="Python" linenums="1"
 from pathlib import Path
 from leech.data_prep import prepare_training_data_with_split
 
@@ -85,7 +85,7 @@ print(f"Train: {result['n_train']}, Val: {result['n_val']}, Test: {result['n_tes
 
 ### Without Splitting
 
-```python
+```python title="Python" linenums="1"
 # Extract chunks without splitting (for later merge-and-split)
 result = prepare_training_data_with_split(
     pod5_path=Path("reads.pod5"),
@@ -103,7 +103,7 @@ Parallel processing is recommended for large datasets (>10,000 reads).
 
 ### Python API
 
-```python
+```python title="Python" linenums="1"
 from leech.data_prep import prepare_training_data_parallel
 from leech.io import get_reference_sequences
 from leech.splitting import split_chunks_by_read
@@ -141,7 +141,7 @@ save_chunks(test, Path("chunks/test.npz"))
 
 ### Performance Tuning
 
-```python
+```python title="Python" linenums="1"
 # Optimize for your hardware
 num_workers = 8  # Set to number of CPU cores
 chunk_size = 100  # Reads per batch
@@ -164,7 +164,7 @@ Leech supports two strategies for finding modification sites:
 
 Search directly in the basecalled sequence:
 
-```python
+```python title="Python" linenums="1"
 from leech.io import get_motif_searcher
 
 searcher = get_motif_searcher(mode="bam")
@@ -188,7 +188,7 @@ positions = searcher.find_motif_positions(
 
 Search in reference sequence, then map to query:
 
-```python
+```python title="Python" linenums="1"
 from leech.io import get_motif_searcher, get_reference_sequences
 
 # Load reference sequences
@@ -223,7 +223,7 @@ positions = searcher.find_motif_positions(
 
 ### CLI Usage
 
-```bash
+```bash title="Bash" linenums="1"
 # Basecalled search
 uv run leech data prepare \
     --motif CCAGGC \
@@ -244,7 +244,7 @@ Splitting at the chunk level can cause data leakage - the same molecule (read) a
 
 ### Correct Workflow
 
-```python
+```python title="Python" linenums="1"
 from leech.splitting import split_chunks_by_read
 
 # Load all chunks
@@ -263,7 +263,7 @@ train, val, test = split_chunks_by_read(
 
 ### Incorrect Workflow (DO NOT DO THIS)
 
-```python
+```python title="Python" linenums="1"
 # ❌ Wrong: Split chunks directly
 from sklearn.model_selection import train_test_split
 
@@ -275,7 +275,7 @@ train, test = train_test_split(chunks, test_size=0.3)
 
 When you have multiple samples (e.g., charged and uncharged), merge first, then split:
 
-```python
+```python title="Python" linenums="1"
 from leech.splitting import merge_and_split_chunks
 
 # Merge multiple samples, then split at read level
@@ -301,7 +301,7 @@ For binary classification tasks, use pairwise relabeling:
 
 ### Single Labels
 
-```python
+```python title="Python" linenums="1"
 from leech.splitting import merge_and_split_chunks
 
 # Ala vs Gly comparison
@@ -318,7 +318,7 @@ result = merge_and_split_chunks(
 
 ### Multiple Labels (Groups)
 
-```python
+```python title="Python" linenums="1"
 # Basic vs Acidic amino acids
 result = merge_and_split_chunks(
     input_paths=[
@@ -340,14 +340,14 @@ result = merge_and_split_chunks(
 
 For many comparisons, use a TSV specification file:
 
-```tsv
+```tsv title="TSV" linenums="1"
 # comparisons.tsv (4 columns, no header)
 basic	Lys,Arg	acidic	Glu,Asp
 polar	Ser,Thr	nonpolar	Ala,Val
 small	Gly,Ala	large	Trp,Tyr
 ```
 
-```python
+```python title="Python" linenums="1"
 from leech.splitting import process_comparison_spec
 
 result = process_comparison_spec(
@@ -367,7 +367,7 @@ result = process_comparison_spec(
 
 ### CLI Usage
 
-```bash
+```bash title="Bash" linenums="1"
 # Pairwise comparison
 uv run leech data merge \
     -i Ala=ala.npz \
@@ -387,7 +387,7 @@ uv run leech data merge \
 
 ### Check Chunk Statistics
 
-```python
+```python title="Python" linenums="1"
 from leech.chunking import load_chunks, get_chunk_statistics
 
 chunks = load_chunks(Path("chunks/train.npz"))
@@ -401,7 +401,7 @@ print(f"Signal length: {stats['signal_lengths']['mean']:.1f} ± {stats['signal_l
 
 ### Verify No Data Leakage
 
-```python
+```python title="Python" linenums="1"
 from leech.chunking import load_chunks
 
 # Load all splits
@@ -463,7 +463,7 @@ Extracted 0 training chunks
 
 **Solution:** Use parallel processing
 
-```bash
+```bash title="Bash" linenums="1"
 # Use all CPU cores
 uv run leech data prepare \
     --workers $(nproc) \
@@ -475,7 +475,7 @@ uv run leech data prepare \
 
 **Solution:** Reduce chunk size or workers
 
-```python
+```python title="Python" linenums="1"
 # Reduce memory usage
 prepare_training_data_parallel(
     ...,
@@ -493,7 +493,7 @@ ValueError: Read read_001 not found in reads.pod5
 
 **Solution:** Check read ID format
 
-```python
+```python title="Python" linenums="1"
 # Check POD5 read IDs
 from pod5 import DatasetReader
 with DatasetReader(Path("reads.pod5")) as reader:
@@ -522,7 +522,7 @@ with pysam.AlignmentFile("alignments.bam") as bam:
 
 **Solution:** Check label values in chunk files
 
-```python
+```python title="Python" linenums="1"
 import numpy as np
 
 # Check what labels are in the file

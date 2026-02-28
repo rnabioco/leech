@@ -21,14 +21,14 @@ Ensure you have:
 - Access to appropriate LSF queues (especially GPU queues if needed)
 
 Check your queue access:
-```bash
+```bash title="Bash" linenums="1"
 bqueues  # List all queues
 bjobs    # List your running/pending jobs
 ```
 
 ### 2. Install uv (Python Package Manager)
 
-```bash
+```bash title="Bash" linenums="1"
 # Install uv in your home directory
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
@@ -43,7 +43,7 @@ uv --version
 
 The modern approach uses the LSF executor plugin:
 
-```bash
+```bash title="Bash" linenums="1"
 # Install the LSF executor plugin
 uv pip install snakemake-executor-plugin-lsf
 
@@ -62,7 +62,7 @@ pip install snakemake-executor-plugin-lsf
 
 ### 4. Clone and Setup
 
-```bash
+```bash title="Bash" linenums="1"
 # Clone repository
 cd /home/$USER
 git clone <repository_url> leech
@@ -76,7 +76,7 @@ uv sync --all-extras
 
 The pipeline includes `config/bodhi-config.yaml` optimized for Bodhi:
 
-```yaml
+```yaml title="YAML" linenums="1"
 # Simple relative paths (everything in home directory)
 chunks_dir: "results/chunks"
 models_dir: "results/models"
@@ -94,7 +94,7 @@ cluster:
 
 Edit `config/bodhi-config.yaml` to match your Bodhi setup:
 
-```yaml
+```yaml title="YAML" linenums="1"
 cluster:
   default_queue: "your_queue_name"     # Check with: bqueues
   gpu_queue: "your_gpu_queue"          # GPU queue name
@@ -107,7 +107,7 @@ cluster:
 
 This is the modern, recommended approach:
 
-```bash
+```bash title="Bash" linenums="1"
 cd /home/$USER/leech/pipeline/workflow
 
 # Dry run
@@ -128,12 +128,12 @@ snakemake \
 
 **Create an alias** for convenience (add to `~/.bashrc`):
 
-```bash
+```bash title="Bash" linenums="1"
 alias snakemake-bodhi='snakemake --executor lsf --configfile config/bodhi-config.yaml --default-resources lsf_queue=gpuqueue --jobs 100'
 ```
 
 Then use:
-```bash
+```bash title="Bash" linenums="1"
 cd /home/$USER/leech/pipeline/workflow
 snakemake-bodhi -n  # Dry run
 snakemake-bodhi     # Execute
@@ -143,7 +143,7 @@ snakemake-bodhi     # Execute
 
 The traditional approach still works:
 
-```bash
+```bash title="Bash" linenums="1"
 cd /home/$USER/leech/pipeline/workflow
 
 # Dry run
@@ -157,26 +157,26 @@ snakemake --profile ../profiles/lsf --configfile ../config/bodhi-config.yaml
 
 #### 1. Prepare Training Data
 
-```bash
+```bash title="Bash" linenums="1"
 snakemake-bodhi all_prepare
 ```
 
 #### 2. Train Models with GPU
 
-```bash
+```bash title="Bash" linenums="1"
 # Training jobs automatically request GPU resources
 snakemake-bodhi all_train
 ```
 
 #### 3. Full Pipeline
 
-```bash
+```bash title="Bash" linenums="1"
 snakemake-bodhi all
 ```
 
 #### 4. Run Specific Rule
 
-```bash
+```bash title="Bash" linenums="1"
 snakemake-bodhi results/models/charged_vs_uncharged/model_best.pt
 ```
 
@@ -186,7 +186,7 @@ snakemake-bodhi results/models/charged_vs_uncharged/model_best.pt
 
 The pipeline automatically requests GPUs for training/inference jobs:
 
-```bash
+```bash title="Bash" linenums="1"
 # LSF directives added automatically:
 # #BSUB -gpu "num=1:mode=shared:mps=no:j_exclusive=yes"
 # #BSUB -R "select[gpu_model==a100]"
@@ -199,7 +199,7 @@ GPU requirements are set in the Snakemake rules:
 
 ### Monitoring Jobs
 
-```bash
+```bash title="Bash" linenums="1"
 # View your jobs
 bjobs
 
@@ -218,7 +218,7 @@ bhist -l <job_id>
 
 ### Managing Jobs
 
-```bash
+```bash title="Bash" linenums="1"
 # Kill a job
 bkill <job_id>
 
@@ -236,7 +236,7 @@ bresume <job_id>
 
 On Bodhi, everything can run from your home directory:
 
-```bash
+```bash title="Bash" linenums="1"
 /home/$USER/leech/
 ├── leech/                          # Code repository (if cloned here)
 ├── pipeline/
@@ -260,7 +260,7 @@ On Bodhi, everything can run from your home directory:
 #### 1. "Command not found: bsub"
 
 **Solution**: LSF commands not in PATH
-```bash
+```bash title="Bash" linenums="1"
 # Load LSF module (if available)
 module load lsf
 
@@ -272,7 +272,7 @@ module load lsf
 **Symptoms**: Jobs pending with `PEND` status, reason shows resource requirements
 
 **Solutions**:
-```bash
+```bash title="Bash" linenums="1"
 # Check GPU queue availability
 bqueues -l gpuqueue
 
@@ -289,7 +289,7 @@ bhosts -gpu
 #### 3. "uv: command not found"
 
 **Solution**: Install uv or add to PATH
-```bash
+```bash title="Bash" linenums="1"
 curl -LsSf https://astral.sh/uv/install.sh | sh
 export PATH="$HOME/.cargo/bin:$PATH"
 ```
@@ -299,7 +299,7 @@ export PATH="$HOME/.cargo/bin:$PATH"
 **Symptoms**: Error about LSF executor not available
 
 **Solution**:
-```bash
+```bash title="Bash" linenums="1"
 # Install the plugin
 uv pip install snakemake-executor-plugin-lsf
 
@@ -321,7 +321,7 @@ python -c "import snakemake_executor_plugin_lsf; print('OK')"
 If your jobs need specific modules:
 
 Edit `profiles/lsf/lsf_submit.sh` and uncomment/add:
-```bash
+```bash title="Bash" linenums="1"
 module purge
 module load cuda/12.1
 module load gcc/11.2
@@ -333,7 +333,7 @@ module load gcc/11.2
 ### 1. Queue Selection
 
 Use appropriate queues for different job types:
-```bash
+```bash title="Bash" linenums="1"
 # CPU jobs → general queue
 # GPU jobs → GPU queue
 # Short test jobs → test/debug queue (if available)
@@ -342,7 +342,7 @@ Use appropriate queues for different job types:
 ### 2. Resource Requests
 
 Request only what you need:
-```yaml
+```yaml title="YAML" linenums="1"
 # In Snakemake rules:
 resources:
   mem_mb=8000,      # Don't over-request memory
@@ -353,7 +353,7 @@ resources:
 ### 3. Parallel Job Submission
 
 The pipeline submits up to 100 jobs in parallel by default:
-```bash
+```bash title="Bash" linenums="1"
 # Adjust with --jobs flag
 snakemake-bodhi --jobs 50  # More conservative
 snakemake-bodhi --jobs 200 # More aggressive
@@ -362,7 +362,7 @@ snakemake-bodhi --jobs 200 # More aggressive
 ### 4. Local Execution for Small Tasks
 
 Run data preparation locally (faster turnaround):
-```bash
+```bash title="Bash" linenums="1"
 # Run prep locally without cluster submission
 cd /home/$USER/leech/pipeline/workflow
 snakemake --configfile ../config/bodhi-config.yaml --cores 8 all_prepare
@@ -400,14 +400,14 @@ snakemake --configfile ../config/bodhi-config.yaml --cores 8 all_prepare
 
 ### 1. Test Locally First
 
-```bash
+```bash title="Bash" linenums="1"
 # Quick local test with 8 cores
 snakemake --configfile config/bodhi-config.yaml --cores 8 -n
 ```
 
 ### 2. Start Small
 
-```bash
+```bash title="Bash" linenums="1"
 # Test with one sample first
 snakemake-bodhi results/chunks/sample1/train.json
 ```
@@ -415,7 +415,7 @@ snakemake-bodhi results/chunks/sample1/train.json
 ### 3. Monitor Resource Usage
 
 After jobs complete:
-```bash
+```bash title="Bash" linenums="1"
 # Check resource usage
 bhist -l <job_id>
 
@@ -428,7 +428,7 @@ bhist -l <job_id>
 ### 4. Use Dry Runs
 
 Always check what will run:
-```bash
+```bash title="Bash" linenums="1"
 snakemake-bodhi -n  # Dry run
 snakemake-bodhi -np # Dry run with detailed output
 ```
@@ -436,7 +436,7 @@ snakemake-bodhi -np # Dry run with detailed output
 ### 5. Clean Up Old Results
 
 Bodhi has lots of space, but keep it tidy:
-```bash
+```bash title="Bash" linenums="1"
 # Archive old results
 tar -czf archive_$(date +%Y%m%d).tar.gz results/
 rm -rf results/
@@ -447,7 +447,7 @@ rm -rf .snakemake/
 
 ## Example: Complete Workflow
 
-```bash
+```bash title="Bash" linenums="1"
 # 1. Setup
 cd /home/$USER/leech/pipeline/workflow
 
@@ -486,7 +486,7 @@ ls -lh results/inference/
 
 ## Quick Reference
 
-```bash
+```bash title="Bash" linenums="1"
 # Setup
 uv pip install snakemake-executor-plugin-lsf
 

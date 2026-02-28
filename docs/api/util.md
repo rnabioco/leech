@@ -39,7 +39,7 @@ The util module provides various helper functions for model loading, metrics com
 
 ## Example Usage
 
-```python
+```python title="Python" linenums="1"
 from leech.util import load_model_from_checkpoint, setup_random_seed
 from pathlib import Path
 

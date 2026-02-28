@@ -21,7 +21,7 @@ The `leech` CLI is organized into workflow-based command groups that mirror the 
 
 ## Global Options
 
-```bash
+```bash title="Bash" linenums="1"
 leech --help      # Show help message
 leech --version   # Show version number
 ```
@@ -34,7 +34,7 @@ Extract training chunks from POD5 and BAM files.
 
 #### Synopsis
 
-```bash
+```bash title="Bash" linenums="1"
 leech data prepare [OPTIONS] --pod5 FILE --bam FILE --output-dir DIR
 ```
 
@@ -84,7 +84,7 @@ Examples:
 
 **Reference-based (default)** - Search in reference sequence and map to query via CIGAR:
 
-```bash
+```bash title="Bash" linenums="1"
 leech data prepare \
   --motif CCAGGC \
   --motif-reference fasta \
@@ -98,7 +98,7 @@ leech data prepare \
 
 **Basecalled search** - Search directly in basecalled sequence:
 
-```bash
+```bash title="Bash" linenums="1"
 leech data prepare \
   --motif CCAGGC \
   --motif-reference bam
@@ -109,7 +109,7 @@ leech data prepare \
 #### Examples
 
 Basic usage:
-```bash
+```bash title="Bash" linenums="1"
 leech data prepare \
   --pod5 reads.pod5 \
   --bam alignments.bam \
@@ -118,7 +118,7 @@ leech data prepare \
 ```
 
 With parallel processing:
-```bash
+```bash title="Bash" linenums="1"
 leech data prepare \
   --pod5 reads.pod5 \
   --bam alignments.bam \
@@ -128,7 +128,7 @@ leech data prepare \
 ```
 
 Custom motif and features:
-```bash
+```bash title="Bash" linenums="1"
 leech data prepare \
   --pod5 reads.pod5 \
   --bam alignments.bam \
@@ -146,7 +146,7 @@ Merge multiple chunk files from different samples and split at the read level to
 
 #### Synopsis
 
-```bash
+```bash title="Bash" linenums="1"
 leech data merge [OPTIONS] -i LABEL=FILE -i LABEL=FILE -o DIR
 ```
 
@@ -169,7 +169,7 @@ leech data merge [OPTIONS] -i LABEL=FILE -i LABEL=FILE -o DIR
 #### Examples
 
 Pairwise amino acid comparison:
-```bash
+```bash title="Bash" linenums="1"
 leech data merge \
   -i Ala=ala.npz \
   -i Gly=gly.npz \
@@ -177,7 +177,7 @@ leech data merge \
 ```
 
 Multi-label comparison (chemical properties):
-```bash
+```bash title="Bash" linenums="1"
 leech data merge \
   -i basic=lys.npz \
   -i basic=arg.npz \
@@ -187,7 +187,7 @@ leech data merge \
 ```
 
 Batch processing with comparison spec:
-```bash
+```bash title="Bash" linenums="1"
 leech data merge \
   -i chunks/dir1 \
   -i chunks/dir2 \
@@ -203,7 +203,7 @@ Train a model on prepared training data.
 
 #### Synopsis
 
-```bash
+```bash title="Bash" linenums="1"
 leech model train [OPTIONS] --train-data FILES --val-data FILES --model MODEL --output-dir DIR
 ```
 
@@ -241,7 +241,7 @@ leech model train [OPTIONS] --train-data FILES --val-data FILES --model MODEL --
 #### Examples
 
 Basic training:
-```bash
+```bash title="Bash" linenums="1"
 leech model train \
   --train-data chunks/train.json \
   --val-data chunks/val.json \
@@ -250,7 +250,7 @@ leech model train \
 ```
 
 With hyperparameters:
-```bash
+```bash title="Bash" linenums="1"
 leech model train \
   --train-data data/*/train.json \
   --val-data data/*/val.json \
@@ -268,7 +268,7 @@ Run grid search over chunk context parameters to optimize model performance.
 
 #### Synopsis
 
-```bash
+```bash title="Bash" linenums="1"
 leech model optimize [OPTIONS] --train-data FILE --output-dir DIR --context-grid VALUES
 ```
 
@@ -299,7 +299,7 @@ leech model optimize [OPTIONS] --train-data FILE --output-dir DIR --context-grid
 #### Examples
 
 Basic grid search:
-```bash
+```bash title="Bash" linenums="1"
 leech model optimize \
   --train-data chunks/train.npz \
   --val-data chunks/val.npz \
@@ -308,7 +308,7 @@ leech model optimize \
 ```
 
 Asymmetric context search:
-```bash
+```bash title="Bash" linenums="1"
 leech model optimize \
   --train-data chunks/train.npz \
   --output-dir grid_results/ \
@@ -324,7 +324,7 @@ Evaluate a trained model on a holdout test set.
 
 #### Synopsis
 
-```bash
+```bash title="Bash" linenums="1"
 leech eval test [OPTIONS] --model FILE --test-data FILES --output FILE
 ```
 
@@ -344,7 +344,7 @@ leech eval test [OPTIONS] --model FILE --test-data FILES --output FILE
 
 #### Examples
 
-```bash
+```bash title="Bash" linenums="1"
 leech eval test \
   --model models/model_best.pt \
   --test-data chunks/test.json \
@@ -357,7 +357,7 @@ Compare multiple trained models on the same test set.
 
 #### Synopsis
 
-```bash
+```bash title="Bash" linenums="1"
 leech eval compare [OPTIONS] -m DIR -m DIR -t FILE -o DIR
 ```
 
@@ -378,7 +378,7 @@ leech eval compare [OPTIONS] -m DIR -m DIR -t FILE -o DIR
 
 #### Examples
 
-```bash
+```bash title="Bash" linenums="1"
 leech eval compare \
   -m models/model1/ \
   -m models/model2/ \
@@ -393,7 +393,7 @@ Compute feature importance scores for a trained model.
 
 #### Synopsis
 
-```bash
+```bash title="Bash" linenums="1"
 leech eval importance [OPTIONS] -m FILE -t FILE -o DIR
 ```
 
@@ -415,7 +415,7 @@ leech eval importance [OPTIONS] -m FILE -t FILE -o DIR
 
 #### Examples
 
-```bash
+```bash title="Bash" linenums="1"
 leech eval importance \
   -m models/model_best.pt \
   -t chunks/test.npz \
@@ -429,7 +429,7 @@ Test model performance with sequence ablation.
 
 #### Synopsis
 
-```bash
+```bash title="Bash" linenums="1"
 leech eval ablation [OPTIONS] -m FILE -t FILE -o DIR
 ```
 
@@ -450,7 +450,7 @@ leech eval ablation [OPTIONS] -m FILE -t FILE -o DIR
 
 #### Examples
 
-```bash
+```bash title="Bash" linenums="1"
 leech eval ablation \
   -m models/model_best.pt \
   -t chunks/test.npz \
@@ -465,7 +465,7 @@ Run inference on new data to generate predictions.
 
 #### Synopsis
 
-```bash
+```bash title="Bash" linenums="1"
 leech predict [OPTIONS] --model FILE --pod5 FILE --bam FILE --output FILE
 ```
 
@@ -486,7 +486,7 @@ leech predict [OPTIONS] --model FILE --pod5 FILE --bam FILE --output FILE
 
 #### Examples
 
-```bash
+```bash title="Bash" linenums="1"
 leech predict \
   --model models/model_best.pt \
   --pod5 new_reads.pod5 \
@@ -516,7 +516,7 @@ leech predict \
 
 ### Single-sample workflow
 
-```bash
+```bash title="Bash" linenums="1"
 # 1. Prepare data
 leech data prepare \
   --pod5 reads.pod5 \
@@ -546,7 +546,7 @@ leech predict \
 
 ### Multi-sample comparison workflow
 
-```bash
+```bash title="Bash" linenums="1"
 # 1. Prepare each sample (no splitting)
 leech data prepare --pod5 sample1.pod5 --bam sample1.bam --output-dir chunks/sample1/ --no-split --label 0
 leech data prepare --pod5 sample2.pod5 --bam sample2.bam --output-dir chunks/sample2/ --no-split --label 1
@@ -573,7 +573,7 @@ leech eval test \
 
 ### Hyperparameter optimization workflow
 
-```bash
+```bash title="Bash" linenums="1"
 # 1. Prepare data
 leech data prepare --pod5 reads.pod5 --bam alignments.bam --output-dir chunks/
 

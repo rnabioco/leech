@@ -13,7 +13,7 @@ The evaluation module provides functions for evaluating trained models.
 
 ## Example Usage
 
-```python
+```python title="Python" linenums="1"
 from leech.evaluation import evaluate_model
 from torch.utils.data import DataLoader
 from pathlib import Path

@@ -22,7 +22,7 @@ The training module provides the Trainer class for training leech models.
 
 ## Example Usage
 
-```python
+```python title="Python" linenums="1"
 from leech.training import Trainer
 from leech.models import get_model
 from leech.dataset import LeechDataset

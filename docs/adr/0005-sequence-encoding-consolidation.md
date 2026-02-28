@@ -36,7 +36,7 @@ This led to:
 
 Consolidate to a single canonical function in `data_prep.py`:
 
-```python
+```python title="Python" linenums="1"
 def encode_kmer(sequence: str) -> torch.Tensor:
     """
     One-hot encode a DNA sequence for model input.
@@ -153,7 +153,7 @@ Placed in `data_prep.py` because:
 ## Usage Examples
 
 ### Training Data Preparation
-```python
+```python title="Python" linenums="1"
 from leech.data_prep import encode_kmer
 
 sequence = read.get_sequence(base_idx, context)
@@ -161,7 +161,7 @@ seq_encoded = encode_kmer(sequence)  # (4, kmer_len)
 ```
 
 ### Dataset Loading
-```python
+```python title="Python" linenums="1"
 from leech.data_prep import encode_kmer
 
 sequence = chunk["sequence"]
@@ -169,7 +169,7 @@ seq_tensor = encode_kmer(sequence)
 ```
 
 ### Inference
-```python
+```python title="Python" linenums="1"
 from leech.data_prep import encode_kmer
 
 sequence = chunk["sequence"]

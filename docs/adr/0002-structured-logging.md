@@ -69,20 +69,20 @@ Implement structured logging using Python's standard `logging` module:
 ## Examples
 
 ### Before
-```python
+```python title="Python" linenums="1"
 print(f"Training epoch {epoch}/{epochs}")
 print(f"Loss: {loss:.4f}")
 ```
 
 ### After
-```python
+```python title="Python" linenums="1"
 logger = logging.getLogger("leech.training")
 logger.info(f"Training epoch {epoch}/{epochs}")
 logger.info(f"Loss: {loss:.4f}")
 ```
 
 ### Usage
-```bash
+```bash title="Bash" linenums="1"
 # Normal output
 leech model train --train-data data.npz --model ConvLSTMDwell
 
