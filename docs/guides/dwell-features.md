@@ -103,7 +103,7 @@ particularly with limited training data.
 Leech includes a grid search tool to find the optimal signal and k-mer context
 window sizes for a given dataset:
 
-```bash
+```bash title="Bash" linenums="1"
 uv run leech model optimize \
     --train-data chunks/train.npz \
     --val-data chunks/val.npz \

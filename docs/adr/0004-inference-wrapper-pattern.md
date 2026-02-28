@@ -9,12 +9,12 @@
 Models in leech have different input signatures:
 
 **Baseline model (ConvLSTMBase)**:
-```python
+```python title="Python" linenums="1"
 logits = model(signal, sequence)
 ```
 
 **Models with dwell features** (ConvLSTMDwell, TransformerDwell, ConvOnly, TCNDwell, ResNetDwell):
-```python
+```python title="Python" linenums="1"
 logits = model(signal, sequence, features)
 ```
 
@@ -40,7 +40,7 @@ This violated DRY and required each new feature to update 4 locations.
 
 Create `ModelInferenceWrapper` in `src/leech/models/inference_wrapper.py`:
 
-```python
+```python title="Python" linenums="1"
 class ModelInferenceWrapper:
     """Unified forward pass interface for all model types."""
 
@@ -68,7 +68,7 @@ class ModelInferenceWrapper:
 ### Usage
 
 **Before**:
-```python
+```python title="Python" linenums="1"
 # Duplicated in 4 places
 if "features" in batch:
     features = batch["features"].to(device)
@@ -78,7 +78,7 @@ else:
 ```
 
 **After**:
-```python
+```python title="Python" linenums="1"
 # Single line
 wrapper = ModelInferenceWrapper(model, model_type)
 logits = wrapper.forward_batch(batch, device)
@@ -145,7 +145,7 @@ Model type comes from:
 
 ## Testing Strategy
 
-```python
+```python title="Python" linenums="1"
 def test_wrapper_with_base_model():
     model = ConvLSTMBase()
     wrapper = ModelInferenceWrapper(model, "ConvLSTMBase")

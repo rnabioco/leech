@@ -84,7 +84,7 @@ The pipeline includes **separate config files** for each cluster:
 - `config/config.yaml` - Template/default (local testing)
 
 **Using cluster-specific configs:**
-```bash
+```bash title="Bash" linenums="1"
 # On Bodhi
 snakemake --configfile ../config/bodhi-config.yaml --cores 8
 
@@ -124,7 +124,7 @@ You need:
 - A computing allocation (account name for billing)
 
 To check your allocations:
-```bash
+```bash title="Bash" linenums="1"
 sacctmgr show associations where user=$USER format=account,cluster
 ```
 
@@ -132,7 +132,7 @@ sacctmgr show associations where user=$USER format=account,cluster
 
 Edit `pipeline/config/config.yaml` and set your allocation account:
 
-```yaml
+```yaml title="YAML" linenums="1"
 cluster:
   account: "your_allocation_name"  # REQUIRED: Replace with your Alpine allocation
 ```
@@ -143,7 +143,7 @@ Example accounts: `ucb-general`, `ucb123_asc1`, etc.
 
 ### 1. Load Required Modules
 
-```bash
+```bash title="Bash" linenums="1"
 # Load CUDA for GPU support (optional, but recommended)
 module load cuda/12.1.1
 
@@ -153,7 +153,7 @@ module load cuda/12.1.1
 
 ### 2. Install uv (Python Package Manager)
 
-```bash
+```bash title="Bash" linenums="1"
 # Install uv in your home directory
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
@@ -166,7 +166,7 @@ uv --version
 
 ### 3. Clone and Setup
 
-```bash
+```bash title="Bash" linenums="1"
 # Clone the repository to your projects directory
 cd /projects/$USER
 git clone <repository_url> leech
@@ -182,7 +182,7 @@ uv sync --all-extras
 
 Set up your directories on Alpine following this structure:
 
-```bash
+```bash title="Bash" linenums="1"
 # Projects directory (permanent, backed up, 250GB quota)
 /projects/$USER/leech/
 ├── leech/                          # Code repository
@@ -204,7 +204,7 @@ Set up your directories on Alpine following this structure:
 
 Edit `pipeline/config/alpine-config.yaml`:
 
-```yaml
+```yaml title="YAML" linenums="1"
 # Use scratch for intermediate files (high I/O)
 chunks_dir: "/scratch/alpine/$USER/leech/chunks"
 
@@ -224,7 +224,7 @@ samples:
 
 ### Create Directories
 
-```bash
+```bash title="Bash" linenums="1"
 # Create projects directory structure
 mkdir -p /projects/$USER/leech/{data,models,inference,metrics}
 
@@ -241,7 +241,7 @@ cp /path/to/your/*.bam /projects/$USER/leech/data/
 ### Transferring Data Between Clusters
 
 **From Bodhi to Alpine:**
-```bash
+```bash title="Bash" linenums="1"
 # On Bodhi: Package your data
 cd /home/$USER/leech
 tar -czf data_for_alpine.tar.gz data/
@@ -256,7 +256,7 @@ tar -xzf data_for_alpine.tar.gz
 ```
 
 **From Alpine to Bodhi:**
-```bash
+```bash title="Bash" linenums="1"
 # On Alpine: Archive results
 cd /projects/$USER/leech
 tar -czf results_from_alpine.tar.gz models/ inference/ metrics/
@@ -273,7 +273,7 @@ tar -xzf results_from_alpine.tar.gz
 
 Keep configuration in sync across clusters:
 
-```bash
+```bash title="Bash" linenums="1"
 # Initialize git repo for configs (if not already)
 cd /home/$USER/leech/pipeline
 git init
@@ -294,7 +294,7 @@ git pull
 
 A recommended workflow:
 
-```bash
+```bash title="Bash" linenums="1"
 # 1. Develop and test on Bodhi (fast iteration)
 # On Bodhi
 cd /home/$USER/leech
@@ -320,7 +320,7 @@ rsync -avz $USER@login.rc.colorado.edu:/projects/$USER/leech/results/ \
 
 ### Basic Usage
 
-```bash
+```bash title="Bash" linenums="1"
 cd /projects/$USER/leech/pipeline/workflow
 
 # Dry run to see what will be executed
@@ -331,7 +331,7 @@ snakemake --configfile ../config/alpine-config.yaml --profile ../profiles/slurm
 ```
 
 **Tip**: Create a shell alias for easier use:
-```bash
+```bash title="Bash" linenums="1"
 # Add to your ~/.bashrc on Alpine
 alias snakemake-alpine='snakemake --configfile config/alpine-config.yaml --profile profiles/slurm'
 
@@ -345,7 +345,7 @@ snakemake-alpine     # Execute
 
 #### 1. Prepare Training Data Only
 
-```bash
+```bash title="Bash" linenums="1"
 snakemake --profile ../profiles/slurm all_prepare
 ```
 
@@ -356,7 +356,7 @@ This will:
 
 #### 2. Train Models (GPU Jobs)
 
-```bash
+```bash title="Bash" linenums="1"
 snakemake --profile ../profiles/slurm all_train
 ```
 
@@ -368,7 +368,7 @@ This will:
 
 #### 3. Run Full Pipeline with Model Comparison
 
-```bash
+```bash title="Bash" linenums="1"
 # Enable model comparison in config.yaml
 # Set: compare_models: true
 
@@ -377,7 +377,7 @@ snakemake --profile ../profiles/slurm all_compare_models
 
 #### 4. Run Grid Search (Long Jobs)
 
-```bash
+```bash title="Bash" linenums="1"
 snakemake --profile ../profiles/slurm all_grid_search
 ```
 
@@ -401,7 +401,7 @@ These are defined in `profiles/slurm/config.yaml` and can be customized.
 
 ### Check Job Status
 
-```bash
+```bash title="Bash" linenums="1"
 # View your running/pending jobs
 squeue -u $USER
 
@@ -414,7 +414,7 @@ sacct -u $USER --starttime=today
 
 ### Monitor GPU Usage
 
-```bash
+```bash title="Bash" linenums="1"
 # SSH to the node running your job
 ssh <node_name>
 
@@ -428,7 +428,7 @@ watch -n 1 nvidia-smi
 ### View Logs
 
 Logs are stored in the output directories:
-```bash
+```bash title="Bash" linenums="1"
 # Training logs
 tail -f results/models/charged_vs_uncharged/train.log
 
@@ -442,7 +442,7 @@ ls results/models/*/train.log
 
 Edit `profiles/slurm/config.yaml`:
 
-```yaml
+```yaml title="YAML" linenums="1"
 set-resources:
   # Change partition from aa100 to ami100
   - train_charged_vs_uncharged:partition="ami100"
@@ -454,7 +454,7 @@ set-resources:
 For models requiring high VRAM (e.g., 80GB A100s):
 
 Edit the rule in workflow files or use `--resources` flag:
-```bash
+```bash title="Bash" linenums="1"
 snakemake --profile ../profiles/slurm --resources gpu_mem_mb=80000
 ```
 
@@ -462,7 +462,7 @@ snakemake --profile ../profiles/slurm --resources gpu_mem_mb=80000
 
 For jobs needing >24 hours, use the `long` QoS:
 
-```yaml
+```yaml title="YAML" linenums="1"
 set-resources:
   - grid_search_charged_vs_uncharged:qos="long"
   - grid_search_charged_vs_uncharged:runtime=2880  # 48 hours
@@ -476,7 +476,7 @@ Note: Long QoS has limited availability and may wait longer in queue.
 
 Check when files will be purged from `/scratch/alpine`:
 
-```bash
+```bash title="Bash" linenums="1"
 # Check file creation time and age
 stat /scratch/alpine/$USER/leech/chunks/*
 
@@ -491,7 +491,7 @@ find /scratch/alpine/$USER/leech -type f -ctime +80 -ls
 
 **Before 90-day purge, move important data to /projects:**
 
-```bash
+```bash title="Bash" linenums="1"
 # Archive and move trained models (if stored in scratch)
 tar -czf /projects/$USER/leech/models_backup_$(date +%Y%m%d).tar.gz \
   /scratch/alpine/$USER/leech/models/
@@ -508,7 +508,7 @@ rm -rf /scratch/alpine/$USER/leech/inference/
 
 If chunks are purged from scratch, regenerate them:
 
-```bash
+```bash title="Bash" linenums="1"
 cd /projects/$USER/leech/pipeline/workflow
 
 # Regenerate chunks for all samples
@@ -519,7 +519,7 @@ Since chunks are derived from POD5/BAM (stored in `/projects`), they can always 
 
 ### Monitoring Storage Quotas
 
-```bash
+```bash title="Bash" linenums="1"
 # Check your quota usage on all filesystems
 curc-quota
 
@@ -545,7 +545,7 @@ find /scratch/alpine/$USER -type f | wc -l
 
 Create a cleanup script for old scratch data:
 
-```bash
+```bash title="Bash" linenums="1"
 #!/bin/bash
 # cleanup_scratch.sh - Run monthly to clean old files
 
@@ -574,7 +574,7 @@ echo "Cleanup complete. Archived files saved to $PROJECTS_DIR"
 #### 1. "Invalid account" Error
 
 **Solution**: Update your account in `config/config.yaml`:
-```yaml
+```yaml title="YAML" linenums="1"
 cluster:
   account: "your_allocation_name"
 ```
@@ -591,7 +591,7 @@ cluster:
 #### 3. "uv: command not found"
 
 **Solution**: Install uv or ensure it's in your PATH:
-```bash
+```bash title="Bash" linenums="1"
 curl -LsSf https://astral.sh/uv/install.sh | sh
 export PATH="$HOME/.cargo/bin:$PATH"
 ```
@@ -599,7 +599,7 @@ export PATH="$HOME/.cargo/bin:$PATH"
 #### 4. CUDA/GPU Not Detected
 
 **Solution**: Load CUDA module in your job script or uncomment in `profiles/slurm/slurm_submit.sh`:
-```bash
+```bash title="Bash" linenums="1"
 module load cuda/12.1.1
 ```
 
@@ -619,7 +619,7 @@ module load cuda/12.1.1
 **Solutions**:
 
 For `/home` (2GB quota):
-```bash
+```bash title="Bash" linenums="1"
 # Check usage
 du -sh /home/$USER
 
@@ -628,7 +628,7 @@ mv /home/$USER/large_files /projects/$USER/
 ```
 
 For `/projects` (250GB quota):
-```bash
+```bash title="Bash" linenums="1"
 # Check usage
 curc-quota
 
@@ -641,7 +641,7 @@ mv large_temp_files/ /scratch/alpine/$USER/
 ```
 
 For `/scratch/alpine` (10TB quota):
-```bash
+```bash title="Bash" linenums="1"
 # Check usage and file count
 find /scratch/alpine/$USER -type f | wc -l  # Must be < 20M files
 
@@ -656,7 +656,7 @@ find /scratch/alpine/$USER -mtime +30 -delete
 **Cause**: Files auto-purged after 90 days or accidentally deleted
 
 **Solutions**:
-```bash
+```bash title="Bash" linenums="1"
 # Regenerate chunks from raw data in /projects
 snakemake --profile ../profiles/slurm all_prepare
 
@@ -685,7 +685,7 @@ tar -xzf /projects/$USER/leech/chunks_archive_*.tar.gz -C /scratch/alpine/$USER/
 ### 1. Test First with Small Jobs
 
 Use the testing partition to verify your pipeline works:
-```bash
+```bash title="Bash" linenums="1"
 # Run a single small job first
 snakemake --profile ../profiles/slurm results/chunks/sample_1/train.json
 ```
@@ -693,14 +693,14 @@ snakemake --profile ../profiles/slurm results/chunks/sample_1/train.json
 ### 2. Use Dry Runs
 
 Always check what will be submitted:
-```bash
+```bash title="Bash" linenums="1"
 snakemake --profile ../profiles/slurm -n
 ```
 
 ### 3. Monitor Resource Usage
 
 Check if you're using resources efficiently:
-```bash
+```bash title="Bash" linenums="1"
 seff <job_id>  # Shows efficiency statistics after job completes
 ```
 
@@ -714,7 +714,7 @@ For GPU jobs, larger batch sizes often improve GPU utilization:
 ### 5. Clean Up Old Jobs
 
 Alpine has storage quotas. Clean up completed jobs:
-```bash
+```bash title="Bash" linenums="1"
 # Remove old log files
 find results/ -name "*.log" -mtime +30 -delete
 
@@ -747,7 +747,7 @@ tar -czf results_archive_$(date +%Y%m%d).tar.gz results/
 
 ## Example: Complete Workflow
 
-```bash
+```bash title="Bash" linenums="1"
 # 1. Configure your allocation
 vim config/config.yaml  # Set cluster.account
 

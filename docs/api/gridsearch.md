@@ -23,7 +23,7 @@ The gridsearch module provides utilities for optimizing chunk context parameters
 
 ## Example Usage
 
-```python
+```python title="Python" linenums="1"
 from leech.gridsearch import GridSearchConfig, run_grid_search
 from pathlib import Path
 

@@ -17,13 +17,13 @@ This guide covers how to install `leech` and its dependencies.
 
 #### Install uv
 
-```bash
+```bash title="Bash" linenums="1"
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
 #### Clone and Install leech
 
-```bash
+```bash title="Bash" linenums="1"
 # Clone the repository
 git clone https://github.com/rnabioco/leech.git
 cd leech
@@ -39,7 +39,7 @@ uv sync --all-extras
 
 If you prefer using pip:
 
-```bash
+```bash title="Bash" linenums="1"
 # Clone the repository
 git clone https://github.com/rnabioco/leech.git
 cd leech
@@ -56,7 +56,7 @@ pip install -e .
 
 After installation, verify that leech is installed correctly:
 
-```bash
+```bash title="Bash" linenums="1"
 # Using uv
 uv run leech --help
 
@@ -72,7 +72,7 @@ leech uses PyTorch for training. GPU acceleration is automatically enabled if CU
 
 To check if GPU is available:
 
-```python
+```python title="Python" linenums="1"
 import torch
 print(f"CUDA available: {torch.cuda.is_available()}")
 print(f"CUDA version: {torch.version.cuda}")
@@ -84,7 +84,7 @@ If you need to install CUDA support, refer to the [PyTorch installation guide](h
 
 For development, install with all optional dependencies:
 
-```bash
+```bash title="Bash" linenums="1"
 # Using uv
 uv sync --all-extras
 
@@ -105,12 +105,12 @@ This installs additional tools for:
 If you encounter issues installing `pod5`, you may need to install system dependencies:
 
 **Ubuntu/Debian:**
-```bash
+```bash title="Bash" linenums="1"
 sudo apt-get install python3-dev libhdf5-dev
 ```
 
 **macOS:**
-```bash
+```bash title="Bash" linenums="1"
 brew install hdf5
 ```
 
@@ -119,12 +119,12 @@ brew install hdf5
 pysam requires certain system libraries:
 
 **Ubuntu/Debian:**
-```bash
+```bash title="Bash" linenums="1"
 sudo apt-get install libbz2-dev liblzma-dev libcurl4-openssl-dev
 ```
 
 **macOS:**
-```bash
+```bash title="Bash" linenums="1"
 brew install bzip2 xz curl
 ```
 

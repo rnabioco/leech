@@ -1,41 +1,41 @@
 # SLURM Job Monitoring Cheatsheet
 
 ## Submit Jobs
-```bash
+```bash title="Bash" linenums="1"
 sbatch test_merge_pods.sh              # Submit single job
 sbatch --array=1-10 script.sh          # Submit job array
 ```
 
 ## Monitor Queue (Real-time)
-```bash
+```bash title="Bash" linenums="1"
 watch -n 2 'squeue -u $USER'           # Auto-refresh every 2 seconds (Ctrl+C to exit)
 watch -n 5 'squeue -u $USER'           # Auto-refresh every 5 seconds
 squeue -u $USER                        # One-time check
 ```
 
 ## Monitor Specific Job
-```bash
+```bash title="Bash" linenums="1"
 squeue -j <JOB_ID>                     # Check specific job
 scontrol show job <JOB_ID>             # Detailed job info
 watch -n 2 "squeue -j <JOB_ID>"        # Auto-refresh specific job
 ```
 
 ## Monitor Log Files
-```bash
+```bash title="Bash" linenums="1"
 tail -f logs/test_merge_*.out          # Follow latest log file
 tail -f logs/*.out                     # Follow all logs
 tail -n 100 logs/test_merge_12345.out  # View last 100 lines
 ```
 
 ## Job History
-```bash
+```bash title="Bash" linenums="1"
 sacct -u $USER --starttime=today       # Jobs from today
 sacct -j <JOB_ID>                      # Specific job history
 sacct -u $USER --starttime=now-1day --format=JobID,JobName,State,Elapsed,ExitCode
 ```
 
 ## Job Control
-```bash
+```bash title="Bash" linenums="1"
 scancel <JOB_ID>                       # Cancel specific job
 scancel -u $USER                       # Cancel all your jobs
 scancel -n <JOB_NAME>                  # Cancel jobs by name
@@ -54,7 +54,7 @@ scontrol release <JOB_ID>              # Release held job
 - **OOM** (Out of Memory): Job ran out of memory
 
 ## Pending Reasons
-```bash
+```bash title="Bash" linenums="1"
 squeue -u $USER -t PD -o "%.18i %.9P %.50j %.8u %.10r"
 ```
 Common reasons:
@@ -65,14 +65,14 @@ Common reasons:
 - **ReqNodeNotAvail**: Requested node not available
 
 ## Cluster Info
-```bash
+```bash title="Bash" linenums="1"
 sinfo                                  # Partition/node status
 sinfo -o "%20P %10a %10l %10c %10G %10m %N"  # Detailed partition info
 sinfo -p aa100                         # GPU partition info
 ```
 
 ## Resource Usage
-```bash
+```bash title="Bash" linenums="1"
 # Check job efficiency after completion
 seff <JOB_ID>
 
@@ -84,7 +84,7 @@ sacct -j <JOB_ID> --format=JobID,MaxRSS,Elapsed,CPUTime,TotalCPU,ReqMem,MaxVMSiz
 ```
 
 ## Useful One-Liners
-```bash
+```bash title="Bash" linenums="1"
 # Count running jobs
 squeue -u $USER -t R | wc -l
 
@@ -102,7 +102,7 @@ tail -f logs/controller_*.out | grep -E "rule|Finished|Error"
 ```
 
 ## Snakemake-Specific Monitoring
-```bash
+```bash title="Bash" linenums="1"
 # Watch Snakemake controller log
 tail -f logs/controller_*.out
 
@@ -114,7 +114,7 @@ squeue -u $USER | awk '{print $5}' | sort | uniq -c
 ```
 
 ## Helpful Aliases (add to ~/.bashrc)
-```bash
+```bash title="Bash" linenums="1"
 alias sq='squeue -u $USER'
 alias sqw='watch -n 2 "squeue -u $USER"'
 alias sqall='squeue -u $USER -o "%.18i %.9P %.50j %.8u %.8T %.10M %.9l %.6D %R"'
@@ -125,7 +125,7 @@ alias logs='tail -f logs/*.out'
 ```
 
 ## GPU-Specific Commands
-```bash
+```bash title="Bash" linenums="1"
 # Check GPU partition availability
 sinfo -p aa100,ami100 -o "%20P %10a %10l %10c %10G %10m %N"
 
@@ -138,7 +138,7 @@ ssh <NODE_NAME> nvidia-smi            # Check GPU usage (if SSH allowed)
 ```
 
 ## Emergency Actions
-```bash
+```bash title="Bash" linenums="1"
 # Cancel all your jobs immediately
 scancel -u $USER
 
@@ -150,7 +150,7 @@ squeue -u $USER -t H -h -o %i | xargs -n1 scontrol release
 ```
 
 ## Troubleshooting Failed Jobs
-```bash
+```bash title="Bash" linenums="1"
 # Find failed jobs from today
 sacct -u $USER --starttime=today --state=FAILED
 

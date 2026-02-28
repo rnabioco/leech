@@ -28,7 +28,7 @@ graph LR
 
 Extract features from your POD5 and BAM files:
 
-```bash
+```bash title="Bash" linenums="1"
 uv run leech data prepare \
   --pod5 reads.pod5 \
   --bam alignments.bam \
@@ -53,7 +53,7 @@ uv run leech data prepare \
 
 For large datasets, use parallel processing:
 
-```bash
+```bash title="Bash" linenums="1"
 uv run leech data prepare \
   --pod5 reads.pod5 \
   --bam alignments.bam \
@@ -68,7 +68,7 @@ This will process reads in parallel across 8 CPU cores.
 
 Train a model on your prepared data:
 
-```bash
+```bash title="Bash" linenums="1"
 uv run leech model train \
   --train-data chunks/train.json \
   --val-data chunks/val.json \
@@ -100,7 +100,7 @@ The training process will save:
 
 Evaluate your trained model:
 
-```bash
+```bash title="Bash" linenums="1"
 uv run leech eval test \
   --model models/model_best.pt \
   --test-data chunks/test.json \
@@ -116,7 +116,7 @@ This will output:
 
 ### Example Output
 
-```json
+```json title="JSON" linenums="1"
 {
   "accuracy": 0.96,
   "precision": 0.95,
@@ -131,7 +131,7 @@ This will output:
 
 Apply your model to new data:
 
-```bash
+```bash title="Bash" linenums="1"
 uv run leech predict \
   --model models/model_best.pt \
   --pod5 new_reads.pod5 \

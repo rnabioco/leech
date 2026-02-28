@@ -15,7 +15,7 @@ Grid search systematically tests different signal window sizes (left/right conte
 
 First, prepare your training and validation chunks:
 
-```bash
+```bash title="Bash" linenums="1"
 # Prepare training data (e.g., charged tRNAs)
 uv run leech data prepare \
   --pod5 charged_reads.pod5 \
@@ -39,7 +39,7 @@ uv run leech data prepare \
 
 Run a coarse grid search to explore the parameter space:
 
-```bash
+```bash title="Bash" linenums="1"
 uv run leech model optimize \
   --train-data data/train/chunks.npz \
   --val-data data/val/chunks.npz \
@@ -57,7 +57,7 @@ This will train 25 models (5 x 5 grid) and save results to `models/grid_coarse/`
 
 The grid search produces a summary CSV:
 
-```bash
+```bash title="Bash" linenums="1"
 # View results
 cat models/grid_coarse/grid_summary.csv
 ```
@@ -74,7 +74,7 @@ left_context,right_context,signal_len,best_val_acc,best_val_auc,best_epoch,train
 
 If your best result is at the edge of the grid, run a fine-grained search:
 
-```bash
+```bash title="Bash" linenums="1"
 uv run leech model optimize \
   --train-data data/train/chunks.npz \
   --val-data data/val/chunks.npz \
@@ -90,7 +90,7 @@ uv run leech model optimize \
 
 ### Basic Usage
 
-```bash
+```bash title="Bash" linenums="1"
 leech model optimize \
   --train-data <path> \
   --val-data <path> \
@@ -125,7 +125,7 @@ leech model optimize \
 
 Test different left vs right contexts:
 
-```bash
+```bash title="Bash" linenums="1"
 uv run leech model optimize \
   --train-data data/train/chunks.npz \
   --val-data data/val/chunks.npz \
@@ -139,7 +139,7 @@ uv run leech model optimize \
 
 For rapid prototyping, use fewer epochs:
 
-```bash
+```bash title="Bash" linenums="1"
 uv run leech model optimize \
   --train-data data/train/chunks.npz \
   --val-data data/val/chunks.npz \
@@ -151,7 +151,7 @@ uv run leech model optimize \
 
 ### CPU Training (No GPU Available)
 
-```bash
+```bash title="Bash" linenums="1"
 uv run leech model optimize \
   --train-data data/train/chunks.npz \
   --val-data data/val/chunks.npz \
@@ -183,7 +183,7 @@ models/grid_coarse/
 
 ### 1. Find Best Model
 
-```bash
+```bash title="Bash" linenums="1"
 # Sort by validation accuracy
 sort -t',' -k4 -r models/grid_coarse/grid_summary.csv | head -5
 ```
@@ -192,7 +192,7 @@ sort -t',' -k4 -r models/grid_coarse/grid_summary.csv | head -5
 
 Example Python script:
 
-```python
+```python title="Python" linenums="1"
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -213,7 +213,7 @@ plt.savefig("grid_heatmap.png", dpi=300, bbox_inches="tight")
 
 Example R script (from grid-search.md):
 
-```r
+```r title="R" linenums="1"
 library(ggplot2)
 library(dplyr)
 
@@ -265,7 +265,7 @@ After finding optimal parameters on synthetic data:
 
 If training fails with CUDA OOM:
 
-```bash
+```bash title="Bash" linenums="1"
 # Reduce batch size
 --batch-size 64
 
@@ -290,7 +290,7 @@ If training fails with CUDA OOM:
 
 Example Snakemake rule:
 
-```python
+```python title="Python" linenums="1"
 rule grid_search:
     input:
         train = "data/train/chunks.npz",

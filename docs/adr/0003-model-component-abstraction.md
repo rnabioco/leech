@@ -30,7 +30,7 @@ Create a component library in `src/leech/models/components.py`:
 
 ### 1. Reusable Branch Components
 
-```python
+```python title="Python" linenums="1"
 class SignalBranch(nn.Module):
     """Standardized 3-layer Conv1d for raw signal processing"""
 
@@ -49,7 +49,7 @@ All three follow the same pattern:
 
 ### 2. BaseModel Class
 
-```python
+```python title="Python" linenums="1"
 class BaseModel(nn.Module):
     """Base class with shared predict_proba() implementation"""
 ```

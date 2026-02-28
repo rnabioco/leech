@@ -18,7 +18,7 @@ The inference module provides functions for running predictions on new POD5/BAM 
 
 ## Example Usage
 
-```python
+```python title="Python" linenums="1"
 from leech.inference import run_inference
 from pathlib import Path
 

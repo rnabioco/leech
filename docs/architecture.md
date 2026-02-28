@@ -190,7 +190,7 @@ Predictions (BAM with modification tags)
 
 Different strategies for finding motifs without code duplication:
 
-```python
+```python title="Python" linenums="1"
 # Basecalled search (original)
 searcher = BasecalledMotifSearcher()
 
@@ -205,7 +205,7 @@ positions = searcher.find_motif_positions(read_id, sequence, alignment, motif)
 
 Automatic cleanup of file handles:
 
-```python
+```python title="Python" linenums="1"
 # BAM reading
 with BAMReader(bam_path) as reader:
     for aln in reader.iter_alignments():
@@ -220,7 +220,7 @@ with POD5Reader(pod5_path) as reader:
 
 Type-safe configuration with validation:
 
-```python
+```python title="Python" linenums="1"
 # Create config with validation
 config = DataPrepConfig(
     pod5_path=Path("reads.pod5"),
@@ -238,7 +238,7 @@ config.validate_splits()  # Raises if train_split + val_split > 1.0
 
 References loaded only when needed:
 
-```python
+```python title="Python" linenums="1"
 manager = ReferenceManager(bam_path, fasta_path)
 # No files opened yet
 
@@ -252,7 +252,7 @@ seq = manager.get_sequence("chr1")  # Loads on first access
 
 All configuration is managed through Pydantic models in `config.py`:
 
-```python
+```python title="Python" linenums="1"
 from leech.config import DataPrepConfig, TrainingConfig
 
 # Data preparation config
@@ -299,7 +299,7 @@ train_config = TrainingConfig(
 
 Instead of opening POD5 for each read:
 
-```python
+```python title="Python" linenums="1"
 # Old: Open POD5 N times
 for read_id in read_ids:
     with DatasetReader(pod5_path) as reader:
@@ -314,7 +314,7 @@ with POD5Reader(pod5_path) as reader:
 
 Two-pass parallel data preparation:
 
-```python
+```python title="Python" linenums="1"
 # Pass 1: Collect lightweight read metadata (fast, sequential)
 read_infos = collect_read_infos(bam_path)
 
@@ -327,7 +327,7 @@ with multiprocessing.Pool(workers=8) as pool:
 
 Merge large datasets without loading all into memory:
 
-```python
+```python title="Python" linenums="1"
 # First pass: Collect only read IDs for split assignment
 all_read_ids = set()
 for chunk_file in chunk_files:
@@ -350,7 +350,7 @@ for chunk_file in chunk_files:
 
 Pydantic models provide clear validation errors:
 
-```python
+```python title="Python" linenums="1"
 try:
     config = DataPrepConfig(
         pod5_path="reads.pod5",
@@ -366,7 +366,7 @@ except ValidationError as e:
 
 Graceful handling of missing reads:
 
-```python
+```python title="Python" linenums="1"
 # Missing POD5 reads logged, not fatal
 signals = read_pod5_signals_batch(pod5_path, read_ids)
 missing = set(read_ids) - set(signals.keys())
@@ -395,7 +395,7 @@ End-to-end pipeline tests:
 
 Shared fixtures in `conftest.py`:
 
-```python
+```python title="Python" linenums="1"
 @pytest.fixture
 def mock_bam():
     """Create minimal BAM for testing."""
@@ -413,7 +413,7 @@ def mock_pod5():
 
 The refactoring maintains backward compatibility:
 
-```python
+```python title="Python" linenums="1"
 # Old imports still work
 from leech.data_prep import LeechRead, save_chunks, load_chunks
 
@@ -424,7 +424,7 @@ from leech.io import POD5Reader, get_motif_searcher
 
 ### Recommended New Patterns
 
-```python
+```python title="Python" linenums="1"
 # Use new I/O classes for better performance
 from leech.io import POD5Reader, BAMReader, ReferenceManager
 
