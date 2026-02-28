@@ -72,19 +72,23 @@ left_context,right_context,signal_len,best_val_acc,best_val_auc,best_epoch,train
 
 ### 4. Fine-Tune Around Optimum (Optional)
 
-If your best result is at the edge of the grid, run a fine-grained search:
+If your best result is at the edge of the grid, run a fine-grained search.
+Use range syntax (`start:stop:step`) for evenly-spaced grids:
 
 ```bash title="Bash" linenums="1"
 uv run leech model optimize \
   --train-data data/train/chunks.npz \
   --val-data data/val/chunks.npz \
   --model ConvLSTMDwell \
-  --left-contexts 8000,8500,9000,9500,10000 \
-  --right-contexts 0,500,1000,1500,2000 \
+  --left-contexts 8000:10000:500 \
+  --right-contexts 0:2000:500 \
   --output-dir models/grid_fine/ \
   --epochs 50 \
   --device cuda
 ```
+
+This is equivalent to `--left-contexts 8000,8500,9000,9500,10000` and
+`--right-contexts 0,500,1000,1500,2000`. The range stop is inclusive.
 
 ## Command Reference
 
@@ -101,7 +105,7 @@ leech model optimize \
 ### Required Arguments
 
 - `--train-data`: Path to training chunks (.npz file)
-- `--context-grid`: Comma-separated context values (e.g., "200,500,1000")
+- `--context-grid`: Context values — comma-separated (e.g., "200,500,1000") or range as start:stop:step (e.g., "200:1000:200")
 - `--output-dir`: Directory for grid search results
 
 ### Optional Arguments

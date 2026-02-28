@@ -1,6 +1,6 @@
-# Grid Search and Model Evaluation Strategy for Leach
+# Grid Search and Model Evaluation Strategy for Leech
 
-This document summarizes the model training exploration workflow developed through iterative analysis of Phe-Tyr and Thr-Ser pairwise amino acid models. It serves as a guide for implementing systematic model optimization and evaluation in the leach library.
+This document summarizes the model training exploration workflow developed through iterative analysis of Phe-Tyr and Thr-Ser pairwise amino acid models. It serves as a guide for implementing systematic model optimization and evaluation in the leech library.
 
 ## Overview
 
@@ -34,7 +34,7 @@ Find the optimal signal window (left/right context) around the modification site
 # Example: Train models across grid
 for left in 200 500 1000 2000 5000; do
   for right in 200 500 1000 2000 5000; do
-    leach train \
+    uv run leech train \
       --train-data train.json \
       --val-data val.json \
       --model ConvLSTMDwell \
@@ -353,13 +353,13 @@ ggplot(df_summary, aes(x = bin, y = mean_pct, color = AA)) +
 
 ---
 
-## 5. Integration with Leach Workflow
+## 5. Integration with Leech Workflow
 
 ### Proposed Module Structure
 
 ```text title="Project Layout"
-leach/
-├── src/leach/
+leech/
+├── src/leech/
 │   ├── gridsearch.py      # NEW: Chunk context grid search
 │   ├── calibration.py     # NEW: MLE estimator + LoD/LoQ
 │   ├── evaluation.py      # EXPAND: Add JS, ΔECDF metrics
@@ -383,7 +383,7 @@ rule grid_search_train:
         right = lambda wc: wc.right
     shell:
         """
-        leach train \
+        uv run leech train \
             --train-data {input.train} \
             --val-data {input.val} \
             --chunk-context {params.left} {params.right} \
@@ -512,4 +512,4 @@ Before deploying a model to production:
 - Phe-Tyr training: `phe_tyr_training.qmd`
 - Misaminoacylation quantification: `202509_misacylation.qmd`
 
-All original notebooks contain detailed R code for visualization and statistical testing that can be adapted for leach's Python implementation.
+All original notebooks contain detailed R code for visualization and statistical testing that can be adapted for leech's Python implementation.

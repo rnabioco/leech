@@ -527,19 +527,19 @@ def train(
     "--context-grid",
     type=str,
     required=True,
-    help="Comma-separated context values to test (e.g., '200,500,1000,2000,5000')",
+    help="Context values to test. Comma-separated (e.g., '200,500,1000') or range as start:stop:step (e.g., '200:1000:200')",
 )
 @click.option(
     "--left-contexts",
     type=str,
     default=None,
-    help="Override left contexts (comma-separated). If not provided, uses --context-grid",
+    help="Override left contexts (comma-separated or start:stop:step). If not provided, uses --context-grid",
 )
 @click.option(
     "--right-contexts",
     type=str,
     default=None,
-    help="Override right contexts (comma-separated). If not provided, uses --context-grid",
+    help="Override right contexts (comma-separated or start:stop:step). If not provided, uses --context-grid",
 )
 @click.option(
     "--kmer-context",
