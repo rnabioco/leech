@@ -182,5 +182,5 @@ uv run leech predict \
 ## Next Steps
 
 - [CLI Usage](cli-usage.md): Detailed documentation of all commands
-- [Implementation Guide](../guides/01-START_HERE_IMPLEMENTATION_GUIDE.md): In-depth guide for research use
+- [User Guide](../guides/move-tables.md): Understanding move tables, dwell features, and classification tasks
 - [Grid Search](../grid-search/grid-search-usage.md): Hyperparameter optimization

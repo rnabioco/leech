@@ -170,7 +170,7 @@ uv run leech predict \
 ## Documentation
 
 - **[Getting Started](getting-started/installation.md)**: Installation and setup instructions
-- **[User Guide](guides/01-START_HERE_IMPLEMENTATION_GUIDE.md)**: Comprehensive implementation guides
+- **[User Guide](guides/move-tables.md)**: Understanding move tables, dwell features, and classification tasks
 - **[Cluster Setup](setup/ALPINE_SETUP.md)**: HPC cluster configuration (SLURM/LSF)
 - **[API Reference](api/index.md)**: Detailed API documentation
 
