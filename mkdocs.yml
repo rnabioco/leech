@@ -129,14 +129,9 @@ nav:
       - Quick Start: getting-started/quick-start.md
       - CLI Usage: getting-started/cli-usage.md
   - User Guide:
-      - Implementation Guide: guides/01-START_HERE_IMPLEMENTATION_GUIDE.md
-      - tRNA Conditional Classification: guides/02-TRNA_CONDITIONAL_CLASSIFICATION.md
-      - Remora Analysis: guides/03-REMORA_ANALYSIS.md
-      - Amino Acid Discrimination: guides/04-AA_DISCRIMINATION_PRIMARY_TASK.md
-      - Model Predictions: guides/05-MODEL_PREDICTIONS.md
-      - Dwell Feature Strategies: guides/06-DWELL_FEATURE_STRATEGIES.md
-      - Amino Acid Heterogeneity: guides/07-AMINO_ACID_HETEROGENEITY.md
-      - Understanding Move Tables: guides/08-UNDERSTANDING_MOVE_TABLES.md
+      - Understanding Move Tables: guides/move-tables.md
+      - Dwell Time Features: guides/dwell-features.md
+      - Classification Tasks: guides/classification-tasks.md
   - Cluster Setup:
       - Alpine (SLURM): setup/ALPINE_SETUP.md
       - Bodhi (LSF): setup/BODHI_SETUP.md
@@ -147,8 +142,6 @@ nav:
   - Architecture:
       - Overview: architecture.md
       - Data Preparation: data_preparation.md
-      - Refactoring Guide: refactoring_guide.md
-      - Alternative Architectures: issue-alternative-architectures.md
       - Troubleshooting: troubleshooting.md
   - Architecture Decision Records:
       - Overview: adr/README.md
