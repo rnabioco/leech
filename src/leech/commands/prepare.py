@@ -28,7 +28,7 @@ def handle_prepare(
     reference_fasta: Path | None = None,
     skip_motif_indels: bool = True,
     label: str | None = None,
-    min_mapq: int = 10,
+    min_mapq: int = 0,
     feature_set: str = "signal+dwell+levels",
     train_split: float = 0.7,
     val_split: float = 0.15,
@@ -99,6 +99,24 @@ def handle_prepare(
             num_workers=workers,
             chunk_size=chunk_size,
         )
+
+        if len(chunks) == 0:
+            reads_processed = stats.get("total_reads", 0)
+            logger.warning(
+                f"0 chunks extracted from {reads_processed} reads. "
+                f"Common causes: indels at motif site, insufficient context, "
+                f"or MAPQ filtering (--min-mapq={min_mapq})."
+            )
+            console.print(
+                f"[bold red]Warning: 0 chunks extracted from {reads_processed} reads.[/bold red]\n"
+                f"[yellow]Stats: {stats}[/yellow]"
+            )
+            return {
+                "n_chunks": 0,
+                "n_train": 0,
+                "n_val": 0,
+                "n_test": 0,
+            }
 
         # Setup seed and handle splitting/saving
         setup_random_seed(seed, output_dir)
