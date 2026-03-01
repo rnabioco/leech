@@ -181,7 +181,7 @@ def data():
 @click.option(
     "--min-mapq",
     type=int,
-    default=10,
+    default=0,
     help="Minimum mapping quality",
 )
 @click.option(
