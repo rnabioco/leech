@@ -481,6 +481,10 @@ def train_model(
         pos_weight_tensor = compute_class_weights(train_dataset)
 
     # Create model
+    # Remove grid-search context parameters (not model init params)
+    model_kwargs.pop("left_context", None)
+    model_kwargs.pop("right_context", None)
+
     # Only pass num_features to models that need it (not ConvLSTMBase)
     model_init_kwargs = {
         "signal_len": signal_len,
