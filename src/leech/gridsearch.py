@@ -146,6 +146,7 @@ class GridSearchConfig:
     early_stopping_patience: int = 10
     motif: str | None = None
     motif_offset: int = 0
+    base_justify: str = "center"
 
 
 def prepare_chunks_with_context(
@@ -160,6 +161,7 @@ def prepare_chunks_with_context(
     label: str | None = None,
     label_int: int = 0,
     min_mapq: int = 10,
+    base_justify: str = "center",
 ) -> None:
     """
     Prepare training chunks with specific signal context.
@@ -187,10 +189,14 @@ def prepare_chunks_with_context(
             base_idx: int,
             signal_context: tuple[int, int] = (left_context, right_context),
             kmer_context: int = kmer_context,
+            base_justify: str = base_justify,
             _original_get_chunk=original_get_chunk,
         ):
             return _original_get_chunk(
-                base_idx, signal_context=signal_context, kmer_context=kmer_context
+                base_idx,
+                signal_context=signal_context,
+                kmer_context=kmer_context,
+                base_justify=base_justify,
             )
 
         read.get_chunk = custom_get_chunk  # type: ignore[method-assign]
