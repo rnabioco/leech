@@ -30,6 +30,7 @@ def run_inference(
     motif: str | None = None,
     motif_offset: int = 0,
     batch_size: int = 128,
+    base_justify: str = "center",
 ) -> None:
     """
     Run inference on POD5 and BAM files.
@@ -120,7 +121,10 @@ def run_inference(
 
             for base_idx in positions:
                 chunk = leech_read.get_chunk(
-                    base_idx, signal_context=signal_context, kmer_context=kmer_context
+                    base_idx,
+                    signal_context=signal_context,
+                    kmer_context=kmer_context,
+                    base_justify=base_justify,
                 )
 
                 if chunk is None:

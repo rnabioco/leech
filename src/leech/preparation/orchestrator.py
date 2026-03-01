@@ -28,6 +28,7 @@ def prepare_training_data(
     label: str | None = None,
     label_int: int | None = None,
     min_mapq: int = 0,
+    base_justify: str = "center",
 ) -> tuple[list[dict[str, np.ndarray | str | int | None]], dict[str, int]]:
     """
     Prepare training data from BAM and POD5 files with statistics tracking.
@@ -80,6 +81,7 @@ def prepare_training_data(
             label=label,
             label_int=label_int,
             motif_searcher=motif_searcher,
+            base_justify=base_justify,
         )
 
         # Track whether this read had motif matches
@@ -132,6 +134,7 @@ def prepare_training_data_with_split(
     seed: int = 42,
     no_split: bool = False,
     progress_callback: Callable[[int], None] | None = None,
+    base_justify: str = "center",
 ) -> dict[str, Any]:
     """
     Prepare training data from POD5/BAM files with optional splitting.
@@ -215,6 +218,7 @@ def prepare_training_data_with_split(
             label=label,
             label_int=label_int,
             motif_searcher=motif_searcher,
+            base_justify=base_justify,
         )
         chunks.extend(read_chunks)
 

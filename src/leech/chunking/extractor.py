@@ -69,6 +69,7 @@ class LeechRead:
         base_idx: int,
         signal_context: tuple[int, int] = DEFAULT_SIGNAL_CONTEXT,
         kmer_context: int = DEFAULT_KMER_CONTEXT,
+        base_justify: str = "center",
     ) -> dict[str, np.ndarray | str | int | None] | None:
         """
         Extract a training chunk centered on a specific base.
@@ -77,6 +78,13 @@ class LeechRead:
             base_idx: Index of the focus base
             signal_context: (left, right) signal padding around focus base
             kmer_context: Number of bases on each side for k-mer encoding
+            base_justify: Where to center the chunk within the focus base's
+                signal span. One of:
+                - "center" (default): midpoint of signal span (Remora default)
+                - "start": first signal sample of the base
+                - "end": last signal sample of the base (first sample of next
+                  base). Useful for tRNA aa-charging where the amino acid is
+                  attached to the 3' hydroxyl of the terminal A.
 
         Returns:
             Dictionary with 'signal', 'kmer', 'dwell', 'features' arrays,
@@ -93,7 +101,15 @@ class LeechRead:
             return None
 
         # Extract signal chunk
-        focus_sig_pos = self.seq_to_sig_map[base_idx]
+        if base_justify == "start":
+            focus_sig_pos = self.seq_to_sig_map[base_idx]
+        elif base_justify == "end":
+            focus_sig_pos = self.seq_to_sig_map[base_idx + 1]
+        else:
+            # Center on midpoint of focus base's signal span (Remora default)
+            focus_sig_pos = (
+                self.seq_to_sig_map[base_idx] + self.seq_to_sig_map[base_idx + 1]
+            ) // 2
         sig_start = max(0, focus_sig_pos - signal_context[0])
         sig_end = min(self.num_samples, focus_sig_pos + signal_context[1])
 
@@ -134,6 +150,7 @@ def extract_training_chunks(
     label: str | None = None,
     label_int: int | None = None,
     motif_searcher: MotifSearcher | None = None,
+    base_justify: str = "center",
 ) -> list[dict[str, np.ndarray | str | int | None]]:
     """
     Extract all training chunks from a read, optionally filtered by motif.
@@ -192,7 +209,7 @@ def extract_training_chunks(
 
     # Extract chunks
     for base_idx in focus_bases:
-        chunk = leech_read.get_chunk(base_idx)
+        chunk = leech_read.get_chunk(base_idx, base_justify=base_justify)
         if chunk is not None:
             chunk["read_id"] = leech_read.read_id
             # Rename numeric "label" from get_chunk() to "label_int"

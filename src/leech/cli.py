@@ -226,6 +226,12 @@ def data():
     default=100,
     help="Number of reads to process per worker batch (for parallel processing)",
 )
+@click.option(
+    "--base-justify",
+    type=click.Choice(["start", "center", "end"]),
+    default="center",
+    help='Where to center signal chunk within the focus base: "start" (first sample), "center" (midpoint, default), or "end" (last sample, useful for 3\' modifications)',
+)
 def prepare(
     pod5,
     bam,
@@ -244,6 +250,7 @@ def prepare(
     no_split,
     workers,
     chunk_size,
+    base_justify,
 ):
     """Prepare training data from POD5 and BAM files."""
     from leech.commands import handle_prepare
@@ -268,6 +275,7 @@ def prepare(
         no_split=no_split,
         workers=workers,
         chunk_size=chunk_size,
+        base_justify=base_justify,
     )
 
 
@@ -583,6 +591,12 @@ def train(
     default=10,
     help="Patience for early stopping: stop training if validation accuracy doesn't improve for N epochs (set to 0 to disable)",
 )
+@click.option(
+    "--base-justify",
+    type=click.Choice(["start", "center", "end"]),
+    default="center",
+    help='Where to center signal chunk within the focus base: "start" (first sample), "center" (midpoint, default), or "end" (last sample, useful for 3\' modifications)',
+)
 def optimize(
     train_data,
     val_data,
@@ -598,6 +612,7 @@ def optimize(
     device,
     seed,
     early_stopping,
+    base_justify,
 ):
     """Optimize model hyperparameters using grid search over chunk contexts."""
     from leech.gridsearch import GridSearchConfig, parse_context_grid, run_grid_search
@@ -628,6 +643,7 @@ def optimize(
         device=device,
         seed=seed,
         early_stopping_patience=early_stopping,
+        base_justify=base_justify,
     )
 
     # Run grid search
@@ -883,7 +899,13 @@ def ablation(model, test_data, output_dir, device, no_plot):
     default=DEFAULT_DEVICE,
     help="Device for inference",
 )
-def predict(model, pod5, bam, output, device):
+@click.option(
+    "--base-justify",
+    type=click.Choice(["start", "center", "end"]),
+    default="center",
+    help='Where to center signal chunk within the focus base: "start" (first sample), "center" (midpoint, default), or "end" (last sample, useful for 3\' modifications)',
+)
+def predict(model, pod5, bam, output, device, base_justify):
     """Run inference on new data to generate predictions."""
     from leech.inference import run_inference
 
@@ -898,6 +920,7 @@ def predict(model, pod5, bam, output, device):
         bam_path=bam,
         output_path=output,
         device=device,
+        base_justify=base_justify,
     )
 
     console.print("[bold green]Inference complete![/bold green]")

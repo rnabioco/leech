@@ -37,6 +37,7 @@ def _process_read_chunk_worker(
         str,
         dict[str, str] | None,
         bool,
+        str,
     ],
 ) -> list[dict[str, np.ndarray | str | int | None]]:
     """
@@ -44,7 +45,8 @@ def _process_read_chunk_worker(
 
     Args:
         args: Tuple of (read_infos, pod5_path, motif, motif_offset, label, label_int,
-                        motif_reference, reference_sequences, skip_motif_indels)
+                        motif_reference, reference_sequences, skip_motif_indels,
+                        base_justify)
 
     Returns:
         List of extracted chunks from all reads in this chunk
@@ -59,6 +61,7 @@ def _process_read_chunk_worker(
         motif_reference,
         reference_sequences,
         skip_motif_indels,
+        base_justify,
     ) = args
 
     # Get motif searcher
@@ -154,6 +157,7 @@ def _process_read_chunk_worker(
                     label=label,
                     label_int=label_int,
                     motif_searcher=motif_searcher,
+                    base_justify=base_justify,
                 )
 
                 all_chunks.extend(read_chunks)
@@ -178,6 +182,7 @@ def prepare_training_data_parallel(
     skip_motif_indels: bool = True,
     num_workers: int = 8,
     chunk_size: int = 100,
+    base_justify: str = "center",
 ) -> tuple[list[dict[str, np.ndarray | str | int | None]], dict[str, int]]:
     """
     Prepare training data from BAM and POD5 files using multiprocessing.
@@ -249,6 +254,7 @@ def prepare_training_data_parallel(
             motif_reference,
             reference_sequences,
             skip_motif_indels,
+            base_justify,
         )
         for chunk in read_chunks
     ]
