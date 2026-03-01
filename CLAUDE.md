@@ -281,7 +281,8 @@ tests/               # pytest tests
 The BAM `mv` tag format:
 - First element: stride (basecaller downsampling factor, typically 5)
 - Remaining elements: binary array where 1 = new base, 0 = same base
-- Convert to signal indices: `signal_idx = (move_position + 1) * stride + trim_offset`
+- Convert to signal indices: `signal_idx = move_position * stride + trim_offset` (Remora convention)
+- Final entry is `num_samples` (from `ns` tag)
 
 ### Training Data Structure
 Training chunks are dictionaries:

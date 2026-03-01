@@ -26,21 +26,22 @@ def test_move_table_basic():
 
 
 def test_seq_to_sig_map():
-    """Test conversion of move table to sequence-to-signal mapping."""
+    """Test conversion of move table to sequence-to-signal mapping.
+
+    Follows Remora convention: move=1 at position i means a new base
+    starts at signal index i * stride. The last entry is num_samples.
+    """
     stride = 5
     moves = np.array([1, 1, 0, 1, 0, 0, 0, 1], dtype=np.int8)
 
-    mt = MoveTable(stride=stride, moves=moves, read_id="test_read", num_samples=1000, trim_offset=0)
+    mt = MoveTable(stride=stride, moves=moves, read_id="test_read", num_samples=40, trim_offset=0)
 
     seq_to_sig = mt.to_seq_to_sig_map()
 
-    # Expected: [0, 5, 10, 20, 40]
-    # Base 0 starts at signal 0, ends at 5
-    # Base 1 starts at 5, ends at 10  (move at position 1)
-    # Base 2 starts at 10, ends at 20 (move at position 3)
-    # Base 3 starts at 20, ends at 40 (move at position 7)
-
-    expected = np.array([0, 5, 10, 20, 40])
+    # move_positions = [0, 1, 3, 7]
+    # Base 0 starts at 0*5=0, Base 1 at 1*5=5, Base 2 at 3*5=15, Base 3 at 7*5=35
+    # Last entry = num_samples = 40
+    expected = np.array([0, 5, 15, 35, 40])
     np.testing.assert_array_equal(seq_to_sig, expected)
 
 
@@ -49,12 +50,13 @@ def test_compute_dwell_times():
     stride = 5
     moves = np.array([1, 1, 0, 1, 0, 0, 0, 1], dtype=np.int8)
 
-    mt = MoveTable(stride=stride, moves=moves, read_id="test_read", num_samples=1000, trim_offset=0)
+    mt = MoveTable(stride=stride, moves=moves, read_id="test_read", num_samples=40, trim_offset=0)
 
     dwells = compute_dwell_times(mt)
 
-    # Expected dwell times: [5, 5, 10, 20]
-    expected = np.array([5, 5, 10, 20])
+    # move_positions = [0, 1, 3, 7], boundaries = [0, 5, 15, 35, 40]
+    # Base 0: [0,5) → 5, Base 1: [5,15) → 10, Base 2: [15,35) → 20, Base 3: [35,40) → 5
+    expected = np.array([5, 10, 20, 5])
     np.testing.assert_array_equal(dwells, expected)
 
 

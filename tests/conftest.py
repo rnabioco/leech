@@ -33,31 +33,31 @@ def sample_move_table():
 
     Creates a move table for 20 bases with:
     - stride = 5 (basecaller samples every 5 signal points)
-    - Total signal samples = 1000
     - First base starts at signal position 250 (allowing 200 left context)
-    - Each base gets ~30 signal samples on average (600 samples / 20 bases)
+    - Each base gets 30 signal samples (6 stride intervals)
+    - Total signal = len(moves) * stride = 170 * 5 = 850, plus trim_offset=250 → 1100
+    - We use trim_offset=250 so indices are into a 1100-sample signal
     """
     stride = 5
     # Create 20 moves (one per base) spread across the signal
-    # We want moves to start at position 50 (50*5=250 signal position)
-    # and be evenly distributed with ~6 stride intervals per base (30 samples)
+    # Each base occupies 6 stride intervals (30 samples)
     moves = []
     for _ in range(20):  # 20 bases
         moves.append(1)  # Move to new base
         for _ in range(5):  # Stay on base for 5 more positions (6 total * 5 = 30 samples)
             moves.append(0)
 
-    # Prepend zeros to shift start position to allow for left context
-    # We want first base at signal ~250, so add 50 positions of zeros (50*5=250)
-    moves = [0] * 50 + moves
     moves = np.array(moves, dtype=np.int8)
+    # Total move table length = 120 entries → covers 120*5=600 signal samples
+    # With trim_offset=250, signal indices run from 250 to 250+600=850
+    # num_samples=850 so the last base extends to 850
 
     return MoveTable(
         stride=stride,
         moves=moves,
         read_id="test_read_001",
-        num_samples=1000,
-        trim_offset=0,
+        num_samples=850,
+        trim_offset=250,
     )
 
 

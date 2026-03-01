@@ -87,18 +87,20 @@ class MoveTable:
 
         Returns:
             Array of shape (num_bases + 1,) giving signal position for each base.
-            The last element is the total signal length.
+            The last element is num_samples (end of basecalled signal region).
+
+        Each move=1 at position i means a new base starts at signal index
+        i * stride (+ trim_offset for untrimmed signal). This matches the
+        Remora convention: ``query_to_signal = np.nonzero(mv)[0] * stride``.
         """
-        # Cumulative sum of moves gives us indices
         move_positions = np.where(self.moves == 1)[0]
 
-        # Convert move indices to signal indices
-        # Move at position i means the base transition occurs after (i+1) stride-length blocks
-        # This is because the move table is indexed from 0 but signals start at 1*stride
-        seq_to_sig = (move_positions + 1) * self.stride + self.trim_offset
+        # Each move=1 at position i marks the START of a new base
+        # at signal index i * stride (offset by trim for untrimmed signal)
+        seq_to_sig = move_positions * self.stride + self.trim_offset
 
-        # Prepend the start position for the first base
-        seq_to_sig = np.concatenate([[self.trim_offset], seq_to_sig])
+        # Append end boundary (total signal samples = ns tag)
+        seq_to_sig = np.concatenate([seq_to_sig, [self.num_samples]])
 
         return seq_to_sig
 
