@@ -442,6 +442,18 @@ def run_grid_search(config: GridSearchConfig) -> Path:
 
         console.print(summary_table)
 
+        best_params_path = config.output_dir / "best_params.json"
+        with open(best_params_path, "w") as f:
+            json.dump(
+                {
+                    "left_context": best_result["left_context"],
+                    "right_context": best_result["right_context"],
+                },
+                f,
+                indent=2,
+            )
+        console.print(f"[bold]Best params saved to:[/bold] {best_params_path}")
+
     console.print(f"\n[bold]Results saved to:[/bold] {summary_path}")
 
     return summary_path
