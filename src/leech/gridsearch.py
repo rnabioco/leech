@@ -61,7 +61,7 @@ def parse_values(spec: str) -> list[int]:
         try:
             start, stop, step = int(parts[0]), int(parts[1]), int(parts[2])
         except ValueError:
-            raise ValueError(f"Range spec contains non-integer values: '{spec}'")
+            raise ValueError(f"Range spec contains non-integer values: '{spec}'") from None
         if step <= 0:
             raise ValueError(f"Step must be positive, got {step}")
         if start > stop:
