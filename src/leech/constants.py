@@ -8,6 +8,7 @@ magic numbers, and configuration constants used throughout the codebase.
 # Signal processing defaults
 DEFAULT_SIGNAL_CONTEXT = (200, 200)  # (left, right) signal samples around focus base
 DEFAULT_KMER_CONTEXT = 5  # Number of bases on each side of focus base
+DEFAULT_DWELL_MARGIN = 15  # Extra bases on each side for dwell_offset tuning
 
 # Model architecture defaults
 DEFAULT_CONV_CHANNELS = [4, 16, 256]  # Channel sizes for conv layers

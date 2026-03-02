@@ -147,6 +147,7 @@ class GridSearchConfig:
     motif: str | None = None
     motif_offset: int = 0
     base_justify: str = "center"
+    dwell_offsets: list[int] | None = None
 
 
 def prepare_chunks_with_context(
@@ -226,6 +227,7 @@ def run_grid_point(
     device: str,
     seed: int,
     early_stopping_patience: int = 10,
+    dwell_offset: int = 0,
 ) -> dict:
     """
     Train model for a single grid point.
@@ -244,6 +246,7 @@ def run_grid_point(
         device: Device
         seed: Random seed
         early_stopping_patience: Stop training if validation loss doesn't improve for N epochs
+        dwell_offset: Dwell feature offset (bases toward 3' end)
 
     Returns:
         Dictionary with grid point results
@@ -251,7 +254,7 @@ def run_grid_point(
     signal_len = left_context + right_context
 
     logger.info(f"\n{'=' * 80}")
-    logger.info(f"Training grid point: left={left_context}, right={right_context}")
+    logger.info(f"Training grid point: left={left_context}, right={right_context}, dwell_offset={dwell_offset}")
     logger.info(f"Signal length: {signal_len}")
     logger.info(f"Output: {output_dir}")
     logger.info(f"{'=' * 80}\n")
@@ -272,6 +275,7 @@ def run_grid_point(
             device=device,
             seed=seed,
             early_stopping_patience=early_stopping_patience,
+            dwell_offset=dwell_offset,
         )
 
         train_time = time.time() - start_time
@@ -284,6 +288,7 @@ def run_grid_point(
         result = {
             "left_context": left_context,
             "right_context": right_context,
+            "dwell_offset": dwell_offset,
             "signal_len": signal_len,
             "best_val_acc": best_val_acc,
             "best_val_auc": best_val_auc,
@@ -301,6 +306,7 @@ def run_grid_point(
         result = {
             "left_context": left_context,
             "right_context": right_context,
+            "dwell_offset": dwell_offset,
             "signal_len": left_context + right_context,
             "status": "failed",
             "error": str(e),
@@ -330,13 +336,17 @@ def run_grid_search(config: GridSearchConfig) -> Path:
         seed = config.seed
         logger.info(f"Using provided seed: {seed}")
 
+    # Default dwell_offsets to [0] if not provided
+    dwell_offsets = config.dwell_offsets if config.dwell_offsets is not None else [0]
+
     logger.info("=" * 80)
     logger.info("Starting Grid Search")
     logger.info("=" * 80)
     logger.info(f"Model: {config.model_name}")
     logger.info(f"Left contexts: {config.left_contexts}")
     logger.info(f"Right contexts: {config.right_contexts}")
-    logger.info(f"Total grid points: {len(config.left_contexts) * len(config.right_contexts)}")
+    logger.info(f"Dwell offsets: {dwell_offsets}")
+    logger.info(f"Total grid points: {len(config.left_contexts) * len(config.right_contexts) * len(dwell_offsets)}")
     logger.info(f"Output directory: {config.output_dir}")
     logger.info(f"Random seed: {seed}")
     logger.info("=" * 80)
@@ -353,6 +363,7 @@ def run_grid_search(config: GridSearchConfig) -> Path:
         "model_name": config.model_name,
         "left_contexts": config.left_contexts,
         "right_contexts": config.right_contexts,
+        "dwell_offsets": dwell_offsets,
         "kmer_context": config.kmer_context,
         "epochs": config.epochs,
         "batch_size": config.batch_size,
@@ -365,15 +376,18 @@ def run_grid_search(config: GridSearchConfig) -> Path:
         json.dump(config_dict, f, indent=2)
 
     # Generate grid
-    grid_points = list(itertools.product(config.left_contexts, config.right_contexts))
+    grid_points = list(itertools.product(config.left_contexts, config.right_contexts, dwell_offsets))
     results = []
 
     # Run each grid point
-    for i, (left, right) in enumerate(grid_points, 1):
+    for i, (left, right, dwoff) in enumerate(grid_points, 1):
         logger.info(f"\n\nGrid point {i}/{len(grid_points)}")
 
         # Create output directory for this grid point
-        grid_output_dir = config.output_dir / f"left_{left}_right_{right}"
+        if len(dwell_offsets) > 1 or dwell_offsets != [0]:
+            grid_output_dir = config.output_dir / f"left_{left}_right_{right}_dwoff_{dwoff}"
+        else:
+            grid_output_dir = config.output_dir / f"left_{left}_right_{right}"
 
         # Train model
         result = run_grid_point(
@@ -390,6 +404,7 @@ def run_grid_search(config: GridSearchConfig) -> Path:
             device=config.device,
             seed=config.seed,
             early_stopping_patience=config.early_stopping_patience,
+            dwell_offset=dwoff,
         )
 
         results.append(result)
@@ -408,6 +423,7 @@ def run_grid_search(config: GridSearchConfig) -> Path:
         table = Table(title="Grid Search Results", show_header=True, header_style="bold magenta")
         table.add_column("Left Context", justify="right", style="cyan")
         table.add_column("Right Context", justify="right", style="cyan")
+        table.add_column("Dwell Offset", justify="right", style="cyan")
         table.add_column("Val Accuracy", justify="right", style="green")
         table.add_column("Val AUC", justify="right", style="yellow")
         table.add_column("Best Epoch", justify="right", style="blue")
@@ -422,6 +438,7 @@ def run_grid_search(config: GridSearchConfig) -> Path:
             table.add_row(
                 str(r["left_context"]),
                 str(r["right_context"]),
+                str(r.get("dwell_offset", 0)),
                 f"{r.get('best_val_acc', 0):.4f}",
                 f"{r.get('best_val_auc', 0):.4f}",
                 str(r.get("best_epoch", 0)),
@@ -441,6 +458,7 @@ def run_grid_search(config: GridSearchConfig) -> Path:
 
         summary_table.add_row("Left Context", str(best_result["left_context"]))
         summary_table.add_row("Right Context", str(best_result["right_context"]))
+        summary_table.add_row("Dwell Offset", str(best_result.get("dwell_offset", 0)))
         summary_table.add_row("Validation Accuracy", f"{best_result['best_val_acc']:.4f}")
         summary_table.add_row("Validation AUC", f"{best_result.get('best_val_auc', 0):.4f}")
         summary_table.add_row("Best Epoch", str(best_result.get("best_epoch", 0)))
@@ -454,6 +472,7 @@ def run_grid_search(config: GridSearchConfig) -> Path:
                 {
                     "left_context": best_result["left_context"],
                     "right_context": best_result["right_context"],
+                    "dwell_offset": best_result.get("dwell_offset", 0),
                 },
                 f,
                 indent=2,
@@ -480,6 +499,7 @@ def save_grid_summary(results: list[dict], output_path: Path) -> None:
     columns = [
         "left_context",
         "right_context",
+        "dwell_offset",
         "signal_len",
         "best_val_acc",
         "best_val_auc",

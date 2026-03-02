@@ -437,15 +437,20 @@ def train_model(
     torch.manual_seed(seed)
     np.random.seed(seed)
 
+    # Extract dwell_offset from model_kwargs (grid search param, not model init param)
+    dwell_offset = model_kwargs.pop("dwell_offset", 0)
+
     # Create datasets
     train_dataset = LeechDataset(
-        train_data_path, signal_len=signal_len, kmer_len=kmer_len, model_type=model_name
+        train_data_path, signal_len=signal_len, kmer_len=kmer_len, model_type=model_name,
+        dwell_offset=dwell_offset,
     )
 
     val_dataset = None
     if val_data_path is not None:
         val_dataset = LeechDataset(
-            val_data_path, signal_len=signal_len, kmer_len=kmer_len, model_type=model_name
+            val_data_path, signal_len=signal_len, kmer_len=kmer_len, model_type=model_name,
+            dwell_offset=dwell_offset,
         )
 
     # Create data loaders

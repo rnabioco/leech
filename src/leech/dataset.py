@@ -66,6 +66,7 @@ class LeechDataset(Dataset):
         signal_len: int = 400,
         kmer_len: int = 11,
         model_type: str = "ConvLSTMDwell",
+        dwell_offset: int = 0,
     ):
         """
         Initialize dataset.
@@ -75,11 +76,15 @@ class LeechDataset(Dataset):
             signal_len: Expected signal length (will pad/truncate)
             kmer_len: Expected k-mer length
             model_type: Model architecture name (e.g., "ConvLSTMDwell", "TransformerDwell")
+            dwell_offset: Shift dwell/feature window toward 3' end (bases).
+                Compensates for physical offset between motor protein and
+                sensing region. Requires chunks extracted with dwell_margin >= offset.
         """
         self.chunk_path = chunk_path
         self.signal_len = signal_len
         self.kmer_len = kmer_len
         self.model_type = model_type
+        self.dwell_offset = dwell_offset
 
         # Load chunks
         self.chunks = load_chunks(chunk_path)
@@ -125,8 +130,21 @@ class LeechDataset(Dataset):
             raise ValueError(f"Expected k-mer length {self.kmer_len}, got {len(sequence)}")
         sequence_tensor = encode_kmer(sequence)
 
-        # Process features (for ConvLSTMDwell)
+        # Process dwell/features — apply dwell_offset slicing if margin exists
+        dwell = chunk["dwell"]
         features = chunk["features"]
+        if len(dwell) > self.kmer_len:
+            margin = (len(dwell) - self.kmer_len) // 2
+            if self.dwell_offset > margin:
+                raise ValueError(
+                    f"dwell_offset ({self.dwell_offset}) exceeds available "
+                    f"dwell_margin ({margin})"
+                )
+            start = margin + self.dwell_offset
+            dwell = dwell[start : start + self.kmer_len]
+            if features.size > 0:
+                features = features[:, start : start + self.kmer_len]
+
         if features.size > 0:
             features_tensor = torch.from_numpy(features.astype(np.float32))
         else:
