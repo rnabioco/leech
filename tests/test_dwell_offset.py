@@ -153,9 +153,7 @@ class TestDatasetDwellOffset:
 
         chunks = []
         for base_idx in [25]:
-            chunk = read.get_chunk(
-                base_idx, kmer_context=kmer_context, dwell_margin=dwell_margin
-            )
+            chunk = read.get_chunk(base_idx, kmer_context=kmer_context, dwell_margin=dwell_margin)
             if chunk is not None:
                 chunk["read_id"] = read.read_id
                 chunk["label_int"] = 1
@@ -177,8 +175,11 @@ class TestDatasetDwellOffset:
         )
 
         dataset = LeechDataset(
-            chunks_file, signal_len=400, kmer_len=kmer_len,
-            model_type="ConvLSTMDwell", dwell_offset=0,
+            chunks_file,
+            signal_len=400,
+            kmer_len=kmer_len,
+            model_type="ConvLSTMDwell",
+            dwell_offset=0,
         )
         item = dataset[0]
 
@@ -197,15 +198,21 @@ class TestDatasetDwellOffset:
 
         # Offset=0
         ds0 = LeechDataset(
-            chunks_file, signal_len=400, kmer_len=kmer_len,
-            model_type="ConvLSTMDwell", dwell_offset=0,
+            chunks_file,
+            signal_len=400,
+            kmer_len=kmer_len,
+            model_type="ConvLSTMDwell",
+            dwell_offset=0,
         )
         item0 = ds0[0]
 
         # Offset=5
         ds5 = LeechDataset(
-            chunks_file, signal_len=400, kmer_len=kmer_len,
-            model_type="ConvLSTMDwell", dwell_offset=5,
+            chunks_file,
+            signal_len=400,
+            kmer_len=kmer_len,
+            model_type="ConvLSTMDwell",
+            dwell_offset=5,
         )
         item5 = ds5[0]
 
@@ -229,8 +236,11 @@ class TestDatasetDwellOffset:
         )
 
         dataset = LeechDataset(
-            chunks_file, signal_len=400, kmer_len=kmer_len,
-            model_type="ConvLSTMDwell", dwell_offset=6,
+            chunks_file,
+            signal_len=400,
+            kmer_len=kmer_len,
+            model_type="ConvLSTMDwell",
+            dwell_offset=6,
         )
         with pytest.raises(ValueError, match="dwell_offset.*exceeds.*dwell_margin"):
             dataset[0]
@@ -238,8 +248,11 @@ class TestDatasetDwellOffset:
     def test_backward_compat_no_margin(self, temp_chunks_file):
         """Existing chunks (no margin) work fine with dwell_offset=0."""
         dataset = LeechDataset(
-            temp_chunks_file, signal_len=400, kmer_len=11,
-            model_type="ConvLSTMDwell", dwell_offset=0,
+            temp_chunks_file,
+            signal_len=400,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            dwell_offset=0,
         )
         item = dataset[0]
         assert item["features"].shape[1] == 11
@@ -255,8 +268,11 @@ class TestDatasetDwellOffset:
         )
 
         dataset = LeechDataset(
-            chunks_file, signal_len=400, kmer_len=kmer_len,
-            model_type="ConvLSTMBase", dwell_offset=5,
+            chunks_file,
+            signal_len=400,
+            kmer_len=kmer_len,
+            model_type="ConvLSTMBase",
+            dwell_offset=5,
         )
         item = dataset[0]
         # ConvLSTMBase should not include features

@@ -131,10 +131,10 @@ predictions = engine.predict_bam(
 
 ## Type Hints
 
-All leech modules use Python type hints for better IDE support and type checking. We recommend using [mypy](http://mypy-lang.org/) for static type checking:
+All leech modules use Python type hints for better IDE support and type checking. We recommend using [ty](https://docs.astral.sh/ty/) for static type checking:
 
 ```bash title="Bash" linenums="1"
-mypy src/leech/
+uv run ty check src/leech/
 ```
 
 ## Contributing

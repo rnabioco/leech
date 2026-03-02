@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Tunable `dwell_offset` hyperparameter for motor-sensor offset correction
+- `base_justify` parameter to control signal chunk centering ("start", "center", "end")
+- Range syntax (`start:stop:step`) for grid search context parameters
+- `best_params.json` output from grid search for Snakemake integration
+- Self-documenting run summary for pipeline runs
+- Motor-pore offset analysis notebook
+
+### Changed
+
+- Reorganize CLI into workflow-based command groups: `data`, `model`, `eval`, `predict`
+- Speed up grid search with CPU optimizations and parallel execution
+- Migrate docs from MkDocs + Material to Zensical
+- Switch LSF profile to use snakemake-executor-plugin-lsf
+- Consolidate guides into 3 professional documentation pages
+- Replace mypy with ty for type checking
+
+### Fixed
+
+- Off-by-one error in `to_seq_to_sig_map` to match Remora convention
+- Default `min_mapq` filtering that drops most tRNA reads
+- TypeError from grid search context params passed to model constructor
+
 ## [0.1.0-alpha] - 2025-11-13
 
 Initial alpha release of leech for aa-tRNA-seq nanopore signal classification.
@@ -51,6 +75,6 @@ Initial alpha release of leech for aa-tRNA-seq nanopore signal classification.
 ### Development
 
 - Complete test suite with pytest
-- Modern tooling: uv for dependencies, ruff for linting, mypy for type checking
+- Modern tooling: uv for dependencies, ruff for linting, ty for type checking
 - GitHub Actions CI/CD with linting, testing, and documentation deployment
 - Snakemake pipeline for production workflows
