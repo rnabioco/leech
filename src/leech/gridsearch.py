@@ -9,6 +9,7 @@ import csv
 import itertools
 import json
 import logging
+import multiprocessing
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,7 +18,7 @@ import numpy as np
 from rich.console import Console
 from rich.table import Table
 
-from leech.chunking import extract_training_chunks, save_chunks
+from leech.chunking import extract_training_chunks, load_chunks, save_chunks
 from leech.preparation import iter_bam_with_pod5
 from leech.training import train_model
 
@@ -148,6 +149,7 @@ class GridSearchConfig:
     motif_offset: int = 0
     base_justify: str = "center"
     dwell_offsets: list[int] | None = None
+    n_parallel: int = 1
 
 
 def prepare_chunks_with_context(
@@ -228,6 +230,9 @@ def run_grid_point(
     seed: int,
     early_stopping_patience: int = 10,
     dwell_offset: int = 0,
+    train_chunks: list[dict] | None = None,
+    val_chunks: list[dict] | None = None,
+    pos_weight: float | None = None,
 ) -> dict:
     """
     Train model for a single grid point.
@@ -247,6 +252,9 @@ def run_grid_point(
         seed: Random seed
         early_stopping_patience: Stop training if validation loss doesn't improve for N epochs
         dwell_offset: Dwell feature offset (bases toward 3' end)
+        train_chunks: Pre-loaded training chunks (avoids redundant disk I/O)
+        val_chunks: Pre-loaded validation chunks (avoids redundant disk I/O)
+        pos_weight: Pre-computed positive class weight (avoids redundant computation)
 
     Returns:
         Dictionary with grid point results
@@ -276,6 +284,9 @@ def run_grid_point(
             seed=seed,
             early_stopping_patience=early_stopping_patience,
             dwell_offset=dwell_offset,
+            train_chunks=train_chunks,
+            val_chunks=val_chunks,
+            pos_weight=pos_weight,
         )
 
         train_time = time.time() - start_time
@@ -313,6 +324,51 @@ def run_grid_point(
         }
 
     return result
+
+
+# Module-level globals for multiprocessing pool workers
+_worker_train_chunks: list[dict] | None = None
+_worker_val_chunks: list[dict] | None = None
+_worker_pos_weight: float | None = None
+
+
+def _init_worker(
+    train_data_path: Path,
+    val_data_path: Path | None,
+    pos_weight: float | None,
+) -> None:
+    """Pool initializer: load chunks once per worker process."""
+    global _worker_train_chunks, _worker_val_chunks, _worker_pos_weight  # noqa: PLW0603
+    _worker_train_chunks = load_chunks(train_data_path)
+    _worker_val_chunks = load_chunks(val_data_path) if val_data_path is not None else None
+    _worker_pos_weight = pos_weight
+    logger.info(
+        f"Worker {multiprocessing.current_process().name}: loaded "
+        f"{len(_worker_train_chunks)} train chunks"
+    )
+
+
+def _grid_point_worker(args: dict) -> dict:
+    """Run a single grid point using worker-cached chunks."""
+    return run_grid_point(
+        train_data_path=args["train_data_path"],
+        val_data_path=args["val_data_path"],
+        model_name=args["model_name"],
+        output_dir=args["output_dir"],
+        left_context=args["left_context"],
+        right_context=args["right_context"],
+        kmer_len=args["kmer_len"],
+        epochs=args["epochs"],
+        batch_size=args["batch_size"],
+        learning_rate=args["learning_rate"],
+        device=args["device"],
+        seed=args["seed"],
+        early_stopping_patience=args["early_stopping_patience"],
+        dwell_offset=args["dwell_offset"],
+        train_chunks=_worker_train_chunks,
+        val_chunks=_worker_val_chunks,
+        pos_weight=_worker_pos_weight,
+    )
 
 
 def run_grid_search(config: GridSearchConfig) -> Path:
@@ -375,43 +431,88 @@ def run_grid_search(config: GridSearchConfig) -> Path:
     with open(config.output_dir / "grid_config.json", "w") as f:
         json.dump(config_dict, f, indent=2)
 
+    # Pre-load chunks once to avoid redundant disk I/O across grid points
+    logger.info("Pre-loading training chunks...")
+    train_chunks = load_chunks(config.train_data_path)
+    logger.info(f"Loaded {len(train_chunks)} training chunks")
+
+    val_chunks = None
+    if config.val_data_path is not None:
+        logger.info("Pre-loading validation chunks...")
+        val_chunks = load_chunks(config.val_data_path)
+        logger.info(f"Loaded {len(val_chunks)} validation chunks")
+
+    # Pre-compute class weights from training chunks (labels don't change across grid points)
+    valid_labels = [c["label_int"] for c in train_chunks if c["label_int"] is not None]
+    labels_array = np.array(valid_labels)
+    unique, counts = np.unique(labels_array, return_counts=True)
+    pos_weight = None
+    if len(unique) == 2:
+        label_counts = dict(zip(unique, counts, strict=True))
+        neg_count = label_counts.get(0, 0)
+        pos_count = label_counts.get(1, 0)
+        if pos_count > 0:
+            pos_weight = neg_count / pos_count
+            logger.info(
+                f"Pre-computed class weights: negative={neg_count}, "
+                f"positive={pos_count}, pos_weight={pos_weight:.4f}"
+            )
+
     # Generate grid
     grid_points = list(itertools.product(config.left_contexts, config.right_contexts, dwell_offsets))
-    results = []
+    summary_path = config.output_dir / "grid_summary.csv"
 
-    # Run each grid point
-    for i, (left, right, dwoff) in enumerate(grid_points, 1):
-        logger.info(f"\n\nGrid point {i}/{len(grid_points)}")
-
-        # Create output directory for this grid point
+    # Build grid point argument dicts
+    grid_args = []
+    for left, right, dwoff in grid_points:
         if len(dwell_offsets) > 1 or dwell_offsets != [0]:
             grid_output_dir = config.output_dir / f"left_{left}_right_{right}_dwoff_{dwoff}"
         else:
             grid_output_dir = config.output_dir / f"left_{left}_right_{right}"
 
-        # Train model
-        result = run_grid_point(
-            train_data_path=config.train_data_path,
-            val_data_path=config.val_data_path,
-            model_name=config.model_name,
-            output_dir=grid_output_dir,
-            left_context=left,
-            right_context=right,
-            kmer_len=2 * config.kmer_context + 1,
-            epochs=config.epochs,
-            batch_size=config.batch_size,
-            learning_rate=config.learning_rate,
-            device=config.device,
-            seed=config.seed,
-            early_stopping_patience=config.early_stopping_patience,
-            dwell_offset=dwoff,
-        )
+        grid_args.append({
+            "train_data_path": config.train_data_path,
+            "val_data_path": config.val_data_path,
+            "model_name": config.model_name,
+            "output_dir": grid_output_dir,
+            "left_context": left,
+            "right_context": right,
+            "kmer_len": 2 * config.kmer_context + 1,
+            "epochs": config.epochs,
+            "batch_size": config.batch_size,
+            "learning_rate": config.learning_rate,
+            "device": config.device,
+            "seed": config.seed,
+            "early_stopping_patience": config.early_stopping_patience,
+            "dwell_offset": dwoff,
+        })
 
-        results.append(result)
+    results: list[dict] = []
 
-        # Save intermediate results
-        summary_path = config.output_dir / "grid_summary.csv"
-        save_grid_summary(results, summary_path)
+    if config.n_parallel > 1:
+        # Parallel execution: each worker loads chunks independently
+        logger.info(f"Running {len(grid_points)} grid points with {config.n_parallel} parallel workers")
+        with multiprocessing.Pool(
+            processes=config.n_parallel,
+            initializer=_init_worker,
+            initargs=(config.train_data_path, config.val_data_path, pos_weight),
+        ) as pool:
+            for i, result in enumerate(pool.imap_unordered(_grid_point_worker, grid_args), 1):
+                results.append(result)
+                logger.info(f"Completed grid point {i}/{len(grid_points)}")
+                save_grid_summary(results, summary_path)
+    else:
+        # Sequential execution: reuse pre-loaded chunks in main process
+        for i, args in enumerate(grid_args, 1):
+            logger.info(f"\n\nGrid point {i}/{len(grid_points)}")
+            result = run_grid_point(
+                **args,
+                train_chunks=train_chunks,
+                val_chunks=val_chunks,
+                pos_weight=pos_weight,
+            )
+            results.append(result)
+            save_grid_summary(results, summary_path)
 
     # Print summary with Rich tables
     console.print("\n[bold green]Grid Search Complete![/bold green]\n")
