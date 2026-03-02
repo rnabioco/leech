@@ -57,6 +57,7 @@ def run_inference(
     kmer_len = config["kmer_len"]
     model_type = config["model_name"]
     config["num_features"]
+    dwell_offset = config.get("dwell_offset", 0)
 
     # Wrap model for unified forward pass
     model_wrapper = ModelInferenceWrapper(model, model_type)
@@ -153,6 +154,11 @@ def run_inference(
                 if model_wrapper.requires_features:
                     features_array = chunk["features"]
                     assert isinstance(features_array, np.ndarray)
+                    # Apply dwell_offset slicing if wider margin exists
+                    if features_array.size > 0 and features_array.shape[1] > kmer_len:
+                        margin = (features_array.shape[1] - kmer_len) // 2
+                        start = margin + dwell_offset
+                        features_array = features_array[:, start : start + kmer_len]
                     features = torch.from_numpy(features_array.astype(np.float32)).to(device)
                     batch["features"] = features.unsqueeze(0)
 

@@ -232,6 +232,12 @@ def data():
     default="center",
     help='Where to center signal chunk within the focus base: "start" (first sample), "center" (midpoint, default), or "end" (last sample, useful for 3\' modifications)',
 )
+@click.option(
+    "--dwell-margin",
+    type=int,
+    default=0,
+    help="Extra bases on each side of dwell/feature arrays for runtime dwell_offset tuning (default: 0, use 15 for grid search over dwell offsets)",
+)
 def prepare(
     pod5,
     bam,
@@ -251,6 +257,7 @@ def prepare(
     workers,
     chunk_size,
     base_justify,
+    dwell_margin,
 ):
     """Prepare training data from POD5 and BAM files."""
     from leech.commands import handle_prepare
@@ -276,6 +283,7 @@ def prepare(
         workers=workers,
         chunk_size=chunk_size,
         base_justify=base_justify,
+        dwell_margin=dwell_margin,
     )
 
 
@@ -597,6 +605,12 @@ def train(
     default="center",
     help='Where to center signal chunk within the focus base: "start" (first sample), "center" (midpoint, default), or "end" (last sample, useful for 3\' modifications)',
 )
+@click.option(
+    "--dwell-offsets",
+    type=str,
+    default="0",
+    help='Dwell offset values to search (comma-separated or start:stop:step). Shifts dwell/feature window toward 3\' end. Default: "0" (no offset). Requires chunks prepared with --dwell-margin >= max offset.',
+)
 def optimize(
     train_data,
     val_data,
@@ -613,20 +627,25 @@ def optimize(
     seed,
     early_stopping,
     base_justify,
+    dwell_offsets,
 ):
     """Optimize model hyperparameters using grid search over chunk contexts."""
-    from leech.gridsearch import GridSearchConfig, parse_context_grid, run_grid_search
+    from leech.gridsearch import GridSearchConfig, parse_context_grid, parse_values, run_grid_search
 
     # Parse context grids
     left_contexts_list, right_contexts_list = parse_context_grid(
         context_grid, left_contexts, right_contexts
     )
 
+    # Parse dwell offsets
+    dwell_offsets_list = parse_values(dwell_offsets)
+
     logger.info(
-        f"Starting grid search with {len(left_contexts_list)} x {len(right_contexts_list)} grid points"
+        f"Starting grid search with {len(left_contexts_list)} x {len(right_contexts_list)} x {len(dwell_offsets_list)} grid points"
     )
     logger.info(f"Left contexts: {left_contexts_list}")
     logger.info(f"Right contexts: {right_contexts_list}")
+    logger.info(f"Dwell offsets: {dwell_offsets_list}")
 
     # Create config
     config = GridSearchConfig(
@@ -644,6 +663,7 @@ def optimize(
         seed=seed,
         early_stopping_patience=early_stopping,
         base_justify=base_justify,
+        dwell_offsets=dwell_offsets_list,
     )
 
     # Run grid search

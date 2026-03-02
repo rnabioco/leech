@@ -70,6 +70,7 @@ class LeechRead:
         signal_context: tuple[int, int] = DEFAULT_SIGNAL_CONTEXT,
         kmer_context: int = DEFAULT_KMER_CONTEXT,
         base_justify: str = "center",
+        dwell_margin: int = 0,
     ) -> dict[str, np.ndarray | str | int | None] | None:
         """
         Extract a training chunk centered on a specific base.
@@ -85,6 +86,8 @@ class LeechRead:
                 - "end": last signal sample of the base (first sample of next
                   base). Useful for tRNA aa-charging where the amino acid is
                   attached to the 3' hydroxyl of the terminal A.
+            dwell_margin: Extra bases on each side of dwell/feature arrays for
+                runtime dwell_offset tuning. Sequence is unaffected.
 
         Returns:
             Dictionary with 'signal', 'kmer', 'dwell', 'features' arrays,
@@ -96,8 +99,9 @@ class LeechRead:
             ...     print(f"Signal length: {len(chunk['signal'])}")
             ...     print(f"Sequence: {chunk['sequence']}")
         """
-        # Check boundaries
-        if base_idx < kmer_context or base_idx >= self.num_bases - kmer_context:
+        # Check boundaries (must have room for kmer_context + dwell_margin)
+        min_ctx = kmer_context + dwell_margin
+        if base_idx < min_ctx or base_idx >= self.num_bases - min_ctx:
             return None
 
         # Extract signal chunk
@@ -118,17 +122,17 @@ class LeechRead:
 
         signal_chunk = self.signal[sig_start:sig_end]
 
-        # Extract k-mer sequence context
+        # Extract k-mer sequence context (unchanged by dwell_margin)
         kmer_start = base_idx - kmer_context
         kmer_end = base_idx + kmer_context + 1
         kmer_seq = self.sequence[kmer_start:kmer_end]
 
-        # Extract dwell features
-        dwell_start = base_idx - kmer_context
-        dwell_end = base_idx + kmer_context + 1
+        # Extract dwell features with wider window for offset tuning
+        dwell_start = base_idx - kmer_context - dwell_margin
+        dwell_end = base_idx + kmer_context + 1 + dwell_margin
         dwell_chunk = self.dwells[dwell_start:dwell_end]
 
-        # Compile additional features
+        # Compile additional features (also with wider window)
         features = []
         for _feat_name, feat_array in {**self.dwell_features, **self.signal_features}.items():
             features.append(feat_array[dwell_start:dwell_end])
@@ -151,6 +155,7 @@ def extract_training_chunks(
     label_int: int | None = None,
     motif_searcher: MotifSearcher | None = None,
     base_justify: str = "center",
+    dwell_margin: int = 0,
 ) -> list[dict[str, np.ndarray | str | int | None]]:
     """
     Extract all training chunks from a read, optionally filtered by motif.
@@ -162,6 +167,8 @@ def extract_training_chunks(
         label: String label identifier (e.g., "Ala", "Gly", "charged", "uncharged")
         label_int: Optional numeric label (0, 1) - assigned during merge for pairwise comparisons
         motif_searcher: MotifSearcher instance (required if motif is provided)
+        dwell_margin: Extra bases on each side of dwell/feature arrays for
+            runtime dwell_offset tuning
 
     Returns:
         List of chunk dictionaries
@@ -209,7 +216,7 @@ def extract_training_chunks(
 
     # Extract chunks
     for base_idx in focus_bases:
-        chunk = leech_read.get_chunk(base_idx, base_justify=base_justify)
+        chunk = leech_read.get_chunk(base_idx, base_justify=base_justify, dwell_margin=dwell_margin)
         if chunk is not None:
             chunk["read_id"] = leech_read.read_id
             # Rename numeric "label" from get_chunk() to "label_int"

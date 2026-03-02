@@ -37,6 +37,7 @@ def handle_prepare(
     workers: int = 8,
     chunk_size: int = 100,
     base_justify: str = "center",
+    dwell_margin: int = 0,
 ) -> dict[str, Any]:
     """
     Handle the prepare command logic.
@@ -100,6 +101,7 @@ def handle_prepare(
             num_workers=workers,
             chunk_size=chunk_size,
             base_justify=base_justify,
+            dwell_margin=dwell_margin,
         )
 
         if len(chunks) == 0:
@@ -212,6 +214,7 @@ def handle_prepare(
                 no_split=no_split,
                 progress_callback=update_progress,
                 base_justify=base_justify,
+                dwell_margin=dwell_margin,
             )
 
             task_id = progress_container["task"]
