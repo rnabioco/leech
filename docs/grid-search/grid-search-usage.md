@@ -121,7 +121,36 @@ leech model optimize \
 - `--batch-size`: Batch size (default: 128)
 - `--learning-rate`: Learning rate (default: 0.001)
 - `--device`: Training device (cuda/cpu, default: cuda)
+- `--parallel`: Number of grid points to train concurrently (default: 1)
 - `--seed`: Random seed (default: 42)
+
+## Parallel Execution
+
+Grid search can train multiple grid points concurrently using `--parallel`:
+
+```bash title="Bash" linenums="1"
+uv run leech model optimize \
+  --train-data data/train/chunks.npz \
+  --val-data data/val/chunks.npz \
+  --context-grid 200,500,1000,2000,5000 \
+  --output-dir models/grid_coarse/ \
+  --epochs 50 \
+  --device cpu \
+  --parallel 8
+```
+
+Each worker process independently loads the training data once during initialization and caches it for all grid points it processes, avoiding redundant disk I/O.
+
+**When to use parallel execution:**
+
+- **CPU training**: `--parallel N` scales well since each worker gets its own CPU cores. Set N to roughly `total_cores / cores_per_model`.
+- **GPU training**: Parallel execution is less useful since models compete for GPU memory. Use `--parallel 1` (default) with GPU, or `--parallel 2` if you have enough VRAM.
+
+**CPU optimizations** (always active):
+
+- Training data and validation data are pre-loaded once before the grid search begins
+- Class weights are pre-computed and shared across all grid points
+- DataLoader uses `num_workers=0` on CPU to avoid multiprocessing contention with the grid search pool
 
 ## Advanced Examples
 
@@ -180,7 +209,8 @@ models/grid_coarse/
 ├── left_200_right_500/
 │   └── ...
 ├── grid_config.json           # Grid search configuration
-└── grid_summary.csv           # Aggregated results (ALL grid points)
+├── grid_summary.csv           # Aggregated results (ALL grid points)
+└── best_params.json           # Best parameters for Snakemake integration
 ```
 
 ## Analyzing Results
@@ -253,6 +283,7 @@ If validation accuracy plateaus while training continues to improve, consider:
 
 - Each grid point trains a full model
 - 5x5 grid = 25 models at ~3-5 min each = 1-2 hours total (GPU)
+- Use `--parallel N` on CPU to train multiple grid points concurrently
 - Use `--epochs 10` for quick exploration, then train final model longer
 
 ### 5. Biological Validation
@@ -280,6 +311,7 @@ If training fails with CUDA OOM:
 ### Slow Training
 
 - Use GPU (`--device cuda`)
+- Use `--parallel N` to train multiple grid points concurrently on CPU
 - Reduce number of grid points
 - Reduce epochs for initial exploration
 
@@ -304,7 +336,7 @@ rule grid_search:
     params:
         contexts = "200,500,1000,2000,5000",
         epochs = 50
-    threads: 1
+    threads: 8
     resources:
         gpu = 1
     shell:
@@ -315,7 +347,8 @@ rule grid_search:
             --context-grid {params.contexts} \
             --output-dir models/grid/ \
             --epochs {params.epochs} \
-            --device cuda
+            --device cuda \
+            --parallel {threads}
         """
 ```
 

@@ -64,6 +64,8 @@ leech data prepare [OPTIONS] --pod5 FILE --bam FILE --output-dir DIR
 | `--chunk-size INT` | 100 | Reads per batch (for parallel) |
 | `--train-split FLOAT` | 0.7 | Fraction for training |
 | `--val-split FLOAT` | 0.15 | Fraction for validation |
+| `--base-justify STR` | `center` | Signal chunk centering: `start`, `center`, or `end` |
+| `--dwell-margin INT` | 0 | Extra bases to include for runtime dwell_offset tuning |
 | `--no-split` | False | Skip splitting (for later merge) |
 | `--seed INT` | 42 | Random seed |
 
@@ -293,6 +295,9 @@ leech model optimize [OPTIONS] --train-data FILE --output-dir DIR --context-grid
 | `--batch-size INT` | 128 | Batch size |
 | `--learning-rate FLOAT` | 0.001 | Learning rate |
 | `--device STR` | `cuda` if available | Device: `cuda` or `cpu` |
+| `--parallel INT` | 1 | Number of grid points to train concurrently |
+| `--base-justify STR` | `center` | Signal chunk centering: `start`, `center`, or `end` |
+| `--dwell-offsets VALUES` | - | Dwell offset values to search (comma-separated or `start:stop:step`) |
 | `--seed INT` | 42 | Random seed |
 | `--early-stopping INT` | 10 | Early stopping patience (0 to disable) |
 
@@ -483,6 +488,7 @@ leech predict [OPTIONS] --model FILE --pod5 FILE --bam FILE --output FILE
 | Argument | Default | Description |
 |----------|---------|-------------|
 | `--device STR` | `cuda` if available | Device: `cuda` or `cpu` |
+| `--base-justify STR` | `center` | Signal chunk centering: `start`, `center`, or `end` |
 
 #### Examples
 
