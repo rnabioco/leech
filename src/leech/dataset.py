@@ -33,6 +33,7 @@ Example:
     >>> print(batch.keys())  # ['signal', 'sequence', 'features', 'label'] for feature models
 """
 
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -40,7 +41,19 @@ import torch
 from torch.utils.data import Dataset
 
 from leech.chunking import load_chunks
-from leech.preparation import encode_kmer
+
+logger = logging.getLogger("leech.dataset")
+
+# ASCII lookup table for vectorized sequence encoding (A=0, C=1, G=2, T=3, else=255)
+_BASE_MAP = np.full(256, 255, dtype=np.uint8)
+_BASE_MAP[ord("A")] = 0
+_BASE_MAP[ord("C")] = 1
+_BASE_MAP[ord("G")] = 2
+_BASE_MAP[ord("T")] = 3
+_BASE_MAP[ord("a")] = 0
+_BASE_MAP[ord("c")] = 1
+_BASE_MAP[ord("g")] = 2
+_BASE_MAP[ord("t")] = 3
 
 # Models that require dwell/signal features as third input
 # Must match ModelInferenceWrapper.FEATURE_MODELS
@@ -62,11 +75,12 @@ class LeechDataset(Dataset):
 
     def __init__(
         self,
-        chunk_path: Path,
+        chunk_path: Path | None = None,
         signal_len: int = 400,
         kmer_len: int = 11,
         model_type: str = "ConvLSTMDwell",
         dwell_offset: int = 0,
+        chunks: list[dict] | None = None,
     ):
         """
         Initialize dataset.
@@ -79,6 +93,8 @@ class LeechDataset(Dataset):
             dwell_offset: Shift dwell/feature window toward 3' end (bases).
                 Compensates for physical offset between motor protein and
                 sensing region. Requires chunks extracted with dwell_margin >= offset.
+            chunks: Pre-loaded list of chunk dicts. When provided, chunk_path is
+                ignored and no disk I/O occurs (useful for grid search caching).
         """
         self.chunk_path = chunk_path
         self.signal_len = signal_len
@@ -86,14 +102,65 @@ class LeechDataset(Dataset):
         self.model_type = model_type
         self.dwell_offset = dwell_offset
 
-        # Load chunks
-        self.chunks = load_chunks(chunk_path)
+        # Use pre-loaded chunks or load from file
+        if chunks is not None:
+            logger.info(f"Using {len(chunks)} pre-loaded chunks (skipping disk I/O)")
+            self.chunks = chunks
+        elif chunk_path is not None:
+            self.chunks = load_chunks(chunk_path)
+        else:
+            raise ValueError("Either chunk_path or chunks must be provided")
 
         # Filter chunks with valid numeric labels (label_int)
         self.chunks = [c for c in self.chunks if c["label_int"] is not None]
 
         if len(self.chunks) == 0:
-            raise ValueError(f"No valid chunks found in {chunk_path}")
+            raise ValueError(
+                f"No valid chunks found"
+                f"{f' in {chunk_path}' if chunk_path else ''}"
+            )
+
+        # Pre-tensorize: encode sequences, labels, and convert dtypes once
+        self._encoded_seqs: list[torch.Tensor] = []
+        self._labels: list[torch.Tensor] = []
+
+        for chunk in self.chunks:
+            # Pre-encode sequence (vectorized, no Python loop)
+            self._encoded_seqs.append(self._encode_sequence(chunk["sequence"]))
+
+            # Pre-create label tensor
+            self._labels.append(
+                torch.tensor([chunk["label_int"]], dtype=torch.float32)
+            )
+
+            # Convert signal and features to float32 in-place (avoid per-epoch astype)
+            if chunk["signal"].dtype != np.float32:
+                chunk["signal"] = chunk["signal"].astype(np.float32)
+            if chunk["features"].dtype != np.float32:
+                chunk["features"] = chunk["features"].astype(np.float32)
+
+        logger.debug(
+            f"Pre-tensorized {len(self.chunks)} chunks "
+            f"({len(self._encoded_seqs)} sequences encoded)"
+        )
+
+    @staticmethod
+    def _encode_sequence(sequence: str) -> torch.Tensor:
+        """Vectorized one-hot encoding of a DNA sequence.
+
+        Uses a pre-built ASCII lookup table instead of a Python for-loop.
+
+        Args:
+            sequence: DNA sequence string (A, C, G, T, N)
+
+        Returns:
+            One-hot encoded tensor of shape (4, len(sequence))
+        """
+        indices = _BASE_MAP[np.frombuffer(sequence.encode(), dtype=np.uint8)]
+        encoded = np.zeros((4, len(sequence)), dtype=np.float32)
+        valid = indices < 4
+        encoded[indices[valid], np.where(valid)[0]] = 1.0
+        return torch.from_numpy(encoded)
 
     def __len__(self) -> int:
         """Return number of chunks."""
@@ -112,23 +179,21 @@ class LeechDataset(Dataset):
         """
         chunk = self.chunks[idx]
 
-        # Process signal - pad or truncate to signal_len
-        signal = chunk["signal"].astype(np.float32)
+        # Process signal - pad or truncate to signal_len (already float32)
+        signal = chunk["signal"]
         if len(signal) < self.signal_len:
-            # Pad with zeros
             signal = np.pad(signal, (0, self.signal_len - len(signal)), mode="constant")
         elif len(signal) > self.signal_len:
-            # Truncate from center
             start = (len(signal) - self.signal_len) // 2
             signal = signal[start : start + self.signal_len]
 
         signal_tensor = torch.from_numpy(signal)
 
-        # Process sequence - one-hot encode
+        # Pre-encoded sequence lookup
         sequence = chunk["sequence"]
         if len(sequence) != self.kmer_len:
             raise ValueError(f"Expected k-mer length {self.kmer_len}, got {len(sequence)}")
-        sequence_tensor = encode_kmer(sequence)
+        sequence_tensor = self._encoded_seqs[idx]
 
         # Process dwell/features — apply dwell_offset slicing if margin exists
         dwell = chunk["dwell"]
@@ -146,13 +211,12 @@ class LeechDataset(Dataset):
                 features = features[:, start : start + self.kmer_len]
 
         if features.size > 0:
-            features_tensor = torch.from_numpy(features.astype(np.float32))
+            features_tensor = torch.from_numpy(features)
         else:
-            # If no features, create dummy features
             features_tensor = torch.zeros(1, self.kmer_len, dtype=torch.float32)
 
-        # Label (use label_int for numeric label)
-        label = torch.tensor([chunk["label_int"]], dtype=torch.float32)
+        # Pre-computed label lookup
+        label = self._labels[idx]
 
         result = {
             "signal": signal_tensor,

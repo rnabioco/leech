@@ -611,6 +611,12 @@ def train(
     default="0",
     help='Dwell offset values to search (comma-separated or start:stop:step). Shifts dwell/feature window toward 3\' end. Default: "0" (no offset). Requires chunks prepared with --dwell-margin >= max offset.',
 )
+@click.option(
+    "--parallel",
+    type=int,
+    default=1,
+    help="Number of grid points to run concurrently (default: 1, sequential). Each worker loads data independently.",
+)
 def optimize(
     train_data,
     val_data,
@@ -628,6 +634,7 @@ def optimize(
     early_stopping,
     base_justify,
     dwell_offsets,
+    parallel,
 ):
     """Optimize model hyperparameters using grid search over chunk contexts."""
     from leech.gridsearch import GridSearchConfig, parse_context_grid, parse_values, run_grid_search
@@ -664,6 +671,7 @@ def optimize(
         early_stopping_patience=early_stopping,
         base_justify=base_justify,
         dwell_offsets=dwell_offsets_list,
+        n_parallel=parallel,
     )
 
     # Run grid search
