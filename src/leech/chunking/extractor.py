@@ -111,9 +111,7 @@ class LeechRead:
             focus_sig_pos = self.seq_to_sig_map[base_idx + 1]
         else:
             # Center on midpoint of focus base's signal span (Remora default)
-            focus_sig_pos = (
-                self.seq_to_sig_map[base_idx] + self.seq_to_sig_map[base_idx + 1]
-            ) // 2
+            focus_sig_pos = (self.seq_to_sig_map[base_idx] + self.seq_to_sig_map[base_idx + 1]) // 2
         sig_start = max(0, focus_sig_pos - signal_context[0])
         sig_end = min(self.num_samples, focus_sig_pos + signal_context[1])
 

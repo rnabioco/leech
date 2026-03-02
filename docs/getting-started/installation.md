@@ -4,7 +4,7 @@ This guide covers how to install `leech` and its dependencies.
 
 ## Requirements
 
-- Python 3.10 or higher
+- Python 3.12 or higher
 - Linux or macOS (Windows may work but is not officially supported)
 - 8GB+ RAM recommended for training
 - CUDA-capable GPU recommended (but not required)
@@ -96,7 +96,7 @@ This installs additional tools for:
 
 - **Testing**: pytest, pytest-cov
 - **Linting**: ruff (replaces black + flake8)
-- **Type checking**: mypy
+- **Type checking**: ty
 
 ## Troubleshooting
 

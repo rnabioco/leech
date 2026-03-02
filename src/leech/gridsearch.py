@@ -66,9 +66,7 @@ def parse_values(spec: str) -> list[int]:
         if step <= 0:
             raise ValueError(f"Step must be positive, got {step}")
         if start > stop:
-            raise ValueError(
-                f"Start ({start}) must be <= stop ({stop})"
-            )
+            raise ValueError(f"Start ({start}) must be <= stop ({stop})")
         return list(range(start, stop + 1, step))
 
     if "," in spec:
@@ -262,7 +260,9 @@ def run_grid_point(
     signal_len = left_context + right_context
 
     logger.info(f"\n{'=' * 80}")
-    logger.info(f"Training grid point: left={left_context}, right={right_context}, dwell_offset={dwell_offset}")
+    logger.info(
+        f"Training grid point: left={left_context}, right={right_context}, dwell_offset={dwell_offset}"
+    )
     logger.info(f"Signal length: {signal_len}")
     logger.info(f"Output: {output_dir}")
     logger.info(f"{'=' * 80}\n")
@@ -402,7 +402,9 @@ def run_grid_search(config: GridSearchConfig) -> Path:
     logger.info(f"Left contexts: {config.left_contexts}")
     logger.info(f"Right contexts: {config.right_contexts}")
     logger.info(f"Dwell offsets: {dwell_offsets}")
-    logger.info(f"Total grid points: {len(config.left_contexts) * len(config.right_contexts) * len(dwell_offsets)}")
+    logger.info(
+        f"Total grid points: {len(config.left_contexts) * len(config.right_contexts) * len(dwell_offsets)}"
+    )
     logger.info(f"Output directory: {config.output_dir}")
     logger.info(f"Random seed: {seed}")
     logger.info("=" * 80)
@@ -459,7 +461,9 @@ def run_grid_search(config: GridSearchConfig) -> Path:
             )
 
     # Generate grid
-    grid_points = list(itertools.product(config.left_contexts, config.right_contexts, dwell_offsets))
+    grid_points = list(
+        itertools.product(config.left_contexts, config.right_contexts, dwell_offsets)
+    )
     summary_path = config.output_dir / "grid_summary.csv"
 
     # Build grid point argument dicts
@@ -470,28 +474,32 @@ def run_grid_search(config: GridSearchConfig) -> Path:
         else:
             grid_output_dir = config.output_dir / f"left_{left}_right_{right}"
 
-        grid_args.append({
-            "train_data_path": config.train_data_path,
-            "val_data_path": config.val_data_path,
-            "model_name": config.model_name,
-            "output_dir": grid_output_dir,
-            "left_context": left,
-            "right_context": right,
-            "kmer_len": 2 * config.kmer_context + 1,
-            "epochs": config.epochs,
-            "batch_size": config.batch_size,
-            "learning_rate": config.learning_rate,
-            "device": config.device,
-            "seed": config.seed,
-            "early_stopping_patience": config.early_stopping_patience,
-            "dwell_offset": dwoff,
-        })
+        grid_args.append(
+            {
+                "train_data_path": config.train_data_path,
+                "val_data_path": config.val_data_path,
+                "model_name": config.model_name,
+                "output_dir": grid_output_dir,
+                "left_context": left,
+                "right_context": right,
+                "kmer_len": 2 * config.kmer_context + 1,
+                "epochs": config.epochs,
+                "batch_size": config.batch_size,
+                "learning_rate": config.learning_rate,
+                "device": config.device,
+                "seed": config.seed,
+                "early_stopping_patience": config.early_stopping_patience,
+                "dwell_offset": dwoff,
+            }
+        )
 
     results: list[dict] = []
 
     if config.n_parallel > 1:
         # Parallel execution: each worker loads chunks independently
-        logger.info(f"Running {len(grid_points)} grid points with {config.n_parallel} parallel workers")
+        logger.info(
+            f"Running {len(grid_points)} grid points with {config.n_parallel} parallel workers"
+        )
         with multiprocessing.Pool(
             processes=config.n_parallel,
             initializer=_init_worker,

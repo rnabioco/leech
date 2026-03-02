@@ -5,7 +5,7 @@
 A Python library for training machine learning models on nanopore signal data, with a focus on integrating dwell time features for modified base detection.
 
 [![CI](https://github.com/rnabioco/leech/actions/workflows/ci.yml/badge.svg)](https://github.com/rnabioco/leech/actions/workflows/ci.yml)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ## Overview
@@ -22,7 +22,7 @@ A Python library for training machine learning models on nanopore signal data, w
 
 ## Installation
 
-Requires Python 3.10+
+Requires Python 3.12+
 
 ### Using uv (recommended)
 
@@ -399,7 +399,7 @@ uv run ruff check .
 uv run ruff format .
 
 # Type checking
-uv run mypy src/leech/
+uv run ty check src/leech/
 ```
 
 ### Project Structure

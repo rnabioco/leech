@@ -9,8 +9,7 @@ Run the following linting and formatting steps in order:
 3. **Check remaining linting issues**: Run `uv run ruff check --exclude notebooks/ .` to check for any remaining issues that couldn't be auto-fixed (excluding notebooks)
 4. **Lint notebooks**: Run `if [ -d "notebooks" ]; then uv run nbqa ruff --fix notebooks/; else echo "notebooks/ directory not found"; fi` to auto-fix linting issues in notebooks (if notebooks/ directory exists)
 5. **Format Snakemake files**: Run `if [ -d "pipeline/workflow" ]; then uv run snakefmt pipeline/workflow/; else echo "pipeline/workflow/ directory not found"; fi` to format Snakemake workflow files
-6. **Type check with mypy**: Run `uv run mypy src/leech/` to check for type errors
-7. **Type check with ty**: Run `uvx ty check` to perform stricter type checking
+6. **Type check with ty**: Run `uv run ty check src/leech/` to check for type errors
 
 If any step fails or reports issues:
 - For formatting and auto-fixable linting: these should be automatically fixed

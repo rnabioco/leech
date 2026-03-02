@@ -115,10 +115,7 @@ class LeechDataset(Dataset):
         self.chunks = [c for c in self.chunks if c["label_int"] is not None]
 
         if len(self.chunks) == 0:
-            raise ValueError(
-                f"No valid chunks found"
-                f"{f' in {chunk_path}' if chunk_path else ''}"
-            )
+            raise ValueError(f"No valid chunks found{f' in {chunk_path}' if chunk_path else ''}")
 
         # Pre-tensorize: encode sequences, labels, and convert dtypes once
         self._encoded_seqs: list[torch.Tensor] = []
@@ -129,9 +126,7 @@ class LeechDataset(Dataset):
             self._encoded_seqs.append(self._encode_sequence(chunk["sequence"]))
 
             # Pre-create label tensor
-            self._labels.append(
-                torch.tensor([chunk["label_int"]], dtype=torch.float32)
-            )
+            self._labels.append(torch.tensor([chunk["label_int"]], dtype=torch.float32))
 
             # Convert signal and features to float32 in-place (avoid per-epoch astype)
             if chunk["signal"].dtype != np.float32:
@@ -202,8 +197,7 @@ class LeechDataset(Dataset):
             margin = (len(dwell) - self.kmer_len) // 2
             if self.dwell_offset > margin:
                 raise ValueError(
-                    f"dwell_offset ({self.dwell_offset}) exceeds available "
-                    f"dwell_margin ({margin})"
+                    f"dwell_offset ({self.dwell_offset}) exceeds available dwell_margin ({margin})"
                 )
             start = margin + self.dwell_offset
             dwell = dwell[start : start + self.kmer_len]

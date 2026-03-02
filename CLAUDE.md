@@ -8,51 +8,51 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Development Commands
 
-This project uses [pixi](https://pixi.sh/) for unified dependency management (conda + PyPI). `leech` is installed as an editable PyPI dependency via `pixi.toml` in the parent project.
+This project uses [uv](https://docs.astral.sh/uv/) for fast, reliable Python package management.
 
 ### Installation
 ```bash
-# Install pixi if you don't have it
-curl -fsSL https://pixi.sh/install.sh | bash
+# Install uv if you don't have it
+curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # Install all dependencies (from project root)
-pixi install
+uv sync
 
 # Install with dev tools
-pixi install -e dev
+uv sync --all-extras
 ```
 
 ### Testing
 ```bash
 # Run all tests
-pixi run -e dev pytest
+uv run pytest
 
 # Run specific test file
-pixi run -e dev pytest tests/test_features.py
+uv run pytest tests/test_features.py
 
 # Run with coverage
-pixi run -e dev pytest --cov=leech --cov-report=term-missing
+uv run pytest --cov=leech --cov-report=term-missing
 
 # Run specific test function
-pixi run -e dev pytest tests/test_features.py::test_compute_dwell_times -v
+uv run pytest tests/test_features.py::test_compute_dwell_times -v
 ```
 
 ### Linting and Formatting
 ```bash
 # Check formatting
-pixi run -e dev ruff format --check .
+uv run ruff format --check .
 
 # Format code
-pixi run -e dev ruff format .
+uv run ruff format .
 
 # Lint with ruff
-pixi run -e dev ruff check .
+uv run ruff check .
 
 # Fix auto-fixable issues
-pixi run -e dev ruff check --fix .
+uv run ruff check --fix .
 
-# Type checking with mypy
-pixi run -e dev mypy src/leech/
+# Type checking with ty
+uv run ty check src/leech/
 ```
 
 ### Running the CLI
@@ -65,51 +65,48 @@ The CLI is organized into workflow-based command groups:
 
 ```bash
 # Prepare training data (sequential)
-pixi run leech data prepare --pod5 reads.pod5 --bam alignments.bam --output-dir chunks/
+uv run leech data prepare --pod5 reads.pod5 --bam alignments.bam --output-dir chunks/
 
 # Prepare training data (parallel - recommended for large datasets)
 # Use --workers to specify number of parallel processes
 # Use --chunk-size to control batch size (default: 100 reads per batch)
-pixi run leech data prepare --pod5 reads.pod5 --bam alignments.bam --output-dir chunks/ \
+uv run leech data prepare --pod5 reads.pod5 --bam alignments.bam --output-dir chunks/ \
   --workers 8 --chunk-size 100
 
 # Merge and split data
-pixi run leech data merge -i label1=file1.npz -i label2=file2.npz --output-dir merged/
+uv run leech data merge -i label1=file1.npz -i label2=file2.npz --output-dir merged/
 
 # Train model
-pixi run leech model train --train-data chunks/train.json --val-data chunks/val.json \
+uv run leech model train --train-data chunks/train.json --val-data chunks/val.json \
   --model ConvLSTMDwell --output-dir models/
 
 # Optimize hyperparameters
-pixi run leech model optimize --train-data chunks/train.npz --val-data chunks/val.npz \
+uv run leech model optimize --train-data chunks/train.npz --val-data chunks/val.npz \
   --context-grid 200,500,1000 --output-dir grid_results/
 
 # Evaluate model
-pixi run leech eval test --model models/model_best.pt --test-data chunks/test.json --output metrics.json
+uv run leech eval test --model models/model_best.pt --test-data chunks/test.json --output metrics.json
 
 # Compare models
-pixi run leech eval compare -m models/model1/ -m models/model2/ -t chunks/test.npz -o comparison/
+uv run leech eval compare -m models/model1/ -m models/model2/ -t chunks/test.npz -o comparison/
 
 # Analyze feature importance
-pixi run leech eval importance -m models/model_best.pt -t chunks/test.npz -o importance/
+uv run leech eval importance -m models/model_best.pt -t chunks/test.npz -o importance/
 
 # Run inference
-pixi run leech predict --model models/model_best.pt --pod5 reads.pod5 --bam alignments.bam --output predictions.bam
+uv run leech predict --model models/model_best.pt --pod5 reads.pod5 --bam alignments.bam --output predictions.bam
 ```
 
 ### Adding Dependencies
 ```bash
-# Add a conda dependency
-pixi add package-name
-
-# Add a PyPI dependency
-pixi add --pypi package-name
+# Add a runtime dependency
+uv add package-name
 
 # Add a dev dependency
-pixi add --pypi --feature dev package-name
+uv add --dev package-name
 
 # Update all dependencies
-pixi update
+uv sync --upgrade
 ```
 
 ## Jupyter Notebook Conventions
@@ -173,7 +170,7 @@ The `prepare` command supports multiprocessing for large datasets:
 ```bash
 # Use --workers N to enable parallel processing (N > 1)
 # Use --chunk-size M to control batch size (default: 100 reads)
-pixi run leech prepare --pod5 data.pod5 --bam alignments.bam \
+uv run leech prepare --pod5 data.pod5 --bam alignments.bam \
   --output-dir chunks/ --workers 8 --chunk-size 100
 ```
 
