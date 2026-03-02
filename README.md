@@ -131,11 +131,12 @@ uv run leech eval importance \
   -t chunks/test.npz \
   -o importance/
 
-# Optimize hyperparameters
+# Optimize hyperparameters (parallel on CPU)
 uv run leech model optimize \
   --train-data chunks/train.npz \
   --val-data chunks/val.npz \
   --context-grid 200,500,1000,2000 \
+  --parallel 4 \
   -o grid_results/
 ```
 

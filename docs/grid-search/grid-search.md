@@ -31,17 +31,14 @@ Find the optimal signal window (left/right context) around the modification site
 #### Training Protocol
 
 ```bash title="Bash" linenums="1"
-# Example: Train models across grid
-for left in 200 500 1000 2000 5000; do
-  for right in 200 500 1000 2000 5000; do
-    uv run leech train \
-      --train-data train.json \
-      --val-data val.json \
-      --model ConvLSTMDwell \
-      --chunk-context $left $right \
-      --output-dir models/train_${left}_${right}
-  done
-done
+# Use leech model optimize for automated grid search
+uv run leech model optimize \
+  --train-data train.npz \
+  --val-data val.npz \
+  --model ConvLSTMDwell \
+  --context-grid 200,500,1000,2000,5000 \
+  --output-dir models/grid/ \
+  --parallel 4
 ```
 
 #### Evaluation Metrics
@@ -383,10 +380,11 @@ rule grid_search_train:
         right = lambda wc: wc.right
     shell:
         """
-        uv run leech train \
+        uv run leech model optimize \
             --train-data {input.train} \
             --val-data {input.val} \
-            --chunk-context {params.left} {params.right} \
+            --left-contexts {params.left} \
+            --right-contexts {params.right} \
             --output-dir $(dirname {output.model})
         """
 

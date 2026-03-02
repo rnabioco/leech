@@ -29,7 +29,8 @@ run_inference(
     bam_path=Path("reads.bam"),
     output_bam=Path("predictions.bam"),
     batch_size=128,
-    device="cuda"
+    device="cuda",
+    base_justify="center",  # Signal chunk centering strategy
 )
 ```
 

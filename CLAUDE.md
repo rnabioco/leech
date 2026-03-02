@@ -82,7 +82,7 @@ uv run leech model train --train-data chunks/train.json --val-data chunks/val.js
 
 # Optimize hyperparameters
 uv run leech model optimize --train-data chunks/train.npz --val-data chunks/val.npz \
-  --context-grid 200,500,1000 --output-dir grid_results/
+  --context-grid 200,500,1000 --output-dir grid_results/ --parallel 4
 
 # Evaluate model
 uv run leech eval test --model models/model_best.pt --test-data chunks/test.json --output metrics.json
