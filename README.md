@@ -1,6 +1,6 @@
 # leech
 
-**L**earning **E**nhanc**e**d **C**lassification from **H**anopore signals
+**L**earning **E**nhanc**e**d **E**lectrical **C**lassifiers from **H**anopore signals
 
 A Python library for training machine learning models on nanopore signal data, with a focus on integrating dwell time features for modified base detection.
 
