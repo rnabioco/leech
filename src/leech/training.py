@@ -468,7 +468,9 @@ def train_model(
     # Create data loaders
     # On CPU, workers compete for CPU time with training; with pre-tensorized
     # data __getitem__ is trivially fast, so workers add overhead without benefit.
-    if device == "cpu":
+    import multiprocessing
+
+    if device == "cpu" or multiprocessing.current_process().daemon:
         num_workers = 0
     else:
         num_workers = 2
