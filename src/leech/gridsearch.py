@@ -527,6 +527,10 @@ def run_grid_search(config: GridSearchConfig) -> Path:
 
     successful_results = [r for r in results if r.get("status") == "success"]
 
+    if not successful_results:
+        logger.error(f"All {len(results)} grid points failed")
+        raise RuntimeError(f"Grid search failed: all {len(results)} grid points failed")
+
     if successful_results:
         # Create results table
         table = Table(title="Grid Search Results", show_header=True, header_style="bold magenta")
