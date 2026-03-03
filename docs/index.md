@@ -1,6 +1,6 @@
 # Leech
 
-<b>L</b>earning <b>E</b>nhanced <b>A</b>minoacylation <b>C</b>lassification from <b>H</b>anopore signals
+<b>L</b>earning <b>E</b>nhanced <b>E</b>lectrical <b>C</b>lassifiers from <b>H</b>anopore signals
 
 [![CI](https://github.com/rnabioco/leech/actions/workflows/ci.yml/badge.svg)](https://github.com/rnabioco/leech/actions/workflows/ci.yml)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
