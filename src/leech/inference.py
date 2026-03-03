@@ -31,6 +31,7 @@ def run_inference(
     motif_offset: int = 0,
     batch_size: int = 128,
     base_justify: str = "center",
+    reverse_signal: bool = True,
 ) -> None:
     """
     Run inference on POD5 and BAM files.
@@ -90,7 +91,9 @@ def run_inference(
     with Progress() as progress:
         task = progress.add_task("[cyan]Running inference...", total=None)
 
-        for leech_read in iter_bam_with_pod5(bam_path, pod5_path, min_mapq=min_mapq):
+        for leech_read in iter_bam_with_pod5(
+            bam_path, pod5_path, min_mapq=min_mapq, reverse_signal=reverse_signal
+        ):
             total_reads += 1
             progress.update(task, advance=1, description=f"[cyan]Processed {total_reads} reads...")
 

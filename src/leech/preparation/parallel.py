@@ -39,6 +39,7 @@ def _process_read_chunk_worker(
         bool,
         str,
         int,
+        bool,
     ],
 ) -> list[dict[str, np.ndarray | str | int | None]]:
     """
@@ -47,7 +48,7 @@ def _process_read_chunk_worker(
     Args:
         args: Tuple of (read_infos, pod5_path, motif, motif_offset, label, label_int,
                         motif_reference, reference_sequences, skip_motif_indels,
-                        base_justify, dwell_margin)
+                        base_justify, dwell_margin, reverse_signal)
 
     Returns:
         List of extracted chunks from all reads in this chunk
@@ -64,6 +65,7 @@ def _process_read_chunk_worker(
         skip_motif_indels,
         base_justify,
         dwell_margin,
+        reverse_signal,
     ) = args
 
     # Get motif searcher
@@ -86,6 +88,12 @@ def _process_read_chunk_worker(
                 signal_found = False
                 for read in pod5_reader.reads([read_info.read_id]):
                     raw_signal = read.signal
+
+                    # Reverse signal for RNA: POD5 stores 3'→5' sequencing order,
+                    # but mv/ts/ns tags reference the reversed (5'→3') signal space
+                    if reverse_signal:
+                        raw_signal = raw_signal[::-1]
+
                     pod5_metadata = {
                         "read_id": str(read.read_id),
                         "channel": read.pore.channel,
@@ -187,6 +195,7 @@ def prepare_training_data_parallel(
     chunk_size: int = 100,
     base_justify: str = "center",
     dwell_margin: int = 0,
+    reverse_signal: bool = True,
 ) -> tuple[list[dict[str, np.ndarray | str | int | None]], dict[str, int]]:
     """
     Prepare training data from BAM and POD5 files using multiprocessing.
@@ -208,6 +217,7 @@ def prepare_training_data_parallel(
         skip_motif_indels: Skip reads with indels in motif region
         num_workers: Number of parallel workers
         chunk_size: Number of reads to process per worker batch
+        reverse_signal: Reverse raw signal for RNA (POD5 3'→5' vs basecaller 5'→3')
 
     Returns:
         Tuple of (chunks, statistics) where statistics contains:
@@ -260,6 +270,7 @@ def prepare_training_data_parallel(
             skip_motif_indels,
             base_justify,
             dwell_margin,
+            reverse_signal,
         )
         for chunk in read_chunks
     ]

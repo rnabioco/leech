@@ -30,6 +30,7 @@ def prepare_training_data(
     min_mapq: int = 0,
     base_justify: str = "center",
     dwell_margin: int = 0,
+    reverse_signal: bool = True,
 ) -> tuple[list[dict[str, np.ndarray | str | int | None]], dict[str, int]]:
     """
     Prepare training data from BAM and POD5 files with statistics tracking.
@@ -46,6 +47,7 @@ def prepare_training_data(
         label: String label identifier (e.g., "Ala", "Gly", "charged", "uncharged")
         label_int: Optional numeric label (0, 1) - assigned during merge for pairwise comparisons
         min_mapq: Minimum mapping quality
+        reverse_signal: Reverse raw signal for RNA (POD5 3'→5' vs basecaller 5'→3')
 
     Returns:
         Tuple of (chunks, statistics) where statistics is a dict with:
@@ -73,7 +75,9 @@ def prepare_training_data(
     if motif is not None:
         motif_searcher = get_motif_searcher(mode="bam")
 
-    for read in iter_bam_with_pod5(bam_path, pod5_path, min_mapq=min_mapq):
+    for read in iter_bam_with_pod5(
+        bam_path, pod5_path, min_mapq=min_mapq, reverse_signal=reverse_signal
+    ):
         total_reads += 1
         read_chunks = extract_training_chunks(
             read,
@@ -138,6 +142,7 @@ def prepare_training_data_with_split(
     progress_callback: Callable[[int], None] | None = None,
     base_justify: str = "center",
     dwell_margin: int = 0,
+    reverse_signal: bool = True,
 ) -> dict[str, Any]:
     """
     Prepare training data from POD5/BAM files with optional splitting.
@@ -213,7 +218,9 @@ def prepare_training_data_with_split(
     # Extract chunks
     logger.info("Extracting chunks...")
     chunks = []
-    for read in iter_bam_with_pod5(bam_path, pod5_path, min_mapq=min_mapq):
+    for read in iter_bam_with_pod5(
+        bam_path, pod5_path, min_mapq=min_mapq, reverse_signal=reverse_signal
+    ):
         read_chunks = extract_training_chunks(
             read,
             motif=motif,
