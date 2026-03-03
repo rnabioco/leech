@@ -215,7 +215,7 @@ def get_project_root():
         try:
             # Find project_name in path and return path up to and including it
             project_idx = parts.index(project_name)
-            return str(Path(*parts[:project_idx + 1]))
+            return str(Path(*parts[: project_idx + 1]))
         except ValueError:
             # project_name not in path, use parent of chunks_dir
             return str(chunks_path.parent)

@@ -54,6 +54,7 @@ def iter_bam_with_pod5(
     reference_fasta: Path | None = None,
     min_mapq: int = 0,
     require_tags: list[str] | None = None,
+    reverse_signal: bool = True,
 ) -> Iterator[LeechRead]:
     """
     Iterate over aligned reads, loading signal from POD5.
@@ -93,6 +94,11 @@ def iter_bam_with_pod5(
 
                 # Read signal from POD5
                 raw_signal, pod5_metadata = pod5_reader.get_signal(read_id)
+
+                # Reverse signal for RNA: POD5 stores 3'→5' sequencing order,
+                # but mv/ts/ns tags reference the reversed (5'→3') signal space
+                if reverse_signal:
+                    raw_signal = raw_signal[::-1]
 
                 # Normalize signal
                 norm_signal, norm_params = normalize_signal(raw_signal, method="median_mad")

@@ -163,6 +163,7 @@ def prepare_chunks_with_context(
     label_int: int = 0,
     min_mapq: int = 10,
     base_justify: str = "center",
+    reverse_signal: bool = True,
 ) -> None:
     """
     Prepare training chunks with specific signal context.
@@ -179,10 +180,13 @@ def prepare_chunks_with_context(
         label: String label for chunks (e.g., 'charged', 'uncharged')
         label_int: Numeric label for chunks (0 or 1)
         min_mapq: Minimum mapping quality
+        reverse_signal: Reverse raw signal for RNA (POD5 3'→5' vs basecaller 5'→3')
     """
     chunks = []
 
-    for read in iter_bam_with_pod5(bam_path, pod5_path, min_mapq=min_mapq):
+    for read in iter_bam_with_pod5(
+        bam_path, pod5_path, min_mapq=min_mapq, reverse_signal=reverse_signal
+    ):
         # Temporarily modify get_chunk to use custom context
         original_get_chunk = read.get_chunk
 

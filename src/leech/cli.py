@@ -238,6 +238,12 @@ def data():
     default=0,
     help="Extra bases on each side of dwell/feature arrays for runtime dwell_offset tuning (default: 0, use 15 for grid search over dwell offsets)",
 )
+@click.option(
+    "--no-reverse-signal",
+    is_flag=True,
+    default=False,
+    help="Do NOT reverse the raw signal. By default, signal is reversed for direct RNA sequencing (POD5 stores 3'→5', basecaller expects 5'→3'). Use this flag for DNA data.",
+)
 def prepare(
     pod5,
     bam,
@@ -258,6 +264,7 @@ def prepare(
     chunk_size,
     base_justify,
     dwell_margin,
+    no_reverse_signal,
 ):
     """Prepare training data from POD5 and BAM files."""
     from leech.commands import handle_prepare
@@ -284,6 +291,7 @@ def prepare(
         chunk_size=chunk_size,
         base_justify=base_justify,
         dwell_margin=dwell_margin,
+        reverse_signal=not no_reverse_signal,
     )
 
 
@@ -933,7 +941,13 @@ def ablation(model, test_data, output_dir, device, no_plot):
     default="center",
     help='Where to center signal chunk within the focus base: "start" (first sample), "center" (midpoint, default), or "end" (last sample, useful for 3\' modifications)',
 )
-def predict(model, pod5, bam, output, device, base_justify):
+@click.option(
+    "--no-reverse-signal",
+    is_flag=True,
+    default=False,
+    help="Do NOT reverse the raw signal. By default, signal is reversed for direct RNA sequencing (POD5 stores 3'→5', basecaller expects 5'→3'). Use this flag for DNA data.",
+)
+def predict(model, pod5, bam, output, device, base_justify, no_reverse_signal):
     """Run inference on new data to generate predictions."""
     from leech.inference import run_inference
 
@@ -949,6 +963,7 @@ def predict(model, pod5, bam, output, device, base_justify):
         output_path=output,
         device=device,
         base_justify=base_justify,
+        reverse_signal=not no_reverse_signal,
     )
 
     console.print("[bold green]Inference complete![/bold green]")
