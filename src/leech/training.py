@@ -508,6 +508,9 @@ def train_model(
     augment_scale_min: float = 1.0,
     augment_scale_max: float = 1.0,
     resume_from: Path | None = None,
+    motif: str | None = None,
+    motif_offset: int = 0,
+    base_justify: str = "center",
     **model_kwargs: Any,
 ) -> dict[str, Any]:
     """
@@ -543,6 +546,9 @@ def train_model(
         augment_scale_min: Min random scale factor for signal augmentation
         augment_scale_max: Max random scale factor for signal augmentation
         resume_from: Path to checkpoint to resume training from
+        motif: Motif used for chunk extraction (recorded in config for provenance)
+        motif_offset: Offset within motif for focus base (recorded in config)
+        base_justify: Signal justification within focus base (recorded in config)
         **model_kwargs: Additional model parameters (passed to model constructor)
 
     Returns:
@@ -675,6 +681,10 @@ def train_model(
         "signal_len": signal_len,
         "kmer_len": kmer_len,
         "num_features": num_features,
+        "dwell_offset": dwell_offset,
+        "motif": motif,
+        "motif_offset": motif_offset,
+        "base_justify": base_justify,
         "epochs": epochs,
         "batch_size": batch_size,
         "learning_rate": learning_rate,
