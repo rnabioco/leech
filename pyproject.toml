@@ -1,7 +1,7 @@
 [project]
 name = "leech"
-version = "0.1.0-alpha"
-description = "Learning Enhanced Aminoacylation Classification from Hanopore signals"
+version = "0.2.0"
+description = "Learning Enhanced Electrical Classifiers from Hanopore signals"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
@@ -57,6 +57,9 @@ notebook = [
 ]
 
 [dependency-groups]
+dev = [
+    "pymupdf>=1.27.1",
+]
 docs = [
   "ghp-import",
   "matplotlib>=3.10.7",

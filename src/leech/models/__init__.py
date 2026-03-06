@@ -12,6 +12,8 @@ Available models:
 
 from typing import Any
 
+import torch.nn as nn
+
 from leech.models.conv_lstm_base import ConvLSTMBase
 from leech.models.conv_lstm_dwell import ConvLSTMDwell
 from leech.models.conv_only import ConvOnly
@@ -42,7 +44,7 @@ MODEL_REGISTRY = {
 }
 
 
-def get_model(model_name: str, **kwargs: Any) -> object:
+def get_model(model_name: str, **kwargs: Any) -> nn.Module:
     """
     Get model by name.
 

@@ -696,7 +696,11 @@ def bundle(model_dir, output, bundle_version, comparison_type):
     # Auto-discover pair subdirectories
     model_dirs = {}
     for subdir in sorted(model_dir.iterdir()):
-        if subdir.is_dir() and (subdir / "model_best.pt").exists() and (subdir / "config.json").exists():
+        if (
+            subdir.is_dir()
+            and (subdir / "model_best.pt").exists()
+            and (subdir / "config.json").exists()
+        ):
             model_dirs[subdir.name] = subdir
 
     if not model_dirs:
@@ -758,7 +762,9 @@ def bundle_info(bundle):
     # Print pairs
     pairs = metadata.get("pairs", [])
     if pairs:
-        pairs_table = Table(title=f"Models ({len(pairs)})", show_header=True, header_style="bold magenta")
+        pairs_table = Table(
+            title=f"Models ({len(pairs)})", show_header=True, header_style="bold magenta"
+        )
         pairs_table.add_column("#", style="dim", width=4)
         pairs_table.add_column("Pair", style="cyan")
         for i, pair in enumerate(pairs, 1):
@@ -1314,7 +1320,19 @@ def ablation(model, test_data, output_dir, device, no_plot):
     default=False,
     help="Do NOT reverse the raw signal. By default, signal is reversed for direct RNA sequencing (POD5 stores 3'→5', basecaller expects 5'→3'). Use this flag for DNA data.",
 )
-def predict(model, bundle_path, pair, run_all, raw, pod5, bam, output, device, base_justify, no_reverse_signal):
+def predict(
+    model,
+    bundle_path,
+    pair,
+    run_all,
+    raw,
+    pod5,
+    bam,
+    output,
+    device,
+    base_justify,
+    no_reverse_signal,
+):
     """Run inference on new data to generate predictions."""
     from leech.inference import run_bundle_inference, run_inference
     from leech.util import load_model_from_bundle, load_model_from_checkpoint

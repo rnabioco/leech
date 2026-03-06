@@ -15,14 +15,12 @@ from rich.progress import Progress
 
 from leech.models.inference_wrapper import ModelInferenceWrapper
 from leech.preparation import encode_kmer, iter_bam_with_pod5
-from leech.util import load_model_from_checkpoint
+from leech.util import _instantiate_model, load_model_from_checkpoint
 
 logger = logging.getLogger("leech.inference")
 
 
-def aggregate_pairwise(
-    pairs: list[str], probs: list[float]
-) -> tuple[str, float, dict[str, float]]:
+def aggregate_pairwise(pairs: list[str], probs: list[float]) -> tuple[str, float, dict[str, float]]:
     """
     Aggregate pairwise model probabilities into a single amino acid prediction.
 
@@ -122,7 +120,6 @@ def run_inference(
     signal_len = config["signal_len"]
     kmer_len = config["kmer_len"]
     model_type = config["model_name"]
-    config["num_features"]
     dwell_offset = config.get("dwell_offset", 0)
 
     # Wrap model for unified forward pass
@@ -137,8 +134,12 @@ def run_inference(
     logger.info(f"K-mer length: {kmer_len}")
     logger.info(f"Signal context: {signal_context}")
 
-    # Open input BAM
+    # Open input BAM and index alignments by read ID (avoids O(n^2) scanning)
     bam_in = pysam.AlignmentFile(str(bam_path), "rb")
+    alignment_by_read_id: dict[str, pysam.AlignedSegment] = {}
+    for a in bam_in.fetch(until_eof=True):
+        if a.query_name is not None:
+            alignment_by_read_id[a.query_name] = a
 
     # Create output BAM
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -163,13 +164,7 @@ def run_inference(
             progress.update(task, advance=1, description=f"[cyan]Processed {total_reads} reads...")
 
             # Get corresponding alignment from input BAM
-            bam_in.reset()
-            aln = None
-            for a in bam_in.fetch(until_eof=True):
-                if a.query_name == leech_read.read_id:
-                    aln = a
-                    break
-
+            aln = alignment_by_read_id.get(leech_read.read_id)
             if aln is None:
                 continue
 
@@ -317,7 +312,9 @@ def run_bundle_inference(
     signal_context = (signal_len // 2, signal_len // 2)
     kmer_context = kmer_len // 2
 
-    logger.info(f"Bundle: {metadata['architecture']}, {len(pairs)} models, v{metadata['bundle_version']}")
+    logger.info(
+        f"Bundle: {metadata['architecture']}, {len(pairs)} models, v{metadata['bundle_version']}"
+    )
 
     # Select aggregation function
     if comparison_type == "pairwise":
@@ -326,20 +323,9 @@ def run_bundle_inference(
         aggregate_fn = aggregate_one_vs_all
 
     # Load all models
-    import inspect
-
-    from leech.models import MODEL_REGISTRY, get_model
-
-    model_kwargs = {
-        k: v for k, v in config.items() if k not in ["model_name", "signal_len", "kmer_len"]
-    }
-    model_class = MODEL_REGISTRY[model_type]
-    valid_params = set(inspect.signature(model_class).parameters.keys()) - {"self"}
-    filtered_kwargs = {k: v for k, v in model_kwargs.items() if k in valid_params}
-
     wrappers = {}
     for pair in pairs:
-        m = get_model(model_type, signal_len=signal_len, kmer_len=kmer_len, **filtered_kwargs)
+        m = _instantiate_model(config)
         m.load_state_dict(bundle["models"][pair]["state_dict"])
         m = m.to(device)
         m.eval()
@@ -347,8 +333,12 @@ def run_bundle_inference(
 
     pair_names_str = ",".join(pairs)
 
-    # Open BAM files
+    # Open BAM files and index alignments by read ID (avoids O(n^2) scanning)
     bam_in = pysam.AlignmentFile(str(bam_path), "rb")
+    alignment_by_read_id: dict[str, pysam.AlignedSegment] = {}
+    for a in bam_in.fetch(until_eof=True):
+        if a.query_name is not None:
+            alignment_by_read_id[a.query_name] = a
     output_path.parent.mkdir(parents=True, exist_ok=True)
     bam_out = pysam.AlignmentFile(str(output_path), "wb", template=bam_in)
 
@@ -364,12 +354,7 @@ def run_bundle_inference(
             progress.update(task, advance=1, description=f"[cyan]Processed {total_reads} reads...")
 
             # Find alignment
-            bam_in.reset()
-            aln = None
-            for a in bam_in.fetch(until_eof=True):
-                if a.query_name == leech_read.read_id:
-                    aln = a
-                    break
+            aln = alignment_by_read_id.get(leech_read.read_id)
             if aln is None:
                 continue
 

@@ -41,6 +41,7 @@ import torch
 from torch.utils.data import Dataset
 
 from leech.chunking import load_chunks
+from leech.models.inference_wrapper import ModelInferenceWrapper
 
 logger = logging.getLogger("leech.dataset")
 
@@ -56,14 +57,7 @@ _BASE_MAP[ord("g")] = 2
 _BASE_MAP[ord("t")] = 3
 
 # Models that require dwell/signal features as third input
-# Must match ModelInferenceWrapper.FEATURE_MODELS
-FEATURE_MODELS = {
-    "ConvLSTMDwell",
-    "TransformerDwell",
-    "ConvOnly",
-    "TCNDwell",
-    "ResNetDwell",
-}
+FEATURE_MODELS = ModelInferenceWrapper.FEATURE_MODELS
 
 
 class LeechDataset(Dataset):
