@@ -1,184 +1,176 @@
-# Troubleshooting Guide
+# Troubleshooting
 
-## SLURM Executor Issues
+## Data preparation
 
-### QoS Error
+### No chunks extracted
 
-**Symptom:**
 ```
-sbatch: error: Error: A Quality of Service (QoS) has not been provided,
-specifying a QoS is now required.
+Extracted 0 training chunks
 ```
 
-**Solution:**
-Ensure `cluster/slurm/config.yaml` has `slurm-qos` (with hyphen) as a top-level parameter:
+**Possible causes:**
 
-```yaml title="YAML" linenums="1"
-# Correct configuration
-slurm-qos: "normal"
+1. **BAM missing move tables.** Basecall with `dorado basecaller --emit-moves`.
+   Verify tags exist:
+   ```bash
+   uv run python -c "
+   import pysam
+   with pysam.AlignmentFile('alignments.bam') as bam:
+       aln = next(bam)
+       print(f'mv: {aln.has_tag(\"mv\")}, ns: {aln.has_tag(\"ns\")}')
+   "
+   ```
+
+2. **Motif not found.** Check that your motif exists in the reference:
+   ```bash
+   grep -c CCAGGC reference.fa
+   ```
+
+3. **All reads filtered.** Lower `--min-mapq` or check alignment rates.
+
+4. **Insufficient context.** Reads near chromosome ends may lack enough
+   flanking signal. Reduce `--signal-context` if needed.
+
+### Read ID mismatch between POD5 and BAM
+
+```
+ValueError: Read read_001 not found in reads.pod5
 ```
 
-NOT as a resource with underscore:
-```yaml title="YAML" linenums="1"
-# INCORRECT
-default-resources:
-  slurm_qos: "normal"  # Wrong - this doesn't work
+Read IDs must match exactly. Print a few from each file to compare:
+
+```bash
+# BAM read IDs
+uv run python -c "
+import pysam
+with pysam.AlignmentFile('alignments.bam') as bam:
+    for i, aln in enumerate(bam):
+        print(aln.query_name)
+        if i >= 3: break
+"
+
+# POD5 read IDs
+uv run python -c "
+from pod5 import DatasetReader
+from pathlib import Path
+with DatasetReader(Path('reads.pod5')) as reader:
+    for i, read in enumerate(reader.reads()):
+        print(read.read_id)
+        if i >= 3: break
+"
 ```
 
-See `TESTING.md` for detailed explanation and verification steps.
+### Slow data preparation
 
-### Lock Files
+Use parallel processing: `--workers 8 --chunk-size 100`. Set workers to
+your core count and adjust chunk size based on read length (smaller for
+long reads, larger for short reads).
 
-**Symptom:**
+### Memory errors during preparation
+
+Reduce `--chunk-size` (fewer reads per batch) or `--workers` (fewer
+parallel processes).
+
+## Training
+
+### CUDA out of memory
+
 ```
-LockException: Error: Directory cannot be locked
-```
-
-**Solution:**
-```bash title="Bash" linenums="1"
-snakemake --unlock
-```
-
-This can happen if a previous Snakemake run was killed or terminated unexpectedly.
-
-### Running in SLURM Job Context
-
-**Warning:**
-```
-You are running snakemake in a SLURM job context. This is not recommended
+RuntimeError: CUDA out of memory
 ```
 
-**Explanation:**
-This warning appears when you run Snakemake from within an sbatch job (like the orchestrator pattern in `scripts/test_merge_pods.sh`). This is expected behavior - the orchestrator job submits worker jobs via sbatch.
+- Reduce `--batch-size` (try 64 or 32)
+- Reduce `--signal-context` during data preparation
+- Use `--device cpu` (slower but no VRAM limit)
 
-You can safely ignore this warning when using the orchestrator pattern, but avoid running Snakemake directly on compute nodes.
+### Training doesn't converge
 
-## Data Pipeline Issues
+- Check that your data has both classes (`label 0` and `label 1`)
+- Try a lower learning rate: `--learning-rate 0.0001`
+- Enable focal loss for imbalanced data: `--loss focal`
+- Run grid search to find optimal signal context
 
-### POD5 Files Not Found
+### Validation accuracy plateaus early
 
-**Symptom:**
-```
-FileNotFoundError: POD5 file not found
-```
+- Add regularization: `--weight-decay 0.01`
+- Use gradient clipping: `--max-grad-norm 1.0`
+- Enable LR scheduling: `--scheduler reduce_on_plateau`
+- Add data augmentation: `--augment-jitter 0.01`
 
-**Check:**
-1. Verify paths in `config/samples.yml`
-2. Ensure POD5 files exist at specified locations
-3. Check file permissions
+## Inference
 
-### BAM Missing Move Tables
+### Model loading errors
 
-**Symptom:**
-```
-KeyError: 'mv' tag not found in BAM file
-```
-
-**Solution:**
-BAM files must be basecalled with dorado or guppy to include move table tags (`mv` and `ns`). Re-basecall if necessary:
-
-```bash title="Bash" linenums="1"
-snakemake --profile cluster/slurm all_rebasecall
-```
-
-### Memory Errors During Training
-
-**Symptom:**
-```
-CUDA out of memory
-```
-
-**Solutions:**
-1. Reduce batch size in training config
-2. Use CPU instead of GPU (slower)
-3. Request more GPU memory in SLURM config
-
-Edit `cluster/slurm/config.yaml`:
-```yaml title="YAML" linenums="1"
-set-resources:
-  train_model:
-    mem_mb: 64000  # Increase from 32000
-```
-
-## Model Issues
-
-### Poor Model Performance
-
-**Check:**
-1. Verify training/validation split is balanced
-2. Check chunk context sizes (use grid search)
-3. Ensure sufficient training data
-4. Verify feature normalization
-
-**Debug:**
-```bash title="Bash" linenums="1"
-# Run grid search to optimize chunk context
-snakemake --profile cluster/slurm all_grid_search
-
-# Check training metrics
-cat results/models/charged_vs_uncharged/training_history.json
-```
-
-### Model Loading Errors
-
-**Symptom:**
 ```
 RuntimeError: Error loading model checkpoint
 ```
 
-**Solutions:**
-1. Verify model architecture matches checkpoint
-2. Check PyTorch version compatibility
-3. Ensure model file is not corrupted
+- Ensure the model architecture matches what was used during training
+  (the `config.json` alongside `model_best.pt` records this)
+- Check PyTorch version compatibility
+- Verify the `.pt` file is not corrupted
 
-```bash title="Bash" linenums="1"
-# Verify checkpoint integrity
-uv run python -c "import torch; print(torch.load('path/to/model.pt').keys())"
+### Bundle inference errors
+
+```
+KeyError: Pair 'Ala_vs_Gly' not in bundle
 ```
 
-## Common Command Issues
+List available pairs with `leech model bundle-info --bundle FILE`.
+Pair names must match exactly (case-sensitive).
 
-### Profile Not Found
+### Wrong predictions on RNA data
 
-**Symptom:**
+If predictions seem random, check signal orientation. Direct RNA data
+needs signal reversal (the default). If you're running on DNA data, use
+`--no-reverse-signal`.
+
+## Snakemake pipeline
+
+### Lock files
+
 ```
-Could not find profile: cluster/slurm
-```
-
-**Solution:**
-Run from project root directory where `cluster/` exists, or specify full path:
-```bash title="Bash" linenums="1"
-snakemake --profile /full/path/to/cluster/slurm target
-```
-
-### Conda/Apptainer Errors
-
-**Symptom:**
-```
-CondaError: environment not found
+LockException: Error: Directory cannot be locked
 ```
 
-**Solution:**
-Snakemake uses apptainer (singularity) for containerized execution. Ensure apptainer cache directory is accessible:
+A previous Snakemake run was interrupted. Unlock with:
 
-```yaml title="YAML" linenums="1"
-# In cluster/slurm/config.yaml
-apptainer-prefix: '/scratch/alpine/username/apptainer_cache'
+```bash
+snakemake --unlock
 ```
 
-Create the directory if it doesn't exist:
-```bash title="Bash" linenums="1"
-mkdir -p /scratch/alpine/$USER/apptainer_cache
+### QoS error (SLURM)
+
+```
+sbatch: error: A Quality of Service (QoS) has not been provided
 ```
 
-## Getting Help
+Set `slurm-qos: "normal"` as a top-level key in your SLURM profile's
+`config.yaml` (not under `default-resources`).
 
-1. Check this troubleshooting guide
-2. Review `TESTING.md` for diagnostic scripts
-3. Check Snakemake logs in `logs/slurm/`
-4. Enable verbose mode: `snakemake --verbose ...`
-5. Review rule-specific logs in `results/*/logs/`
+### Jobs timing out
 
-For SLURM-specific issues, consult:
-- Alpine docs: https://curc.readthedocs.io/en/latest/clusters/alpine/
-- Snakemake SLURM plugin: https://snakemake.github.io/snakemake-plugin-catalog/plugins/executor/slurm.html
+Increase `runtime` in rule resources, or use the `long` QoS for grid
+search jobs.
+
+### POD5 files not found
+
+Verify paths in your pipeline config. On Alpine, ensure raw data is in
+`/projects/` (not `/scratch/`, which is auto-purged after 90 days).
+
+## General
+
+### `uv run leech` not found
+
+```
+error: No module named leech
+```
+
+Run `uv sync` from the project root to install the package.
+
+### Checking your installation
+
+```bash
+uv run leech --version
+uv run python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}')"
+```
