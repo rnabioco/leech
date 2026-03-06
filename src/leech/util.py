@@ -29,7 +29,7 @@ from sklearn.metrics import (
 )
 
 from leech.constants import generate_random_seed
-from leech.models import get_model
+from leech.models import MODEL_REGISTRY, get_model
 
 logger = logging.getLogger("leech.util")
 console = Console()
@@ -99,66 +99,8 @@ def load_model_from_checkpoint(
     with open(config_file) as f:
         config = json.load(f)
 
-    # Get model parameters
-    model_name = config["model_name"]
-    signal_len = config["signal_len"]
-    kmer_len = config["kmer_len"]
-
-    # Training-specific parameters that should NOT be passed to models
-    training_params = {
-        "epochs",
-        "batch_size",
-        "learning_rate",
-        "device",
-        "seed",
-        "val_split",
-        "patience",
-        "min_delta",
-        "save_dir",
-        "log_dir",
-        "num_workers",
-        "pin_memory",
-        "prefetch_factor",
-        "use_class_weights",
-        "pos_weight",
-        "scheduler",
-        "scheduler_patience",
-        "scheduler_factor",
-        "max_grad_norm",
-        "weight_decay",
-        "mixed_precision",
-        "warmup_epochs",
-        "loss_type",
-        "focal_gamma",
-        "augment_jitter",
-        "augment_scale_min",
-        "augment_scale_max",
-        "resume_from",
-    }
-
-    # Extract model-specific kwargs (filter out training params)
-    model_kwargs = {
-        k: v
-        for k, v in config.items()
-        if k not in ["model_name", "signal_len", "kmer_len"] and k not in training_params
-    }
-
-    # Filter kwargs to only include parameters the model actually accepts
-    from leech.models import MODEL_REGISTRY
-
-    model_class = MODEL_REGISTRY[model_name]
-    model_signature = inspect.signature(model_class)
-    valid_params = set(model_signature.parameters.keys()) - {"self"}
-
-    filtered_kwargs = {k: v for k, v in model_kwargs.items() if k in valid_params}
-
-    # Create model with only valid parameters
-    model = get_model(
-        model_name,
-        signal_len=signal_len,
-        kmer_len=kmer_len,
-        **filtered_kwargs,
-    )
+    # Create model from config (filters training params and validates constructor args)
+    model = _instantiate_model(config)
 
     # Load checkpoint
     checkpoint_file = checkpoint_path / checkpoint_name
@@ -209,6 +151,29 @@ _TRAINING_PARAMS = {
 def _architecture_config(config: dict) -> dict:
     """Extract architecture-only parameters from a full training config."""
     return {k: v for k, v in config.items() if k not in _TRAINING_PARAMS}
+
+
+def _instantiate_model(config: dict) -> nn.Module:
+    """Instantiate a model from a config dict, filtering to valid constructor params.
+
+    Strips training-specific keys and any kwargs not accepted by the model class,
+    so it works with both full training configs and bundle architecture configs.
+    """
+    model_name = config["model_name"]
+    signal_len = config["signal_len"]
+    kmer_len = config["kmer_len"]
+
+    model_kwargs = {
+        k: v
+        for k, v in config.items()
+        if k not in {"model_name", "signal_len", "kmer_len"} and k not in _TRAINING_PARAMS
+    }
+
+    model_class = MODEL_REGISTRY[model_name]
+    valid_params = set(inspect.signature(model_class).parameters.keys()) - {"self"}
+    filtered_kwargs = {k: v for k, v in model_kwargs.items() if k in valid_params}
+
+    return get_model(model_name, signal_len=signal_len, kmer_len=kmer_len, **filtered_kwargs)
 
 
 def create_bundle(
@@ -337,22 +302,7 @@ def load_model_from_bundle(
         raise KeyError(f"Pair '{pair}' not in bundle. Available: {available}")
 
     config = bundle["config"]
-    model_name = config["model_name"]
-    signal_len = config["signal_len"]
-    kmer_len = config["kmer_len"]
-
-    # Filter kwargs to valid model constructor params
-    model_kwargs = {
-        k: v for k, v in config.items() if k not in ["model_name", "signal_len", "kmer_len"]
-    }
-    from leech.models import MODEL_REGISTRY
-
-    model_class = MODEL_REGISTRY[model_name]
-    model_signature = inspect.signature(model_class)
-    valid_params = set(model_signature.parameters.keys()) - {"self"}
-    filtered_kwargs = {k: v for k, v in model_kwargs.items() if k in valid_params}
-
-    model = get_model(model_name, signal_len=signal_len, kmer_len=kmer_len, **filtered_kwargs)
+    model = _instantiate_model(config)
     model.load_state_dict(models[pair]["state_dict"])
     model = model.to(device)
     model.eval()

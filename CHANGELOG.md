@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-03-06
+
 ### Added
 
 - Tunable `dwell_offset` hyperparameter for motor-sensor offset correction
@@ -24,12 +26,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Switch LSF profile to use snakemake-executor-plugin-lsf
 - Consolidate guides into 3 professional documentation pages
 - Replace mypy with ty for type checking
+- Deduplicate `_TRAINING_PARAMS` set and extract `_instantiate_model()` helper in util.py
+- Consolidate `FEATURE_MODELS` set (dataset.py now references ModelInferenceWrapper)
+- Standardize project acronym across docs, pyproject.toml, and CLAUDE.md
 
 ### Fixed
 
+- O(n²) BAM scan in inference.py: build alignment dict in one pass instead of rescanning per read
 - Off-by-one error in `to_seq_to_sig_map` to match Remora convention
 - Default `min_mapq` filtering that drops most tRNA reads
 - TypeError from grid search context params passed to model constructor
+- Python badge in docs/index.md now shows 3.12+ (matches requires-python)
+
+### Removed
+
+- Stale `data_prep.py.bak` backup file
 
 ## [0.1.0-alpha] - 2025-11-13
 
