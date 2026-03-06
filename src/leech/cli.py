@@ -547,6 +547,24 @@ def merge(input_chunks, output_dir, train_split, val_split, seed, comparison_spe
     default=DEFAULT_AUGMENT_SCALE_MAX,
     help="Max random scale factor for signal augmentation",
 )
+@click.option(
+    "--motif",
+    type=str,
+    default=None,
+    help="Motif used for chunk extraction (recorded in config for provenance/inference)",
+)
+@click.option(
+    "--motif-offset",
+    type=int,
+    default=0,
+    help="Offset within motif for focus base (recorded in config)",
+)
+@click.option(
+    "--base-justify",
+    type=click.Choice(["start", "center", "end"]),
+    default="center",
+    help="Signal justification within focus base (recorded in config)",
+)
 def train(
     train_data,
     val_data,
@@ -574,6 +592,9 @@ def train(
     augment_jitter,
     augment_scale_min,
     augment_scale_max,
+    motif,
+    motif_offset,
+    base_justify,
 ):
     """Train a model on prepared data."""
     from leech.training import train_model
@@ -617,6 +638,9 @@ def train(
         augment_scale_min=augment_scale_min,
         augment_scale_max=augment_scale_max,
         resume_from=resume,
+        motif=motif,
+        motif_offset=motif_offset,
+        base_justify=base_justify,
         **model_kwargs,
     )
 
@@ -635,6 +659,111 @@ def train(
     table.add_row("Model saved to", str(output_dir))
 
     console.print(table)
+
+
+@model.command()
+@click.option(
+    "--model-dir",
+    required=True,
+    type=click.Path(exists=True, path_type=Path),
+    help="Root dir containing pair subdirectories (each with model_best.pt + config.json)",
+)
+@click.option(
+    "--output",
+    "-o",
+    required=True,
+    type=click.Path(path_type=Path),
+    help="Output bundle .pt file path",
+)
+@click.option(
+    "--version",
+    "-v",
+    "bundle_version",
+    required=True,
+    type=str,
+    help='Semantic version string (e.g., "0.1.0-alpha.1")',
+)
+@click.option(
+    "--comparison-type",
+    type=click.Choice(["pairwise", "one_vs_all"]),
+    default="pairwise",
+    help="Comparison type (default: pairwise)",
+)
+def bundle(model_dir, output, bundle_version, comparison_type):
+    """Bundle trained models into a single versioned file."""
+    from leech.util import create_bundle
+
+    # Auto-discover pair subdirectories
+    model_dirs = {}
+    for subdir in sorted(model_dir.iterdir()):
+        if subdir.is_dir() and (subdir / "model_best.pt").exists() and (subdir / "config.json").exists():
+            model_dirs[subdir.name] = subdir
+
+    if not model_dirs:
+        console.print(f"[bold red]No model directories found in {model_dir}[/bold red]")
+        raise SystemExit(1)
+
+    logger.info(f"Found {len(model_dirs)} model directories")
+
+    bundle_path = create_bundle(
+        model_dirs=model_dirs,
+        output_path=output,
+        comparison_type=comparison_type,
+        version=bundle_version,
+    )
+
+    # Print summary table
+    table = Table(title="Bundle Summary", show_header=True, header_style="bold magenta")
+    table.add_column("Property", style="cyan")
+    table.add_column("Value", style="green")
+    table.add_row("Version", bundle_version)
+    table.add_row("Comparison type", comparison_type)
+    table.add_row("Models", str(len(model_dirs)))
+    table.add_row("Output", str(bundle_path))
+    size_mb = bundle_path.stat().st_size / (1024 * 1024)
+    table.add_row("File size", f"{size_mb:.1f} MB")
+
+    console.print(table)
+    console.print("[bold green]Bundle created![/bold green]")
+
+
+@model.command(name="bundle-info")
+@click.option(
+    "--bundle",
+    required=True,
+    type=click.Path(exists=True, path_type=Path),
+    help="Path to bundle .pt file",
+)
+def bundle_info(bundle):
+    """Display metadata from a model bundle."""
+    from leech.util import list_bundle_models
+
+    metadata = list_bundle_models(bundle)
+
+    table = Table(title="Bundle Info", show_header=True, header_style="bold magenta")
+    table.add_column("Property", style="cyan")
+    table.add_column("Value", style="green")
+
+    table.add_row("Bundle version", metadata.get("bundle_version", "unknown"))
+    table.add_row("Format version", str(metadata.get("format_version", "unknown")))
+    table.add_row("Architecture", metadata.get("architecture", "unknown"))
+    table.add_row("Comparison type", metadata.get("comparison_type", "unknown"))
+    table.add_row("Number of models", str(metadata.get("num_models", 0)))
+    table.add_row("Created at", metadata.get("created_at", "unknown"))
+    size_mb = Path(bundle).stat().st_size / (1024 * 1024)
+    table.add_row("File size", f"{size_mb:.1f} MB")
+
+    console.print(table)
+
+    # Print pairs
+    pairs = metadata.get("pairs", [])
+    if pairs:
+        pairs_table = Table(title=f"Models ({len(pairs)})", show_header=True, header_style="bold magenta")
+        pairs_table.add_column("#", style="dim", width=4)
+        pairs_table.add_column("Pair", style="cyan")
+        for i, pair in enumerate(pairs, 1):
+            pairs_table.add_row(str(i), pair)
+        console.print(pairs_table)
 
 
 @model.command()
@@ -1118,9 +1247,35 @@ def ablation(model, test_data, output_dir, device, no_plot):
 @cli.command()
 @click.option(
     "--model",
-    required=True,
     type=click.Path(exists=True, path_type=Path),
-    help="Trained model file (.pt)",
+    default=None,
+    help="Trained model checkpoint directory",
+)
+@click.option(
+    "--bundle",
+    "bundle_path",
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
+    help="Model bundle .pt file (mutually exclusive with --model)",
+)
+@click.option(
+    "--pair",
+    type=str,
+    default=None,
+    help="Run a single model from the bundle (requires --bundle)",
+)
+@click.option(
+    "--all",
+    "run_all",
+    is_flag=True,
+    default=False,
+    help="Run every model in the bundle on each read (requires --bundle)",
+)
+@click.option(
+    "--raw",
+    is_flag=True,
+    default=False,
+    help="With --all, additionally write per-pair probabilities (pn/pp tags)",
 )
 @click.option(
     "--pod5",
@@ -1159,24 +1314,59 @@ def ablation(model, test_data, output_dir, device, no_plot):
     default=False,
     help="Do NOT reverse the raw signal. By default, signal is reversed for direct RNA sequencing (POD5 stores 3'→5', basecaller expects 5'→3'). Use this flag for DNA data.",
 )
-def predict(model, pod5, bam, output, device, base_justify, no_reverse_signal):
+def predict(model, bundle_path, pair, run_all, raw, pod5, bam, output, device, base_justify, no_reverse_signal):
     """Run inference on new data to generate predictions."""
-    from leech.inference import run_inference
+    from leech.inference import run_bundle_inference, run_inference
+    from leech.util import load_model_from_bundle, load_model_from_checkpoint
 
-    logger.info(f"Running inference with model: {model}")
-    logger.info(f"Input: {pod5}, {bam}")
-    logger.info(f"Output: {output}")
+    # Validate mutually exclusive options
+    if model and bundle_path:
+        raise click.UsageError("--model and --bundle are mutually exclusive")
+    if not model and not bundle_path:
+        raise click.UsageError("Either --model or --bundle is required")
+    if bundle_path and not pair and not run_all:
+        raise click.UsageError("--bundle requires either --pair or --all")
+    if pair and run_all:
+        raise click.UsageError("--pair and --all are mutually exclusive")
+    if (pair or run_all) and not bundle_path:
+        raise click.UsageError("--pair and --all require --bundle")
 
-    # Run inference
-    run_inference(
-        model_path=model,
-        pod5_path=pod5,
-        bam_path=bam,
-        output_path=output,
-        device=device,
-        base_justify=base_justify,
-        reverse_signal=not no_reverse_signal,
-    )
+    reverse_signal = not no_reverse_signal
+
+    if bundle_path and run_all:
+        # Multi-model inference: run all models in bundle
+        logger.info(f"Running multi-model inference with bundle: {bundle_path}")
+        run_bundle_inference(
+            bundle_path=bundle_path,
+            pod5_path=pod5,
+            bam_path=bam,
+            output_path=output,
+            device=device,
+            base_justify=base_justify,
+            reverse_signal=reverse_signal,
+            raw=raw,
+        )
+    else:
+        # Single-model inference
+        if bundle_path and pair:
+            loaded_model, config = load_model_from_bundle(bundle_path, pair, device=device)
+            logger.info(f"Running inference with pair '{pair}' from bundle: {bundle_path}")
+        else:
+            loaded_model, config = load_model_from_checkpoint(model, device=device)
+            logger.info(f"Running inference with model: {model}")
+
+        logger.info(f"Input: {pod5}, {bam}")
+        logger.info(f"Output: {output}")
+
+        run_inference(
+            model_and_config=(loaded_model, config),
+            pod5_path=pod5,
+            bam_path=bam,
+            output_path=output,
+            device=device,
+            base_justify=base_justify,
+            reverse_signal=reverse_signal,
+        )
 
     console.print("[bold green]Inference complete![/bold green]")
     logger.info(f"Predictions saved to {output}")

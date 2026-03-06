@@ -20,11 +20,72 @@ from leech.util import load_model_from_checkpoint
 logger = logging.getLogger("leech.inference")
 
 
+def aggregate_pairwise(
+    pairs: list[str], probs: list[float]
+) -> tuple[str, float, dict[str, float]]:
+    """
+    Aggregate pairwise model probabilities into a single amino acid prediction.
+
+    Label convention: pair "A_B" (alphabetical) -> A = label 0, B = label 1.
+    Sigmoid probability p: vote strength (1-p) goes to A, p goes to B.
+
+    Args:
+        pairs: List of pair names (e.g., ["Ala_Gly", "Ala_Ser", "Gly_Ser"])
+        probs: List of sigmoid probabilities, one per pair
+
+    Returns:
+        Tuple of (predicted_aa, confidence, vote_totals) where:
+        - predicted_aa: amino acid with highest total vote strength
+        - confidence: winner's vote fraction (winner_total / sum_all_totals)
+        - vote_totals: dict mapping amino acid -> total vote strength
+    """
+    votes: dict[str, float] = {}
+    for pair, prob in zip(pairs, probs, strict=True):
+        aa_a, aa_b = pair.split("_", 1)
+        votes[aa_a] = votes.get(aa_a, 0.0) + (1.0 - prob)
+        votes[aa_b] = votes.get(aa_b, 0.0) + prob
+
+    total = sum(votes.values())
+    predicted_aa = max(votes, key=votes.__getitem__)
+    confidence = votes[predicted_aa] / total if total > 0 else 0.0
+    return predicted_aa, confidence, votes
+
+
+def aggregate_one_vs_all(
+    pairs: list[str], probs: list[float]
+) -> tuple[str, float, dict[str, float]]:
+    """
+    Aggregate one-vs-all model probabilities into a single amino acid prediction.
+
+    Label convention: pair "A_notA" -> A = label 0, notA = label 1.
+    Score for AA = (1 - p), since low probability means more likely to be the target.
+
+    Args:
+        pairs: List of pair names (e.g., ["Ala_notAla", "Gly_notGly"])
+        probs: List of sigmoid probabilities, one per pair
+
+    Returns:
+        Tuple of (predicted_aa, confidence, scores) where:
+        - predicted_aa: amino acid with highest score
+        - confidence: max score
+        - scores: dict mapping amino acid -> score
+    """
+    scores: dict[str, float] = {}
+    for pair, prob in zip(pairs, probs, strict=True):
+        aa = pair.split("_", 1)[0]
+        scores[aa] = 1.0 - prob
+
+    predicted_aa = max(scores, key=scores.__getitem__)
+    confidence = scores[predicted_aa]
+    return predicted_aa, confidence, scores
+
+
 def run_inference(
-    model_path: Path,
-    pod5_path: Path,
-    bam_path: Path,
-    output_path: Path,
+    model_and_config: tuple[torch.nn.Module, dict] | None = None,
+    model_path: Path | None = None,
+    pod5_path: Path | None = None,
+    bam_path: Path | None = None,
+    output_path: Path | None = None,
     device: str = "cuda",
     min_mapq: int = 10,
     motif: str | None = None,
@@ -39,7 +100,8 @@ def run_inference(
     Writes predictions to output BAM with modification probability tags.
 
     Args:
-        model_path: Path to model checkpoint directory
+        model_and_config: Pre-loaded (model, config) tuple. If provided, model_path is ignored.
+        model_path: Path to model checkpoint directory (used if model_and_config is None)
         pod5_path: Path to POD5 file with raw signal
         bam_path: Path to input BAM file with alignments
         output_path: Path to output BAM file with predictions
@@ -49,10 +111,13 @@ def run_inference(
         motif_offset: Offset within motif for prediction
         batch_size: Batch size for inference
     """
-    logger.info(f"Loading model from {model_path}")
-
-    # Load model and config
-    model, config = load_model_from_checkpoint(model_path, device=device)
+    if model_and_config is not None:
+        model, config = model_and_config
+    elif model_path is not None:
+        logger.info(f"Loading model from {model_path}")
+        model, config = load_model_from_checkpoint(model_path, device=device)
+    else:
+        raise ValueError("Either model_and_config or model_path must be provided")
 
     signal_len = config["signal_len"]
     kmer_len = config["kmer_len"]
@@ -199,6 +264,187 @@ def run_inference(
     logger.info("\nInference complete!")
     logger.info(f"Reads processed: {total_reads}")
     logger.info(f"Total predictions: {total_predictions}")
+    logger.info(f"Output written to: {output_path}")
+
+
+def run_bundle_inference(
+    bundle_path: Path,
+    pod5_path: Path,
+    bam_path: Path,
+    output_path: Path,
+    device: str = "cuda",
+    min_mapq: int = 10,
+    motif: str | None = None,
+    motif_offset: int = 0,
+    base_justify: str = "center",
+    reverse_signal: bool = True,
+    raw: bool = False,
+) -> None:
+    """
+    Run all models from a bundle on each read, aggregate to a single AA prediction.
+
+    Writes output BAM with tags:
+    - aa:Z:Gly — predicted amino acid
+    - ac:f:0.93 — confidence score (vote fraction or max score)
+    With --raw, additionally:
+    - pn:Z:Ala_Gly,Ala_Ser,... — comma-separated pair names
+    - pp:B:f,0.95,0.23,... — float array of probabilities in matching order
+
+    Args:
+        bundle_path: Path to bundle .pt file
+        pod5_path: Path to POD5 file with raw signal
+        bam_path: Path to input BAM file with alignments
+        output_path: Path to output BAM file with predictions
+        device: Device for inference
+        min_mapq: Minimum mapping quality
+        motif: Optional motif to filter predictions
+        motif_offset: Offset within motif for prediction
+        base_justify: Signal justification within focus base
+        reverse_signal: Whether to reverse signal for RNA
+        raw: If True, also write per-pair probabilities (pn/pp tags)
+    """
+    bundle = torch.load(bundle_path, map_location=device)
+    metadata = bundle["metadata"]
+    config = bundle["config"]
+    pairs = metadata["pairs"]
+    comparison_type = metadata["comparison_type"]
+
+    signal_len = config["signal_len"]
+    kmer_len = config["kmer_len"]
+    model_type = config["model_name"]
+    dwell_offset = config.get("dwell_offset", 0)
+
+    signal_context = (signal_len // 2, signal_len // 2)
+    kmer_context = kmer_len // 2
+
+    logger.info(f"Bundle: {metadata['architecture']}, {len(pairs)} models, v{metadata['bundle_version']}")
+
+    # Select aggregation function
+    if comparison_type == "pairwise":
+        aggregate_fn = aggregate_pairwise
+    else:
+        aggregate_fn = aggregate_one_vs_all
+
+    # Load all models
+    import inspect
+
+    from leech.models import MODEL_REGISTRY, get_model
+
+    model_kwargs = {
+        k: v for k, v in config.items() if k not in ["model_name", "signal_len", "kmer_len"]
+    }
+    model_class = MODEL_REGISTRY[model_type]
+    valid_params = set(inspect.signature(model_class).parameters.keys()) - {"self"}
+    filtered_kwargs = {k: v for k, v in model_kwargs.items() if k in valid_params}
+
+    wrappers = {}
+    for pair in pairs:
+        m = get_model(model_type, signal_len=signal_len, kmer_len=kmer_len, **filtered_kwargs)
+        m.load_state_dict(bundle["models"][pair]["state_dict"])
+        m = m.to(device)
+        m.eval()
+        wrappers[pair] = ModelInferenceWrapper(m, model_type)
+
+    pair_names_str = ",".join(pairs)
+
+    # Open BAM files
+    bam_in = pysam.AlignmentFile(str(bam_path), "rb")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    bam_out = pysam.AlignmentFile(str(output_path), "wb", template=bam_in)
+
+    total_reads = 0
+
+    with Progress() as progress:
+        task = progress.add_task("[cyan]Running bundle inference...", total=None)
+
+        for leech_read in iter_bam_with_pod5(
+            bam_path, pod5_path, min_mapq=min_mapq, reverse_signal=reverse_signal
+        ):
+            total_reads += 1
+            progress.update(task, advance=1, description=f"[cyan]Processed {total_reads} reads...")
+
+            # Find alignment
+            bam_in.reset()
+            aln = None
+            for a in bam_in.fetch(until_eof=True):
+                if a.query_name == leech_read.read_id:
+                    aln = a
+                    break
+            if aln is None:
+                continue
+
+            # Find prediction position(s)
+            if motif is None:
+                positions = list(range(kmer_context, leech_read.num_bases - kmer_context))
+            else:
+                positions = []
+                motif_len = len(motif)
+                for i in range(len(leech_read.sequence) - motif_len + 1):
+                    if leech_read.sequence[i : i + motif_len] == motif:
+                        positions.append(i + motif_offset)
+
+            # Extract chunk once (use first valid position)
+            if not positions:
+                bam_out.write(aln)
+                continue
+
+            base_idx = positions[0]
+            chunk = leech_read.get_chunk(
+                base_idx,
+                signal_context=signal_context,
+                kmer_context=kmer_context,
+                base_justify=base_justify,
+            )
+            if chunk is None:
+                bam_out.write(aln)
+                continue
+
+            # Prepare input tensors (once for all models)
+            signal_array = chunk["signal"]
+            assert isinstance(signal_array, np.ndarray)
+            signal = torch.from_numpy(signal_array.astype(np.float32)).to(device).unsqueeze(0)
+
+            sequence_str = chunk["sequence"]
+            assert isinstance(sequence_str, str)
+            sequence = encode_kmer(sequence_str).to(device).unsqueeze(0)
+
+            batch = {"signal": signal, "sequence": sequence}
+
+            # Add features if needed (check first wrapper)
+            first_wrapper = next(iter(wrappers.values()))
+            if first_wrapper.requires_features:
+                features_array = chunk["features"]
+                assert isinstance(features_array, np.ndarray)
+                if features_array.size > 0 and features_array.shape[1] > kmer_len:
+                    margin = (features_array.shape[1] - kmer_len) // 2
+                    start = margin + dwell_offset
+                    features_array = features_array[:, start : start + kmer_len]
+                features = torch.from_numpy(features_array.astype(np.float32)).to(device)
+                batch["features"] = features.unsqueeze(0)
+
+            # Run all models
+            probs = []
+            with torch.no_grad():
+                for pair in pairs:
+                    logits = wrappers[pair].forward_batch(batch, device)
+                    prob = torch.sigmoid(logits).item()
+                    probs.append(prob)
+
+            # Aggregate to single AA prediction
+            predicted_aa, confidence, _ = aggregate_fn(pairs, probs)
+
+            # Write tags
+            aln.set_tag("aa", predicted_aa)  # Z type (string)
+            aln.set_tag("ac", confidence)  # f type (float)
+            if raw:
+                aln.set_tag("pn", pair_names_str)  # Z type (string)
+                aln.set_tag("pp", probs)  # B:f type (float array)
+            bam_out.write(aln)
+
+    bam_in.close()
+    bam_out.close()
+
+    logger.info(f"Bundle inference complete: {total_reads} reads, {len(pairs)} models")
     logger.info(f"Output written to: {output_path}")
 
 

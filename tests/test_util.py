@@ -13,6 +13,9 @@ import torch
 from leech.models import get_model
 from leech.util import (
     compute_metrics,
+    create_bundle,
+    list_bundle_models,
+    load_model_from_bundle,
     load_model_from_checkpoint,
     print_metrics,
     save_metrics,
@@ -313,6 +316,257 @@ class TestLoadModelFromCheckpoint:
         # Check that weights match
         for key in original_state.keys():
             assert torch.allclose(original_state[key], loaded_state[key])
+
+
+class TestModelBundle:
+    """Test model bundling functions."""
+
+    def _create_fake_model_dirs(self, tmp_path, model_config, pair_names):
+        """Helper to create fake model directories for testing."""
+        model_dirs = {}
+        for pair in pair_names:
+            pair_dir = tmp_path / pair
+            pair_dir.mkdir(parents=True)
+
+            # Save config.json
+            config = {
+                "model_name": "ConvLSTMDwell",
+                **model_config,
+                "epochs": 10,
+                "batch_size": 32,
+                "learning_rate": 0.001,
+                "device": "cpu",
+                "seed": 42,
+            }
+            with open(pair_dir / "config.json", "w") as f:
+                json.dump(config, f)
+
+            # Save model_best.pt
+            model = get_model("ConvLSTMDwell", **model_config)
+            torch.save(
+                {
+                    "model_state_dict": model.state_dict(),
+                    "optimizer_state_dict": {"some_key": "some_value"},
+                    "scheduler_state_dict": {"lr": 0.001},
+                    "best_val_acc": 0.90 + 0.01 * len(pair),
+                    "best_epoch": 15,
+                },
+                pair_dir / "model_best.pt",
+            )
+            model_dirs[pair] = pair_dir
+
+        return model_dirs
+
+    def test_create_and_load_bundle(self, tmp_path, model_config):
+        """Round-trip: create 3 fake models, bundle, load one, verify forward pass."""
+        pairs = ["Ala_Gly", "Ala_Ser", "Gly_Ser"]
+        model_dirs = self._create_fake_model_dirs(tmp_path / "models", model_config, pairs)
+
+        bundle_path = tmp_path / "test_bundle.pt"
+        create_bundle(model_dirs, bundle_path, "pairwise", "0.1.0-alpha.1")
+        assert bundle_path.exists()
+
+        # Load one model and verify forward pass
+        loaded_model, config = load_model_from_bundle(bundle_path, "Ala_Gly", device="cpu")
+        assert config["model_name"] == "ConvLSTMDwell"
+        assert config["signal_len"] == model_config["signal_len"]
+
+        # Forward pass
+        signal = torch.randn(1, model_config["signal_len"])
+        sequence = torch.randn(1, 4, model_config["kmer_len"])
+        features = torch.randn(1, model_config["num_features"], model_config["kmer_len"])
+        with torch.no_grad():
+            output = loaded_model(signal, sequence, features)
+        assert output.shape == (1, 1)
+
+    def test_bundle_version(self, tmp_path, model_config):
+        """Verify bundle_version in metadata matches what was passed."""
+        model_dirs = self._create_fake_model_dirs(tmp_path / "models", model_config, ["Ala_Gly"])
+
+        bundle_path = tmp_path / "test_bundle.pt"
+        create_bundle(model_dirs, bundle_path, "pairwise", "1.2.3-beta.4")
+
+        metadata = list_bundle_models(bundle_path)
+        assert metadata["bundle_version"] == "1.2.3-beta.4"
+
+    def test_bundle_strips_training_state(self, tmp_path, model_config):
+        """Verify no optimizer/scheduler keys in bundle models."""
+        model_dirs = self._create_fake_model_dirs(tmp_path / "models", model_config, ["Ala_Gly"])
+
+        bundle_path = tmp_path / "test_bundle.pt"
+        create_bundle(model_dirs, bundle_path, "pairwise", "0.1.0")
+
+        bundle = torch.load(bundle_path, map_location="cpu")
+        model_entry = bundle["models"]["Ala_Gly"]
+        assert "state_dict" in model_entry
+        assert "optimizer_state_dict" not in model_entry
+        assert "scheduler_state_dict" not in model_entry
+
+        # Config should also be free of training params
+        config = bundle["config"]
+        assert "epochs" not in config
+        assert "batch_size" not in config
+        assert "learning_rate" not in config
+        assert "device" not in config
+
+    def test_load_missing_pair(self, tmp_path, model_config):
+        """KeyError for nonexistent pair."""
+        model_dirs = self._create_fake_model_dirs(tmp_path / "models", model_config, ["Ala_Gly"])
+
+        bundle_path = tmp_path / "test_bundle.pt"
+        create_bundle(model_dirs, bundle_path, "pairwise", "0.1.0")
+
+        with pytest.raises(KeyError, match="nonexistent"):
+            load_model_from_bundle(bundle_path, "nonexistent", device="cpu")
+
+    def test_list_bundle_models(self, tmp_path, model_config):
+        """Verify metadata includes version, pairs, architecture."""
+        pairs = ["Asn_Gln", "Asn_Glu", "Gln_Glu"]
+        model_dirs = self._create_fake_model_dirs(tmp_path / "models", model_config, pairs)
+
+        bundle_path = tmp_path / "test_bundle.pt"
+        create_bundle(model_dirs, bundle_path, "one_vs_all", "2.0.0")
+
+        metadata = list_bundle_models(bundle_path)
+        assert metadata["bundle_version"] == "2.0.0"
+        assert metadata["architecture"] == "ConvLSTMDwell"
+        assert metadata["comparison_type"] == "one_vs_all"
+        assert metadata["num_models"] == 3
+        assert set(metadata["pairs"]) == set(pairs)
+        assert metadata["format_version"] == 1
+        assert "created_at" in metadata
+
+    def test_bundle_config_mismatch(self, tmp_path, model_config):
+        """Error when models have incompatible architectures."""
+        # Create two model dirs with different signal_len
+        model_dirs = {}
+        for pair, sig_len in [("Ala_Gly", 400), ("Ala_Ser", 200)]:
+            pair_dir = tmp_path / "models" / pair
+            pair_dir.mkdir(parents=True)
+
+            config = {
+                "model_name": "ConvLSTMDwell",
+                **model_config,
+                "signal_len": sig_len,
+                "epochs": 10,
+                "batch_size": 32,
+                "learning_rate": 0.001,
+            }
+            with open(pair_dir / "config.json", "w") as f:
+                json.dump(config, f)
+
+            mc = {**model_config, "signal_len": sig_len}
+            model = get_model("ConvLSTMDwell", **mc)
+            torch.save(
+                {"model_state_dict": model.state_dict(), "best_val_acc": 0.9, "best_epoch": 5},
+                pair_dir / "model_best.pt",
+            )
+            model_dirs[pair] = pair_dir
+
+        bundle_path = tmp_path / "bad_bundle.pt"
+        with pytest.raises(ValueError, match="Architecture config mismatch"):
+            create_bundle(model_dirs, bundle_path, "pairwise", "0.1.0")
+
+
+class TestAggregatePairwise:
+    """Test pairwise voting aggregation."""
+
+    def test_clear_winner(self):
+        """When all models agree, the correct AA wins."""
+        from leech.inference import aggregate_pairwise
+
+        # Ala vs Gly: p=0.1 -> strong vote for Ala (label 0)
+        # Ala vs Ser: p=0.2 -> strong vote for Ala (label 0)
+        # Gly vs Ser: p=0.5 -> even split
+        pairs = ["Ala_Gly", "Ala_Ser", "Gly_Ser"]
+        probs = [0.1, 0.2, 0.5]
+
+        predicted_aa, confidence, votes = aggregate_pairwise(pairs, probs)
+        assert predicted_aa == "Ala"
+        assert confidence > 0.0
+
+    def test_symmetric_probabilities(self):
+        """With perfectly even probabilities, votes distribute equally."""
+        from leech.inference import aggregate_pairwise
+
+        pairs = ["Ala_Gly", "Ala_Ser", "Gly_Ser"]
+        probs = [0.5, 0.5, 0.5]
+
+        _, confidence, votes = aggregate_pairwise(pairs, probs)
+        # All amino acids should have equal votes
+        assert abs(votes["Ala"] - votes["Gly"]) < 1e-10
+        assert abs(votes["Gly"] - votes["Ser"]) < 1e-10
+
+    def test_vote_strengths_sum(self):
+        """Total vote strength equals number of pairs (each contributes 1.0)."""
+        from leech.inference import aggregate_pairwise
+
+        pairs = ["Ala_Gly", "Ala_Ser", "Gly_Ser"]
+        probs = [0.3, 0.7, 0.9]
+
+        _, _, votes = aggregate_pairwise(pairs, probs)
+        total = sum(votes.values())
+        assert abs(total - len(pairs)) < 1e-10
+
+    def test_confidence_range(self):
+        """Confidence is always between 0 and 1."""
+        from leech.inference import aggregate_pairwise
+
+        pairs = ["Ala_Gly", "Ala_Ser", "Gly_Ser"]
+        for _ in range(20):
+            probs = list(np.random.rand(3))
+            _, confidence, _ = aggregate_pairwise(pairs, probs)
+            assert 0.0 <= confidence <= 1.0
+
+    def test_single_pair(self):
+        """Works with a single pair."""
+        from leech.inference import aggregate_pairwise
+
+        pairs = ["Ala_Gly"]
+        probs = [0.2]  # Favors Ala
+
+        predicted_aa, confidence, votes = aggregate_pairwise(pairs, probs)
+        assert predicted_aa == "Ala"
+        assert abs(votes["Ala"] - 0.8) < 1e-10
+        assert abs(votes["Gly"] - 0.2) < 1e-10
+
+
+class TestAggregateOneVsAll:
+    """Test one-vs-all aggregation."""
+
+    def test_clear_winner(self):
+        """The AA with lowest probability (most 'target-like') wins."""
+        from leech.inference import aggregate_one_vs_all
+
+        # Ala_notAla: p=0.1 -> score 0.9 (very likely Ala)
+        # Gly_notGly: p=0.8 -> score 0.2 (unlikely Gly)
+        # Ser_notSer: p=0.6 -> score 0.4 (unlikely Ser)
+        pairs = ["Ala_notAla", "Gly_notGly", "Ser_notSer"]
+        probs = [0.1, 0.8, 0.6]
+
+        predicted_aa, confidence, scores = aggregate_one_vs_all(pairs, probs)
+        assert predicted_aa == "Ala"
+        assert abs(confidence - 0.9) < 1e-10
+
+    def test_confidence_equals_max_score(self):
+        """Confidence is the max score across all AAs."""
+        from leech.inference import aggregate_one_vs_all
+
+        pairs = ["Ala_notAla", "Gly_notGly"]
+        probs = [0.3, 0.4]
+
+        _, confidence, scores = aggregate_one_vs_all(pairs, probs)
+        assert abs(confidence - max(scores.values())) < 1e-10
+
+    def test_confidence_range(self):
+        """Confidence is always between 0 and 1."""
+        from leech.inference import aggregate_one_vs_all
+
+        pairs = ["Ala_notAla", "Gly_notGly", "Ser_notSer"]
+        for _ in range(20):
+            probs = list(np.random.rand(3))
+            _, confidence, _ = aggregate_one_vs_all(pairs, probs)
+            assert 0.0 <= confidence <= 1.0
 
 
 class TestMetricsEdgeCases:

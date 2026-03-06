@@ -7,7 +7,10 @@ Includes model loading/saving helpers, metrics computation, and logging utilitie
 import inspect
 import json
 import logging
+import os
 import random
+import tempfile
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -168,6 +171,208 @@ def load_model_from_checkpoint(
     model.eval()
 
     return model, config
+
+
+# Training-specific parameters that should NOT be in bundle configs
+_TRAINING_PARAMS = {
+    "epochs",
+    "batch_size",
+    "learning_rate",
+    "device",
+    "seed",
+    "val_split",
+    "patience",
+    "min_delta",
+    "save_dir",
+    "log_dir",
+    "num_workers",
+    "pin_memory",
+    "prefetch_factor",
+    "use_class_weights",
+    "pos_weight",
+    "scheduler",
+    "scheduler_patience",
+    "scheduler_factor",
+    "max_grad_norm",
+    "weight_decay",
+    "mixed_precision",
+    "warmup_epochs",
+    "loss_type",
+    "focal_gamma",
+    "augment_jitter",
+    "augment_scale_min",
+    "augment_scale_max",
+    "resume_from",
+}
+
+
+def _architecture_config(config: dict) -> dict:
+    """Extract architecture-only parameters from a full training config."""
+    return {k: v for k, v in config.items() if k not in _TRAINING_PARAMS}
+
+
+def create_bundle(
+    model_dirs: dict[str, Path],
+    output_path: Path,
+    comparison_type: str,
+    version: str,
+) -> Path:
+    """
+    Bundle multiple trained models into a single versioned file.
+
+    Args:
+        model_dirs: Mapping of pair name -> model directory (with config.json and model_best.pt)
+        output_path: Output .pt file path
+        comparison_type: "pairwise" or "one_vs_all"
+        version: Semantic version string (e.g., "0.1.0-alpha.1")
+
+    Returns:
+        Path to the saved bundle file
+
+    Raises:
+        FileNotFoundError: If config.json or model_best.pt missing in any dir
+        ValueError: If architecture configs don't match across models
+    """
+    if not model_dirs:
+        raise ValueError("model_dirs must not be empty")
+
+    pairs = sorted(model_dirs.keys())
+
+    # Load first model's config as reference
+    first_dir = model_dirs[pairs[0]]
+    ref_config_path = first_dir / "config.json"
+    if not ref_config_path.exists():
+        raise FileNotFoundError(f"Config file not found: {ref_config_path}")
+    with open(ref_config_path) as f:
+        ref_full_config = json.load(f)
+    ref_arch_config = _architecture_config(ref_full_config)
+
+    architecture = ref_full_config["model_name"]
+
+    models_dict: dict[str, dict] = {}
+    for pair in pairs:
+        model_dir = Path(model_dirs[pair])
+
+        # Validate config matches
+        config_path = model_dir / "config.json"
+        if not config_path.exists():
+            raise FileNotFoundError(f"Config file not found: {config_path}")
+        with open(config_path) as f:
+            pair_config = json.load(f)
+        pair_arch_config = _architecture_config(pair_config)
+
+        if pair_arch_config != ref_arch_config:
+            raise ValueError(
+                f"Architecture config mismatch for {pair}. "
+                f"Expected {ref_arch_config}, got {pair_arch_config}"
+            )
+
+        # Load checkpoint
+        checkpoint_path = model_dir / "model_best.pt"
+        if not checkpoint_path.exists():
+            raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+        checkpoint = torch.load(checkpoint_path, map_location="cpu")
+
+        models_dict[pair] = {
+            "state_dict": checkpoint["model_state_dict"],
+            "best_val_acc": checkpoint.get("best_val_acc"),
+            "best_epoch": checkpoint.get("best_epoch"),
+        }
+
+    bundle = {
+        "metadata": {
+            "format_version": 1,
+            "bundle_version": version,
+            "architecture": architecture,
+            "comparison_type": comparison_type,
+            "num_models": len(models_dict),
+            "pairs": pairs,
+            "created_at": datetime.now(UTC).isoformat(),
+        },
+        "config": ref_arch_config,
+        "models": models_dict,
+    }
+
+    # Atomic save: write to temp file then rename
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=output_path.parent, suffix=".pt.tmp")
+    try:
+        os.close(fd)
+        torch.save(bundle, tmp_path)
+        os.rename(tmp_path, output_path)
+    except BaseException:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise
+
+    logger.info(f"Bundle saved to {output_path} ({len(models_dict)} models, version {version})")
+    return output_path
+
+
+def load_model_from_bundle(
+    bundle_path: Path,
+    pair: str,
+    device: str = "cuda",
+) -> tuple[nn.Module, dict]:
+    """
+    Load a single model from a bundle file.
+
+    Args:
+        bundle_path: Path to bundle .pt file
+        pair: Pair name to load (e.g., "Asn_Gln")
+        device: Device to load model on
+
+    Returns:
+        Tuple of (model, config_dict) — same interface as load_model_from_checkpoint
+
+    Raises:
+        KeyError: If pair not found in bundle
+    """
+    bundle = torch.load(bundle_path, map_location=device)
+    models = bundle["models"]
+
+    if pair not in models:
+        available = ", ".join(sorted(models.keys()))
+        raise KeyError(f"Pair '{pair}' not in bundle. Available: {available}")
+
+    config = bundle["config"]
+    model_name = config["model_name"]
+    signal_len = config["signal_len"]
+    kmer_len = config["kmer_len"]
+
+    # Filter kwargs to valid model constructor params
+    model_kwargs = {
+        k: v for k, v in config.items() if k not in ["model_name", "signal_len", "kmer_len"]
+    }
+    from leech.models import MODEL_REGISTRY
+
+    model_class = MODEL_REGISTRY[model_name]
+    model_signature = inspect.signature(model_class)
+    valid_params = set(model_signature.parameters.keys()) - {"self"}
+    filtered_kwargs = {k: v for k, v in model_kwargs.items() if k in valid_params}
+
+    model = get_model(model_name, signal_len=signal_len, kmer_len=kmer_len, **filtered_kwargs)
+    model.load_state_dict(models[pair]["state_dict"])
+    model = model.to(device)
+    model.eval()
+
+    return model, config
+
+
+def list_bundle_models(bundle_path: Path) -> dict:
+    """
+    List metadata from a bundle file.
+
+    Args:
+        bundle_path: Path to bundle .pt file
+
+    Returns:
+        Metadata dict with keys: format_version, bundle_version, architecture,
+        comparison_type, num_models, pairs, created_at
+    """
+    bundle = torch.load(bundle_path, map_location="cpu")
+    return bundle["metadata"]
 
 
 def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray, y_prob: np.ndarray) -> dict:
