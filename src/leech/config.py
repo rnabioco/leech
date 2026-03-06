@@ -10,13 +10,25 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator
 
 from leech.constants import (
+    DEFAULT_AUGMENT_JITTER,
+    DEFAULT_AUGMENT_SCALE_MAX,
+    DEFAULT_AUGMENT_SCALE_MIN,
     DEFAULT_BATCH_SIZE,
     DEFAULT_DEVICE,
     DEFAULT_EPOCHS,
+    DEFAULT_FOCAL_GAMMA,
     DEFAULT_KMER_CONTEXT,
     DEFAULT_LEARNING_RATE,
+    DEFAULT_LOSS_TYPE,
+    DEFAULT_MAX_GRAD_NORM,
+    DEFAULT_MIXED_PRECISION,
+    DEFAULT_SCHEDULER,
+    DEFAULT_SCHEDULER_FACTOR,
+    DEFAULT_SCHEDULER_PATIENCE,
     DEFAULT_SEED,
     DEFAULT_SIGNAL_CONTEXT,
+    DEFAULT_WARMUP_EPOCHS,
+    DEFAULT_WEIGHT_DECAY,
 )
 
 
@@ -142,6 +154,25 @@ class TrainingConfig(BaseModel):
     device: str = DEFAULT_DEVICE
     seed: int | None = DEFAULT_SEED
     early_stopping_patience: int = 10
+
+    # Advanced training
+    weight_decay: float = DEFAULT_WEIGHT_DECAY
+    max_grad_norm: float = DEFAULT_MAX_GRAD_NORM
+    scheduler: str = DEFAULT_SCHEDULER
+    scheduler_patience: int = DEFAULT_SCHEDULER_PATIENCE
+    scheduler_factor: float = DEFAULT_SCHEDULER_FACTOR
+    warmup_epochs: int = DEFAULT_WARMUP_EPOCHS
+    loss_type: str = DEFAULT_LOSS_TYPE
+    focal_gamma: float = DEFAULT_FOCAL_GAMMA
+    mixed_precision: bool = DEFAULT_MIXED_PRECISION
+
+    # Data augmentation
+    augment_jitter: float = DEFAULT_AUGMENT_JITTER
+    augment_scale_min: float = DEFAULT_AUGMENT_SCALE_MIN
+    augment_scale_max: float = DEFAULT_AUGMENT_SCALE_MAX
+
+    # Checkpoint recovery
+    resume_from: Path | None = None
 
     @field_validator("epochs", "batch_size")
     @classmethod

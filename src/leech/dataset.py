@@ -81,6 +81,7 @@ class LeechDataset(Dataset):
         model_type: str = "ConvLSTMDwell",
         dwell_offset: int = 0,
         chunks: list[dict] | None = None,
+        augmentation: dict | None = None,
     ):
         """
         Initialize dataset.
@@ -95,12 +96,16 @@ class LeechDataset(Dataset):
                 sensing region. Requires chunks extracted with dwell_margin >= offset.
             chunks: Pre-loaded list of chunk dicts. When provided, chunk_path is
                 ignored and no disk I/O occurs (useful for grid search caching).
+            augmentation: Signal augmentation config dict. Keys:
+                - jitter_std (float): Gaussian noise std dev (0 = disabled)
+                - scale_range (tuple[float, float]): Random scale range (1.0, 1.0 = disabled)
         """
         self.chunk_path = chunk_path
         self.signal_len = signal_len
         self.kmer_len = kmer_len
         self.model_type = model_type
         self.dwell_offset = dwell_offset
+        self.augmentation = augmentation
 
         # Use pre-loaded chunks or load from file
         if chunks is not None:
@@ -138,6 +143,17 @@ class LeechDataset(Dataset):
             f"Pre-tensorized {len(self.chunks)} chunks "
             f"({len(self._encoded_seqs)} sequences encoded)"
         )
+
+    def _apply_augmentation(self, signal: torch.Tensor) -> torch.Tensor:
+        """Apply signal augmentation (jitter and/or scaling)."""
+        jitter_std = self.augmentation.get("jitter_std", 0.0)
+        if jitter_std > 0:
+            signal = signal + torch.randn_like(signal) * jitter_std
+        scale_range = self.augmentation.get("scale_range", (1.0, 1.0))
+        if scale_range != (1.0, 1.0):
+            scale = torch.empty(1).uniform_(scale_range[0], scale_range[1]).item()
+            signal = signal * scale
+        return signal
 
     @staticmethod
     def _encode_sequence(sequence: str) -> torch.Tensor:
@@ -183,6 +199,10 @@ class LeechDataset(Dataset):
             signal = signal[start : start + self.signal_len]
 
         signal_tensor = torch.from_numpy(signal)
+
+        # Apply augmentation if configured
+        if self.augmentation is not None:
+            signal_tensor = self._apply_augmentation(signal_tensor)
 
         # Pre-encoded sequence lookup
         sequence = chunk["sequence"]

@@ -23,6 +23,7 @@ from sklearn.metrics import accuracy_score, roc_auc_score
 from torch.utils.data import DataLoader
 
 from leech.dataset import LeechDataset, collate_fn
+from leech.losses import FocalBCEWithLogitsLoss
 from leech.models import get_model
 from leech.models.inference_wrapper import ModelInferenceWrapper
 
@@ -88,20 +89,17 @@ class Trainer:
         learning_rate: float = 0.001,
         output_dir: Path | None = None,
         pos_weight: torch.Tensor | None = None,
+        weight_decay: float = 0.0,
+        max_grad_norm: float = 0.0,
+        scheduler_type: str = "none",
+        scheduler_patience: int = 5,
+        scheduler_factor: float = 0.5,
+        warmup_epochs: int = 0,
+        loss_type: str = "bce",
+        focal_gamma: float = 2.0,
+        use_mixed_precision: bool = False,
+        resume_checkpoint: Path | None = None,
     ):
-        """
-        Initialize trainer.
-
-        Args:
-            model: PyTorch model to train
-            model_type: Model architecture name (e.g., "ConvLSTMDwell")
-            train_loader: Training data loader
-            val_loader: Validation data loader (optional)
-            device: Device for training ("cuda" or "cpu")
-            learning_rate: Learning rate for optimizer
-            output_dir: Directory for saving models and logs
-            pos_weight: Weight for positive class in BCEWithLogitsLoss (None = no weighting)
-        """
         # Wrap model with inference wrapper for unified forward pass
         self.model_wrapper = ModelInferenceWrapper(model, model_type)
         self.model = self.model_wrapper.model  # Keep reference to underlying model
@@ -110,21 +108,51 @@ class Trainer:
         self.val_loader = val_loader
         self.device = device
         self.output_dir = output_dir
+        self.max_grad_norm = max_grad_norm
+        self.warmup_epochs = warmup_epochs
+        self.base_lr = learning_rate
 
-        # Setup optimizer and loss
-        self.optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+        # Setup optimizer
+        self.optimizer = torch.optim.Adam(
+            model.parameters(), lr=learning_rate, weight_decay=weight_decay
+        )
 
-        # Setup loss with optional class weighting
-        if pos_weight is not None:
-            pos_weight = pos_weight.to(device)
-            self.criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+        # Setup loss
+        pw = pos_weight.to(device) if pos_weight is not None else None
+        if loss_type == "focal":
+            self.criterion = FocalBCEWithLogitsLoss(gamma=focal_gamma, pos_weight=pw)
+            logger.info(f"Using focal loss (gamma={focal_gamma})")
         else:
-            self.criterion = nn.BCEWithLogitsLoss()
-            logger.info("Training without class weighting")
+            if pw is not None:
+                self.criterion = nn.BCEWithLogitsLoss(pos_weight=pw)
+            else:
+                self.criterion = nn.BCEWithLogitsLoss()
+                logger.info("Training without class weighting")
+
+        # Setup LR scheduler
+        self.scheduler = None
+        if scheduler_type == "reduce_on_plateau":
+            self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                self.optimizer,
+                mode="min",
+                patience=scheduler_patience,
+                factor=scheduler_factor,
+            )
+            logger.info(
+                f"Using ReduceLROnPlateau scheduler (patience={scheduler_patience}, factor={scheduler_factor})"
+            )
+
+        # Mixed precision (only on CUDA)
+        self.use_mixed_precision = use_mixed_precision and device != "cpu"
+        self.scaler = None
+        if self.use_mixed_precision:
+            self.scaler = torch.amp.GradScaler("cuda")
+            logger.info("Mixed precision training enabled")
 
         # Track best model
         self.best_val_acc = 0.0
         self.best_epoch = 0
+        self.start_epoch = 1
 
         # History
         self.history: dict[str, list[float]] = {
@@ -137,6 +165,34 @@ class Trainer:
 
         if self.output_dir:
             self.output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Resume from checkpoint
+        if resume_checkpoint is not None:
+            self._resume_from_checkpoint(resume_checkpoint)
+
+    def _resume_from_checkpoint(self, checkpoint_path: Path) -> None:
+        """Restore training state from a checkpoint."""
+        logger.info(f"Resuming from checkpoint: {checkpoint_path}")
+        checkpoint = torch.load(checkpoint_path, map_location=self.device)
+
+        self.model.load_state_dict(checkpoint["model_state_dict"])
+        self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        self.best_val_acc = checkpoint.get("best_val_acc", 0.0)
+        self.best_epoch = checkpoint.get("best_epoch", 0)
+        self.start_epoch = checkpoint.get("epoch", 0) + 1
+
+        # Restore scheduler state if available
+        if self.scheduler is not None and checkpoint.get("scheduler_state_dict") is not None:
+            self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+
+        # Restore scaler state if available
+        if self.scaler is not None and checkpoint.get("scaler_state_dict") is not None:
+            self.scaler.load_state_dict(checkpoint["scaler_state_dict"])
+
+        logger.info(
+            f"Resumed from epoch {self.start_epoch - 1} "
+            f"(best_val_acc={self.best_val_acc:.4f} at epoch {self.best_epoch})"
+        )
 
     def train_epoch(
         self, progress: Progress | None = None, task_id: TaskID | None = None
@@ -162,14 +218,33 @@ class Trainer:
 
             # Forward pass (wrapper handles moving tensors and calling model correctly)
             self.optimizer.zero_grad()
-            logits = self.model_wrapper.forward_batch(batch, self.device)
 
-            # Compute loss
-            loss = self.criterion(logits, labels)
+            if self.use_mixed_precision:
+                with torch.amp.autocast("cuda"):
+                    logits = self.model_wrapper.forward_batch(batch, self.device)
+                    loss = self.criterion(logits, labels)
 
-            # Backward pass
-            loss.backward()
-            self.optimizer.step()
+                # Scaled backward pass
+                self.scaler.scale(loss).backward()
+
+                # Gradient clipping with mixed precision
+                if self.max_grad_norm > 0:
+                    self.scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
+
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                logits = self.model_wrapper.forward_batch(batch, self.device)
+                loss = self.criterion(logits, labels)
+
+                loss.backward()
+
+                # Gradient clipping
+                if self.max_grad_norm > 0:
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
+
+                self.optimizer.step()
 
             # Track metrics
             total_loss += loss.item()
@@ -215,10 +290,13 @@ class Trainer:
                 labels = batch["label"].to(self.device)
 
                 # Forward pass (wrapper handles moving tensors and calling model correctly)
-                logits = self.model_wrapper.forward_batch(batch, self.device)
-
-                # Compute loss
-                loss = self.criterion(logits, labels)
+                if self.use_mixed_precision:
+                    with torch.amp.autocast("cuda"):
+                        logits = self.model_wrapper.forward_batch(batch, self.device)
+                        loss = self.criterion(logits, labels)
+                else:
+                    logits = self.model_wrapper.forward_batch(batch, self.device)
+                    loss = self.criterion(logits, labels)
 
                 # Track metrics
                 total_loss += loss.item()
@@ -250,6 +328,8 @@ class Trainer:
             Training history dictionary
         """
         patience_counter = 0
+        total_epochs = max(0, epochs - self.start_epoch + 1)
+        last_epoch = self.start_epoch - 1
 
         # Create progress bars
         with Progress(
@@ -260,9 +340,16 @@ class Trainer:
             TimeRemainingColumn(),
             console=console,
         ) as progress:
-            epoch_task = progress.add_task("[cyan]Training epochs...", total=epochs)
+            epoch_task = progress.add_task("[cyan]Training epochs...", total=total_epochs)
 
-            for epoch in range(1, epochs + 1):
+            for epoch in range(self.start_epoch, epochs + 1):
+                last_epoch = epoch
+                # LR warmup
+                if self.warmup_epochs > 0 and epoch <= self.warmup_epochs:
+                    warmup_lr = self.base_lr * (epoch / self.warmup_epochs)
+                    for param_group in self.optimizer.param_groups:
+                        param_group["lr"] = warmup_lr
+
                 # Create tasks for this epoch
                 train_task = progress.add_task(
                     f"[green]Epoch {epoch}/{epochs} - Training", total=len(self.train_loader)
@@ -287,11 +374,24 @@ class Trainer:
 
                     progress.remove_task(val_task)
 
+                    # LR scheduler step (only after warmup)
+                    if self.scheduler is not None and epoch > self.warmup_epochs:
+                        old_lr = self.optimizer.param_groups[0]["lr"]
+                        self.scheduler.step(val_loss)
+                        new_lr = self.optimizer.param_groups[0]["lr"]
+                        if new_lr != old_lr:
+                            logger.info(f"LR reduced: {old_lr:.6f} -> {new_lr:.6f}")
+
                     # Display metrics
+                    lr_str = ""
+                    current_lr = self.optimizer.param_groups[0]["lr"]
+                    if current_lr != self.base_lr:
+                        lr_str = f" LR: {current_lr:.6f}"
                     console.print(
                         f"[cyan]Epoch {epoch}/{epochs}[/cyan] | "
                         f"Train Loss: {train_loss:.4f} Acc: {train_acc:.4f} | "
                         f"Val Loss: {val_loss:.4f} Acc: {val_acc:.4f} AUC: {val_auc:.4f}"
+                        f"{lr_str}"
                     )
 
                     # Save best model
@@ -301,7 +401,7 @@ class Trainer:
                         patience_counter = 0
 
                         if self.output_dir:
-                            self.save_checkpoint("model_best.pt")
+                            self.save_checkpoint("model_best.pt", epoch=epoch)
                             console.print(
                                 f"[bold green]✓ Saved best model (val_acc: {val_acc:.4f})[/bold green]"
                             )
@@ -322,26 +422,27 @@ class Trainer:
 
         # Save final model
         if self.output_dir:
-            self.save_checkpoint("model_last.pt")
+            self.save_checkpoint("model_last.pt", epoch=last_epoch)
             self.save_history()
 
         return self.history
 
-    def save_checkpoint(self, filename: str) -> None:
+    def save_checkpoint(self, filename: str, epoch: int = 0) -> None:
         """Save model checkpoint."""
         if self.output_dir is None:
             return
 
         checkpoint_path = self.output_dir / filename
-        torch.save(
-            {
-                "model_state_dict": self.model.state_dict(),
-                "optimizer_state_dict": self.optimizer.state_dict(),
-                "best_val_acc": self.best_val_acc,
-                "best_epoch": self.best_epoch,
-            },
-            checkpoint_path,
-        )
+        checkpoint = {
+            "model_state_dict": self.model.state_dict(),
+            "optimizer_state_dict": self.optimizer.state_dict(),
+            "best_val_acc": self.best_val_acc,
+            "best_epoch": self.best_epoch,
+            "epoch": epoch,
+            "scheduler_state_dict": self.scheduler.state_dict() if self.scheduler else None,
+            "scaler_state_dict": self.scaler.state_dict() if self.scaler else None,
+        }
+        torch.save(checkpoint, checkpoint_path)
 
     def save_history(self) -> None:
         """Save training history to JSON."""
@@ -394,6 +495,19 @@ def train_model(
     pos_weight: float | None = None,
     train_chunks: list[dict] | None = None,
     val_chunks: list[dict] | None = None,
+    weight_decay: float = 0.0,
+    max_grad_norm: float = 0.0,
+    scheduler: str = "none",
+    scheduler_patience: int = 5,
+    scheduler_factor: float = 0.5,
+    warmup_epochs: int = 0,
+    loss_type: str = "bce",
+    focal_gamma: float = 2.0,
+    mixed_precision: bool = False,
+    augment_jitter: float = 0.0,
+    augment_scale_min: float = 1.0,
+    augment_scale_max: float = 1.0,
+    resume_from: Path | None = None,
     **model_kwargs: Any,
 ) -> dict[str, Any]:
     """
@@ -416,6 +530,19 @@ def train_model(
         pos_weight: Manual positive class weight (overrides use_class_weights if provided)
         train_chunks: Pre-loaded training chunks (skips loading from train_data_path)
         val_chunks: Pre-loaded validation chunks (skips loading from val_data_path)
+        weight_decay: L2 regularization weight (0 = disabled)
+        max_grad_norm: Max gradient norm for clipping (0 = disabled)
+        scheduler: LR scheduler type ("none" or "reduce_on_plateau")
+        scheduler_patience: Epochs to wait before reducing LR
+        scheduler_factor: Factor to reduce LR by
+        warmup_epochs: Number of LR warmup epochs (0 = disabled)
+        loss_type: Loss function type ("bce" or "focal")
+        focal_gamma: Focal loss gamma parameter
+        mixed_precision: Enable mixed precision training (CUDA only)
+        augment_jitter: Signal jitter noise std dev (0 = disabled)
+        augment_scale_min: Min random scale factor for signal augmentation
+        augment_scale_max: Max random scale factor for signal augmentation
+        resume_from: Path to checkpoint to resume training from
         **model_kwargs: Additional model parameters (passed to model constructor)
 
     Returns:
@@ -444,6 +571,15 @@ def train_model(
     # Extract dwell_offset from model_kwargs (grid search param, not model init param)
     dwell_offset = model_kwargs.pop("dwell_offset", 0)
 
+    # Build augmentation config for training dataset
+    augmentation = None
+    if augment_jitter > 0 or (augment_scale_min, augment_scale_max) != (1.0, 1.0):
+        augmentation = {
+            "jitter_std": augment_jitter,
+            "scale_range": (augment_scale_min, augment_scale_max),
+        }
+        logger.info(f"Signal augmentation enabled: {augmentation}")
+
     # Create datasets (use pre-loaded chunks if provided)
     train_dataset = LeechDataset(
         chunk_path=train_data_path,
@@ -452,6 +588,7 @@ def train_model(
         model_type=model_name,
         dwell_offset=dwell_offset,
         chunks=train_chunks,
+        augmentation=augmentation,
     )
 
     val_dataset = None
@@ -547,6 +684,18 @@ def train_model(
         "pos_weight": pos_weight
         if pos_weight is not None
         else (pos_weight_tensor.item() if pos_weight_tensor is not None else None),
+        "weight_decay": weight_decay,
+        "max_grad_norm": max_grad_norm,
+        "scheduler": scheduler,
+        "scheduler_patience": scheduler_patience,
+        "scheduler_factor": scheduler_factor,
+        "warmup_epochs": warmup_epochs,
+        "loss_type": loss_type,
+        "focal_gamma": focal_gamma,
+        "mixed_precision": mixed_precision,
+        "augment_jitter": augment_jitter,
+        "augment_scale_min": augment_scale_min,
+        "augment_scale_max": augment_scale_max,
         **model_kwargs,
     }
 
@@ -563,6 +712,16 @@ def train_model(
         learning_rate=learning_rate,
         output_dir=output_dir,
         pos_weight=pos_weight_tensor,
+        weight_decay=weight_decay,
+        max_grad_norm=max_grad_norm,
+        scheduler_type=scheduler,
+        scheduler_patience=scheduler_patience,
+        scheduler_factor=scheduler_factor,
+        warmup_epochs=warmup_epochs,
+        loss_type=loss_type,
+        focal_gamma=focal_gamma,
+        use_mixed_precision=mixed_precision,
+        resume_checkpoint=resume_from,
     )
 
     # Train

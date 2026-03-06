@@ -14,11 +14,23 @@ from rich.panel import Panel
 from rich.table import Table
 
 from leech.constants import (
+    DEFAULT_AUGMENT_JITTER,
+    DEFAULT_AUGMENT_SCALE_MAX,
+    DEFAULT_AUGMENT_SCALE_MIN,
     DEFAULT_BATCH_SIZE,
     DEFAULT_DEVICE,
     DEFAULT_EPOCHS,
+    DEFAULT_FOCAL_GAMMA,
     DEFAULT_LEARNING_RATE,
+    DEFAULT_LOSS_TYPE,
+    DEFAULT_MAX_GRAD_NORM,
+    DEFAULT_MIXED_PRECISION,
+    DEFAULT_SCHEDULER,
+    DEFAULT_SCHEDULER_FACTOR,
+    DEFAULT_SCHEDULER_PATIENCE,
     DEFAULT_SEED,
+    DEFAULT_WARMUP_EPOCHS,
+    DEFAULT_WEIGHT_DECAY,
 )
 from leech.logging_config import setup_logging
 
@@ -457,6 +469,84 @@ def merge(input_chunks, output_dir, train_split, val_split, seed, comparison_spe
     default=None,
     help="Manual positive class weight for BCEWithLogitsLoss (overrides --use-class-weights)",
 )
+@click.option(
+    "--resume",
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
+    help="Resume training from a checkpoint file (e.g., model_last.pt)",
+)
+@click.option(
+    "--weight-decay",
+    type=float,
+    default=DEFAULT_WEIGHT_DECAY,
+    help="L2 weight decay for optimizer (0 = disabled)",
+)
+@click.option(
+    "--max-grad-norm",
+    type=float,
+    default=DEFAULT_MAX_GRAD_NORM,
+    help="Max gradient norm for clipping (0 = disabled)",
+)
+@click.option(
+    "--scheduler",
+    type=click.Choice(["none", "reduce_on_plateau"]),
+    default=DEFAULT_SCHEDULER,
+    help="Learning rate scheduler",
+)
+@click.option(
+    "--scheduler-patience",
+    type=int,
+    default=DEFAULT_SCHEDULER_PATIENCE,
+    help="Epochs to wait before reducing LR (for reduce_on_plateau)",
+)
+@click.option(
+    "--scheduler-factor",
+    type=float,
+    default=DEFAULT_SCHEDULER_FACTOR,
+    help="Factor to reduce LR by (for reduce_on_plateau)",
+)
+@click.option(
+    "--warmup-epochs",
+    type=int,
+    default=DEFAULT_WARMUP_EPOCHS,
+    help="Number of LR warmup epochs (0 = disabled)",
+)
+@click.option(
+    "--loss",
+    "loss_type",
+    type=click.Choice(["bce", "focal"]),
+    default=DEFAULT_LOSS_TYPE,
+    help="Loss function type",
+)
+@click.option(
+    "--focal-gamma",
+    type=float,
+    default=DEFAULT_FOCAL_GAMMA,
+    help="Focal loss gamma parameter (only used with --loss focal)",
+)
+@click.option(
+    "--mixed-precision/--no-mixed-precision",
+    default=DEFAULT_MIXED_PRECISION,
+    help="Enable mixed precision training (CUDA only)",
+)
+@click.option(
+    "--augment-jitter",
+    type=float,
+    default=DEFAULT_AUGMENT_JITTER,
+    help="Signal jitter noise std dev for data augmentation (0 = disabled)",
+)
+@click.option(
+    "--augment-scale-min",
+    type=float,
+    default=DEFAULT_AUGMENT_SCALE_MIN,
+    help="Min random scale factor for signal augmentation",
+)
+@click.option(
+    "--augment-scale-max",
+    type=float,
+    default=DEFAULT_AUGMENT_SCALE_MAX,
+    help="Max random scale factor for signal augmentation",
+)
 def train(
     train_data,
     val_data,
@@ -471,6 +561,19 @@ def train(
     early_stopping,
     use_class_weights,
     pos_weight,
+    resume,
+    weight_decay,
+    max_grad_norm,
+    scheduler,
+    scheduler_patience,
+    scheduler_factor,
+    warmup_epochs,
+    loss_type,
+    focal_gamma,
+    mixed_precision,
+    augment_jitter,
+    augment_scale_min,
+    augment_scale_max,
 ):
     """Train a model on prepared data."""
     from leech.training import train_model
@@ -501,6 +604,19 @@ def train(
         early_stopping_patience=early_stopping,
         use_class_weights=use_class_weights,
         pos_weight=pos_weight,
+        weight_decay=weight_decay,
+        max_grad_norm=max_grad_norm,
+        scheduler=scheduler,
+        scheduler_patience=scheduler_patience,
+        scheduler_factor=scheduler_factor,
+        warmup_epochs=warmup_epochs,
+        loss_type=loss_type,
+        focal_gamma=focal_gamma,
+        mixed_precision=mixed_precision,
+        augment_jitter=augment_jitter,
+        augment_scale_min=augment_scale_min,
+        augment_scale_max=augment_scale_max,
+        resume_from=resume,
         **model_kwargs,
     )
 
