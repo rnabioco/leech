@@ -354,6 +354,6 @@ rule grid_search:
 
 ## See Also
 
-- [Grid Search Strategy](grid-search.md) - Full methodology and statistical analysis
-- [Architecture](../architecture.md) - Project overview and architecture
-- [Getting Started](../getting-started/quick-start.md) - Installation and quick start
+- [CLI Reference](../reference/cli.md) - Full `leech model optimize` documentation
+- [Quick Start](../getting-started/quick-start.md) - Installation and first workflow
+- [Data Preparation](../data_preparation.md) - Preparing training data with dwell margins for offset tuning

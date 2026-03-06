@@ -145,9 +145,32 @@ The output BAM file will contain modification probability tags for each base.
 
 The steps above cover a single-sample classification. For multi-sample experiments (e.g., preparing charged and uncharged data separately, then merging), see `leech data merge` in the [CLI Reference](../reference/cli.md). The merge command handles read-level splitting across samples to prevent data leakage.
 
-## Next Steps
+## Deploying with model bundles
 
-- **[Understanding Move Tables](../guides/move-tables.md)** — learn how leech decodes the BAM `mv` tag into per-base dwell times, the foundation of its feature extraction
-- **[Dwell Time Features](../guides/dwell-features.md)** — explore the signal statistics and dwell features that give leech its classification edge
-- **[Classification Tasks](../guides/classification-tasks.md)** — set up charged vs. uncharged, pairwise amino acid, and chemical property comparisons
+When you have multiple pairwise models (e.g., Ala vs Gly, Ala vs Val, ...),
+package them into a single bundle for deployment:
+
+```bash title="Bash" linenums="1"
+# Bundle all pairwise models
+leech model bundle \
+  --model-dir models/pairwise/ \
+  --output bundle.pt \
+  --version 1.0.0
+
+# Run all models on new data (aggregated amino acid prediction)
+leech predict \
+  --bundle bundle.pt --all \
+  --pod5 new_reads.pod5 --bam new_alignments.bam \
+  --output predictions.bam
+```
+
+See the [CLI Reference](../reference/cli.md) for full bundle and inference options.
+
+## Next steps
+
+- **[Data Preparation](../data_preparation.md)** — parallel processing, motif search, multi-sample merging
+- **[Understanding Move Tables](../guides/move-tables.md)** — how leech decodes the BAM `mv` tag into per-base dwell times
+- **[Dwell Time Features](../guides/dwell-features.md)** — the 9-channel feature set and model architecture
+- **[Classification Tasks](../guides/classification-tasks.md)** — charged vs. uncharged, pairwise amino acid, and chemical property comparisons
 - **[Grid Search](../grid-search/grid-search-usage.md)** — optimize signal context and hyperparameters
+- **[CLI Reference](../reference/cli.md)** — all commands including training improvements and bundle workflows

@@ -127,33 +127,21 @@ nav:
   - Getting Started:
       - Installation: getting-started/installation.md
       - Quick Start: getting-started/quick-start.md
-  - User Guide:
+  - Guides:
+      - Data Preparation: data_preparation.md
       - Understanding Move Tables: guides/move-tables.md
       - Dwell Time Features: guides/dwell-features.md
       - Classification Tasks: guides/classification-tasks.md
+      - Grid Search: grid-search/grid-search-usage.md
   - Reference:
       - CLI: reference/cli.md
-  - Cluster Setup:
-      - Alpine (SLURM): setup/ALPINE_SETUP.md
-      - Bodhi (LSF): setup/BODHI_SETUP.md
-      - SLURM Cheatsheet: SLURM_CHEATSHEET.md
-  - Grid Search:
-      - Overview: grid-search/grid-search.md
-      - Usage: grid-search/grid-search-usage.md
-  - Architecture:
-      - Overview: architecture.md
-      - Data Preparation: data_preparation.md
-      - Troubleshooting: troubleshooting.md
-  - Architecture Decision Records:
-      - Overview: adr/README.md
-      - Constants Consolidation: adr/0001-constants-consolidation.md
-      - Structured Logging: adr/0002-structured-logging.md
-      - Model Component Abstraction: adr/0003-model-component-abstraction.md
-      - Inference Wrapper Pattern: adr/0004-inference-wrapper-pattern.md
-      - Sequence Encoding Consolidation: adr/0005-sequence-encoding-consolidation.md
+  - Pipeline:
+      - Overview: pipeline.md
+      - Alpine Setup (SLURM): setup/ALPINE_SETUP.md
+      - Bodhi Setup (LSF): setup/BODHI_SETUP.md
+  - Troubleshooting: troubleshooting.md
   - API Reference:
       - Overview: api/index.md
-      - CLI: api/cli.md
       - Data Preparation: api/data_prep.md
       - Features: api/features.md
       - Dataset: api/dataset.md
