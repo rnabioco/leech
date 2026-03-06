@@ -148,6 +148,18 @@ class GridSearchConfig:
     base_justify: str = "center"
     dwell_offsets: list[int] | None = None
     n_parallel: int = 1
+    weight_decay: float = 0.0
+    max_grad_norm: float = 0.0
+    scheduler: str = "none"
+    scheduler_patience: int = 5
+    scheduler_factor: float = 0.5
+    warmup_epochs: int = 0
+    loss_type: str = "bce"
+    focal_gamma: float = 2.0
+    mixed_precision: bool = False
+    augment_jitter: float = 0.0
+    augment_scale_min: float = 1.0
+    augment_scale_max: float = 1.0
 
 
 def prepare_chunks_with_context(
@@ -235,6 +247,18 @@ def run_grid_point(
     train_chunks: list[dict] | None = None,
     val_chunks: list[dict] | None = None,
     pos_weight: float | None = None,
+    weight_decay: float = 0.0,
+    max_grad_norm: float = 0.0,
+    scheduler: str = "none",
+    scheduler_patience: int = 5,
+    scheduler_factor: float = 0.5,
+    warmup_epochs: int = 0,
+    loss_type: str = "bce",
+    focal_gamma: float = 2.0,
+    mixed_precision: bool = False,
+    augment_jitter: float = 0.0,
+    augment_scale_min: float = 1.0,
+    augment_scale_max: float = 1.0,
 ) -> dict:
     """
     Train model for a single grid point.
@@ -291,6 +315,18 @@ def run_grid_point(
             train_chunks=train_chunks,
             val_chunks=val_chunks,
             pos_weight=pos_weight,
+            weight_decay=weight_decay,
+            max_grad_norm=max_grad_norm,
+            scheduler=scheduler,
+            scheduler_patience=scheduler_patience,
+            scheduler_factor=scheduler_factor,
+            warmup_epochs=warmup_epochs,
+            loss_type=loss_type,
+            focal_gamma=focal_gamma,
+            mixed_precision=mixed_precision,
+            augment_jitter=augment_jitter,
+            augment_scale_min=augment_scale_min,
+            augment_scale_max=augment_scale_max,
         )
 
         train_time = time.time() - start_time
@@ -372,6 +408,18 @@ def _grid_point_worker(args: dict) -> dict:
         train_chunks=_worker_train_chunks,
         val_chunks=_worker_val_chunks,
         pos_weight=_worker_pos_weight,
+        weight_decay=args["weight_decay"],
+        max_grad_norm=args["max_grad_norm"],
+        scheduler=args["scheduler"],
+        scheduler_patience=args["scheduler_patience"],
+        scheduler_factor=args["scheduler_factor"],
+        warmup_epochs=args["warmup_epochs"],
+        loss_type=args["loss_type"],
+        focal_gamma=args["focal_gamma"],
+        mixed_precision=args["mixed_precision"],
+        augment_jitter=args["augment_jitter"],
+        augment_scale_min=args["augment_scale_min"],
+        augment_scale_max=args["augment_scale_max"],
     )
 
 
@@ -494,6 +542,18 @@ def run_grid_search(config: GridSearchConfig) -> Path:
                 "seed": config.seed,
                 "early_stopping_patience": config.early_stopping_patience,
                 "dwell_offset": dwoff,
+                "weight_decay": config.weight_decay,
+                "max_grad_norm": config.max_grad_norm,
+                "scheduler": config.scheduler,
+                "scheduler_patience": config.scheduler_patience,
+                "scheduler_factor": config.scheduler_factor,
+                "warmup_epochs": config.warmup_epochs,
+                "loss_type": config.loss_type,
+                "focal_gamma": config.focal_gamma,
+                "mixed_precision": config.mixed_precision,
+                "augment_jitter": config.augment_jitter,
+                "augment_scale_min": config.augment_scale_min,
+                "augment_scale_max": config.augment_scale_max,
             }
         )
 
