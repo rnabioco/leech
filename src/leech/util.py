@@ -118,6 +118,19 @@ def load_model_from_checkpoint(
         "prefetch_factor",
         "use_class_weights",
         "pos_weight",
+        "scheduler",
+        "scheduler_patience",
+        "scheduler_factor",
+        "max_grad_norm",
+        "weight_decay",
+        "mixed_precision",
+        "warmup_epochs",
+        "loss_type",
+        "focal_gamma",
+        "augment_jitter",
+        "augment_scale_min",
+        "augment_scale_max",
+        "resume_from",
     }
 
     # Extract model-specific kwargs (filter out training params)
