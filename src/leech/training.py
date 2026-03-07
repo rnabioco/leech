@@ -19,7 +19,7 @@ from rich.progress import (
     TextColumn,
     TimeRemainingColumn,
 )
-from sklearn.metrics import accuracy_score, roc_auc_score
+from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 from torch.utils.data import DataLoader
 
 from leech.dataset import LeechDataset, collate_fn
@@ -151,6 +151,7 @@ class Trainer:
 
         # Track best model
         self.best_val_acc = 0.0
+        self.best_val_f1 = 0.0
         self.best_epoch = 0
         self.start_epoch = 1
 
@@ -161,6 +162,7 @@ class Trainer:
             "val_loss": [],
             "val_acc": [],
             "val_auc": [],
+            "val_f1": [],
         }
 
         if self.output_dir:
@@ -178,6 +180,7 @@ class Trainer:
         self.model.load_state_dict(checkpoint["model_state_dict"])
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         self.best_val_acc = checkpoint.get("best_val_acc", 0.0)
+        self.best_val_f1 = checkpoint.get("best_val_f1", 0.0)
         self.best_epoch = checkpoint.get("best_epoch", 0)
         self.start_epoch = checkpoint.get("epoch", 0) + 1
 
@@ -191,7 +194,8 @@ class Trainer:
 
         logger.info(
             f"Resumed from epoch {self.start_epoch - 1} "
-            f"(best_val_acc={self.best_val_acc:.4f} at epoch {self.best_epoch})"
+            f"(best_val_acc={self.best_val_acc:.4f}, best_val_f1={self.best_val_f1:.4f} "
+            f"at epoch {self.best_epoch})"
         )
 
     def train_epoch(
@@ -265,7 +269,7 @@ class Trainer:
 
     def validate(
         self, progress: Progress | None = None, task_id: TaskID | None = None
-    ) -> tuple[float, float, float]:
+    ) -> tuple[float, float, float, float]:
         """
         Validate model.
 
@@ -274,10 +278,10 @@ class Trainer:
             task_id: Progress task ID (optional)
 
         Returns:
-            Tuple of (average_loss, accuracy, roc_auc)
+            Tuple of (average_loss, accuracy, roc_auc, f1)
         """
         if self.val_loader is None:
-            return 0.0, 0.0, 0.0
+            return 0.0, 0.0, 0.0, 0.0
 
         self.model.eval()
         total_loss = 0.0
@@ -313,8 +317,9 @@ class Trainer:
         all_preds_binary = (np.array(all_preds) > 0.5).astype(int)
         accuracy = accuracy_score(all_labels, all_preds_binary)
         auc = roc_auc_score(all_labels, all_preds) if len(np.unique(all_labels)) > 1 else 0.0
+        f1 = f1_score(all_labels, all_preds_binary, zero_division=0.0)
 
-        return avg_loss, accuracy, auc
+        return avg_loss, accuracy, auc, f1
 
     def train(self, epochs: int, early_stopping_patience: int = 10) -> dict[str, Any]:
         """
@@ -367,10 +372,11 @@ class Trainer:
                     val_task = progress.add_task(
                         f"[yellow]Epoch {epoch}/{epochs} - Validation", total=len(self.val_loader)
                     )
-                    val_loss, val_acc, val_auc = self.validate(progress, val_task)
+                    val_loss, val_acc, val_auc, val_f1 = self.validate(progress, val_task)
                     self.history["val_loss"].append(val_loss)
                     self.history["val_acc"].append(val_acc)
                     self.history["val_auc"].append(val_auc)
+                    self.history["val_f1"].append(val_f1)
 
                     progress.remove_task(val_task)
 
@@ -390,20 +396,23 @@ class Trainer:
                     console.print(
                         f"[cyan]Epoch {epoch}/{epochs}[/cyan] | "
                         f"Train Loss: {train_loss:.4f} Acc: {train_acc:.4f} | "
-                        f"Val Loss: {val_loss:.4f} Acc: {val_acc:.4f} AUC: {val_auc:.4f}"
+                        f"Val Loss: {val_loss:.4f} Acc: {val_acc:.4f} "
+                        f"F1: {val_f1:.4f} AUC: {val_auc:.4f}"
                         f"{lr_str}"
                     )
 
                     # Save best model
                     if val_acc > self.best_val_acc:
                         self.best_val_acc = val_acc
+                        self.best_val_f1 = val_f1
                         self.best_epoch = epoch
                         patience_counter = 0
 
                         if self.output_dir:
                             self.save_checkpoint("model_best.pt", epoch=epoch)
                             console.print(
-                                f"[bold green]✓ Saved best model (val_acc: {val_acc:.4f})[/bold green]"
+                                f"[bold green]✓ Saved best model "
+                                f"(val_acc: {val_acc:.4f}, val_f1: {val_f1:.4f})[/bold green]"
                             )
                     else:
                         patience_counter += 1
@@ -437,6 +446,7 @@ class Trainer:
             "model_state_dict": self.model.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
             "best_val_acc": self.best_val_acc,
+            "best_val_f1": self.best_val_f1,
             "best_epoch": self.best_epoch,
             "epoch": epoch,
             "scheduler_state_dict": self.scheduler.state_dict() if self.scheduler else None,
@@ -459,6 +469,7 @@ class Trainer:
 
         summary = {
             "best_val_acc": self.best_val_acc,
+            "best_val_f1": self.best_val_f1,
             "best_epoch": self.best_epoch,
             "final_train_loss": self.history["train_loss"][-1],
             "final_train_acc": self.history["train_acc"][-1],
@@ -470,6 +481,7 @@ class Trainer:
                     "final_val_loss": self.history["val_loss"][-1],
                     "final_val_acc": self.history["val_acc"][-1],
                     "final_val_auc": self.history["val_auc"][-1],
+                    "final_val_f1": self.history["val_f1"][-1],
                 }
             )
 

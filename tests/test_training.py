@@ -88,11 +88,12 @@ class TestTrainer:
             device="cpu",
         )
 
-        loss, acc, auc = trainer.validate()
+        loss, acc, auc, f1 = trainer.validate()
 
         assert loss == 0.0
         assert acc == 0.0
         assert auc == 0.0
+        assert f1 == 0.0
 
     def test_validate_with_loader(self, sample_model, sample_dataloader):
         """Test validation with validation loader."""
@@ -104,14 +105,16 @@ class TestTrainer:
             device="cpu",
         )
 
-        loss, acc, auc = trainer.validate()
+        loss, acc, auc, f1 = trainer.validate()
 
         assert isinstance(loss, float)
         assert isinstance(acc, float)
         assert isinstance(auc, float)
+        assert isinstance(f1, float)
         assert loss >= 0
         assert 0 <= acc <= 1
         assert 0 <= auc <= 1
+        assert 0 <= f1 <= 1
 
     def test_train_multiple_epochs(self, sample_model, sample_dataloader, tmp_path):
         """Test training for multiple epochs."""
