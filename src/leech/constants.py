@@ -95,5 +95,20 @@ DEFAULT_MOTIF = "CCAGGC"  # Default motif for tRNA 3' end
 DEFAULT_MOTIF_OFFSET = 2  # Default offset within motif (0-indexed, focuses on A in CCA)
 
 # Normalization methods
-NORMALIZATION_METHODS = ["median_mad", "zscore", "quantile"]
+NORMALIZATION_METHODS = ["median_mad", "zscore", "quantile", "pa_scaling"]
 DEFAULT_NORMALIZATION = "median_mad"
+
+# Anchor modes for data preparation
+ANCHOR_MODES = ["basecall", "reference"]
+DEFAULT_ANCHOR = "basecall"
+
+# Signal map refinement defaults
+DEFAULT_REFINE_HALF_BANDWIDTH = 300
+DEFAULT_REFINE_ROUGH_RESCALE = True
+
+# Loss types
+LOSS_TYPES = ["bce", "focal", "cross_entropy"]
+
+# Remora model defaults
+DEFAULT_REMORA_SIZE = 64
+DEFAULT_REMORA_NUM_OUT = 2

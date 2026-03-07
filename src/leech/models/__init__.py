@@ -16,6 +16,7 @@ import torch.nn as nn
 
 from leech.models.conv_lstm_base import ConvLSTMBase
 from leech.models.conv_lstm_dwell import ConvLSTMDwell
+from leech.models.conv_lstm_remora import ConvLSTMRemora, ConvLSTMRemoraBase
 from leech.models.conv_only import ConvOnly
 from leech.models.inference_wrapper import ModelInferenceWrapper
 from leech.models.remora_compat import RemoraModelWrapper
@@ -26,6 +27,8 @@ from leech.models.transformer_dwell import TransformerDwell
 __all__ = [
     "ConvLSTMBase",
     "ConvLSTMDwell",
+    "ConvLSTMRemora",
+    "ConvLSTMRemoraBase",
     "TransformerDwell",
     "ConvOnly",
     "TCNDwell",
@@ -39,6 +42,8 @@ __all__ = [
 MODEL_REGISTRY = {
     "ConvLSTMBase": ConvLSTMBase,
     "ConvLSTMDwell": ConvLSTMDwell,
+    "ConvLSTMRemora": ConvLSTMRemora,
+    "ConvLSTMRemoraBase": ConvLSTMRemoraBase,
     "TransformerDwell": TransformerDwell,
     "ConvOnly": ConvOnly,
     "TCNDwell": TCNDwell,

@@ -39,6 +39,12 @@ def handle_prepare(
     base_justify: str = "center",
     dwell_margin: int = 0,
     reverse_signal: bool = True,
+    anchor: str = "basecall",
+    signal_norm: str = "median_mad",
+    pa_mean: float | None = None,
+    pa_stdev: float | None = None,
+    refine_signal_map: bool = False,
+    kmer_table: Path | None = None,
 ) -> dict[str, Any]:
     """
     Handle the prepare command logic.
@@ -73,8 +79,18 @@ def handle_prepare(
 
     logger.info(f"Preparing data from {pod5} and {bam}")
     logger.info(f"Motif reference mode: {motif_reference}")
+    logger.info(f"Anchor mode: {anchor}, Signal norm: {signal_norm}")
+    if refine_signal_map:
+        logger.info(f"Signal map refinement enabled with kmer table: {kmer_table}")
     if workers > 1:
         logger.info(f"Parallel mode: {workers} workers, {chunk_size} reads per batch")
+
+    # Setup signal refiner if requested
+    signal_refiner = None
+    if refine_signal_map and kmer_table is not None:
+        from leech.signal_refine import SigMapRefiner
+
+        signal_refiner = SigMapRefiner.from_table(kmer_table)
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -104,6 +120,12 @@ def handle_prepare(
             base_justify=base_justify,
             dwell_margin=dwell_margin,
             reverse_signal=reverse_signal,
+            anchor=anchor,
+            norm_method=signal_norm,
+            pa_mean=pa_mean,
+            pa_stdev=pa_stdev,
+            refine_signal_map=refine_signal_map,
+            signal_refiner=signal_refiner,
         )
 
         if len(chunks) == 0:
@@ -218,6 +240,12 @@ def handle_prepare(
                 base_justify=base_justify,
                 dwell_margin=dwell_margin,
                 reverse_signal=reverse_signal,
+                anchor=anchor,
+                norm_method=signal_norm,
+                pa_mean=pa_mean,
+                pa_stdev=pa_stdev,
+                refine_signal_map=refine_signal_map,
+                signal_refiner=signal_refiner,
             )
 
             task_id = progress_container["task"]

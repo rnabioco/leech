@@ -204,14 +204,23 @@ def compute_signal_levels(
 
 
 def normalize_signal(
-    raw_signal: np.ndarray, method: str = "median_mad"
+    raw_signal: np.ndarray,
+    method: str = "median_mad",
+    pa_mean: float | None = None,
+    pa_stdev: float | None = None,
+    cal_offset: float | None = None,
+    cal_scale: float | None = None,
 ) -> tuple[np.ndarray, dict[str, float]]:
     """
     Normalize raw signal data.
 
     Args:
         raw_signal: Raw DAC signal values
-        method: Normalization method ('median_mad', 'zscore', 'quantile')
+        method: Normalization method ('median_mad', 'zscore', 'quantile', 'pa_scaling')
+        pa_mean: Global shift for pa_scaling normalization (from basecaller model)
+        pa_stdev: Global scale for pa_scaling normalization (from basecaller model)
+        cal_offset: POD5 calibration offset (DAC -> pA conversion)
+        cal_scale: POD5 calibration scale (DAC -> pA conversion)
 
     Returns:
         Tuple of (normalized_signal, normalization_params)
@@ -242,10 +251,117 @@ def normalize_signal(
         normalized = (raw_signal - median) / (mad * 1.4826)
         params = {"median": float(median), "mad": float(mad), "q01": float(q01), "q99": float(q99)}
 
+    elif method == "pa_scaling":
+        # Remora-style global normalization using basecaller model parameters.
+        # DAC -> pA (via POD5 calibration) -> global normalization.
+        if pa_mean is None or pa_stdev is None:
+            raise ValueError("pa_scaling requires pa_mean and pa_stdev parameters")
+        if cal_offset is None or cal_scale is None:
+            raise ValueError("pa_scaling requires cal_offset and cal_scale from POD5 calibration")
+
+        # Convert DAC to pA
+        pa_signal = (raw_signal - cal_offset) * cal_scale
+        # Apply global normalization
+        normalized = (pa_signal - pa_mean) / pa_stdev
+        params = {
+            "pa_mean": pa_mean,
+            "pa_stdev": pa_stdev,
+            "cal_offset": cal_offset,
+            "cal_scale": cal_scale,
+        }
+
     else:
         raise ValueError(f"Unknown normalization method: {method}")
 
     return normalized.astype(np.float32), params
+
+
+def make_ref_to_query_mapping(cigar_tuples: list[tuple[int, int]]) -> np.ndarray:
+    """
+    Build reference-to-query coordinate mapping from CIGAR tuples.
+
+    Walks CIGAR operations to map each reference position to the
+    corresponding query (basecalled) position. For deletions (D/N),
+    the query position is interpolated (held at current query pos).
+
+    Args:
+        cigar_tuples: List of (op, length) from pysam's cigartuples.
+            Standard CIGAR ops: M=0, I=1, D=2, N=3, S=4, H=5, P=6, =7, X=8
+
+    Returns:
+        Array of length ref_len+1 mapping reference coordinates to query coordinates.
+        ref_to_query[i] gives the query position corresponding to ref position i.
+    """
+    # CIGAR ops that consume reference: M(0), D(2), N(3), =(7), X(8)
+    # CIGAR ops that consume query: M(0), I(1), S(4), =(7), X(8)
+    ref_to_query_knots: list[tuple[int, int]] = []
+    ref_pos = 0
+    query_pos = 0
+
+    for op, length in cigar_tuples:
+        if op in (0, 7, 8):  # M, =, X: consume both ref and query
+            ref_to_query_knots.append((ref_pos, query_pos))
+            ref_pos += length
+            query_pos += length
+        elif op == 1:  # I: consume query only
+            query_pos += length
+        elif op in (2, 3):  # D, N: consume ref only
+            ref_to_query_knots.append((ref_pos, query_pos))
+            ref_pos += length
+        elif op == 4:  # S: soft clip, consume query only
+            query_pos += length
+        # H(5), P(6): consume neither
+
+    # Final knot
+    ref_to_query_knots.append((ref_pos, query_pos))
+
+    if not ref_to_query_knots:
+        return np.array([0], dtype=np.int64)
+
+    # Interpolate to get ref_to_query for every ref position
+    ref_positions = np.array([k[0] for k in ref_to_query_knots])
+    query_positions = np.array([k[1] for k in ref_to_query_knots])
+
+    ref_len = ref_pos
+    all_ref = np.arange(ref_len + 1)
+    ref_to_query = np.interp(all_ref, ref_positions, query_positions)
+
+    return np.floor(ref_to_query).astype(np.int64)
+
+
+def compute_ref_to_signal(
+    query_to_signal: np.ndarray,
+    cigar_tuples: list[tuple[int, int]],
+) -> np.ndarray:
+    """
+    Compute reference-to-signal mapping via ref->query->signal chain.
+
+    This is the full pipeline for reference-anchored mode:
+    1. Build ref->query mapping from CIGAR
+    2. Interpolate through query->signal mapping
+
+    Args:
+        query_to_signal: Base-to-signal mapping for basecalled sequence,
+            length = query_len + 1
+        cigar_tuples: CIGAR tuples from pysam alignment
+
+    Returns:
+        Array mapping each reference position to signal position,
+        length = ref_len + 1
+    """
+    ref_to_query = make_ref_to_query_mapping(cigar_tuples)
+
+    # Clamp ref_to_query values to valid query indices
+    max_query = len(query_to_signal) - 1
+    ref_to_query_clamped = np.clip(ref_to_query, 0, max_query)
+
+    # Map through query_to_signal
+    query_indices = np.arange(len(query_to_signal))
+    ref_to_signal = np.floor(
+        np.interp(ref_to_query_clamped, query_indices, query_to_signal)
+    ).astype(np.int64)
+
+    return ref_to_signal
 
 
 def sequence_to_int(sequence: str) -> np.ndarray:

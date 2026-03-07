@@ -118,8 +118,18 @@ class Trainer:
         )
 
         # Setup loss
+        self.loss_type = loss_type
         pw = pos_weight.to(device) if pos_weight is not None else None
-        if loss_type == "focal":
+        if loss_type == "cross_entropy":
+            # CrossEntropyLoss expects (B, num_classes) logits and (B,) integer labels
+            if pw is not None:
+                # Convert pos_weight to per-class weights for CE
+                ce_weights = torch.tensor([1.0, pw.item()], dtype=torch.float32).to(device)
+                self.criterion = nn.CrossEntropyLoss(weight=ce_weights)
+            else:
+                self.criterion = nn.CrossEntropyLoss()
+            logger.info("Using CrossEntropyLoss (2-class softmax)")
+        elif loss_type == "focal":
             self.criterion = FocalBCEWithLogitsLoss(gamma=focal_gamma, pos_weight=pw)
             logger.info(f"Using focal loss (gamma={focal_gamma})")
         else:
@@ -220,13 +230,22 @@ class Trainer:
             # Move labels to device
             labels = batch["label"].to(self.device)
 
+            # Adapt labels for CrossEntropyLoss
+            if self.loss_type == "cross_entropy":
+                ce_labels = labels.squeeze(-1).long()
+            else:
+                ce_labels = None
+
             # Forward pass (wrapper handles moving tensors and calling model correctly)
             self.optimizer.zero_grad()
 
             if self.use_mixed_precision:
                 with torch.amp.autocast("cuda"):
                     logits = self.model_wrapper.forward_batch(batch, self.device)
-                    loss = self.criterion(logits, labels)
+                    if ce_labels is not None:
+                        loss = self.criterion(logits, ce_labels)
+                    else:
+                        loss = self.criterion(logits, labels)
 
                 # Scaled backward pass
                 self.scaler.scale(loss).backward()
@@ -240,7 +259,10 @@ class Trainer:
                 self.scaler.update()
             else:
                 logits = self.model_wrapper.forward_batch(batch, self.device)
-                loss = self.criterion(logits, labels)
+                if ce_labels is not None:
+                    loss = self.criterion(logits, ce_labels)
+                else:
+                    loss = self.criterion(logits, labels)
 
                 loss.backward()
 
@@ -252,8 +274,13 @@ class Trainer:
 
             # Track metrics
             total_loss += loss.item()
-            preds = torch.sigmoid(logits).detach().cpu().numpy()
-            all_preds.extend(preds.flatten())
+            if self.loss_type == "cross_entropy":
+                # For CE: probabilities via softmax, take class 1
+                probs = torch.softmax(logits, dim=-1)[:, 1].detach().cpu().numpy()
+                all_preds.extend(probs.flatten())
+            else:
+                preds = torch.sigmoid(logits).detach().cpu().numpy()
+                all_preds.extend(preds.flatten())
             all_labels.extend(labels.cpu().numpy().flatten())
 
             # Update progress if provided
@@ -293,19 +320,35 @@ class Trainer:
                 # Move labels to device
                 labels = batch["label"].to(self.device)
 
+                # Adapt labels for CrossEntropyLoss
+                if self.loss_type == "cross_entropy":
+                    ce_labels = labels.squeeze(-1).long()
+                else:
+                    ce_labels = None
+
                 # Forward pass (wrapper handles moving tensors and calling model correctly)
                 if self.use_mixed_precision:
                     with torch.amp.autocast("cuda"):
                         logits = self.model_wrapper.forward_batch(batch, self.device)
-                        loss = self.criterion(logits, labels)
+                        if ce_labels is not None:
+                            loss = self.criterion(logits, ce_labels)
+                        else:
+                            loss = self.criterion(logits, labels)
                 else:
                     logits = self.model_wrapper.forward_batch(batch, self.device)
-                    loss = self.criterion(logits, labels)
+                    if ce_labels is not None:
+                        loss = self.criterion(logits, ce_labels)
+                    else:
+                        loss = self.criterion(logits, labels)
 
                 # Track metrics
                 total_loss += loss.item()
-                preds = torch.sigmoid(logits).cpu().numpy()
-                all_preds.extend(preds.flatten())
+                if self.loss_type == "cross_entropy":
+                    probs = torch.softmax(logits, dim=-1)[:, 1].cpu().numpy()
+                    all_preds.extend(probs.flatten())
+                else:
+                    preds = torch.sigmoid(logits).cpu().numpy()
+                    all_preds.extend(preds.flatten())
                 all_labels.extend(labels.cpu().numpy().flatten())
 
                 # Update progress if provided
@@ -681,7 +724,7 @@ def train_model(
     model_kwargs.pop("left_context", None)
     model_kwargs.pop("right_context", None)
 
-    # Only pass num_features to models that need it (not ConvLSTMBase)
+    # Only pass num_features to models that need it
     model_init_kwargs = {
         "signal_len": signal_len,
         "kmer_len": kmer_len,
@@ -689,7 +732,9 @@ def train_model(
         "signal_kmer_context": signal_kmer_context,
         **model_kwargs,
     }
-    if model_name != "ConvLSTMBase":
+    # Models without a feature branch don't take num_features
+    no_feature_models = {"ConvLSTMBase", "ConvLSTMRemoraBase"}
+    if model_name not in no_feature_models:
         model_init_kwargs["num_features"] = num_features
 
     model = get_model(model_name, **model_init_kwargs)
