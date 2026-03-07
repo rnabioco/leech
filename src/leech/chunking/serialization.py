@@ -51,6 +51,8 @@ def save_chunks(chunks: list[dict], output_path: Path) -> None:
     labels_int = []
     read_ids = []
     base_indices = []
+    seq_to_sig_maps = []
+    sequences_with_kmer_context = []
 
     for chunk in chunks:
         signals.append(chunk["signal"])
@@ -63,6 +65,11 @@ def save_chunks(chunks: list[dict], output_path: Path) -> None:
         )  # Numeric label or -1
         read_ids.append(chunk["read_id"])
         base_indices.append(chunk["base_idx"])
+        # Signal-level kmer encoding fields (may be None for old chunks)
+        s2s = chunk.get("seq_to_sig_map")
+        seq_ctx = chunk.get("sequence_with_kmer_context")
+        seq_to_sig_maps.append(s2s if s2s is not None else np.array([], dtype=np.int64))
+        sequences_with_kmer_context.append(seq_ctx if seq_ctx is not None else "")
 
     # Convert to arrays
     # Signals may have variable length, so we'll save them as object array
@@ -74,6 +81,8 @@ def save_chunks(chunks: list[dict], output_path: Path) -> None:
     labels_int_arr = np.array(labels_int, dtype=np.int64)  # Numeric labels
     read_ids_arr = np.array(read_ids, dtype=str)
     base_indices_arr = np.array(base_indices, dtype=np.int64)
+    seq_to_sig_maps_arr = np.array(seq_to_sig_maps, dtype=object)
+    sequences_with_kmer_context_arr = np.array(sequences_with_kmer_context, dtype=str)
 
     # Create parent directories if they don't exist
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -89,6 +98,8 @@ def save_chunks(chunks: list[dict], output_path: Path) -> None:
         labels_int=labels_int_arr,
         read_ids=read_ids_arr,
         base_indices=base_indices_arr,
+        seq_to_sig_maps=seq_to_sig_maps_arr,
+        sequences_with_kmer_context=sequences_with_kmer_context_arr,
     )
 
     logger.info(f"Saved {len(chunks)} chunks to {output_path}")
@@ -127,6 +138,11 @@ def load_chunks(input_path: Path) -> list[dict]:
         labels_int_arr = data["labels_int"]  # Numeric labels
         read_ids = data["read_ids"]
         base_indices = data["base_indices"]
+        # New fields for signal_kmer encoding (backward compatible)
+        has_sig_kmer = "seq_to_sig_maps" in data
+        if has_sig_kmer:
+            seq_to_sig_maps = data["seq_to_sig_maps"]
+            sequences_with_kmer_context = data["sequences_with_kmer_context"]
 
         n_chunks = len(labels_arr)
         chunks = []
@@ -144,6 +160,11 @@ def load_chunks(input_path: Path) -> list[dict]:
                 "label": str(labels_arr[i]) if labels_arr[i] != "" else None,
                 "label_int": int(labels_int_arr[i]) if labels_int_arr[i] >= 0 else None,
             }
+            if has_sig_kmer:
+                s2s = seq_to_sig_maps[i]
+                seq_ctx = str(sequences_with_kmer_context[i])
+                chunk["seq_to_sig_map"] = s2s if len(s2s) > 0 else None
+                chunk["sequence_with_kmer_context"] = seq_ctx if seq_ctx else None
 
             chunks.append(chunk)
 

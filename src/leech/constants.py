@@ -85,10 +85,14 @@ def generate_random_seed() -> int:
     return secrets.randbits(32)
 
 
+# Sequence encoding defaults
+DEFAULT_SEQ_ENCODING = "signal_kmer"  # "signal_kmer" or "base_onehot"
+DEFAULT_SIGNAL_KMER_CONTEXT = (4, 4)  # Kmer context for signal-level kmer encoding
+
 # Inference defaults
 DEFAULT_MIN_MAPQ = 0  # Minimum mapping quality for inference
-DEFAULT_MOTIF = "CCATGGC"  # Default motif for tRNA 3' end (amino acid at center T)
-DEFAULT_MOTIF_OFFSET = 3  # Default offset within motif (0-indexed, focuses on center T)
+DEFAULT_MOTIF = "CCAGGC"  # Default motif for tRNA 3' end
+DEFAULT_MOTIF_OFFSET = 2  # Default offset within motif (0-indexed, focuses on A in CCA)
 
 # Normalization methods
 NORMALIZATION_METHODS = ["median_mad", "zscore", "quantile"]

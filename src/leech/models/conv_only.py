@@ -21,6 +21,7 @@ from leech.constants import (
     DEFAULT_DROPOUT,
     DEFAULT_KMER_LEN,
     DEFAULT_NUM_FEATURES,
+    DEFAULT_SIGNAL_KMER_CONTEXT,
     DEFAULT_SIGNAL_LEN,
 )
 from leech.models.components import BaseModel
@@ -99,12 +100,21 @@ class ConvOnly(BaseModel):
         base_channels: int = 16,
         num_blocks: int = 3,
         dropout: float = DEFAULT_DROPOUT,
+        seq_encoding: str = "base_onehot",
+        signal_kmer_context: tuple[int, int] = DEFAULT_SIGNAL_KMER_CONTEXT,
     ):
         super().__init__()
 
         self.signal_len = signal_len
         self.kmer_len = kmer_len
         self.num_features = num_features
+        self.seq_encoding = seq_encoding
+
+        # Compute sequence input channels
+        if seq_encoding == "signal_kmer":
+            seq_in_channels = 4 * (signal_kmer_context[0] + signal_kmer_context[1] + 1)
+        else:
+            seq_in_channels = 4
 
         # Signal branch: Stack of inception blocks
         # Input: (batch, 1, signal_len)
@@ -119,13 +129,15 @@ class ConvOnly(BaseModel):
         self.signal_pool = nn.AdaptiveMaxPool1d(kmer_len)
 
         # Sequence branch: Stack of inception blocks
-        # Input: (batch, 4, kmer_len) - 4 nucleotides (A, C, G, T)
         self.seq_conv = nn.ModuleList()
-        in_ch = 4
+        in_ch = seq_in_channels
         for i in range(num_blocks):
             out_ch = base_channels * (2**i)
             self.seq_conv.append(InceptionBlock(in_ch, out_ch))
             in_ch = out_ch * 5
+
+        if seq_encoding == "signal_kmer":
+            self.seq_pool_sk = nn.AdaptiveMaxPool1d(kmer_len)
 
         # Feature branch: Stack of inception blocks
         # Input: (batch, num_features, kmer_len)
@@ -189,6 +201,8 @@ class ConvOnly(BaseModel):
         seq_feat = sequence
         for conv_block in self.seq_conv:
             seq_feat = conv_block(seq_feat)
+        if self.seq_encoding == "signal_kmer":
+            seq_feat = self.seq_pool_sk(seq_feat)  # Pool to kmer_len
 
         # Feature branch
         feat_feat = features

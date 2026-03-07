@@ -23,6 +23,7 @@ from leech.constants import (
     DEFAULT_KMER_LEN,
     DEFAULT_NUM_FEATURES,
     DEFAULT_SIGNAL_KERNEL,
+    DEFAULT_SIGNAL_KMER_CONTEXT,
     DEFAULT_SIGNAL_LEN,
 )
 from leech.models.components import BaseModel
@@ -90,6 +91,8 @@ class TransformerDwell(BaseModel):
         num_layers: int = 4,
         dim_feedforward: int = 1024,
         dropout: float = DEFAULT_DROPOUT,
+        seq_encoding: str = "base_onehot",
+        signal_kmer_context: tuple[int, int] = DEFAULT_SIGNAL_KMER_CONTEXT,
     ):
         super().__init__()
 
@@ -97,6 +100,13 @@ class TransformerDwell(BaseModel):
         self.kmer_len = kmer_len
         self.num_features = num_features
         self.d_model = d_model
+        self.seq_encoding = seq_encoding
+
+        # Compute sequence input channels
+        if seq_encoding == "signal_kmer":
+            seq_in_channels = 4 * (signal_kmer_context[0] + signal_kmer_context[1] + 1)
+        else:
+            seq_in_channels = 4
 
         # Signal branch: Conv1d to project signal to d_model dimensions
         # Input: (batch, 1, signal_len)
@@ -110,14 +120,15 @@ class TransformerDwell(BaseModel):
         )
         self.signal_pool = nn.AdaptiveAvgPool1d(kmer_len)  # Match sequence length
 
-        # Sequence branch: Project one-hot encoding to d_model dimensions
-        # Input: (batch, 4, kmer_len) - 4 nucleotides (A, C, G, T)
+        # Sequence branch: Project encoding to d_model dimensions
         self.seq_conv = nn.Sequential(
-            nn.Conv1d(4, 64, kernel_size=3, padding=1),
+            nn.Conv1d(seq_in_channels, 64, kernel_size=3, padding=1),
             nn.ReLU(),
             nn.Conv1d(64, d_model, kernel_size=3, padding=1),
             nn.ReLU(),
         )
+        if seq_encoding == "signal_kmer":
+            self.seq_pool = nn.AdaptiveAvgPool1d(kmer_len)
 
         # Feature branch: Project features to d_model dimensions
         # Input: (batch, num_features, kmer_len)
@@ -188,7 +199,9 @@ class TransformerDwell(BaseModel):
         signal_feat = self.signal_transformer(signal_feat)  # (batch, kmer_len, d_model)
 
         # Sequence branch
-        seq_feat = self.seq_conv(sequence)  # (batch, d_model, kmer_len)
+        seq_feat = self.seq_conv(sequence)  # (batch, d_model, seq_len)
+        if self.seq_encoding == "signal_kmer":
+            seq_feat = self.seq_pool(seq_feat)  # (batch, d_model, kmer_len)
         seq_feat = seq_feat.transpose(1, 2)  # (batch, kmer_len, d_model)
         seq_feat = self.pos_encoding(seq_feat)
         seq_feat = self.seq_transformer(seq_feat)  # (batch, kmer_len, d_model)

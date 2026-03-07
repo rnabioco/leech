@@ -523,6 +523,8 @@ def train_model(
     motif: str | None = None,
     motif_offset: int = 0,
     base_justify: str = "center",
+    seq_encoding: str = "base_onehot",
+    signal_kmer_context: tuple[int, int] = (4, 4),
     **model_kwargs: Any,
 ) -> dict[str, Any]:
     """
@@ -607,6 +609,8 @@ def train_model(
         dwell_offset=dwell_offset,
         chunks=train_chunks,
         augmentation=augmentation,
+        seq_encoding=seq_encoding,
+        signal_kmer_context=signal_kmer_context,
     )
 
     val_dataset = None
@@ -618,6 +622,8 @@ def train_model(
             model_type=model_name,
             dwell_offset=dwell_offset,
             chunks=val_chunks,
+            seq_encoding=seq_encoding,
+            signal_kmer_context=signal_kmer_context,
         )
 
     # Create data loaders
@@ -679,6 +685,8 @@ def train_model(
     model_init_kwargs = {
         "signal_len": signal_len,
         "kmer_len": kmer_len,
+        "seq_encoding": seq_encoding,
+        "signal_kmer_context": signal_kmer_context,
         **model_kwargs,
     }
     if model_name != "ConvLSTMBase":
@@ -697,6 +705,8 @@ def train_model(
         "motif": motif,
         "motif_offset": motif_offset,
         "base_justify": base_justify,
+        "seq_encoding": seq_encoding,
+        "signal_kmer_context": list(signal_kmer_context),
         "epochs": epochs,
         "batch_size": batch_size,
         "learning_rate": learning_rate,

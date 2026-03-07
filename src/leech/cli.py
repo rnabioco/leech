@@ -565,6 +565,12 @@ def merge(input_chunks, output_dir, train_split, val_split, seed, comparison_spe
     default="center",
     help="Signal justification within focus base (recorded in config)",
 )
+@click.option(
+    "--seq-encoding",
+    type=click.Choice(["base_onehot", "signal_kmer"]),
+    default="base_onehot",
+    help="Sequence encoding type: base_onehot (4, kmer_len) or signal_kmer (36, signal_len)",
+)
 def train(
     train_data,
     val_data,
@@ -595,6 +601,7 @@ def train(
     motif,
     motif_offset,
     base_justify,
+    seq_encoding,
 ):
     """Train a model on prepared data."""
     from leech.training import train_model
@@ -641,6 +648,7 @@ def train(
         motif=motif,
         motif_offset=motif_offset,
         base_justify=base_justify,
+        seq_encoding=seq_encoding,
         **model_kwargs,
     )
 
@@ -1320,6 +1328,36 @@ def ablation(model, test_data, output_dir, device, no_plot):
     default=False,
     help="Do NOT reverse the raw signal. By default, signal is reversed for direct RNA sequencing (POD5 stores 3'→5', basecaller expects 5'→3'). Use this flag for DNA data.",
 )
+@click.option(
+    "--motif",
+    type=str,
+    default=None,
+    help="Motif to search for in reads (auto-read from model config if not provided; required for Remora models)",
+)
+@click.option(
+    "--motif-offset",
+    type=int,
+    default=0,
+    help="Offset within motif for the prediction position (0-indexed)",
+)
+@click.option(
+    "--batch-size",
+    type=int,
+    default=256,
+    help="Chunks per forward pass (default: 256)",
+)
+@click.option(
+    "--min-mapq",
+    type=int,
+    default=10,
+    help="Minimum mapping quality (default: 10)",
+)
+@click.option(
+    "--workers",
+    type=int,
+    default=0,
+    help="Parallel chunk extraction workers (0=sequential, default: 0)",
+)
 def predict(
     model,
     bundle_path,
@@ -1332,10 +1370,15 @@ def predict(
     device,
     base_justify,
     no_reverse_signal,
+    motif,
+    motif_offset,
+    batch_size,
+    min_mapq,
+    workers,
 ):
     """Run inference on new data to generate predictions."""
     from leech.inference import run_bundle_inference, run_inference
-    from leech.util import load_model_from_bundle, load_model_from_checkpoint
+    from leech.util import load_model_from_bundle
 
     # Validate mutually exclusive options
     if model and bundle_path:
@@ -1360,30 +1403,44 @@ def predict(
             bam_path=bam,
             output_path=output,
             device=device,
+            min_mapq=min_mapq,
+            motif=motif,
+            motif_offset=motif_offset,
             base_justify=base_justify,
             reverse_signal=reverse_signal,
             raw=raw,
         )
     else:
-        # Single-model inference
+        # Single-model inference (auto-detects leech vs Remora)
         if bundle_path and pair:
             loaded_model, config = load_model_from_bundle(bundle_path, pair, device=device)
             logger.info(f"Running inference with pair '{pair}' from bundle: {bundle_path}")
+            model_and_config = (loaded_model, config)
+            model_path_arg = None
+        elif model is not None:
+            # Use load_model_auto for auto-detection of leech vs Remora
+            model_and_config = None
+            model_path_arg = Path(model)
         else:
-            loaded_model, config = load_model_from_checkpoint(model, device=device)
-            logger.info(f"Running inference with model: {model}")
+            raise click.UsageError("Either --model or --bundle is required")
 
         logger.info(f"Input: {pod5}, {bam}")
         logger.info(f"Output: {output}")
 
         run_inference(
-            model_and_config=(loaded_model, config),
+            model_and_config=model_and_config,
+            model_path=model_path_arg,
             pod5_path=pod5,
             bam_path=bam,
             output_path=output,
             device=device,
+            min_mapq=min_mapq,
+            motif=motif,
+            motif_offset=motif_offset,
+            batch_size=batch_size,
             base_justify=base_justify,
             reverse_signal=reverse_signal,
+            num_workers=workers,
         )
 
     console.print("[bold green]Inference complete![/bold green]")

@@ -12,7 +12,7 @@ from leech.preparation.orchestrator import (
     prepare_training_data_with_split,
 )
 from leech.preparation.parallel import prepare_training_data_parallel
-from leech.preparation.reader import iter_bam_with_pod5, read_pod5_signal
+from leech.preparation.reader import build_leech_read, iter_bam_with_pod5, read_pod5_signal
 
 __all__ = [
     # Orchestration
@@ -20,6 +20,7 @@ __all__ = [
     "prepare_training_data_with_split",
     "prepare_training_data_parallel",
     # Reading
+    "build_leech_read",
     "iter_bam_with_pod5",
     "read_pod5_signal",
     # Encoding

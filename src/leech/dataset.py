@@ -41,6 +41,7 @@ import torch
 from torch.utils.data import Dataset
 
 from leech.chunking import load_chunks
+from leech.features import encode_signal_kmer, sequence_to_int
 from leech.models.inference_wrapper import ModelInferenceWrapper
 
 logger = logging.getLogger("leech.dataset")
@@ -76,6 +77,8 @@ class LeechDataset(Dataset):
         dwell_offset: int = 0,
         chunks: list[dict] | None = None,
         augmentation: dict | None = None,
+        seq_encoding: str = "base_onehot",
+        signal_kmer_context: tuple[int, int] = (4, 4),
     ):
         """
         Initialize dataset.
@@ -100,6 +103,8 @@ class LeechDataset(Dataset):
         self.model_type = model_type
         self.dwell_offset = dwell_offset
         self.augmentation = augmentation
+        self.seq_encoding = seq_encoding
+        self.signal_kmer_context = signal_kmer_context
 
         # Use pre-loaded chunks or load from file
         if chunks is not None:
@@ -120,9 +125,27 @@ class LeechDataset(Dataset):
         self._encoded_seqs: list[torch.Tensor] = []
         self._labels: list[torch.Tensor] = []
 
+        # Determine effective encoding: fall back to base_onehot if chunks lack signal_kmer data
+        self._effective_seq_encoding = seq_encoding
+        if seq_encoding == "signal_kmer":
+            first = self.chunks[0]
+            if not first.get("seq_to_sig_map") is not None or not first.get(
+                "sequence_with_kmer_context"
+            ):
+                logger.warning(
+                    "Chunks lack seq_to_sig_map/sequence_with_kmer_context; "
+                    "falling back to base_onehot encoding"
+                )
+                self._effective_seq_encoding = "base_onehot"
+
         for chunk in self.chunks:
-            # Pre-encode sequence (vectorized, no Python loop)
-            self._encoded_seqs.append(self._encode_sequence(chunk["sequence"]))
+            if self._effective_seq_encoding == "signal_kmer":
+                self._encoded_seqs.append(
+                    self._encode_signal_kmer(chunk, signal_len, signal_kmer_context)
+                )
+            else:
+                # Pre-encode sequence (vectorized, no Python loop)
+                self._encoded_seqs.append(self._encode_sequence(chunk["sequence"]))
 
             # Pre-create label tensor
             self._labels.append(torch.tensor([chunk["label_int"]], dtype=torch.float32))
@@ -135,7 +158,7 @@ class LeechDataset(Dataset):
 
         logger.debug(
             f"Pre-tensorized {len(self.chunks)} chunks "
-            f"({len(self._encoded_seqs)} sequences encoded)"
+            f"({len(self._encoded_seqs)} sequences encoded, encoding={self._effective_seq_encoding})"
         )
 
     def _apply_augmentation(self, signal: torch.Tensor) -> torch.Tensor:
@@ -166,6 +189,28 @@ class LeechDataset(Dataset):
         valid = indices < 4
         encoded[indices[valid], np.where(valid)[0]] = 1.0
         return torch.from_numpy(encoded)
+
+    @staticmethod
+    def _encode_signal_kmer(
+        chunk: dict,
+        signal_len: int,
+        kmer_context: tuple[int, int],
+    ) -> torch.Tensor:
+        """Encode chunk using signal-level kmer encoding.
+
+        Args:
+            chunk: Chunk dict with seq_to_sig_map and sequence_with_kmer_context
+            signal_len: Target signal length (pad/truncate)
+            kmer_context: (kmer_before, kmer_after) for encoding
+
+        Returns:
+            Encoded tensor of shape (4 * kmer_len, signal_len)
+        """
+        seq_ctx = chunk["sequence_with_kmer_context"]
+        seq_to_sig = chunk["seq_to_sig_map"]
+        seq_ints = sequence_to_int(seq_ctx)
+        enc = encode_signal_kmer(seq_ints, seq_to_sig, signal_len, kmer_context)
+        return torch.from_numpy(enc)
 
     def __len__(self) -> int:
         """Return number of chunks."""
@@ -199,10 +244,11 @@ class LeechDataset(Dataset):
             signal_tensor = self._apply_augmentation(signal_tensor)
 
         # Pre-encoded sequence lookup
-        sequence = chunk["sequence"]
-        if len(sequence) != self.kmer_len:
-            raise ValueError(f"Expected k-mer length {self.kmer_len}, got {len(sequence)}")
         sequence_tensor = self._encoded_seqs[idx]
+        if self._effective_seq_encoding == "base_onehot":
+            sequence = chunk["sequence"]
+            if len(sequence) != self.kmer_len:
+                raise ValueError(f"Expected k-mer length {self.kmer_len}, got {len(sequence)}")
 
         # Process dwell/features — apply dwell_offset slicing if margin exists
         dwell = chunk["dwell"]
