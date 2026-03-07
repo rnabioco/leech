@@ -334,6 +334,7 @@ def run_grid_point(
         # Extract best metrics
         best_val_acc = max(history["val_acc"]) if history["val_acc"] else 0.0
         best_val_auc = max(history["val_auc"]) if history["val_auc"] else 0.0
+        best_val_f1 = max(history["val_f1"]) if history["val_f1"] else 0.0
         best_epoch = int(np.argmax(history["val_acc"]) + 1) if history["val_acc"] else epochs
 
         result = {
@@ -343,6 +344,7 @@ def run_grid_point(
             "signal_len": signal_len,
             "best_val_acc": best_val_acc,
             "best_val_auc": best_val_auc,
+            "best_val_f1": best_val_f1,
             "best_val_loss": min(history["val_loss"]) if history["val_loss"] else 0.0,
             "best_epoch": best_epoch,
             "final_train_acc": history["train_acc"][-1] if history["train_acc"] else 0.0,
@@ -602,6 +604,7 @@ def run_grid_search(config: GridSearchConfig) -> Path:
         table.add_column("Right Context", justify="right", style="cyan")
         table.add_column("Dwell Offset", justify="right", style="cyan")
         table.add_column("Val Accuracy", justify="right", style="green")
+        table.add_column("Val F1", justify="right", style="green")
         table.add_column("Val AUC", justify="right", style="yellow")
         table.add_column("Best Epoch", justify="right", style="blue")
         table.add_column("Training Time", justify="right", style="white")
@@ -617,6 +620,7 @@ def run_grid_search(config: GridSearchConfig) -> Path:
                 str(r["right_context"]),
                 str(r.get("dwell_offset", 0)),
                 f"{r.get('best_val_acc', 0):.4f}",
+                f"{r.get('best_val_f1', 0):.4f}",
                 f"{r.get('best_val_auc', 0):.4f}",
                 str(r.get("best_epoch", 0)),
                 f"{r.get('training_time_sec', 0):.1f}s",
@@ -637,6 +641,7 @@ def run_grid_search(config: GridSearchConfig) -> Path:
         summary_table.add_row("Right Context", str(best_result["right_context"]))
         summary_table.add_row("Dwell Offset", str(best_result.get("dwell_offset", 0)))
         summary_table.add_row("Validation Accuracy", f"{best_result['best_val_acc']:.4f}")
+        summary_table.add_row("Validation F1", f"{best_result.get('best_val_f1', 0):.4f}")
         summary_table.add_row("Validation AUC", f"{best_result.get('best_val_auc', 0):.4f}")
         summary_table.add_row("Best Epoch", str(best_result.get("best_epoch", 0)))
         summary_table.add_row("Model Path", str(best_result["model_path"]))
@@ -679,6 +684,7 @@ def save_grid_summary(results: list[dict], output_path: Path) -> None:
         "dwell_offset",
         "signal_len",
         "best_val_acc",
+        "best_val_f1",
         "best_val_auc",
         "best_val_loss",
         "best_epoch",
