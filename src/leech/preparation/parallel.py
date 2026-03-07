@@ -17,7 +17,7 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn
 from leech.chunking import LeechRead, extract_training_chunks
 from leech.features import (
     compute_dwell_features,
-    compute_dwell_times,
+    compute_ref_to_signal,
     compute_signal_features,
     normalize_signal,
 )
@@ -27,20 +27,7 @@ logger = logging.getLogger("leech.preparation.parallel")
 
 
 def _process_read_chunk_worker(
-    args: tuple[
-        list[ReadInfo],
-        Path,
-        str | None,
-        int,
-        str | None,
-        int | None,
-        str,
-        dict[str, str] | None,
-        bool,
-        str,
-        int,
-        bool,
-    ],
+    args: tuple,
 ) -> list[dict[str, np.ndarray | str | int | None]]:
     """
     Worker function to process a chunk of reads in parallel.
@@ -48,7 +35,9 @@ def _process_read_chunk_worker(
     Args:
         args: Tuple of (read_infos, pod5_path, motif, motif_offset, label, label_int,
                         motif_reference, reference_sequences, skip_motif_indels,
-                        base_justify, dwell_margin, reverse_signal)
+                        base_justify, dwell_margin, reverse_signal, anchor,
+                        norm_method, pa_mean, pa_stdev, refine_signal_map,
+                        signal_refiner)
 
     Returns:
         List of extracted chunks from all reads in this chunk
@@ -66,6 +55,12 @@ def _process_read_chunk_worker(
         base_justify,
         dwell_margin,
         reverse_signal,
+        anchor,
+        norm_method,
+        pa_mean,
+        pa_stdev,
+        refine_signal_map,
+        signal_refiner,
     ) = args
 
     # Get motif searcher
@@ -112,14 +107,50 @@ def _process_read_chunk_worker(
                 # Reconstruct move table
                 move_table = read_info.to_move_table()
 
+                # Get calibration data for pa_scaling
+                cal_offset = pod5_metadata.get("calibration_offset")
+                cal_scale = pod5_metadata.get("calibration_scale")
+
                 # Normalize signal
-                norm_signal, norm_params = normalize_signal(raw_signal, method="median_mad")
+                norm_signal, norm_params = normalize_signal(
+                    raw_signal,
+                    method=norm_method,
+                    pa_mean=pa_mean,
+                    pa_stdev=pa_stdev,
+                    cal_offset=cal_offset,
+                    cal_scale=cal_scale,
+                )
 
                 # Compute seq-to-signal mapping
-                seq_to_sig_map = move_table.to_seq_to_sig_map()
+                query_to_sig_map = move_table.to_seq_to_sig_map()
+
+                # Reference-anchored mode
+                use_sequence = read_info.sequence
+                if (
+                    anchor == "reference"
+                    and read_info.reference_sequence is not None
+                    and read_info.cigar_tuples is not None
+                ):
+                    ref_to_sig_map = compute_ref_to_signal(query_to_sig_map, read_info.cigar_tuples)
+                    sig_start = int(ref_to_sig_map[0])
+                    sig_end = int(ref_to_sig_map[-1])
+                    norm_signal = norm_signal[sig_start:sig_end]
+                    seq_to_sig_map = ref_to_sig_map - sig_start
+                    use_sequence = read_info.reference_sequence
+                else:
+                    seq_to_sig_map = query_to_sig_map
+
+                # Optional signal map refinement
+                if refine_signal_map and signal_refiner is not None:
+                    from leech.signal_refine import SigMapRefiner
+
+                    if isinstance(signal_refiner, SigMapRefiner):
+                        seq_to_sig_map = signal_refiner.refine(
+                            norm_signal, use_sequence, seq_to_sig_map
+                        )
 
                 # Compute features
-                dwells = compute_dwell_times(move_table)
+                dwells = np.diff(seq_to_sig_map)
                 dwell_feats = compute_dwell_features(dwells)
                 signal_feats = compute_signal_features(norm_signal, seq_to_sig_map)
 
@@ -150,7 +181,7 @@ def _process_read_chunk_worker(
                 # Create LeechRead
                 leech_read = LeechRead(
                     read_id=read_info.read_id,
-                    sequence=read_info.sequence,
+                    sequence=use_sequence,
                     signal=norm_signal,
                     seq_to_sig_map=seq_to_sig_map,
                     dwells=dwells,
@@ -196,6 +227,12 @@ def prepare_training_data_parallel(
     base_justify: str = "center",
     dwell_margin: int = 0,
     reverse_signal: bool = True,
+    anchor: str = "basecall",
+    norm_method: str = "median_mad",
+    pa_mean: float | None = None,
+    pa_stdev: float | None = None,
+    refine_signal_map: bool = False,
+    signal_refiner: object | None = None,
 ) -> tuple[list[dict[str, np.ndarray | str | int | None]], dict[str, int]]:
     """
     Prepare training data from BAM and POD5 files using multiprocessing.
@@ -271,6 +308,12 @@ def prepare_training_data_parallel(
             base_justify,
             dwell_margin,
             reverse_signal,
+            anchor,
+            norm_method,
+            pa_mean,
+            pa_stdev,
+            refine_signal_map,
+            signal_refiner,
         )
         for chunk in read_chunks
     ]

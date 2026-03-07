@@ -96,6 +96,8 @@ LOGO = """
 MODEL_CHOICES = [
     "ConvLSTMDwell",
     "ConvLSTMBase",
+    "ConvLSTMRemora",
+    "ConvLSTMRemoraBase",
     "TransformerDwell",
     "ConvOnly",
     "TCNDwell",
@@ -256,6 +258,42 @@ def data():
     default=False,
     help="Do NOT reverse the raw signal. By default, signal is reversed for direct RNA sequencing (POD5 stores 3'→5', basecaller expects 5'→3'). Use this flag for DNA data.",
 )
+@click.option(
+    "--anchor",
+    type=click.Choice(["basecall", "reference"]),
+    default="basecall",
+    help='Anchor mode: "basecall" uses basecalled sequence, "reference" uses ref sequence + ref->signal mapping via CIGAR and trims signal to aligned region',
+)
+@click.option(
+    "--signal-norm",
+    type=click.Choice(["median_mad", "zscore", "quantile", "pa_scaling"]),
+    default="median_mad",
+    help="Signal normalization method",
+)
+@click.option(
+    "--pa-mean",
+    type=float,
+    default=None,
+    help="Global shift for pa_scaling normalization (from basecaller model)",
+)
+@click.option(
+    "--pa-stdev",
+    type=float,
+    default=None,
+    help="Global scale for pa_scaling normalization (from basecaller model)",
+)
+@click.option(
+    "--refine-signal-map",
+    is_flag=True,
+    default=False,
+    help="Apply signal map refinement using kmer level tables (improves base boundary accuracy)",
+)
+@click.option(
+    "--kmer-table",
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
+    help="Path to kmer level table for signal map refinement (e.g., rna004_9mer_levels.txt)",
+)
 def prepare(
     pod5,
     bam,
@@ -277,9 +315,21 @@ def prepare(
     base_justify,
     dwell_margin,
     no_reverse_signal,
+    anchor,
+    signal_norm,
+    pa_mean,
+    pa_stdev,
+    refine_signal_map,
+    kmer_table,
 ):
     """Prepare training data from POD5 and BAM files."""
     from leech.commands import handle_prepare
+
+    # Validate pa_scaling params
+    if signal_norm == "pa_scaling" and (pa_mean is None or pa_stdev is None):
+        raise click.UsageError("--signal-norm pa_scaling requires --pa-mean and --pa-stdev")
+    if refine_signal_map and kmer_table is None:
+        raise click.UsageError("--refine-signal-map requires --kmer-table")
 
     # display_logo()
 
@@ -304,6 +354,12 @@ def prepare(
         base_justify=base_justify,
         dwell_margin=dwell_margin,
         reverse_signal=not no_reverse_signal,
+        anchor=anchor,
+        signal_norm=signal_norm,
+        pa_mean=pa_mean,
+        pa_stdev=pa_stdev,
+        refine_signal_map=refine_signal_map,
+        kmer_table=kmer_table,
     )
 
 
@@ -514,7 +570,7 @@ def merge(input_chunks, output_dir, train_split, val_split, seed, comparison_spe
 @click.option(
     "--loss",
     "loss_type",
-    type=click.Choice(["bce", "focal"]),
+    type=click.Choice(["bce", "focal", "cross_entropy"]),
     default=DEFAULT_LOSS_TYPE,
     help="Loss function type",
 )
@@ -923,7 +979,7 @@ def bundle_info(bundle):
 @click.option(
     "--loss",
     "loss_type",
-    type=click.Choice(["bce", "focal"]),
+    type=click.Choice(["bce", "focal", "cross_entropy"]),
     default=DEFAULT_LOSS_TYPE,
     help="Loss function type",
 )

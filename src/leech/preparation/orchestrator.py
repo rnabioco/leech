@@ -143,6 +143,12 @@ def prepare_training_data_with_split(
     base_justify: str = "center",
     dwell_margin: int = 0,
     reverse_signal: bool = True,
+    anchor: str = "basecall",
+    norm_method: str = "median_mad",
+    pa_mean: float | None = None,
+    pa_stdev: float | None = None,
+    refine_signal_map: bool = False,
+    signal_refiner: object | None = None,
 ) -> dict[str, Any]:
     """
     Prepare training data from POD5/BAM files with optional splitting.
@@ -219,7 +225,16 @@ def prepare_training_data_with_split(
     logger.info("Extracting chunks...")
     chunks = []
     for read in iter_bam_with_pod5(
-        bam_path, pod5_path, min_mapq=min_mapq, reverse_signal=reverse_signal
+        bam_path,
+        pod5_path,
+        min_mapq=min_mapq,
+        reverse_signal=reverse_signal,
+        anchor=anchor,
+        norm_method=norm_method,
+        pa_mean=pa_mean,
+        pa_stdev=pa_stdev,
+        refine_signal_map=refine_signal_map,
+        signal_refiner=signal_refiner,
     ):
         read_chunks = extract_training_chunks(
             read,

@@ -100,6 +100,12 @@ class ReadInfo:
         self.is_reverse = aln.is_reverse
         self.cigar_tuples = aln.cigartuples
 
+        # Reference sequence (may be None if not available)
+        try:
+            self.reference_sequence: str | None = aln.get_reference_sequence()
+        except Exception:
+            self.reference_sequence = None
+
         # Extract move table data
         # mv_tag is an array: [stride, move1, move2, ...]
         mv_tag = aln.get_tag("mv")

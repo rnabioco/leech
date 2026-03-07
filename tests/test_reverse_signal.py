@@ -336,6 +336,12 @@ class TestParallelWorkerReverseSignal:
                 "center",  # base_justify
                 0,  # dwell_margin
                 True,  # reverse_signal
+                "basecall",  # anchor
+                "median_mad",  # norm_method
+                None,  # pa_mean
+                None,  # pa_stdev
+                False,  # refine_signal_map
+                None,  # signal_refiner
             )
             chunks_reversed = _process_read_chunk_worker(args)
 
@@ -357,6 +363,12 @@ class TestParallelWorkerReverseSignal:
                 "center",
                 0,
                 False,  # reverse_signal=False
+                "basecall",  # anchor
+                "median_mad",  # norm_method
+                None,  # pa_mean
+                None,  # pa_stdev
+                False,  # refine_signal_map
+                None,  # signal_refiner
             )
             chunks_not_reversed = _process_read_chunk_worker(args_no_rev)
 

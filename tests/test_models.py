@@ -28,6 +28,8 @@ class TestModelRegistry:
         expected_models = {
             "ConvLSTMBase",
             "ConvLSTMDwell",
+            "ConvLSTMRemora",
+            "ConvLSTMRemoraBase",
             "TransformerDwell",
             "ConvOnly",
             "TCNDwell",
@@ -447,6 +449,10 @@ class TestModelComparisons:
                     "conv_channels": [4, 16, 64],
                     "lstm_hidden": 32,
                 }
+            elif model_name == "ConvLSTMRemoraBase":
+                model_config = {**base_config, "size": 32}
+            elif model_name == "ConvLSTMRemora":
+                model_config = {**base_config, "num_features": 5, "size": 32}
             elif model_name == "TransformerDwell":
                 model_config = {
                     **base_config,

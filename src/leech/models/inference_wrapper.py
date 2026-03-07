@@ -30,6 +30,7 @@ class ModelInferenceWrapper:
     # Models that require dwell/signal features as third input
     FEATURE_MODELS = {
         "ConvLSTMDwell",
+        "ConvLSTMRemora",
         "TransformerDwell",
         "ConvOnly",
         "TCNDwell",
