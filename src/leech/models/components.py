@@ -80,23 +80,26 @@ class SignalBranch(nn.Module):
 
 class SequenceBranch(nn.Module):
     """
-    Reusable 1D convolutional branch for one-hot encoded sequence processing.
+    Reusable 1D convolutional branch for sequence processing.
 
-    Applies a series of 1D convolutions to extract features from sequence k-mers.
+    Applies a series of 1D convolutions to extract features from encoded sequences.
+    Supports both base_onehot (4 channels) and signal_kmer (4*kmer_len channels).
 
     Args:
+        in_channels: Number of input channels (4 for base_onehot, 36 for signal_kmer with (4,4) context)
         conv_channels: List of channel sizes for conv layers (default: [4, 16, 256])
         kernel_size: Kernel size for convolutions (default: 3)
 
     Input shape:
-        (batch_size, 4, kmer_len) - 4 channels for A, C, G, T
+        (batch_size, in_channels, seq_len)
 
     Output shape:
-        (batch_size, conv_channels[-1], kmer_len)
+        (batch_size, conv_channels[-1], seq_len)
     """
 
     def __init__(
         self,
+        in_channels: int = 4,
         conv_channels: list[int] | None = None,
         kernel_size: int = DEFAULT_SEQ_KERNEL,
     ):
@@ -106,7 +109,9 @@ class SequenceBranch(nn.Module):
             conv_channels = DEFAULT_CONV_CHANNELS
 
         self.conv_layers = nn.Sequential(
-            nn.Conv1d(4, conv_channels[0], kernel_size=kernel_size, padding=kernel_size // 2),
+            nn.Conv1d(
+                in_channels, conv_channels[0], kernel_size=kernel_size, padding=kernel_size // 2
+            ),
             nn.ReLU(),
             nn.Conv1d(
                 conv_channels[0],

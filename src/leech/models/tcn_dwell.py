@@ -22,6 +22,7 @@ from leech.constants import (
     DEFAULT_DROPOUT,
     DEFAULT_KMER_LEN,
     DEFAULT_NUM_FEATURES,
+    DEFAULT_SIGNAL_KMER_CONTEXT,
     DEFAULT_SIGNAL_LEN,
 )
 from leech.models.components import BaseModel
@@ -188,12 +189,21 @@ class TCNDwell(BaseModel):
         num_layers: int = 6,
         kernel_size: int = 3,
         dropout: float = DEFAULT_DROPOUT,
+        seq_encoding: str = "base_onehot",
+        signal_kmer_context: tuple[int, int] = DEFAULT_SIGNAL_KMER_CONTEXT,
     ):
         super().__init__()
 
         self.signal_len = signal_len
         self.kmer_len = kmer_len
         self.num_features = num_features
+        self.seq_encoding = seq_encoding
+
+        # Compute sequence input channels
+        if seq_encoding == "signal_kmer":
+            seq_in_channels = 4 * (signal_kmer_context[0] + signal_kmer_context[1] + 1)
+        else:
+            seq_in_channels = 4
 
         # Signal branch: TCN
         # Input: (batch, 1, signal_len)
@@ -208,14 +218,15 @@ class TCNDwell(BaseModel):
         self.signal_pool = nn.AdaptiveAvgPool1d(kmer_len)
 
         # Sequence branch: TCN
-        # Input: (batch, 4, kmer_len) - 4 nucleotides (A, C, G, T)
         self.seq_tcn = TCN(
-            in_channels=4,
+            in_channels=seq_in_channels,
             hidden_channels=hidden_channels,
             num_layers=num_layers,
             kernel_size=kernel_size,
             dropout=dropout,
         )
+        if seq_encoding == "signal_kmer":
+            self.seq_pool = nn.AdaptiveAvgPool1d(kmer_len)
 
         # Feature branch: TCN
         # Input: (batch, num_features, kmer_len)
@@ -269,7 +280,9 @@ class TCNDwell(BaseModel):
         signal_feat = self.signal_pool(signal_feat)  # (batch, hidden_channels, kmer_len)
 
         # Sequence branch
-        seq_feat = self.seq_tcn(sequence)  # (batch, hidden_channels, kmer_len)
+        seq_feat = self.seq_tcn(sequence)  # (batch, hidden_channels, seq_len)
+        if self.seq_encoding == "signal_kmer":
+            seq_feat = self.seq_pool(seq_feat)  # (batch, hidden_channels, kmer_len)
 
         # Feature branch
         feat_feat = self.feature_tcn(features)  # (batch, hidden_channels, kmer_len)

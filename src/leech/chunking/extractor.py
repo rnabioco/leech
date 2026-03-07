@@ -9,7 +9,11 @@ import logging
 
 import numpy as np
 
-from leech.constants import DEFAULT_KMER_CONTEXT, DEFAULT_SIGNAL_CONTEXT
+from leech.constants import (
+    DEFAULT_KMER_CONTEXT,
+    DEFAULT_SIGNAL_CONTEXT,
+    DEFAULT_SIGNAL_KMER_CONTEXT,
+)
 from leech.io.motif_search import MotifSearcher
 
 logger = logging.getLogger("leech.chunking.extractor")
@@ -135,6 +139,21 @@ class LeechRead:
         for _feat_name, feat_array in {**self.dwell_features, **self.signal_features}.items():
             features.append(feat_array[dwell_start:dwell_end])
 
+        # Build chunk-relative seq_to_sig_map for signal_kmer encoding
+        chunk_sig_len = sig_end - sig_start
+        chunk_seq_to_sig = np.clip(
+            self.seq_to_sig_map[kmer_start : kmer_end + 1] - sig_start, 0, chunk_sig_len
+        )
+
+        # Extended sequence for signal_kmer encoding (extra kmer context)
+        kmer_before, kmer_after = DEFAULT_SIGNAL_KMER_CONTEXT
+        ext_start = kmer_start - kmer_before
+        ext_end = kmer_end + kmer_after
+        if ext_start >= 0 and ext_end <= self.num_bases:
+            sequence_with_kmer_context = self.sequence[ext_start:ext_end]
+        else:
+            sequence_with_kmer_context = None
+
         return {
             "signal": signal_chunk,
             "sequence": kmer_seq,
@@ -142,6 +161,8 @@ class LeechRead:
             "features": np.stack(features, axis=0) if features else np.array([]),
             "base_idx": base_idx,
             "label": self.labels[base_idx] if self.labels is not None else None,
+            "seq_to_sig_map": chunk_seq_to_sig,
+            "sequence_with_kmer_context": sequence_with_kmer_context,
         }
 
 

@@ -3,7 +3,7 @@ ConvLSTMDwell: Full model with dwell time features.
 
 Architecture:
 - Signal branch: Conv1d on raw signal
-- Sequence branch: Conv1d on one-hot encoded k-mers
+- Sequence branch: Conv1d on encoded k-mers (base_onehot or signal_kmer)
 - Feature branch: Conv1d on dwell+level features (NEW vs. ConvLSTMBase)
 - Merge → BiLSTM → FC → binary classification
 """
@@ -19,6 +19,7 @@ from leech.constants import (
     DEFAULT_LSTM_HIDDEN,
     DEFAULT_LSTM_LAYERS,
     DEFAULT_NUM_FEATURES,
+    DEFAULT_SIGNAL_KMER_CONTEXT,
     DEFAULT_SIGNAL_LEN,
 )
 from leech.models.components import BaseModel, FeatureBranch, SequenceBranch, SignalBranch
@@ -35,6 +36,8 @@ class ConvLSTMDwell(BaseModel):
         conv_channels: List of channel sizes for conv layers (default: [4, 16, 256])
         lstm_hidden: Hidden size for BiLSTM (default: 96)
         dropout: Dropout probability (default: 0.1)
+        seq_encoding: Sequence encoding type ("base_onehot" or "signal_kmer")
+        signal_kmer_context: Kmer context for signal_kmer encoding (default: (4, 4))
     """
 
     def __init__(
@@ -45,6 +48,8 @@ class ConvLSTMDwell(BaseModel):
         conv_channels: list[int] | None = None,
         lstm_hidden: int = DEFAULT_LSTM_HIDDEN,
         dropout: float = DEFAULT_DROPOUT,
+        seq_encoding: str = "base_onehot",
+        signal_kmer_context: tuple[int, int] = DEFAULT_SIGNAL_KMER_CONTEXT,
     ):
         super().__init__()
 
@@ -55,22 +60,29 @@ class ConvLSTMDwell(BaseModel):
         self.kmer_len = kmer_len
         self.num_features = num_features
         self.lstm_hidden = lstm_hidden
+        self.seq_encoding = seq_encoding
+
+        # Compute sequence input channels
+        if seq_encoding == "signal_kmer":
+            seq_in_channels = 4 * (signal_kmer_context[0] + signal_kmer_context[1] + 1)
+        else:
+            seq_in_channels = 4
 
         # Signal branch: Shared component for signal processing
         self.signal_branch = SignalBranch(conv_channels=conv_channels)
 
         # Sequence branch: Shared component for sequence processing
-        self.sequence_branch = SequenceBranch(conv_channels=conv_channels)
+        self.sequence_branch = SequenceBranch(
+            in_channels=seq_in_channels, conv_channels=conv_channels
+        )
 
         # Feature branch: Shared component for feature processing
         self.feature_branch = FeatureBranch(num_features=num_features, conv_channels=conv_channels)
 
         # Adaptive pooling to match dimensions
-        # Signal branch output: (batch, 256, signal_len)
-        # Seq branch output: (batch, 256, kmer_len)
-        # Feature branch output: (batch, 256, kmer_len)
-        # Target: (batch, 256, kmer_len) - pool signal to match kmer length
         self.signal_pool = nn.AdaptiveAvgPool1d(kmer_len)
+        if seq_encoding == "signal_kmer":
+            self.seq_pool = nn.AdaptiveAvgPool1d(kmer_len)
 
         # BiLSTM on merged features
         # Input: (batch, kmer_len, 768) - concatenated signal + seq + feature
@@ -101,26 +113,26 @@ class ConvLSTMDwell(BaseModel):
 
         Args:
             signal: Raw signal (batch, signal_len)
-            sequence: One-hot encoded sequence (batch, 4, kmer_len)
+            sequence: Encoded sequence — (batch, 4, kmer_len) for base_onehot
+                or (batch, 36, signal_len) for signal_kmer
             features: Dwell + signal level features (batch, num_features, kmer_len)
 
         Returns:
             Logits for binary classification (batch, 1)
         """
-        signal.size(0)
-
         # Signal branch (handles unsqueeze internally)
         signal_feat = self.signal_branch(signal)  # (batch, 256, signal_len)
         signal_feat = self.signal_pool(signal_feat)  # (batch, 256, kmer_len)
 
         # Sequence branch
-        seq_feat = self.sequence_branch(sequence)  # (batch, 256, kmer_len)
+        seq_feat = self.sequence_branch(sequence)  # (batch, 256, seq_len)
+        if self.seq_encoding == "signal_kmer":
+            seq_feat = self.seq_pool(seq_feat)  # (batch, 256, kmer_len)
 
         # Feature branch
         feat_feat = self.feature_branch(features)  # (batch, 256, kmer_len)
 
         # Merge all three branches
-        # (batch, 256, kmer_len) x 3 -> (batch, 768, kmer_len)
         merged = torch.cat([signal_feat, seq_feat, feat_feat], dim=1)
 
         # Transpose for LSTM: (batch, 768, kmer_len) -> (batch, kmer_len, 768)

@@ -21,6 +21,7 @@ from leech.constants import (
     DEFAULT_DROPOUT,
     DEFAULT_KMER_LEN,
     DEFAULT_NUM_FEATURES,
+    DEFAULT_SIGNAL_KMER_CONTEXT,
     DEFAULT_SIGNAL_LEN,
 )
 from leech.models.components import BaseModel
@@ -184,12 +185,21 @@ class ResNetDwell(BaseModel):
         num_features: int = DEFAULT_NUM_FEATURES,
         base_channels: int = 64,
         dropout: float = DEFAULT_DROPOUT,
+        seq_encoding: str = "base_onehot",
+        signal_kmer_context: tuple[int, int] = DEFAULT_SIGNAL_KMER_CONTEXT,
     ):
         super().__init__()
 
         self.signal_len = signal_len
         self.kmer_len = kmer_len
         self.num_features = num_features
+        self.seq_encoding = seq_encoding
+
+        # Compute sequence input channels
+        if seq_encoding == "signal_kmer":
+            seq_in_channels = 4 * (signal_kmer_context[0] + signal_kmer_context[1] + 1)
+        else:
+            seq_in_channels = 4
 
         # Signal branch: Deep ResNet (8 blocks, ResNet-18 style)
         # Input: (batch, 1, signal_len)
@@ -201,9 +211,8 @@ class ResNetDwell(BaseModel):
         )
 
         # Sequence branch: Medium ResNet (4 blocks)
-        # Input: (batch, 4, kmer_len) - 4 nucleotides (A, C, G, T)
         self.seq_resnet = ResNet1D(
-            in_channels=4,
+            in_channels=seq_in_channels,
             base_channels=base_channels // 2,  # Smaller for sequence
             num_blocks=4,
             dropout=dropout,
@@ -264,7 +273,7 @@ class ResNetDwell(BaseModel):
         signal_feat = signal.unsqueeze(1)
         signal_feat = self.signal_resnet(signal_feat)  # (batch, final_ch, reduced_len)
 
-        # Sequence branch
+        # Sequence branch — for signal_kmer, ResNet downsampling handles it
         seq_feat = self.seq_resnet(sequence)  # (batch, final_ch, reduced_len)
 
         # Feature branch

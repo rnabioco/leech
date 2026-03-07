@@ -248,6 +248,68 @@ def normalize_signal(
     return normalized.astype(np.float32), params
 
 
+def sequence_to_int(sequence: str) -> np.ndarray:
+    """
+    Convert DNA/RNA sequence to integer encoding for signal_kmer encoding.
+
+    A=0, C=1, G=2, T=3 (U=3), other=-1.
+
+    Args:
+        sequence: DNA/RNA sequence string
+
+    Returns:
+        Integer array with values 0-3 for valid bases, -1 for unknown
+    """
+    mapping = {"A": 0, "C": 1, "G": 2, "T": 3, "U": 3}
+    return np.array([mapping.get(b.upper(), -1) for b in sequence], dtype=np.int8)
+
+
+def encode_signal_kmer(
+    sequence_ints: np.ndarray,
+    seq_to_sig_map: np.ndarray,
+    signal_len: int,
+    kmer_context: tuple[int, int] = (4, 4),
+) -> np.ndarray:
+    """
+    Signal-level kmer encoding: (4 * kmer_len, signal_len) float32.
+
+    For each signal position, encodes the kmer context centered on the base
+    occupying that position as a one-hot vector (4 channels per kmer position).
+
+    This reimplements Remora's encoded_kmers.pyx in pure numpy.
+
+    Args:
+        sequence_ints: Int-encoded bases with context,
+            len = seq_len + kmer_before + kmer_after.
+            Values 0-3 for ACGT, <0 for unknown (skipped).
+        seq_to_sig_map: Base-to-signal mapping for the core seq_len bases,
+            len = seq_len + 1. Values are signal indices.
+        signal_len: Length of the signal array.
+        kmer_context: (kmer_before, kmer_after) context bases for kmer encoding.
+
+    Returns:
+        Encoding array of shape (4 * kmer_len, signal_len), dtype float32.
+        kmer_len = kmer_before + 1 + kmer_after.
+    """
+    kmer_before, kmer_after = kmer_context
+    kmer_len = kmer_before + 1 + kmer_after
+    enc = np.zeros((4 * kmer_len, signal_len), dtype=np.float32)
+    seq_len = len(seq_to_sig_map) - 1
+
+    for kmer_pos in range(kmer_len):
+        offset = 4 * kmer_pos
+        for seq_pos in range(seq_len):
+            base = sequence_ints[seq_pos + kmer_pos]
+            if base < 0:
+                continue
+            sig_start = seq_to_sig_map[seq_pos]
+            sig_end = seq_to_sig_map[seq_pos + 1]
+            if sig_start < signal_len and sig_end > 0:
+                enc[offset + base, max(0, sig_start) : min(signal_len, sig_end)] = 1.0
+
+    return enc
+
+
 def compute_dwell_features(dwells: np.ndarray, window: int = 5) -> dict[str, np.ndarray]:
     """
     Compute windowed dwell time features.
