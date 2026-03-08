@@ -105,6 +105,8 @@ uv run leech predict \
 |-------|-------------|
 | **ConvLSTMDwell** | Conv-LSTM with dwell features (recommended) |
 | ConvLSTMBase | Baseline without dwell features (for comparison) |
+| ConvLSTMRemora | Remora-compatible architecture with dwell features |
+| ConvLSTMRemoraBase | Remora-compatible baseline (no dwell features) |
 | TransformerDwell | Transformer with multi-head self-attention |
 | ConvOnly | Pure CNN with multi-scale convolutions |
 | TCNDwell | Temporal Convolutional Network |
@@ -112,14 +114,15 @@ uv run leech predict \
 
 ## Training features
 
-- **Loss functions**: BCE and focal loss (for class imbalance)
+- **Loss functions**: BCE, focal loss (for class imbalance), and cross-entropy
 - **Regularization**: weight decay, gradient clipping, dropout
-- **LR scheduling**: reduce-on-plateau with configurable patience
+- **LR scheduling**: reduce-on-plateau, cosine annealing with warmup
 - **LR warmup**: linear warmup over configurable epochs
-- **Data augmentation**: signal jitter and random scaling
+- **Data augmentation**: mixup (signal jitter + random scaling)
 - **Mixed precision**: FP16 training on CUDA
 - **Class balancing**: automatic class weight computation
 - **Checkpoint resume**: continue training from any checkpoint
+- **Sequence encoding**: base one-hot or signal-level kmer encoding
 
 ## Snakemake pipeline
 

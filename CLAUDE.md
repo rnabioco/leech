@@ -96,8 +96,20 @@ uv run leech eval compare -m models/model1/ -m models/model2/ -t chunks/test.npz
 # Analyze feature importance
 uv run leech eval importance -m models/model_best.pt -t chunks/test.npz -o importance/
 
-# Run inference
-uv run leech predict --model models/model_best.pt --pod5 reads.pod5 --bam alignments.bam --output predictions.bam
+# Sequence ablation testing
+uv run leech eval ablation -m models/model_best.pt -t chunks/test.npz -o ablation/
+
+# Bundle pairwise models for deployment
+uv run leech model bundle --model-dir results/models/pairwise/ --output bundle.pt --version 1.0.0
+
+# Inspect bundle metadata
+uv run leech model bundle-info --bundle bundle.pt
+
+# Run inference (single model)
+uv run leech predict --model models/ --pod5 reads.pod5 --bam alignments.bam --output predictions.bam
+
+# Run inference (bundled models, aggregated prediction)
+uv run leech predict --bundle bundle.pt --all --pod5 reads.pod5 --bam alignments.bam --output predictions.bam
 ```
 
 ### Adding Dependencies
@@ -151,14 +163,19 @@ uv sync --upgrade
 2. **Feature Extraction** (`features.py`):
    - Parse move tables to compute per-base dwell times
    - Extract signal level statistics (mean, median, std, range) per base
-   - Normalize raw signal using median-MAD
+   - Normalize raw signal using median-MAD (default), z-score, quantile, or pa_scaling
+   - Optional signal map refinement via kmer level tables (`signal_refine.py`)
 3. **Data Preparation** (`io/`, `preparation/`, `chunking/`):
    - Read BAM + POD5 files (`io/bam_reader.py`, `io/pod5_reader.py`)
    - Search for motifs in reference or basecalled sequence (`io/motif_search.py`)
    - Extract training chunks centered on motifs (e.g., "CCAGGC" for tRNA 3' end) (`chunking/extractor.py`)
    - Serialize chunks for training (`chunking/serialization.py`)
 4. **Model Training**: PyTorch models with three input branches (signal, sequence, dwell/level features)
-5. **Output**: Trained models (.pt files) and predictions (BAM with modification probabilities)
+   - Loss functions: BCE, focal loss, cross-entropy (`losses.py`)
+   - Augmentation: mixup (signal jitter + scale)
+   - LR scheduling: reduce-on-plateau, cosine annealing with warmup
+5. **Model Bundling**: Package multiple pairwise models into a single versioned .pt file for deployment
+6. **Output**: Trained models (.pt files), model bundles, and predictions (BAM with modification probabilities)
 
 ### Parallel Processing
 
@@ -173,7 +190,7 @@ The `prepare` command supports multiprocessing for large datasets:
 ```bash
 # Use --workers N to enable parallel processing (N > 1)
 # Use --chunk-size M to control batch size (default: 100 reads)
-uv run leech prepare --pod5 data.pod5 --bam alignments.bam \
+uv run leech data prepare --pod5 data.pod5 --bam alignments.bam \
   --output-dir chunks/ --workers 8 --chunk-size 100
 ```
 
@@ -215,22 +232,35 @@ uv run leech prepare --pod5 data.pod5 --bam alignments.bam \
 - Maps motif positions from reference to query coordinates using CIGAR
 - Filters reads with indels in motif regions (optional)
 
-**`ConvLSTMDwell` (models/conv_lstm_dwell.py:13-141)**
+**`ConvLSTMDwell` (models/conv_lstm_dwell.py)**
 - PyTorch model with three branches:
   - Signal branch: Conv1d on raw signal
-  - Sequence branch: Conv1d on one-hot encoded k-mers
+  - Sequence branch: Conv1d on one-hot encoded k-mers (or signal_kmer encoding)
   - Feature branch: Conv1d on dwell+level features (NEW vs. Remora)
 - Branches merge → BiLSTM → FC output
 - Compare with `ConvLSTMBase` (no dwell features) to measure impact
+
+**Remora-compatible models** (`models/conv_lstm_remora.py`)
+- `ConvLSTMRemora`: Remora-compatible architecture with dwell features
+- `ConvLSTMRemoraBase`: Remora-compatible architecture without dwell features
+- `RemoraModelWrapper` (`models/remora_compat.py`): Wraps Remora models for leech inference
+
+**Model bundling** (`util.py`)
+- Bundle multiple trained models into a single versioned .pt file
+- Supports pairwise and one-vs-all aggregation modes
+- Provenance tracking: motif, motif_offset, base_justify stored per model
 
 ### Module Organization
 
 ```
 src/leech/           # Main package source
 ├── cli.py           # Command-line interface (rich-click based)
+├── cli_config.py    # Rich-click styling configuration
+├── cli_options.py   # Shared option decorators for CLI commands
 ├── commands/        # CLI command handlers
 │   ├── prepare.py   # Prepare command implementation
-│   └── merge_split.py  # Merge-and-split command
+│   ├── merge_split.py  # Merge-and-split command
+│   └── analyze.py   # Analysis command handlers (importance, ablation)
 ├── io/              # Input/output operations
 │   ├── bam_reader.py    # BAM file reading
 │   ├── pod5_reader.py   # POD5 signal reading
@@ -250,11 +280,14 @@ src/leech/           # Main package source
 ├── dataset.py       # PyTorch Dataset classes for loading chunks
 ├── training.py      # Training loop with Trainer class
 ├── evaluation.py    # Model evaluation and testing
-├── inference.py     # Inference engine for predictions
+├── inference.py     # Inference engine (multi-model, Remora compat)
 ├── gridsearch.py    # Grid search for chunk context optimization
-├── util.py          # Helper functions (model loading, metrics)
+├── util.py          # Helper functions (model loading, bundling, metrics)
+├── losses.py        # Loss function implementations (BCE, focal, cross-entropy)
+├── signal_refine.py # Signal map refinement via kmer level tables
+├── _rust_accel.py   # Rust acceleration wrapper for vectorized operations
 ├── config.py        # Configuration management
-├── constants.py     # Project-wide constants
+├── constants.py     # Project-wide constants and defaults
 ├── logging_config.py  # Logging setup
 └── models/          # Model architectures
     ├── __init__.py            # Model registry and get_model()
@@ -262,10 +295,12 @@ src/leech/           # Main package source
     ├── inference_wrapper.py   # Inference wrapper pattern
     ├── conv_lstm_dwell.py     # ConvLSTMDwell architecture
     ├── conv_lstm_base.py      # ConvLSTMBase architecture
+    ├── conv_lstm_remora.py    # ConvLSTMRemora / ConvLSTMRemoraBase
     ├── transformer_dwell.py   # TransformerDwell architecture
     ├── tcn_dwell.py           # TCNDwell architecture
     ├── resnet_dwell.py        # ResNetDwell architecture
-    └── conv_only.py           # ConvOnly architecture
+    ├── conv_only.py           # ConvOnly architecture
+    └── remora_compat.py       # RemoraModelWrapper for Remora model inference
 
 tests/               # pytest tests
 ```
@@ -274,7 +309,12 @@ tests/               # pytest tests
 
 ### Feature Engineering
 - **Dwell times**: Number of signal samples per base, computed from move table using `np.diff(seq_to_sig_map)`
-- **Signal normalization**: Median-MAD (default) is robust to outliers; z-score and quantile methods available
+- **Dwell offset**: Tunable motor-sensor offset (`dwell_offset` param) for correcting the physical delay between motor and pore
+- **Base justification**: Controls signal chunk centering relative to the focus base (`start`, `center`, `end`)
+- **Signal normalization**: Median-MAD (default) is robust to outliers; z-score, quantile, and pa_scaling (physics-aware) methods available
+- **Signal map refinement**: Optional kmer-level-table-based refinement of base boundaries (`--refine-signal-map`, `--kmer-table`)
+- **Signal orientation**: RNA signals are reversed by default (POD5 stores 3'→5', basecaller expects 5'→3'); use `--no-reverse-signal` for DNA
+- **Sequence encoding**: `base_onehot` (default 4-channel) or `signal_kmer` (36-dimensional signal-level kmers)
 - **Feature concatenation**: Models expect 3 inputs: (signal, sequence, features) where features combines dwell and signal statistics
 
 ### Move Table Format
@@ -315,35 +355,37 @@ The workflow is designed to integrate with the leech CLI commands and supports b
 3. **Motif-based extraction**: Training focuses on specific motifs (e.g., "CCAGGC" for tRNA); motif_offset specifies the focus base within the motif
    - **Reference-based search (default)**: Searches for motif in reference sequence, maps to query via CIGAR. Avoids bias from basecalling errors at modification sites.
    - **Basecalled search**: Searches in basecalled sequence (backward compatible). Use `--motif-reference bam` to enable.
-4. **Reference sequences**: For reference-based motif search, BAM must contain @SQ sequences in header OR provide `--reference-fasta` path
-5. **Edge handling**: Chunks require sufficient context (default: 200 samples left/right for signal, 5 bases for k-mer)
-6. **Feature alignment**: All three model inputs (signal, sequence, features) must be temporally aligned after convolution layers
+4. **Anchor modes**: `basecall` (default) anchors chunks to basecalled coordinates; `reference` anchors to reference coordinates (matches Remora `--reference-anchored` behavior)
+5. **Reference sequences**: For reference-based motif search, BAM must contain @SQ sequences in header OR provide `--reference-fasta` path
+6. **Signal orientation**: RNA signals are auto-reversed (3'→5' to 5'→3'). Use `--no-reverse-signal` for DNA data
+7. **Edge handling**: Chunks require sufficient context (default: 200 samples left/right for signal, 5 bases for k-mer)
+8. **Feature alignment**: All three model inputs (signal, sequence, features) must be temporally aligned after convolution layers
 
 ## Dependencies
 
-- **PyTorch**: Neural network training
-- **pod5**: Reading ONT POD5 format
-- **pysam**: BAM file parsing
-- **polars**: Fast dataframe operations (used for future batch processing)
-- **numpy/scipy/scikit-learn**: Numerical operations and ML utilities
+- **PyTorch** (2.5+): Neural network training
+- **pod5** (0.3+): Reading ONT POD5 format
+- **pysam** (0.22+): BAM file parsing
+- **rich-click**: CLI framework (click + rich formatting)
+- **polars**: Fast dataframe operations
+- **numpy/scipy/scikit-learn** (1.5+): Numerical operations and ML utilities
 - **pydantic**: Config validation
 - **ruff**: Linting and formatting (replaces black/flake8)
+- **ty**: Type checking (replaces mypy)
 
 ## Current Status
 
-The codebase is feature-complete:
-- ✓ Feature extraction fully implemented
-- ✓ Model architectures defined (ConvLSTMDwell, ConvLSTMBase, TransformerDwell, TCNDwell, ResNetDwell, ConvOnly)
-- ✓ CLI interface fully implemented with 6 commands (prepare, merge-and-split, train, test, infer, grid-search)
-- ✓ Training loop with Trainer class
-- ✓ Grid search for chunk context optimization
-- ✓ Testing/evaluation with comprehensive metrics
-- ✓ Inference engine with BAM output
-- ✓ Chunk serialization (chunking/serialization.py)
-- ✓ Model loading utilities (load_model_from_checkpoint in util.py)
-- ✓ Comprehensive tests for features.py
-- ✓ Parallel data preparation with multiprocessing
-- ✓ Reference-based motif search to avoid training bias
+The codebase is feature-complete (v0.2.0):
+- ✓ Feature extraction with dwell offset tuning and signal map refinement
+- ✓ 8 model architectures (ConvLSTMDwell, ConvLSTMBase, ConvLSTMRemora, ConvLSTMRemoraBase, TransformerDwell, TCNDwell, ResNetDwell, ConvOnly)
+- ✓ CLI organized into 4 command groups: `data` (prepare, merge), `model` (train, optimize, bundle, bundle-info), `eval` (test, compare, importance, ablation), `predict`
+- ✓ Training with focal loss, mixup augmentation, cosine annealing, gradient clipping
+- ✓ Grid search with range syntax, parallel execution, dwell offset tuning
+- ✓ Model bundling for multi-model pairwise deployment
+- ✓ Inference engine with leech and Remora model auto-detection
+- ✓ Parallel data preparation and parallel inference
+- ✓ Reference-anchored mode matching Remora convention
+- ✓ Rust acceleration for vectorized operations
 - ✓ Snakemake workflow for production pipelines
 
 All core functionality is implemented and ready for use.
