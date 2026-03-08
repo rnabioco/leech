@@ -8,6 +8,7 @@ extracting features from both BAM alignments and POD5 signal data.
 import logging
 from collections.abc import Iterator
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -21,6 +22,9 @@ from leech.features import (
     normalize_signal,
 )
 from leech.io import POD5Reader, iter_bam_alignments
+
+if TYPE_CHECKING:
+    from leech.signal_refine import SigMapRefiner
 
 logger = logging.getLogger("leech.preparation.reader")
 
@@ -41,7 +45,7 @@ def build_leech_read(
     cal_offset: float | None = None,
     cal_scale: float | None = None,
     refine_signal_map: bool = False,
-    signal_refiner: object | None = None,
+    signal_refiner: "SigMapRefiner | None" = None,
 ) -> "LeechRead":
     """
     Build a LeechRead from raw components.
@@ -162,7 +166,7 @@ def iter_bam_with_pod5(
     pa_mean: float | None = None,
     pa_stdev: float | None = None,
     refine_signal_map: bool = False,
-    signal_refiner: object | None = None,
+    signal_refiner: "SigMapRefiner | None" = None,
 ) -> Iterator[LeechRead]:
     """
     Iterate over aligned reads, loading signal from POD5.

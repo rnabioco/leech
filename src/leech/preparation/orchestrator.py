@@ -8,9 +8,12 @@ coordinating the extraction, splitting, and saving of training chunks.
 import logging
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from leech.signal_refine import SigMapRefiner
 
 from leech.chunking import extract_training_chunks, save_chunks
 from leech.io import get_motif_searcher, get_reference_sequences
@@ -148,7 +151,7 @@ def prepare_training_data_with_split(
     pa_mean: float | None = None,
     pa_stdev: float | None = None,
     refine_signal_map: bool = False,
-    signal_refiner: object | None = None,
+    signal_refiner: "SigMapRefiner | None" = None,
 ) -> dict[str, Any]:
     """
     Prepare training data from POD5/BAM files with optional splitting.

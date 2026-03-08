@@ -272,6 +272,7 @@ class TestParallelWorkerReverseSignal:
         """The parallel worker should reverse signal when reverse_signal=True."""
         from leech.features import MoveTable
         from leech.io.bam_reader import ReadInfo
+        from leech.preparation.parallel import WorkerConfig
 
         stride = 5
         num_bases = 100  # Need enough bases for default signal context (200+200)
@@ -290,6 +291,7 @@ class TestParallelWorkerReverseSignal:
         read_info.reference_end = num_bases
         read_info.is_reverse = False
         read_info.cigar_tuples = [(0, num_bases)]
+        read_info.reference_sequence = None
 
         # Build a real MoveTable
         moves = np.array([1] * num_bases, dtype=np.int8)
@@ -322,55 +324,53 @@ class TestParallelWorkerReverseSignal:
         with patch("leech.preparation.parallel.DatasetReader", return_value=mock_dataset_reader):
             from leech.preparation.parallel import _process_read_chunk_worker
 
-            # Call worker with reverse_signal=True (no motif, extract all positions)
-            args = (
-                [read_info],  # read_infos
-                Path("fake.pod5"),  # pod5_path
-                None,  # motif
-                0,  # motif_offset
-                "test",  # label
-                0,  # label_int
-                "bam",  # motif_reference
-                None,  # reference_sequences
-                True,  # skip_motif_indels
-                "center",  # base_justify
-                0,  # dwell_margin
-                True,  # reverse_signal
-                "basecall",  # anchor
-                "median_mad",  # norm_method
-                None,  # pa_mean
-                None,  # pa_stdev
-                False,  # refine_signal_map
-                None,  # signal_refiner
+            # Build WorkerConfig with reverse_signal=True
+            config_rev = WorkerConfig(
+                pod5_path=Path("fake.pod5"),
+                motif=None,
+                motif_offset=0,
+                label="test",
+                label_int=0,
+                motif_reference="bam",
+                reference_sequences=None,
+                skip_motif_indels=True,
+                base_justify="center",
+                dwell_margin=0,
+                reverse_signal=True,
+                anchor="basecall",
+                norm_method="median_mad",
+                pa_mean=None,
+                pa_stdev=None,
+                refine_signal_map=False,
+                signal_refiner=None,
             )
-            chunks_reversed = _process_read_chunk_worker(args)
+            chunks_reversed = _process_read_chunk_worker(([read_info], config_rev))
 
             # Reset mock for second call
             mock_pod5_read.signal = raw_signal.copy()
             mock_dataset_reader.reads.return_value = iter([mock_pod5_read])
 
-            # Call worker with reverse_signal=False
-            args_no_rev = (
-                [read_info],
-                Path("fake.pod5"),
-                None,
-                0,
-                "test",
-                0,
-                "bam",
-                None,
-                True,
-                "center",
-                0,
-                False,  # reverse_signal=False
-                "basecall",  # anchor
-                "median_mad",  # norm_method
-                None,  # pa_mean
-                None,  # pa_stdev
-                False,  # refine_signal_map
-                None,  # signal_refiner
+            # Build WorkerConfig with reverse_signal=False
+            config_no_rev = WorkerConfig(
+                pod5_path=Path("fake.pod5"),
+                motif=None,
+                motif_offset=0,
+                label="test",
+                label_int=0,
+                motif_reference="bam",
+                reference_sequences=None,
+                skip_motif_indels=True,
+                base_justify="center",
+                dwell_margin=0,
+                reverse_signal=False,
+                anchor="basecall",
+                norm_method="median_mad",
+                pa_mean=None,
+                pa_stdev=None,
+                refine_signal_map=False,
+                signal_refiner=None,
             )
-            chunks_not_reversed = _process_read_chunk_worker(args_no_rev)
+            chunks_not_reversed = _process_read_chunk_worker(([read_info], config_no_rev))
 
         # Both should produce chunks (no motif = extract all valid positions)
         assert len(chunks_reversed) > 0, "No chunks extracted with reverse_signal=True"

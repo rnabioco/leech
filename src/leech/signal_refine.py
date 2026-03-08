@@ -23,6 +23,17 @@ import numpy as np
 
 logger = logging.getLogger("leech.signal_refine")
 
+# Try to import Rust-accelerated implementations
+try:
+    from leech._rust_accel import (
+        HAS_RUST,
+        _rs_extract_levels,
+        _rs_rough_rescale,
+        _rs_seq_banded_dp,
+    )
+except ImportError:
+    HAS_RUST = False
+
 # CIGAR operations
 _CIGAR_OPS_CONSUME_REF = {0, 2, 3, 7, 8}  # M, D, N, =, X
 _CIGAR_OPS_CONSUME_QUERY = {0, 1, 4, 7, 8}  # M, I, S, =, X
@@ -89,6 +100,9 @@ def extract_levels(
     Returns:
         Array of expected levels, length = len(sequence)
     """
+    if HAS_RUST:
+        return np.asarray(_rs_extract_levels(sequence, kmer_to_level, kmer_len))
+
     seq_len = len(sequence)
     levels = np.zeros(seq_len, dtype=np.float64)
     half_k = kmer_len // 2
@@ -136,6 +150,16 @@ def rough_rescale(
     Returns:
         Rescaled signal
     """
+    if HAS_RUST:
+        result = np.asarray(
+            _rs_rough_rescale(
+                signal.astype(np.float64),
+                expected_levels.astype(np.float64),
+                seq_to_sig_map.astype(np.int64),
+            )
+        )
+        return result.astype(signal.dtype)
+
     num_bases = len(seq_to_sig_map) - 1
     observed = np.zeros(num_bases, dtype=np.float64)
 
@@ -207,6 +231,17 @@ def seq_banded_dp(
     Returns:
         Refined seq_to_sig_map of length num_bases+1
     """
+    if HAS_RUST:
+        return np.asarray(
+            _rs_seq_banded_dp(
+                signal.astype(np.float64),
+                expected_levels.astype(np.float64),
+                band_starts.astype(np.int64),
+                band_ends.astype(np.int64),
+                sig_len,
+            )
+        )
+
     num_bases = len(expected_levels)
     num_positions = num_bases + 1
 

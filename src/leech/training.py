@@ -31,7 +31,7 @@ logger = logging.getLogger("leech.training")
 console = Console()
 
 
-def compute_class_weights(dataset: Any) -> torch.Tensor | None:
+def compute_class_weights(dataset: LeechDataset) -> torch.Tensor | None:
     """
     Compute pos_weight for BCEWithLogitsLoss from dataset.
 
@@ -683,6 +683,8 @@ def train_model(
         "collate_fn": collate_fn,
         "num_workers": num_workers,
     }
+    if device != "cpu":
+        loader_kwargs["pin_memory"] = True
     if num_workers > 0:
         loader_kwargs["persistent_workers"] = True
 

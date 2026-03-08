@@ -5,7 +5,13 @@ This module provides efficient readers for nanopore data files with
 support for batched access and filtering.
 """
 
-from leech.io.bam_reader import BAMReader, ReadInfo, collect_read_infos, iter_bam_alignments
+from leech.io.bam_reader import (
+    BAMReader,
+    MockAlignment,
+    ReadInfo,
+    collect_read_infos,
+    iter_bam_alignments,
+)
 from leech.io.motif_search import (
     BasecalledMotifSearcher,
     MotifSearcher,
@@ -14,7 +20,12 @@ from leech.io.motif_search import (
     get_motif_searcher,
     map_reference_to_query_coords,
 )
-from leech.io.pod5_reader import POD5Reader, read_pod5_signal, read_pod5_signals_batch
+from leech.io.pod5_reader import (
+    POD5Reader,
+    _extract_pod5_metadata,
+    read_pod5_signal,
+    read_pod5_signals_batch,
+)
 from leech.io.reference import (
     ReferenceManager,
     extract_reference_from_bam,
@@ -25,11 +36,13 @@ from leech.io.reference import (
 __all__ = [
     # BAM reading
     "BAMReader",
+    "MockAlignment",
     "ReadInfo",
     "iter_bam_alignments",
     "collect_read_infos",
     # POD5 reading
     "POD5Reader",
+    "_extract_pod5_metadata",
     "read_pod5_signal",
     "read_pod5_signals_batch",
     # Reference sequences

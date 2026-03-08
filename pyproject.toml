@@ -58,6 +58,7 @@ notebook = [
 
 [dependency-groups]
 dev = [
+    "maturin>=1.12.6",
     "pymupdf>=1.27.1",
 ]
 docs = [

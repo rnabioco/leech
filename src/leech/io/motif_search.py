@@ -64,13 +64,13 @@ def map_reference_to_query_coords(
 
         # M/=/X: match/mismatch (consumes both)
         if op in (0, 7, 8):  # BAM_CMATCH, BAM_CEQUAL, BAM_CDIFF
-            for _ in range(length):
-                if ref_pos == ref_start:
-                    query_start = query_pos
-                if ref_pos == ref_end - 1:
-                    query_end = query_pos + 1
-                ref_pos += 1
-                query_pos += 1
+            # Check if ref_start falls within this block
+            if query_start is None and ref_start >= ref_pos and ref_start < ref_pos + length:
+                query_start = query_pos + (ref_start - ref_pos)
+            if query_end is None and ref_end - 1 >= ref_pos and ref_end - 1 < ref_pos + length:
+                query_end = query_pos + (ref_end - ref_pos)
+            ref_pos += length
+            query_pos += length
 
         # I: insertion (consumes query only)
         elif op == 1:  # BAM_CINS
@@ -150,12 +150,11 @@ def find_motif_in_sequence(
         end = len(sequence)
 
     positions = []
-    motif_len = len(motif)
     search_region = sequence[start:end]
-
-    for i in range(len(search_region) - motif_len + 1):
-        if search_region[i : i + motif_len] == motif:
-            positions.append(start + i)
+    pos = search_region.find(motif)
+    while pos != -1:
+        positions.append(start + pos)
+        pos = search_region.find(motif, pos + 1)
 
     return positions
 
