@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from leech.chunking import LeechRead
+from leech.constants import REQUIRED_BAM_TAGS
 from leech.features import (
     MoveTable,
     compute_dwell_features,
@@ -215,7 +216,7 @@ def iter_bam_with_pod5(
         LeechRead objects with full feature extraction
     """
     if require_tags is None:
-        require_tags = ["mv", "ns"]
+        require_tags = REQUIRED_BAM_TAGS
 
     # First pass: collect all BAM alignments to get read IDs for batched POD5 access
     alignments: list = []
