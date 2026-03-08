@@ -559,9 +559,14 @@ def train(
     default="pairwise",
     help="Comparison type (default: pairwise)",
 )
-def bundle(model_dir, output, bundle_version, comparison_type):
+@click.option(
+    "--torchscript/--no-torchscript",
+    default=False,
+    help="Bundle as TorchScript (standalone, no leech needed to load). Default: False.",
+)
+def bundle(model_dir, output, bundle_version, comparison_type, torchscript):
     """Bundle trained models into a single versioned file."""
-    from leech.util import create_bundle
+    from leech.util import create_bundle, create_torchscript_bundle
 
     # Auto-discover pair subdirectories
     model_dirs = {}
@@ -579,18 +584,27 @@ def bundle(model_dir, output, bundle_version, comparison_type):
 
     logger.info(f"Found {len(model_dirs)} model directories")
 
-    bundle_path = create_bundle(
-        model_dirs=model_dirs,
-        output_path=output,
-        comparison_type=comparison_type,
-        version=bundle_version,
-    )
+    if torchscript:
+        bundle_path = create_torchscript_bundle(
+            model_dirs=model_dirs,
+            output_path=output,
+            comparison_type=comparison_type,
+            version=bundle_version,
+        )
+    else:
+        bundle_path = create_bundle(
+            model_dirs=model_dirs,
+            output_path=output,
+            comparison_type=comparison_type,
+            version=bundle_version,
+        )
 
     # Print summary table
     table = Table(title="Bundle Summary", show_header=True, header_style="bold magenta")
     table.add_column("Property", style="cyan")
     table.add_column("Value", style="green")
     table.add_row("Version", bundle_version)
+    table.add_row("Format", "TorchScript" if torchscript else "state_dict")
     table.add_row("Comparison type", comparison_type)
     table.add_row("Models", str(len(model_dirs)))
     table.add_row("Output", str(bundle_path))
@@ -620,6 +634,8 @@ def bundle_info(bundle):
 
     table.add_row("Bundle version", metadata.get("bundle_version", "unknown"))
     table.add_row("Format version", str(metadata.get("format_version", "unknown")))
+    is_ts = metadata.get("torchscript", False)
+    table.add_row("Format", "TorchScript" if is_ts else "state_dict")
     table.add_row("Architecture", metadata.get("architecture", "unknown"))
     table.add_row("Comparison type", metadata.get("comparison_type", "unknown"))
     table.add_row("Number of models", str(metadata.get("num_models", 0)))
@@ -640,6 +656,42 @@ def bundle_info(bundle):
         for i, pair in enumerate(pairs, 1):
             pairs_table.add_row(str(i), pair)
         console.print(pairs_table)
+
+
+@model.command()
+@click.option(
+    "--model-dir",
+    required=True,
+    type=click.Path(exists=True, path_type=Path),
+    help="Model checkpoint directory (with config.json and model_best.pt)",
+)
+@click.option(
+    "--output",
+    "-o",
+    required=True,
+    type=click.Path(path_type=Path),
+    help="Output TorchScript .pt file path",
+)
+def export(model_dir, output):
+    """Export a trained model as a standalone TorchScript file.
+
+    The exported file is loadable with just torch.jit.load() — no leech
+    codebase required. Model config is embedded in the file.
+    """
+    from leech.util import export_single_model
+
+    output_path = export_single_model(model_dir, output)
+    size_mb = output_path.stat().st_size / (1024 * 1024)
+
+    table = Table(title="Export Summary", show_header=True, header_style="bold magenta")
+    table.add_column("Property", style="cyan")
+    table.add_column("Value", style="green")
+    table.add_row("Source", str(model_dir))
+    table.add_row("Output", str(output_path))
+    table.add_row("File size", f"{size_mb:.1f} MB")
+
+    console.print(table)
+    console.print("[bold green]TorchScript export complete![/bold green]")
 
 
 @model.command()

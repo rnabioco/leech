@@ -431,6 +431,75 @@ class TestModelComparisons:
         assert not torch.isnan(output).any()
         assert not torch.isinf(output).any()
 
+    @pytest.mark.parametrize(
+        "model_name,requires_features",
+        [
+            ("ConvLSTMBase", False),
+            ("ConvLSTMRemoraBase", False),
+            ("ConvLSTMDwell", True),
+            ("ConvLSTMRemora", True),
+            ("TransformerDwell", True),
+            ("ConvOnly", True),
+            ("TCNDwell", True),
+            ("ResNetDwell", True),
+        ],
+    )
+    def test_all_models_traceable(self, model_name, requires_features):
+        """Test that all 8 model architectures can be traced with torch.jit.trace."""
+        from leech.util import trace_model
+
+        config = {"signal_len": 100, "kmer_len": 11}
+
+        if model_name == "ConvLSTMBase":
+            config.update({"conv_channels": [4, 16, 32], "lstm_hidden": 16})
+        elif model_name == "ConvLSTMRemoraBase":
+            config.update({"size": 32, "seq_encoding": "signal_kmer"})
+        elif model_name == "ConvLSTMDwell":
+            config.update({"num_features": 5, "conv_channels": [4, 16, 32], "lstm_hidden": 16})
+        elif model_name == "ConvLSTMRemora":
+            config.update({"num_features": 5, "size": 32, "seq_encoding": "signal_kmer"})
+        elif model_name == "TransformerDwell":
+            config.update({"num_features": 5, "d_model": 32, "nhead": 4, "num_layers": 1})
+        elif model_name == "ConvOnly":
+            config.update({"num_features": 5, "base_channels": 4})
+        elif model_name == "ResNetDwell":
+            config.update({"num_features": 5, "base_channels": 4})
+        elif model_name == "TCNDwell":
+            config.update(
+                {"num_features": 5, "hidden_channels": 16, "num_layers": 2, "kernel_size": 3}
+            )
+
+        model = get_model(model_name, **config)
+        full_config = {"model_name": model_name, **config}
+        traced = trace_model(model, full_config)
+
+        # Verify traced model produces valid output
+        batch_size = 2
+        signal = torch.randn(batch_size, config["signal_len"])
+
+        seq_encoding = config.get("seq_encoding", "base_onehot")
+        skc = config.get("signal_kmer_context", [4, 4])
+        if seq_encoding == "signal_kmer":
+            seq_channels = sum(skc) * 4 + 4
+            seq_len = config["signal_len"]
+        else:
+            seq_channels = 4
+            seq_len = config["kmer_len"]
+        sequence = torch.randn(batch_size, seq_channels, seq_len)
+
+        with torch.no_grad():
+            if requires_features:
+                features = torch.randn(batch_size, config["num_features"], config["kmer_len"])
+                output = traced(signal, sequence, features)
+            else:
+                output = traced(signal, sequence)
+
+        # Remora models output (B, 2) for CrossEntropyLoss; others output (B, 1)
+        assert output.shape[0] == batch_size
+        assert output.shape[1] in (1, 2)
+        assert not torch.isnan(output).any()
+        assert not torch.isinf(output).any()
+
     def test_model_parameter_counts(self):
         """Test that models have reasonable parameter counts."""
         base_config = {

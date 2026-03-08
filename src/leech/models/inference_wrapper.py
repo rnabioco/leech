@@ -115,3 +115,41 @@ class ModelInferenceWrapper:
     def load_state_dict(self, state_dict):
         """Load model state dict from checkpoint."""
         self.model.load_state_dict(state_dict)
+
+
+class TracedModelWrapper:
+    """Wrapper for TorchScript traced models.
+
+    Provides the same ``forward_batch`` interface as
+    :class:`ModelInferenceWrapper` and :class:`RemoraModelWrapper` so that
+    traced models can be used interchangeably in the inference engine.
+    """
+
+    def __init__(self, traced_model: torch.jit.ScriptModule, requires_features: bool):
+        self.model = traced_model
+        self.requires_features = requires_features
+        self.is_traced = True
+
+    def forward_batch(self, batch: dict, device: str) -> torch.Tensor:
+        """Forward pass from batch dictionary."""
+        signal = batch["signal"].to(device)
+        sequence = batch["sequence"].to(device)
+
+        output: torch.Tensor
+        if self.requires_features:
+            features = batch["features"].to(device)
+            output = self.model(signal, sequence, features)
+        else:
+            output = self.model(signal, sequence)
+        return output
+
+    def __call__(self, *args, **kwargs) -> torch.Tensor:
+        output: torch.Tensor = self.model(*args, **kwargs)
+        return output
+
+    def eval(self) -> None:
+        self.model.eval()
+
+    def to(self, device: str) -> "TracedModelWrapper":
+        self.model.to(device)
+        return self
