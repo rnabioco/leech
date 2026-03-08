@@ -168,7 +168,9 @@ class TestSigMapRefiner:
 
         assert len(refined_map) == len(seq_to_sig)
         # Should be monotonically non-decreasing (or fall back to original)
-        is_monotonic = all(refined_map[i] <= refined_map[i + 1] for i in range(len(refined_map) - 1))
+        is_monotonic = all(
+            refined_map[i] <= refined_map[i + 1] for i in range(len(refined_map) - 1)
+        )
         if not is_monotonic:
             # Fallback case: should equal original
             np.testing.assert_array_equal(refined_map, seq_to_sig)

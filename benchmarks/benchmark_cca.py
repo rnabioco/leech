@@ -44,16 +44,9 @@ logger = logging.getLogger("benchmark_cca")
 PIPELINE_DIR = Path("/beevol/home/jhessel/devel/rnabioco/2026-aars-in-vitro")
 DEFAULT_SAMPLE = "AsnRS_asn_b1"
 DEFAULT_MODEL = PIPELINE_DIR / "aa-tRNA-seq-pipeline/resources/models/cca_classifier.pt"
-DEFAULT_BAM = (
-    PIPELINE_DIR / f"results/bam/tagged/{DEFAULT_SAMPLE}/{DEFAULT_SAMPLE}.tagged.bam"
-)
-DEFAULT_POD5 = (
-    PIPELINE_DIR
-    / f"results/demux/pod5/{DEFAULT_SAMPLE}/{DEFAULT_SAMPLE}.pod5"
-)
-REMORA_BIN = (
-    PIPELINE_DIR / "aa-tRNA-seq-pipeline/.pixi/envs/default/bin/remora"
-)
+DEFAULT_BAM = PIPELINE_DIR / f"results/bam/tagged/{DEFAULT_SAMPLE}/{DEFAULT_SAMPLE}.tagged.bam"
+DEFAULT_POD5 = PIPELINE_DIR / f"results/demux/pod5/{DEFAULT_SAMPLE}/{DEFAULT_SAMPLE}.pod5"
+REMORA_BIN = PIPELINE_DIR / "aa-tRNA-seq-pipeline/.pixi/envs/default/bin/remora"
 
 
 def subset_bam(bam_path: Path, output_path: Path, num_reads: int) -> int:
@@ -252,9 +245,7 @@ def compare_scores(
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Benchmark CCA classification: Remora vs Leech"
-    )
+    parser = argparse.ArgumentParser(description="Benchmark CCA classification: Remora vs Leech")
     parser.add_argument(
         "--pod5",
         type=Path,
@@ -348,8 +339,12 @@ def main():
     # Run remora (uses subset BAM + --num-reads for consistent read set)
     if not args.skip_remora:
         remora_time = run_remora(
-            args.pod5, subset_bam_path, args.model, remora_out,
-            num_reads=actual_reads, num_workers=args.workers,
+            args.pod5,
+            subset_bam_path,
+            args.model,
+            remora_out,
+            num_reads=actual_reads,
+            num_workers=args.workers,
         )
         results["remora_time_s"] = remora_time
         results["remora_reads_per_sec"] = actual_reads / remora_time
@@ -358,9 +353,7 @@ def main():
 
     # Run leech (uses same subset BAM)
     if not args.skip_leech:
-        leech_time = run_leech(
-            args.pod5, subset_bam_path, args.model, leech_out, args.workers
-        )
+        leech_time = run_leech(args.pod5, subset_bam_path, args.model, leech_out, args.workers)
         results["leech_time_s"] = leech_time
         results["leech_reads_per_sec"] = actual_reads / leech_time
 
@@ -371,8 +364,7 @@ def main():
         leech_scores = extract_leech_scores(leech_out)
 
         logger.info(
-            f"Remora: {len(remora_scores)} scored reads, "
-            f"Leech: {len(leech_scores)} scored reads"
+            f"Remora: {len(remora_scores)} scored reads, Leech: {len(leech_scores)} scored reads"
         )
 
         comparison = compare_scores(remora_scores, leech_scores)
@@ -390,25 +382,33 @@ def main():
     print(f"Workers: {results['workers']}")
 
     if "remora_time_s" in results:
-        print(f"\nRemora:  {results['remora_time_s']:.1f}s "
-              f"({results['remora_reads_per_sec']:.0f} reads/s)")
+        print(
+            f"\nRemora:  {results['remora_time_s']:.1f}s "
+            f"({results['remora_reads_per_sec']:.0f} reads/s)"
+        )
     if "leech_time_s" in results:
-        print(f"Leech:   {results['leech_time_s']:.1f}s "
-              f"({results['leech_reads_per_sec']:.0f} reads/s)")
+        print(
+            f"Leech:   {results['leech_time_s']:.1f}s "
+            f"({results['leech_reads_per_sec']:.0f} reads/s)"
+        )
     if "speedup" in results:
         print(f"Speedup: {results['speedup']:.2f}x")
 
     if "comparison" in results:
         c = results["comparison"]
-        print(f"\n--- Score Comparison ---")
+        print("\n--- Score Comparison ---")
         print(f"Common reads:           {c['common_reads']}")
         print(f"Remora-only reads:      {c['remora_only']}")
         print(f"Leech-only reads:       {c['leech_only']}")
         if c["common_reads"] > 0:
-            print(f"Exact ML match:         {c['exact_match']}/{c['common_reads']} "
-                  f"({c['exact_match_pct']:.1f}%)")
-            print(f"Classification agree:   {c['classification_agree']}/{c['common_reads']} "
-                  f"({c['classification_agree_pct']:.1f}%)")
+            print(
+                f"Exact ML match:         {c['exact_match']}/{c['common_reads']} "
+                f"({c['exact_match_pct']:.1f}%)"
+            )
+            print(
+                f"Classification agree:   {c['classification_agree']}/{c['common_reads']} "
+                f"({c['classification_agree_pct']:.1f}%)"
+            )
             print(f"Mean |diff|:            {c['mean_abs_diff']:.2f}")
             print(f"Median |diff|:          {c['median_abs_diff']:.1f}")
             print(f"95th %ile |diff|:       {c['p95_abs_diff']:.1f}")
