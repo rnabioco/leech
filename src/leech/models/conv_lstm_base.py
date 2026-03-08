@@ -130,7 +130,7 @@ class ConvLSTMBase(BaseModel):
         center_out = lstm_out[:, center_idx, :]
 
         # FC layers
-        logits: torch.Tensor = self.fc(center_out)  # type: ignore[assignment]  # (batch, 1)
+        logits: torch.Tensor = self.fc(center_out)  # (batch, 1)
 
         return logits
 

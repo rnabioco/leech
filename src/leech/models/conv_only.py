@@ -224,7 +224,7 @@ class ConvOnly(BaseModel):
         merged = torch.cat([signal_avg, signal_max, seq_avg, seq_max, feat_avg, feat_max], dim=1)
 
         # Classifier
-        logits: torch.Tensor = self.classifier(merged)  # type: ignore[assignment]  # (batch, 1)
+        logits: torch.Tensor = self.classifier(merged)  # (batch, 1)
 
         return logits
 

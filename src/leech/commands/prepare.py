@@ -199,7 +199,7 @@ def handle_prepare(
             task = progress_container["task"]
             if prog is not None and task is not None and isinstance(prog, Progress):
                 prog.update(
-                    task,  # type: ignore[arg-type]
+                    task,
                     advance=1,
                     description=f"[cyan]Extracted {n_chunks} chunks...",
                 )
@@ -250,7 +250,7 @@ def handle_prepare(
 
             task_id = progress_container["task"]
             if task_id is not None:
-                progress.update(task_id, completed=True)  # type: ignore[arg-type]
+                progress.update(task_id, completed=True)
 
     # Display results
     _display_prepare_results(result, no_split)

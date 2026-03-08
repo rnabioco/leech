@@ -62,6 +62,7 @@ try:
     from leech._rust_accel import HAS_RUST, _rs_encode_signal_kmer
 except ImportError:
     HAS_RUST = False
+    _rs_encode_signal_kmer = None
 
 
 @dataclass
@@ -447,6 +448,7 @@ def encode_signal_kmer(
     kmer_before, kmer_after = kmer_context
 
     if HAS_RUST:
+        assert _rs_encode_signal_kmer is not None
         return np.asarray(
             _rs_encode_signal_kmer(
                 sequence_ints.astype(np.int8),
