@@ -14,11 +14,16 @@ from leech.models import get_model
 from leech.util import (
     compute_metrics,
     create_bundle,
+    create_torchscript_bundle,
+    deserialize_traced_model,
+    export_single_model,
     list_bundle_models,
     load_model_from_bundle,
     load_model_from_checkpoint,
     print_metrics,
     save_metrics,
+    serialize_traced_model,
+    trace_model,
 )
 
 
@@ -601,6 +606,212 @@ class TestMetricsEdgeCases:
         # Should still compute metrics (sklearn doesn't validate prob range for AUC)
         metrics = compute_metrics(y_true, y_pred, y_prob)
         assert "accuracy" in metrics
+
+
+class TestTorchScriptExport:
+    """Test TorchScript tracing, export, and bundle functions."""
+
+    def test_trace_round_trip(self, model_config):
+        """Trace a model, serialize, deserialize, and compare outputs."""
+        model = get_model("ConvLSTMDwell", **model_config)
+        model.eval()
+
+        config = {"model_name": "ConvLSTMDwell", **model_config}
+        traced = trace_model(model, config)
+
+        # Verify traced model produces same output
+        signal = torch.randn(2, model_config["signal_len"])
+        sequence = torch.randn(2, 4, model_config["kmer_len"])
+        features = torch.randn(2, model_config["num_features"], model_config["kmer_len"])
+
+        with torch.no_grad():
+            original_out = model(signal, sequence, features)
+            traced_out = traced(signal, sequence, features)
+
+        assert torch.allclose(original_out, traced_out, atol=1e-5)
+
+    def test_serialize_deserialize(self, model_config):
+        """Test serialize/deserialize round-trip."""
+        model = get_model("ConvLSTMDwell", **model_config)
+        config = {"model_name": "ConvLSTMDwell", **model_config}
+        traced = trace_model(model, config)
+
+        data = serialize_traced_model(traced)
+        assert isinstance(data, bytes)
+        assert len(data) > 0
+
+        restored = deserialize_traced_model(data, device="cpu")
+        signal = torch.randn(1, model_config["signal_len"])
+        sequence = torch.randn(1, 4, model_config["kmer_len"])
+        features = torch.randn(1, model_config["num_features"], model_config["kmer_len"])
+
+        with torch.no_grad():
+            out1 = traced(signal, sequence, features)
+            out2 = restored(signal, sequence, features)
+
+        assert torch.allclose(out1, out2, atol=1e-5)
+
+    def test_trace_base_model(self):
+        """Trace a 2-arg model (no features)."""
+        config = {
+            "signal_len": 100,
+            "kmer_len": 11,
+            "conv_channels": [4, 16, 32],
+            "lstm_hidden": 16,
+        }
+        model = get_model("ConvLSTMBase", **config)
+        full_config = {"model_name": "ConvLSTMBase", **config}
+        traced = trace_model(model, full_config)
+
+        signal = torch.randn(2, 100)
+        sequence = torch.randn(2, 4, 11)
+        with torch.no_grad():
+            out = traced(signal, sequence)
+        assert out.shape == (2, 1)
+
+    def test_export_single_model(self, tmp_path, model_config):
+        """Test export_single_model creates a loadable TorchScript file."""
+        # Create a model directory
+        model_dir = tmp_path / "model"
+        model_dir.mkdir()
+
+        config = {
+            "model_name": "ConvLSTMDwell",
+            **model_config,
+            "epochs": 10,
+            "batch_size": 32,
+        }
+        with open(model_dir / "config.json", "w") as f:
+            json.dump(config, f)
+
+        model = get_model("ConvLSTMDwell", **model_config)
+        torch.save({"model_state_dict": model.state_dict()}, model_dir / "model_best.pt")
+
+        output_path = tmp_path / "exported.pt"
+        result = export_single_model(model_dir, output_path)
+        assert result.exists()
+
+        # Load with bare torch.jit.load — no leech needed
+        extra = {"leech_meta.txt": ""}
+        loaded = torch.jit.load(str(output_path), map_location="cpu", _extra_files=extra)
+        assert extra["leech_meta.txt"] != ""
+
+        meta = json.loads(extra["leech_meta.txt"])
+        assert meta["model_name"] == "ConvLSTMDwell"
+        assert meta["signal_len"] == model_config["signal_len"]
+
+        # Verify forward pass
+        signal = torch.randn(1, model_config["signal_len"])
+        sequence = torch.randn(1, 4, model_config["kmer_len"])
+        features = torch.randn(1, model_config["num_features"], model_config["kmer_len"])
+        with torch.no_grad():
+            out = loaded(signal, sequence, features)
+        assert out.shape == (1, 1)
+
+    def _create_fake_model_dirs(self, tmp_path, model_config, pair_names):
+        """Helper to create fake model directories for testing."""
+        model_dirs = {}
+        for pair in pair_names:
+            pair_dir = tmp_path / pair
+            pair_dir.mkdir(parents=True)
+
+            config = {
+                "model_name": "ConvLSTMDwell",
+                **model_config,
+                "epochs": 10,
+                "batch_size": 32,
+                "learning_rate": 0.001,
+                "device": "cpu",
+                "seed": 42,
+            }
+            with open(pair_dir / "config.json", "w") as f:
+                json.dump(config, f)
+
+            model = get_model("ConvLSTMDwell", **model_config)
+            torch.save(
+                {
+                    "model_state_dict": model.state_dict(),
+                    "best_val_acc": 0.90,
+                    "best_epoch": 15,
+                },
+                pair_dir / "model_best.pt",
+            )
+            model_dirs[pair] = pair_dir
+        return model_dirs
+
+    def test_torchscript_bundle_create_and_load(self, tmp_path, model_config):
+        """Create a TorchScript bundle, load a model from it, verify forward pass."""
+        pairs = ["Ala_Gly", "Ala_Ser", "Gly_Ser"]
+        model_dirs = self._create_fake_model_dirs(tmp_path / "models", model_config, pairs)
+
+        bundle_path = tmp_path / "ts_bundle.pt"
+        create_torchscript_bundle(model_dirs, bundle_path, "pairwise", "1.0.0")
+        assert bundle_path.exists()
+
+        # Verify metadata
+        metadata = list_bundle_models(bundle_path)
+        assert metadata["format_version"] == 2
+        assert metadata["torchscript"] is True
+        assert metadata["requires_features"] is True
+        assert set(metadata["pairs"]) == set(pairs)
+
+        # Load a model and run forward pass
+        loaded_model, config = load_model_from_bundle(bundle_path, "Ala_Gly", device="cpu")
+        signal = torch.randn(1, model_config["signal_len"])
+        sequence = torch.randn(1, 4, model_config["kmer_len"])
+        features = torch.randn(1, model_config["num_features"], model_config["kmer_len"])
+        with torch.no_grad():
+            output = loaded_model(signal, sequence, features)
+        assert output.shape == (1, 1)
+
+    def test_old_bundle_still_works(self, tmp_path, model_config):
+        """Verify format_version=1 (state_dict) bundles are still loadable."""
+        pairs = ["Ala_Gly"]
+        model_dirs = self._create_fake_model_dirs(tmp_path / "models", model_config, pairs)
+
+        bundle_path = tmp_path / "v1_bundle.pt"
+        create_bundle(model_dirs, bundle_path, "pairwise", "0.1.0")
+
+        metadata = list_bundle_models(bundle_path)
+        assert metadata["format_version"] == 1
+        assert metadata.get("torchscript", False) is False
+
+        loaded_model, config = load_model_from_bundle(bundle_path, "Ala_Gly", device="cpu")
+        signal = torch.randn(1, model_config["signal_len"])
+        sequence = torch.randn(1, 4, model_config["kmer_len"])
+        features = torch.randn(1, model_config["num_features"], model_config["kmer_len"])
+        with torch.no_grad():
+            output = loaded_model(signal, sequence, features)
+        assert output.shape == (1, 1)
+
+    def test_torchscript_bundle_config_mismatch(self, tmp_path, model_config):
+        """Error when models in TorchScript bundle have incompatible configs."""
+        model_dirs = {}
+        for pair, sig_len in [("Ala_Gly", 400), ("Ala_Ser", 200)]:
+            pair_dir = tmp_path / "models" / pair
+            pair_dir.mkdir(parents=True)
+
+            config = {
+                "model_name": "ConvLSTMDwell",
+                **model_config,
+                "signal_len": sig_len,
+                "epochs": 10,
+                "batch_size": 32,
+            }
+            with open(pair_dir / "config.json", "w") as f:
+                json.dump(config, f)
+
+            mc = {**model_config, "signal_len": sig_len}
+            m = get_model("ConvLSTMDwell", **mc)
+            torch.save(
+                {"model_state_dict": m.state_dict(), "best_val_acc": 0.9, "best_epoch": 5},
+                pair_dir / "model_best.pt",
+            )
+            model_dirs[pair] = pair_dir
+
+        bundle_path = tmp_path / "bad_ts_bundle.pt"
+        with pytest.raises(ValueError, match="Architecture config mismatch"):
+            create_torchscript_bundle(model_dirs, bundle_path, "pairwise", "0.1.0")
 
 
 if __name__ == "__main__":

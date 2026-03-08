@@ -18,7 +18,7 @@ from leech.models.conv_lstm_base import ConvLSTMBase
 from leech.models.conv_lstm_dwell import ConvLSTMDwell
 from leech.models.conv_lstm_remora import ConvLSTMRemora, ConvLSTMRemoraBase
 from leech.models.conv_only import ConvOnly
-from leech.models.inference_wrapper import ModelInferenceWrapper
+from leech.models.inference_wrapper import ModelInferenceWrapper, TracedModelWrapper
 from leech.models.remora_compat import RemoraModelWrapper
 from leech.models.resnet_dwell import ResNetDwell
 from leech.models.tcn_dwell import TCNDwell
@@ -34,6 +34,7 @@ __all__ = [
     "TCNDwell",
     "ResNetDwell",
     "ModelInferenceWrapper",
+    "TracedModelWrapper",
     "RemoraModelWrapper",
 ]
 

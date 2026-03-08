@@ -5,6 +5,7 @@ Includes model loading/saving helpers, metrics computation, and logging utilitie
 """
 
 import inspect
+import io
 import json
 import logging
 import os
@@ -176,6 +177,96 @@ def _instantiate_model(config: dict) -> nn.Module:
     return get_model(model_name, signal_len=signal_len, kmer_len=kmer_len, **filtered_kwargs)
 
 
+# ============================================================================
+# TorchScript export helpers
+# ============================================================================
+
+
+def trace_model(model: nn.Module, config: dict) -> torch.jit.ScriptModule:
+    """Trace a leech model into a TorchScript ScriptModule.
+
+    Args:
+        model: PyTorch model (must be in eval mode or will be set to eval)
+        config: Model config dict with signal_len, kmer_len, etc.
+
+    Returns:
+        Traced ScriptModule
+    """
+    from leech.models.inference_wrapper import ModelInferenceWrapper
+
+    model.eval()
+
+    signal_len = config["signal_len"]
+    kmer_len = config["kmer_len"]
+    seq_encoding = config.get("seq_encoding", "base_onehot")
+    signal_kmer_context = config.get("signal_kmer_context", [4, 4])
+
+    # Determine sequence tensor shape based on encoding
+    if seq_encoding == "signal_kmer":
+        seq_channels = sum(signal_kmer_context) * 4 + 4  # 36 for default (4,4)
+        seq_len = signal_len
+    else:
+        seq_channels = 4
+        seq_len = kmer_len
+
+    # Build example inputs
+    signal = torch.randn(1, signal_len)
+    sequence = torch.randn(1, seq_channels, seq_len)
+
+    model_name = config.get("model_name", "")
+    requires_features = model_name in ModelInferenceWrapper.FEATURE_MODELS
+
+    if requires_features:
+        num_features = config.get("num_features", 5)
+        features = torch.randn(1, num_features, kmer_len)
+        example_inputs = (signal, sequence, features)
+    else:
+        example_inputs = (signal, sequence)
+
+    with torch.no_grad():
+        traced = torch.jit.trace(model, example_inputs)
+
+    return traced
+
+
+def serialize_traced_model(traced: torch.jit.ScriptModule) -> bytes:
+    """Serialize a traced model to bytes."""
+    buf = io.BytesIO()
+    torch.jit.save(traced, buf)
+    return buf.getvalue()
+
+
+def deserialize_traced_model(data: bytes, device: str = "cpu") -> torch.jit.ScriptModule:
+    """Deserialize a traced model from bytes."""
+    buf = io.BytesIO(data)
+    return torch.jit.load(buf, map_location=device)
+
+
+def export_single_model(model_dir: Path, output_path: Path) -> Path:
+    """Export a single trained model as a standalone TorchScript .pt file.
+
+    The exported file is loadable with just ``torch.jit.load()`` — no leech
+    required.  Model config is embedded via ``_extra_files``.
+
+    Args:
+        model_dir: Directory with config.json and model_best.pt
+        output_path: Where to write the TorchScript .pt file
+
+    Returns:
+        Path to the saved file
+    """
+    model, config = load_model_from_checkpoint(model_dir, device="cpu")
+    traced = trace_model(model, config)
+
+    meta = json.dumps(config)
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    torch.jit.save(traced, str(output_path), _extra_files={"leech_meta.txt": meta})
+
+    logger.info(f"Exported TorchScript model to {output_path}")
+    return output_path
+
+
 def create_bundle(
     model_dirs: dict[str, Path],
     output_path: Path,
@@ -275,6 +366,116 @@ def create_bundle(
     return output_path
 
 
+def create_torchscript_bundle(
+    model_dirs: dict[str, Path],
+    output_path: Path,
+    comparison_type: str,
+    version: str,
+) -> Path:
+    """Bundle multiple trained models as TorchScript into a single versioned file.
+
+    Like :func:`create_bundle` but stores traced model bytes instead of raw
+    state dicts.  The resulting bundle is loadable without the leech model
+    registry — each pair is a self-contained TorchScript graph.
+
+    Args:
+        model_dirs: Mapping of pair name -> model directory
+        output_path: Output .pt file path
+        comparison_type: "pairwise" or "one_vs_all"
+        version: Semantic version string
+
+    Returns:
+        Path to the saved bundle file
+    """
+    from leech.models.inference_wrapper import ModelInferenceWrapper
+
+    if not model_dirs:
+        raise ValueError("model_dirs must not be empty")
+
+    pairs = sorted(model_dirs.keys())
+
+    # Load first model's config as reference
+    first_dir = model_dirs[pairs[0]]
+    ref_config_path = first_dir / "config.json"
+    if not ref_config_path.exists():
+        raise FileNotFoundError(f"Config file not found: {ref_config_path}")
+    with open(ref_config_path) as f:
+        ref_full_config = json.load(f)
+    ref_arch_config = _architecture_config(ref_full_config)
+
+    architecture = ref_full_config["model_name"]
+    requires_features = architecture in ModelInferenceWrapper.FEATURE_MODELS
+
+    models_dict: dict[str, dict] = {}
+    for pair in pairs:
+        model_dir = Path(model_dirs[pair])
+
+        # Validate config matches
+        config_path = model_dir / "config.json"
+        if not config_path.exists():
+            raise FileNotFoundError(f"Config file not found: {config_path}")
+        with open(config_path) as f:
+            pair_config = json.load(f)
+        pair_arch_config = _architecture_config(pair_config)
+
+        if pair_arch_config != ref_arch_config:
+            raise ValueError(
+                f"Architecture config mismatch for {pair}. "
+                f"Expected {ref_arch_config}, got {pair_arch_config}"
+            )
+
+        # Load checkpoint, instantiate, trace
+        checkpoint_path = model_dir / "model_best.pt"
+        if not checkpoint_path.exists():
+            raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+        checkpoint = torch.load(checkpoint_path, map_location="cpu")
+
+        model = _instantiate_model(ref_arch_config)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        traced = trace_model(model, ref_arch_config)
+        traced_bytes = serialize_traced_model(traced)
+
+        models_dict[pair] = {
+            "traced_bytes": traced_bytes,
+            "best_val_acc": checkpoint.get("best_val_acc"),
+            "best_epoch": checkpoint.get("best_epoch"),
+        }
+
+    bundle = {
+        "metadata": {
+            "format_version": 2,
+            "bundle_version": version,
+            "architecture": architecture,
+            "comparison_type": comparison_type,
+            "num_models": len(models_dict),
+            "pairs": pairs,
+            "created_at": datetime.now(UTC).isoformat(),
+            "torchscript": True,
+            "requires_features": requires_features,
+        },
+        "config": ref_arch_config,
+        "models": models_dict,
+    }
+
+    # Atomic save
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=output_path.parent, suffix=".pt.tmp")
+    try:
+        os.close(fd)
+        torch.save(bundle, tmp_path)
+        os.rename(tmp_path, output_path)
+    except BaseException:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise
+
+    logger.info(
+        f"TorchScript bundle saved to {output_path} ({len(models_dict)} models, version {version})"
+    )
+    return output_path
+
+
 def load_model_from_bundle(
     bundle_path: Path,
     pair: str,
@@ -282,6 +483,9 @@ def load_model_from_bundle(
 ) -> tuple[nn.Module, dict]:
     """
     Load a single model from a bundle file.
+
+    Supports both format_version 1 (state_dict) and format_version 2
+    (TorchScript) bundles transparently.
 
     Args:
         bundle_path: Path to bundle .pt file
@@ -302,10 +506,18 @@ def load_model_from_bundle(
         raise KeyError(f"Pair '{pair}' not in bundle. Available: {available}")
 
     config = bundle["config"]
-    model = _instantiate_model(config)
-    model.load_state_dict(models[pair]["state_dict"])
-    model = model.to(device)
-    model.eval()
+    metadata = bundle.get("metadata", {})
+
+    if metadata.get("torchscript", False):
+        # TorchScript bundle (format_version 2)
+        model = deserialize_traced_model(models[pair]["traced_bytes"], device=device)
+        model.eval()
+    else:
+        # Legacy state_dict bundle (format_version 1)
+        model = _instantiate_model(config)
+        model.load_state_dict(models[pair]["state_dict"])
+        model = model.to(device)
+        model.eval()
 
     return model, config
 

@@ -12,6 +12,7 @@ Supports:
 """
 
 import array
+import json
 import logging
 import multiprocessing as mp
 from dataclasses import dataclass
@@ -25,10 +26,10 @@ from rich.progress import Progress
 
 from leech.features import encode_signal_kmer, sequence_to_int
 from leech.io.motif_search import find_motif_in_sequence
-from leech.models.inference_wrapper import ModelInferenceWrapper
+from leech.models.inference_wrapper import ModelInferenceWrapper, TracedModelWrapper
 from leech.models.remora_compat import RemoraModelWrapper
 from leech.preparation import encode_kmer, iter_bam_with_pod5
-from leech.util import _instantiate_model, load_model_from_checkpoint
+from leech.util import _instantiate_model, deserialize_traced_model, load_model_from_checkpoint
 
 if TYPE_CHECKING:
     from leech.signal_refine import SigMapRefiner
@@ -85,15 +86,26 @@ def _extract_remora_metadata(model_path: Path) -> dict:
     return raw
 
 
+def _is_leech_torchscript(path: Path) -> bool:
+    """Check if a .pt file is a leech TorchScript export (has leech_meta.txt)."""
+    try:
+        extra = {"leech_meta.txt": ""}
+        torch.jit.load(str(path), map_location="cpu", _extra_files=extra)
+        return bool(extra.get("leech_meta.txt", ""))
+    except Exception:
+        return False
+
+
 def load_model_auto(
     model_path: Path, device: str = "cpu"
-) -> tuple[ModelInferenceWrapper | RemoraModelWrapper, dict]:
+) -> tuple[ModelInferenceWrapper | TracedModelWrapper | RemoraModelWrapper, dict]:
     """
-    Load leech model (directory) or Remora TorchScript (.pt file).
+    Load leech model (directory), leech TorchScript, or Remora TorchScript (.pt file).
 
     Auto-detects format:
     - Directory with config.json → leech checkpoint
-    - .pt file → Remora TorchScript model (reads embedded metadata)
+    - .pt file with leech_meta.txt → leech TorchScript export
+    - .pt file with meta.txt → Remora TorchScript model
 
     Args:
         model_path: Path to model directory or .pt file
@@ -108,7 +120,25 @@ def load_model_auto(
         model_type = config["model_name"]
         return ModelInferenceWrapper(model, model_type), config
     elif path.suffix == ".pt" and not (path.parent / "config.json").exists():
-        # Standalone .pt file without config.json → Remora TorchScript
+        # Try leech TorchScript first
+        extra = {"leech_meta.txt": ""}
+        try:
+            traced = torch.jit.load(str(path), map_location=device, _extra_files=extra)
+        except Exception:
+            traced = None
+
+        if traced is not None and extra.get("leech_meta.txt", ""):
+            config = json.loads(extra["leech_meta.txt"])
+            model_name = config.get("model_name", "")
+            requires_features = model_name in ModelInferenceWrapper.FEATURE_MODELS
+            wrapper = TracedModelWrapper(traced, requires_features=requires_features)
+            logger.info(
+                f"Leech TorchScript model: {model_name}, "
+                f"signal_len={config.get('signal_len')}, kmer_len={config.get('kmer_len')}"
+            )
+            return wrapper, config
+
+        # Fall back to Remora TorchScript
         wrapper = RemoraModelWrapper(path, device=device)
 
         # Extract metadata from the model
@@ -865,10 +895,11 @@ def run_bundle_inference(
     config = bundle["config"]
     pairs = metadata["pairs"]
     comparison_type = metadata["comparison_type"]
+    is_torchscript = metadata.get("torchscript", False)
 
     signal_len = config["signal_len"]
     kmer_len = config["kmer_len"]
-    model_type = config["model_name"]
+    model_type = config.get("model_name", metadata.get("architecture", ""))
     dwell_offset = config.get("dwell_offset", 0)
     seq_encoding = config.get("seq_encoding", "base_onehot")
     signal_kmer_context = tuple(config.get("signal_kmer_context", (4, 4)))
@@ -878,6 +909,7 @@ def run_bundle_inference(
 
     logger.info(
         f"Bundle: {metadata['architecture']}, {len(pairs)} models, v{metadata['bundle_version']}"
+        f"{' (TorchScript)' if is_torchscript else ''}"
     )
 
     # Select aggregation function
@@ -887,13 +919,19 @@ def run_bundle_inference(
         aggregate_fn = aggregate_one_vs_all
 
     # Load all models
-    wrappers = {}
-    for pair in pairs:
-        m = _instantiate_model(config)
-        m.load_state_dict(bundle["models"][pair]["state_dict"])
-        m = m.to(device)
-        m.eval()
-        wrappers[pair] = ModelInferenceWrapper(m, model_type)
+    wrappers: dict[str, ModelInferenceWrapper | TracedModelWrapper] = {}
+    if is_torchscript:
+        requires_features = metadata.get("requires_features", False)
+        for pair in pairs:
+            traced = deserialize_traced_model(bundle["models"][pair]["traced_bytes"], device=device)
+            wrappers[pair] = TracedModelWrapper(traced, requires_features=requires_features)
+    else:
+        for pair in pairs:
+            m = _instantiate_model(config)
+            m.load_state_dict(bundle["models"][pair]["state_dict"])
+            m = m.to(device)
+            m.eval()
+            wrappers[pair] = ModelInferenceWrapper(m, model_type)
 
     pair_names_str = ",".join(pairs)
 
