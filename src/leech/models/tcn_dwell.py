@@ -112,7 +112,7 @@ class TemporalBlock(nn.Module):
 
         # Residual connection
         res = x if self.downsample is None else self.downsample(x)
-        result: torch.Tensor = self.relu(out + res)  # type: ignore[assignment]
+        result: torch.Tensor = self.relu(out + res)
         return result
 
 
@@ -162,7 +162,7 @@ class TCN(nn.Module):
         Returns:
             Output tensor (batch, hidden_channels, length)
         """
-        out: torch.Tensor = self.network(x)  # type: ignore[assignment]
+        out: torch.Tensor = self.network(x)
         return out
 
 
@@ -302,7 +302,7 @@ class TCNDwell(BaseModel):
         merged = torch.cat([signal_avg, signal_max, seq_avg, seq_max, feat_avg, feat_max], dim=1)
 
         # Classifier
-        logits: torch.Tensor = self.classifier(merged)  # type: ignore[assignment]  # (batch, 1)
+        logits: torch.Tensor = self.classifier(merged)  # (batch, 1)
 
         return logits
 

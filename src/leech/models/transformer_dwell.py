@@ -60,9 +60,9 @@ class PositionalEncoding(nn.Module):
         Returns:
             Tensor with positional encoding added (batch, seq_len, d_model)
         """
-        pe: torch.Tensor = self.pe  # type: ignore[assignment]
-        x = x + pe[:, : x.size(1), :]
-        out: torch.Tensor = self.dropout(x)  # type: ignore[assignment]
+        assert isinstance(self.pe, torch.Tensor)
+        x = x + self.pe[:, : x.size(1), :]
+        out: torch.Tensor = self.dropout(x)
         return out
 
 
@@ -224,7 +224,7 @@ class TransformerDwell(BaseModel):
         center_out = attended[:, center_idx, :]  # (batch, d_model*3)
 
         # Classifier
-        logits: torch.Tensor = self.classifier(center_out)  # type: ignore[assignment]  # (batch, 1)
+        logits: torch.Tensor = self.classifier(center_out)  # (batch, 1)
 
         return logits
 

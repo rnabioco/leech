@@ -32,6 +32,8 @@ try:
     )
 except ImportError:
     HAS_RUST = False
+    _rs_rough_rescale = None
+    _rs_seq_banded_dp = None
 
 # CIGAR operations
 _CIGAR_OPS_CONSUME_REF = {0, 2, 3, 7, 8}  # M, D, N, =, X
@@ -146,6 +148,7 @@ def rough_rescale(
         Rescaled signal
     """
     if HAS_RUST:
+        assert _rs_rough_rescale is not None
         result = np.asarray(
             _rs_rough_rescale(
                 signal.astype(np.float64),
@@ -282,6 +285,7 @@ def seq_banded_dp(
         Refined seq_to_sig_map of length num_bases+1
     """
     if HAS_RUST:
+        assert _rs_seq_banded_dp is not None
         return np.asarray(
             _rs_seq_banded_dp(
                 signal.astype(np.float64),

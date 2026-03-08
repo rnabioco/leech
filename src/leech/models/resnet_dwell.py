@@ -95,7 +95,7 @@ class ResidualBlock1D(nn.Module):
 
         # Add skip connection
         out += self.skip(identity)
-        result: torch.Tensor = self.relu(out)  # type: ignore[assignment]
+        result: torch.Tensor = self.relu(out)
 
         return result
 
@@ -156,7 +156,7 @@ class ResNet1D(nn.Module):
             Output tensor (batch, final_channels, reduced_length)
         """
         out = self.conv1(x)
-        result: torch.Tensor = self.res_blocks(out)  # type: ignore[assignment]
+        result: torch.Tensor = self.res_blocks(out)
         return result
 
 
@@ -294,7 +294,7 @@ class ResNetDwell(BaseModel):
         merged = torch.cat([signal_avg, signal_max, seq_avg, seq_max, feat_avg, feat_max], dim=1)
 
         # Classifier
-        logits: torch.Tensor = self.classifier(merged)  # type: ignore[assignment]  # (batch, 1)
+        logits: torch.Tensor = self.classifier(merged)  # (batch, 1)
 
         return logits
 
