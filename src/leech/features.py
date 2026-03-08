@@ -330,7 +330,7 @@ def make_ref_to_query_mapping(cigar_tuples: list[tuple[int, int]]) -> np.ndarray
     if len(cigar) == 0:
         return np.array([0.0], dtype=np.float64)
 
-    ops, lens = map(np.array, zip(*cigar))
+    ops, lens = map(np.array, zip(*cigar, strict=True))
     is_match = MATCH_OPS[ops]
     match_counts = lens[is_match]
     # offsets shape (2, n_match): row 0 = match_count, row 1 = 1

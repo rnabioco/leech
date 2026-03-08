@@ -142,8 +142,9 @@ def load_model_auto(
             config["refine_scale_iters"] = remora_meta.get("refine_scale_iters", -1)
             config["refine_kmer_center_idx"] = remora_meta.get("refine_kmer_center_idx", -1)
 
-        logger.info(f"Remora model: signal_len={config['signal_len']}, "
-                     f"kmer_len={config['kmer_len']}")
+        logger.info(
+            f"Remora model: signal_len={config['signal_len']}, kmer_len={config['kmer_len']}"
+        )
 
         return wrapper, config
     else:
@@ -347,9 +348,7 @@ def _inference_worker(
                     # Signal
                     sig = chunk["signal"].astype(np.float32)
                     if len(sig) < config.signal_len:
-                        sig = np.pad(
-                            sig, (0, config.signal_len - len(sig)), mode="constant"
-                        )
+                        sig = np.pad(sig, (0, config.signal_len - len(sig)), mode="constant")
                     elif len(sig) > config.signal_len:
                         start = (len(sig) - config.signal_len) // 2
                         sig = sig[start : start + config.signal_len]
@@ -677,8 +676,14 @@ def run_inference(
             if not batch_signals:
                 return
             _run_batch(
-                batch_signals, batch_seqs, batch_feats, batch_meta,
-                model_wrapper, requires_features, device, pending,
+                batch_signals,
+                batch_seqs,
+                batch_feats,
+                batch_meta,
+                model_wrapper,
+                requires_features,
+                device,
+                pending,
             )
             batch_signals, batch_seqs, batch_feats, batch_meta = [], [], [], []
 
@@ -686,7 +691,10 @@ def run_inference(
             task = progress.add_task("[cyan]Running inference...", total=None)
 
             for leech_read in iter_bam_with_pod5(
-                bam_path, pod5_path, min_mapq=min_mapq, reverse_signal=reverse_signal,
+                bam_path,
+                pod5_path,
+                min_mapq=min_mapq,
+                reverse_signal=reverse_signal,
                 anchor=anchor,
                 norm_method=norm_method,
                 pa_mean=pa_mean,
@@ -743,7 +751,9 @@ def run_inference(
                         continue
 
                     batch_signals.append(sig)
-                    batch_seqs.append(seq_enc.numpy() if isinstance(seq_enc, torch.Tensor) else seq_enc)
+                    batch_seqs.append(
+                        seq_enc.numpy() if isinstance(seq_enc, torch.Tensor) else seq_enc
+                    )
                     # Features
                     feat = None
                     if requires_features:

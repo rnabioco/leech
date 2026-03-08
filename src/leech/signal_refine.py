@@ -16,7 +16,7 @@ Key functions:
 """
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -27,7 +27,6 @@ logger = logging.getLogger("leech.signal_refine")
 try:
     from leech._rust_accel import (
         HAS_RUST,
-        _rs_extract_levels,
         _rs_rough_rescale,
         _rs_seq_banded_dp,
     )
@@ -449,9 +448,7 @@ class SigMapRefiner:
             Tuple of (rescaled_signal, refined_seq_to_sig_map).
             If scale_iters == -1, mapping is unchanged (only normalization updated).
         """
-        expected = extract_levels(
-            sequence, self.kmer_to_level, self.kmer_len, self.center_idx
-        )
+        expected = extract_levels(sequence, self.kmer_to_level, self.kmer_len, self.center_idx)
 
         # Step 1: Rough rescale normalization (remora convention)
         if self.do_rough_rescale:

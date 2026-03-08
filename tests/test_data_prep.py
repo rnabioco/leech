@@ -50,9 +50,7 @@ class TestLeechRead:
         assert chunk is None
 
         # Index beyond sequence length
-        chunk = sample_leech_read.get_chunk(
-            base_idx=sample_leech_read.num_bases, kmer_context=5
-        )
+        chunk = sample_leech_read.get_chunk(base_idx=sample_leech_read.num_bases, kmer_context=5)
         assert chunk is None
 
     def test_get_chunk_edge_base_idx(self, sample_leech_read):

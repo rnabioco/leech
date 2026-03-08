@@ -194,12 +194,8 @@ class LeechRead:
         # Use searchsorted (like remora) to find ALL bases overlapping the
         # signal chunk, not just the fixed kmer_context bases. This ensures
         # the kmer encoding covers the entire signal window.
-        seq_start = int(
-            np.searchsorted(self.seq_to_sig_map, sig_start, side="right") - 1
-        )
-        seq_end = int(
-            np.searchsorted(self.seq_to_sig_map, sig_end, side="left")
-        )
+        seq_start = int(np.searchsorted(self.seq_to_sig_map, sig_start, side="right") - 1)
+        seq_end = int(np.searchsorted(self.seq_to_sig_map, sig_end, side="left"))
         seq_start = max(0, seq_start)
         seq_end = min(self.num_bases, seq_end)
 
