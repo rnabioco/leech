@@ -238,36 +238,3 @@ class InferenceConfig(BaseModel):
         if v not in ["cuda", "cpu"]:
             raise ValueError(f"Device must be 'cuda' or 'cpu', got {v}")
         return v
-
-
-class GridSearchConfig(BaseModel):
-    """Configuration for grid search."""
-
-    # Data paths
-    train_data_path: Path
-    val_data_path: Path | None = None
-    output_dir: Path
-
-    # Model
-    model_name: str = "ConvLSTMDwell"
-
-    # Grid parameters
-    left_contexts: list[int]
-    right_contexts: list[int]
-    kmer_context: int = DEFAULT_KMER_CONTEXT
-
-    # Training parameters
-    epochs: int = DEFAULT_EPOCHS
-    batch_size: int = DEFAULT_BATCH_SIZE
-    learning_rate: float = DEFAULT_LEARNING_RATE
-    device: str = DEFAULT_DEVICE
-    seed: int | None = DEFAULT_SEED
-    early_stopping_patience: int = 10
-
-    @field_validator("left_contexts", "right_contexts")
-    @classmethod
-    def validate_contexts(cls, v: list[int]) -> list[int]:
-        """Ensure all context values are positive."""
-        if not all(c > 0 for c in v):
-            raise ValueError(f"All context values must be positive, got {v}")
-        return v

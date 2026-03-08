@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pysam
 
+from leech.constants import REQUIRED_BAM_TAGS
 from leech.features import MoveTable, extract_move_table
 
 logger = logging.getLogger("leech.io.bam_reader")
@@ -43,7 +44,7 @@ def iter_bam_alignments(
         ...     print(f"{aln.query_name}: {aln.mapping_quality}")
     """
     if require_tags is None:
-        require_tags = ["mv", "ns"]
+        require_tags = REQUIRED_BAM_TAGS
 
     with pysam.AlignmentFile(str(bam_path), "rb") as bam:
         for aln in bam:
@@ -194,7 +195,7 @@ def collect_read_infos(
         ...     print(f"{info.read_id}: {len(info.sequence)} bases")
     """
     if require_tags is None:
-        require_tags = ["mv", "ns"]
+        require_tags = REQUIRED_BAM_TAGS
 
     read_infos = []
 
@@ -239,7 +240,7 @@ class BAMReader:
         """
         self.bam_path = bam_path
         self.min_mapq = min_mapq
-        self.require_tags = require_tags if require_tags is not None else ["mv", "ns"]
+        self.require_tags = require_tags if require_tags is not None else REQUIRED_BAM_TAGS
         self._bam = None
 
     def __enter__(self):

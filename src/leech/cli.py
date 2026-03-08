@@ -9,105 +9,18 @@ import logging
 from pathlib import Path
 
 import rich_click as click
-from rich.console import Console
-from rich.panel import Panel
 from rich.table import Table
 
-from leech.constants import (
-    DEFAULT_AUGMENT_JITTER,
-    DEFAULT_AUGMENT_SCALE_MAX,
-    DEFAULT_AUGMENT_SCALE_MIN,
-    DEFAULT_BATCH_SIZE,
-    DEFAULT_DEVICE,
-    DEFAULT_EPOCHS,
-    DEFAULT_FOCAL_GAMMA,
-    DEFAULT_LEARNING_RATE,
-    DEFAULT_LOSS_TYPE,
-    DEFAULT_MAX_GRAD_NORM,
-    DEFAULT_MIXED_PRECISION,
-    DEFAULT_SCHEDULER,
-    DEFAULT_SCHEDULER_FACTOR,
-    DEFAULT_SCHEDULER_PATIENCE,
-    DEFAULT_SEED,
-    DEFAULT_WARMUP_EPOCHS,
-    DEFAULT_WEIGHT_DECAY,
-)
+from leech.cli_config import configure_rich_click, console
+from leech.cli_options import MODEL_CHOICES, training_hyperparams
+from leech.constants import DEFAULT_DEVICE, DEFAULT_SEED
 from leech.logging_config import setup_logging
 
 # Setup logging for CLI
 logger = logging.getLogger("leech.cli")
-console = Console()
 
-# Configure rich-click for beautiful help display
-click.rich_click.USE_RICH_MARKUP = True
-click.rich_click.SHOW_ARGUMENTS = True
-click.rich_click.GROUP_ARGUMENTS_OPTIONS = True
-click.rich_click.MAX_WIDTH = 100
-
-# Error styling
-click.rich_click.STYLE_ERRORS_SUGGESTION = "magenta italic"
-click.rich_click.ERRORS_SUGGESTION = "Try running the '--help' flag for more information."
-click.rich_click.ERRORS_EPILOGUE = ""
-
-# Color styling for help elements
-click.rich_click.STYLE_OPTION = "bold cyan"
-click.rich_click.STYLE_ARGUMENT = "bold yellow"
-click.rich_click.STYLE_COMMAND = "bold green"
-click.rich_click.STYLE_SWITCH = "bold blue"
-click.rich_click.STYLE_METAVAR = "bold yellow"
-click.rich_click.STYLE_METAVAR_SEPARATOR = "dim"
-click.rich_click.STYLE_HEADER_TEXT = "bold magenta"
-click.rich_click.STYLE_EPILOG_TEXT = "dim"
-click.rich_click.STYLE_FOOTER_TEXT = "dim"
-click.rich_click.STYLE_USAGE = "bold yellow"
-click.rich_click.STYLE_USAGE_COMMAND = "bold"
-click.rich_click.STYLE_DEPRECATED = "red"
-click.rich_click.STYLE_HELPTEXT_FIRST_LINE = ""
-click.rich_click.STYLE_HELPTEXT = "dim"
-click.rich_click.STYLE_OPTION_HELP = ""
-click.rich_click.STYLE_OPTION_DEFAULT = "dim italic"
-click.rich_click.STYLE_REQUIRED_SHORT = "bold red"
-click.rich_click.STYLE_REQUIRED_LONG = "bold red"
-
-# Table and panel styling
-click.rich_click.STYLE_OPTIONS_TABLE_LEADING = 1
-click.rich_click.STYLE_OPTIONS_TABLE_PAD_EDGE = True
-click.rich_click.STYLE_OPTIONS_TABLE_PADDING = (0, 1)
-click.rich_click.STYLE_COMMANDS_TABLE_LEADING = 1
-click.rich_click.STYLE_COMMANDS_TABLE_PAD_EDGE = True
-click.rich_click.STYLE_COMMANDS_TABLE_PADDING = (0, 1)
-
-# Additional features
-click.rich_click.SHOW_METAVARS_COLUMN = True
-click.rich_click.APPEND_METAVARS_HELP = True
-click.rich_click.USE_CLICK_SHORT_HELP = True
-
-# ASCII Logo
-LOGO = """
-   ___
-  (O O)    LEECH
-  <VVV>    Learning Enhanced Electrical
-   |||     Classifiers from Hanopore signals
-   |||
-    V
-"""
-
-# Model choices for CLI
-MODEL_CHOICES = [
-    "ConvLSTMDwell",
-    "ConvLSTMBase",
-    "ConvLSTMRemora",
-    "ConvLSTMRemoraBase",
-    "TransformerDwell",
-    "ConvOnly",
-    "TCNDwell",
-    "ResNetDwell",
-]
-
-
-def display_logo():
-    """Display the ASCII logo in a panel."""
-    console.print(Panel(LOGO, border_style="cyan", padding=(0, 2)))
+# Apply rich-click styling
+configure_rich_click()
 
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
@@ -478,42 +391,7 @@ def merge(input_chunks, output_dir, train_split, val_split, seed, comparison_spe
     type=click.Path(path_type=Path),
     help="Output directory for model and logs",
 )
-@click.option(
-    "--epochs",
-    type=int,
-    default=DEFAULT_EPOCHS,
-    help="Number of training epochs",
-)
-@click.option(
-    "--batch-size",
-    type=int,
-    default=DEFAULT_BATCH_SIZE,
-    help="Batch size",
-)
-@click.option(
-    "--learning-rate",
-    type=float,
-    default=DEFAULT_LEARNING_RATE,
-    help="Learning rate",
-)
-@click.option(
-    "--device",
-    type=click.Choice(["cuda", "cpu"]),
-    default=DEFAULT_DEVICE,
-    help="Device for training",
-)
-@click.option(
-    "--seed",
-    type=int,
-    default=DEFAULT_SEED,
-    help="Random seed for reproducibility",
-)
-@click.option(
-    "--early-stopping",
-    type=int,
-    default=10,
-    help="Patience for early stopping: stop training if validation accuracy doesn't improve for N epochs (set to 0 to disable)",
-)
+@training_hyperparams
 @click.option(
     "--use-class-weights/--no-class-weights",
     default=True,
@@ -530,78 +408,6 @@ def merge(input_chunks, output_dir, train_split, val_split, seed, comparison_spe
     type=click.Path(exists=True, path_type=Path),
     default=None,
     help="Resume training from a checkpoint file (e.g., model_last.pt)",
-)
-@click.option(
-    "--weight-decay",
-    type=float,
-    default=DEFAULT_WEIGHT_DECAY,
-    help="L2 weight decay for optimizer (0 = disabled)",
-)
-@click.option(
-    "--max-grad-norm",
-    type=float,
-    default=DEFAULT_MAX_GRAD_NORM,
-    help="Max gradient norm for clipping (0 = disabled)",
-)
-@click.option(
-    "--scheduler",
-    type=click.Choice(["none", "reduce_on_plateau"]),
-    default=DEFAULT_SCHEDULER,
-    help="Learning rate scheduler",
-)
-@click.option(
-    "--scheduler-patience",
-    type=int,
-    default=DEFAULT_SCHEDULER_PATIENCE,
-    help="Epochs to wait before reducing LR (for reduce_on_plateau)",
-)
-@click.option(
-    "--scheduler-factor",
-    type=float,
-    default=DEFAULT_SCHEDULER_FACTOR,
-    help="Factor to reduce LR by (for reduce_on_plateau)",
-)
-@click.option(
-    "--warmup-epochs",
-    type=int,
-    default=DEFAULT_WARMUP_EPOCHS,
-    help="Number of LR warmup epochs (0 = disabled)",
-)
-@click.option(
-    "--loss",
-    "loss_type",
-    type=click.Choice(["bce", "focal", "cross_entropy"]),
-    default=DEFAULT_LOSS_TYPE,
-    help="Loss function type",
-)
-@click.option(
-    "--focal-gamma",
-    type=float,
-    default=DEFAULT_FOCAL_GAMMA,
-    help="Focal loss gamma parameter (only used with --loss focal)",
-)
-@click.option(
-    "--mixed-precision/--no-mixed-precision",
-    default=DEFAULT_MIXED_PRECISION,
-    help="Enable mixed precision training (CUDA only)",
-)
-@click.option(
-    "--augment-jitter",
-    type=float,
-    default=DEFAULT_AUGMENT_JITTER,
-    help="Signal jitter noise std dev for data augmentation (0 = disabled)",
-)
-@click.option(
-    "--augment-scale-min",
-    type=float,
-    default=DEFAULT_AUGMENT_SCALE_MIN,
-    help="Min random scale factor for signal augmentation",
-)
-@click.option(
-    "--augment-scale-max",
-    type=float,
-    default=DEFAULT_AUGMENT_SCALE_MAX,
-    help="Max random scale factor for signal augmentation",
 )
 @click.option(
     "--motif",
@@ -886,42 +692,7 @@ def bundle_info(bundle):
     default=5,
     help="K-mer context for sequence encoding",
 )
-@click.option(
-    "--epochs",
-    type=int,
-    default=DEFAULT_EPOCHS,
-    help="Number of training epochs",
-)
-@click.option(
-    "--batch-size",
-    type=int,
-    default=DEFAULT_BATCH_SIZE,
-    help="Batch size",
-)
-@click.option(
-    "--learning-rate",
-    type=float,
-    default=DEFAULT_LEARNING_RATE,
-    help="Learning rate",
-)
-@click.option(
-    "--device",
-    type=click.Choice(["cuda", "cpu"]),
-    default=DEFAULT_DEVICE,
-    help="Device for training",
-)
-@click.option(
-    "--seed",
-    type=int,
-    default=DEFAULT_SEED,
-    help="Random seed for reproducibility",
-)
-@click.option(
-    "--early-stopping",
-    type=int,
-    default=10,
-    help="Patience for early stopping: stop training if validation accuracy doesn't improve for N epochs (set to 0 to disable)",
-)
+@training_hyperparams
 @click.option(
     "--base-justify",
     type=click.Choice(["start", "center", "end"]),
@@ -939,78 +710,6 @@ def bundle_info(bundle):
     type=int,
     default=1,
     help="Number of grid points to run concurrently (default: 1, sequential). Each worker loads data independently.",
-)
-@click.option(
-    "--weight-decay",
-    type=float,
-    default=DEFAULT_WEIGHT_DECAY,
-    help="L2 weight decay for optimizer (0 = disabled)",
-)
-@click.option(
-    "--max-grad-norm",
-    type=float,
-    default=DEFAULT_MAX_GRAD_NORM,
-    help="Max gradient norm for clipping (0 = disabled)",
-)
-@click.option(
-    "--scheduler",
-    type=click.Choice(["none", "reduce_on_plateau"]),
-    default=DEFAULT_SCHEDULER,
-    help="Learning rate scheduler",
-)
-@click.option(
-    "--scheduler-patience",
-    type=int,
-    default=DEFAULT_SCHEDULER_PATIENCE,
-    help="Epochs to wait before reducing LR (for reduce_on_plateau)",
-)
-@click.option(
-    "--scheduler-factor",
-    type=float,
-    default=DEFAULT_SCHEDULER_FACTOR,
-    help="Factor to reduce LR by (for reduce_on_plateau)",
-)
-@click.option(
-    "--warmup-epochs",
-    type=int,
-    default=DEFAULT_WARMUP_EPOCHS,
-    help="Number of LR warmup epochs (0 = disabled)",
-)
-@click.option(
-    "--loss",
-    "loss_type",
-    type=click.Choice(["bce", "focal", "cross_entropy"]),
-    default=DEFAULT_LOSS_TYPE,
-    help="Loss function type",
-)
-@click.option(
-    "--focal-gamma",
-    type=float,
-    default=DEFAULT_FOCAL_GAMMA,
-    help="Focal loss gamma parameter (only used with --loss focal)",
-)
-@click.option(
-    "--mixed-precision/--no-mixed-precision",
-    default=DEFAULT_MIXED_PRECISION,
-    help="Enable mixed precision training (CUDA only)",
-)
-@click.option(
-    "--augment-jitter",
-    type=float,
-    default=DEFAULT_AUGMENT_JITTER,
-    help="Signal jitter noise std dev for data augmentation (0 = disabled)",
-)
-@click.option(
-    "--augment-scale-min",
-    type=float,
-    default=DEFAULT_AUGMENT_SCALE_MIN,
-    help="Min random scale factor for signal augmentation",
-)
-@click.option(
-    "--augment-scale-max",
-    type=float,
-    default=DEFAULT_AUGMENT_SCALE_MAX,
-    help="Max random scale factor for signal augmentation",
 )
 def optimize(
     train_data,
@@ -1314,6 +1013,20 @@ def ablation(model, test_data, output_dir, device, no_plot):
 # ============================================================================
 
 
+def _validate_predict_args(model, bundle_path, pair, run_all):
+    """Validate mutually exclusive predict command arguments."""
+    if model and bundle_path:
+        raise click.UsageError("--model and --bundle are mutually exclusive")
+    if not model and not bundle_path:
+        raise click.UsageError("Either --model or --bundle is required")
+    if bundle_path and not pair and not run_all:
+        raise click.UsageError("--bundle requires either --pair or --all")
+    if pair and run_all:
+        raise click.UsageError("--pair and --all are mutually exclusive")
+    if (pair or run_all) and not bundle_path:
+        raise click.UsageError("--pair and --all require --bundle")
+
+
 @cli.command()
 @click.option(
     "--model",
@@ -1443,17 +1156,7 @@ def predict(
     from leech.inference import run_bundle_inference, run_inference
     from leech.util import load_model_from_bundle
 
-    # Validate mutually exclusive options
-    if model and bundle_path:
-        raise click.UsageError("--model and --bundle are mutually exclusive")
-    if not model and not bundle_path:
-        raise click.UsageError("Either --model or --bundle is required")
-    if bundle_path and not pair and not run_all:
-        raise click.UsageError("--bundle requires either --pair or --all")
-    if pair and run_all:
-        raise click.UsageError("--pair and --all are mutually exclusive")
-    if (pair or run_all) and not bundle_path:
-        raise click.UsageError("--pair and --all require --bundle")
+    _validate_predict_args(model, bundle_path, pair, run_all)
 
     reverse_signal = not no_reverse_signal
     anchor = "reference" if reference_anchored else "basecall"
