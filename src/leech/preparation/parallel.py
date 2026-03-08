@@ -82,20 +82,21 @@ def _process_read_chunk_worker(
 
     all_chunks: list[dict[str, np.ndarray | str | int | None]] = []
 
-    # Open POD5 once for this worker
+    # Batch-read all POD5 signals in one traversal (avoids per-read seeks on large files)
+    read_info_by_id = {ri.read_id: ri for ri in read_infos}
+    pod5_cache: dict[str, tuple] = {}  # read_id -> (signal, metadata)
+
     with DatasetReader(config.pod5_path) as pod5_reader:
+        for read in pod5_reader.reads(list(read_info_by_id.keys())):
+            rid = str(read.read_id)
+            pod5_cache[rid] = (read.signal, _extract_pod5_metadata(read))
+
         for read_info in read_infos:
             try:
-                # Read signal from POD5
-                signal_found = False
-                for read in pod5_reader.reads([read_info.read_id]):
-                    raw_signal = read.signal
-                    pod5_metadata = _extract_pod5_metadata(read)
-                    signal_found = True
-                    break
-
-                if not signal_found:
+                cached = pod5_cache.get(read_info.read_id)
+                if cached is None:
                     continue
+                raw_signal, pod5_metadata = cached
 
                 # Build metadata
                 metadata = {

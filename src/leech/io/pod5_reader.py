@@ -130,6 +130,7 @@ class POD5Reader:
         self.pod5_path = pod5_path
         self.batch_size = batch_size
         self._reader = None
+        self._cache: dict[str, tuple[np.ndarray, dict]] = {}
 
     def __enter__(self):
         """Open POD5 file."""
@@ -140,10 +141,35 @@ class POD5Reader:
         """Close POD5 file."""
         # DatasetReader handles cleanup via its own context manager
         self._reader = None
+        self._cache.clear()
+
+    def preload(self, read_ids: list[str]) -> None:
+        """
+        Pre-load signals for a batch of reads into the internal cache.
+
+        Calls pod5 reader.reads() once with all IDs, avoiding per-read
+        traversal planning overhead. Subsequent get_signal() calls for
+        preloaded reads return from cache.
+
+        Args:
+            read_ids: List of read identifiers to preload
+        """
+        if self._reader is None:
+            raise RuntimeError("POD5Reader must be used as a context manager")
+
+        self._cache.clear()
+        for read in self._reader.reads(read_ids):
+            rid = str(read.read_id)
+            self._cache[rid] = (read.signal, _extract_pod5_metadata(read))
+
+        loaded = len(self._cache)
+        missing = len(read_ids) - loaded
+        if missing > 0:
+            logger.debug(f"Preloaded {loaded}/{len(read_ids)} reads ({missing} not found)")
 
     def get_signal(self, read_id: str) -> tuple[np.ndarray, dict]:
         """
-        Get signal for a single read.
+        Get signal for a single read. Uses cache if available.
 
         Args:
             read_id: Read identifier
@@ -157,6 +183,11 @@ class POD5Reader:
         """
         if self._reader is None:
             raise RuntimeError("POD5Reader must be used as a context manager")
+
+        # Check cache first (from preload)
+        cached = self._cache.get(read_id)
+        if cached is not None:
+            return cached
 
         for read in self._reader.reads([read_id]):
             signal = read.signal

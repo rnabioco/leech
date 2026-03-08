@@ -103,56 +103,129 @@ class LeechRead:
             ...     print(f"Signal length: {len(chunk['signal'])}")
             ...     print(f"Sequence: {chunk['sequence']}")
         """
-        # Check boundaries (must have room for kmer_context + dwell_margin)
-        min_ctx = kmer_context + dwell_margin
-        if base_idx < min_ctx or base_idx >= self.num_bases - min_ctx:
+        # Check boundaries: base_idx must be valid for seq_to_sig_map access
+        # (need base_idx and base_idx+1 for signal position lookup)
+        if base_idx < 0 or base_idx >= self.num_bases:
             return None
 
-        # Extract signal chunk
+        # Extract signal chunk (remora-compatible: pad with zeros at boundaries)
         if base_justify == "start":
-            focus_sig_pos = self.seq_to_sig_map[base_idx]
+            focus_sig_pos = int(self.seq_to_sig_map[base_idx])
         elif base_justify == "end":
-            focus_sig_pos = self.seq_to_sig_map[base_idx + 1]
+            focus_sig_pos = int(self.seq_to_sig_map[base_idx + 1])
         else:
             # Center on midpoint of focus base's signal span (Remora default)
-            focus_sig_pos = (self.seq_to_sig_map[base_idx] + self.seq_to_sig_map[base_idx + 1]) // 2
-        sig_start = max(0, focus_sig_pos - signal_context[0])
-        sig_end = min(self.num_samples, focus_sig_pos + signal_context[1])
+            focus_sig_pos = int(
+                (self.seq_to_sig_map[base_idx] + self.seq_to_sig_map[base_idx + 1]) // 2
+            )
+        chunk_len = signal_context[0] + signal_context[1]
+        sig_start = focus_sig_pos - signal_context[0]
+        sig_end = focus_sig_pos + signal_context[1]
 
-        if sig_end - sig_start < signal_context[0] + signal_context[1]:
-            return None  # Not enough signal context
+        # seq_to_sig_offset: shift applied to seq_to_sig_map to account for
+        # zero-padding when the chunk extends beyond signal boundaries
+        seq_to_sig_offset = 0
+        if sig_start >= 0 and sig_end <= self.num_samples:
+            signal_chunk = self.signal[sig_start:sig_end].copy()
+        else:
+            # Pad with zeros when signal extends beyond read (remora convention)
+            signal_chunk = np.zeros(chunk_len, dtype=np.float32)
+            fill_st = 0
+            fill_en = chunk_len
+            if sig_start < 0:
+                fill_st = -sig_start
+                seq_to_sig_offset = -sig_start
+                sig_start = 0
+            if sig_end > self.num_samples:
+                fill_en = self.num_samples - sig_start + seq_to_sig_offset
+                sig_end = self.num_samples
+            if fill_en > fill_st:
+                signal_chunk[fill_st:fill_en] = self.signal[sig_start:sig_end]
+        chunk_sig_len = chunk_len
 
-        signal_chunk = self.signal[sig_start:sig_end]
-
-        # Extract k-mer sequence context (unchanged by dwell_margin)
+        # Extract k-mer sequence context with safe boundary handling
         kmer_start = base_idx - kmer_context
         kmer_end = base_idx + kmer_context + 1
-        kmer_seq = self.sequence[kmer_start:kmer_end]
+        if kmer_start >= 0 and kmer_end <= self.num_bases:
+            kmer_seq = self.sequence[kmer_start:kmer_end]
+        else:
+            # Pad with N for out-of-bounds positions
+            parts = []
+            for i in range(kmer_start, kmer_end):
+                if 0 <= i < self.num_bases:
+                    parts.append(self.sequence[i])
+                else:
+                    parts.append("N")
+            kmer_seq = "".join(parts)
 
-        # Extract dwell features with wider window for offset tuning
+        # Extract dwell features with safe boundary handling
         dwell_start = base_idx - kmer_context - dwell_margin
         dwell_end = base_idx + kmer_context + 1 + dwell_margin
-        dwell_chunk = self.dwells[dwell_start:dwell_end]
+        dwell_width = dwell_end - dwell_start
+        safe_start = max(0, dwell_start)
+        safe_end = min(len(self.dwells), dwell_end)
+        if safe_start < safe_end:
+            raw_dwell = self.dwells[safe_start:safe_end]
+        else:
+            raw_dwell = np.array([], dtype=self.dwells.dtype)
+        if len(raw_dwell) < dwell_width:
+            dwell_chunk = np.zeros(dwell_width, dtype=self.dwells.dtype)
+            offset = safe_start - dwell_start
+            dwell_chunk[offset : offset + len(raw_dwell)] = raw_dwell
+        else:
+            dwell_chunk = raw_dwell
 
-        # Compile additional features (also with wider window)
+        # Compile additional features (also with wider window, safe boundary)
         features = []
         for _feat_name, feat_array in {**self.dwell_features, **self.signal_features}.items():
-            features.append(feat_array[dwell_start:dwell_end])
+            if safe_start < safe_end:
+                raw_feat = feat_array[safe_start:safe_end]
+            else:
+                raw_feat = np.array([], dtype=feat_array.dtype)
+            if len(raw_feat) < dwell_width:
+                padded = np.zeros(dwell_width, dtype=feat_array.dtype)
+                feat_offset = safe_start - dwell_start
+                padded[feat_offset : feat_offset + len(raw_feat)] = raw_feat
+                features.append(padded)
+            else:
+                features.append(raw_feat)
 
-        # Build chunk-relative seq_to_sig_map for signal_kmer encoding
-        chunk_sig_len = sig_end - sig_start
-        chunk_seq_to_sig = np.clip(
-            self.seq_to_sig_map[kmer_start : kmer_end + 1] - sig_start, 0, chunk_sig_len
+        # Build chunk-relative seq_to_sig_map for signal_kmer encoding.
+        # Use searchsorted (like remora) to find ALL bases overlapping the
+        # signal chunk, not just the fixed kmer_context bases. This ensures
+        # the kmer encoding covers the entire signal window.
+        seq_start = int(
+            np.searchsorted(self.seq_to_sig_map, sig_start, side="right") - 1
         )
+        seq_end = int(
+            np.searchsorted(self.seq_to_sig_map, sig_end, side="left")
+        )
+        seq_start = max(0, seq_start)
+        seq_end = min(self.num_bases, seq_end)
 
-        # Extended sequence for signal_kmer encoding (extra kmer context)
+        chunk_seq_to_sig = self.seq_to_sig_map[seq_start : seq_end + 1].copy()
+        # Shift mapping relative to the chunk (account for zero-padding offset)
+        chunk_seq_to_sig -= sig_start - seq_to_sig_offset
+        # Clamp ends to chunk boundaries (remora convention)
+        chunk_seq_to_sig[0] = 0
+        chunk_seq_to_sig[-1] = chunk_sig_len
+        chunk_seq_to_sig = chunk_seq_to_sig.astype(np.int64)
+
+        # Extended sequence for signal_kmer encoding: core bases + kmer context
         kmer_before, kmer_after = DEFAULT_SIGNAL_KMER_CONTEXT
-        ext_start = kmer_start - kmer_before
-        ext_end = kmer_end + kmer_after
+        ext_start = seq_start - kmer_before
+        ext_end = seq_end + kmer_after
         if ext_start >= 0 and ext_end <= self.num_bases:
             sequence_with_kmer_context = self.sequence[ext_start:ext_end]
         else:
-            sequence_with_kmer_context = None
+            # Pad with N for out-of-bounds positions
+            parts = []
+            for i in range(ext_start, ext_end):
+                if 0 <= i < self.num_bases:
+                    parts.append(self.sequence[i])
+                else:
+                    parts.append("N")
+            sequence_with_kmer_context = "".join(parts)
 
         return {
             "signal": signal_chunk,

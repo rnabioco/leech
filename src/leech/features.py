@@ -280,8 +280,8 @@ def normalize_signal(
         if cal_offset is None or cal_scale is None:
             raise ValueError("pa_scaling requires cal_offset and cal_scale from POD5 calibration")
 
-        # Convert DAC to pA
-        pa_signal = (raw_signal - cal_offset) * cal_scale
+        # Convert DAC to pA: pA = (raw + offset) * scale (pod5 convention)
+        pa_signal = (raw_signal + cal_offset) * cal_scale
         # Apply global normalization
         normalized = (pa_signal - pa_mean) / pa_stdev
         params = {
@@ -301,53 +301,58 @@ def make_ref_to_query_mapping(cigar_tuples: list[tuple[int, int]]) -> np.ndarray
     """
     Build reference-to-query coordinate mapping from CIGAR tuples.
 
-    Walks CIGAR operations to map each reference position to the
-    corresponding query (basecalled) position. For deletions (D/N),
-    the query position is interpolated (held at current query pos).
+    Uses remora's knot algorithm: places knots at both the start and end-1
+    of each match block, ensuring 1:1 mapping within match operations and
+    correct interpolation across indels.
 
     Args:
         cigar_tuples: List of (op, length) from pysam's cigartuples.
             Standard CIGAR ops: M=0, I=1, D=2, N=3, S=4, H=5, P=6, =7, X=8
 
     Returns:
-        Array of length ref_len+1 mapping reference coordinates to query coordinates.
-        ref_to_query[i] gives the query position corresponding to ref position i.
+        Float array of length ref_len+1 mapping reference coordinates to
+        query coordinates. ref_to_query[i] gives the (float) query position
+        corresponding to ref position i.
     """
-    # CIGAR ops that consume reference: M(0), D(2), N(3), =(7), X(8)
-    # CIGAR ops that consume query: M(0), I(1), S(4), =(7), X(8)
-    ref_to_query_knots: list[tuple[int, int]] = []
-    ref_pos = 0
-    query_pos = 0
+    # CIGAR op classification (matching remora's constants)
+    # Match ops: M(0), =(7), X(8)
+    MATCH_OPS = np.array([True, False, False, False, False, False, False, True, True])
+    # Ops consuming reference: M(0), D(2), N(3), =(7), X(8)
+    REF_OPS = np.array([True, False, True, True, False, False, False, True, True])
+    # Ops consuming query: M(0), I(1), S(4), =(7), X(8)
+    QUERY_OPS = np.array([True, True, False, False, True, False, False, True, True])
 
-    for op, length in cigar_tuples:
-        if op in (0, 7, 8):  # M, =, X: consume both ref and query
-            ref_to_query_knots.append((ref_pos, query_pos))
-            ref_pos += length
-            query_pos += length
-        elif op == 1:  # I: consume query only
-            query_pos += length
-        elif op in (2, 3):  # D, N: consume ref only
-            ref_to_query_knots.append((ref_pos, query_pos))
-            ref_pos += length
-        elif op == 4:  # S: soft clip, consume query only
-            query_pos += length
-        # H(5), P(6): consume neither
+    # Strip trailing non-match ops (remora convention)
+    cigar = list(cigar_tuples)
+    match_set = set(np.where(MATCH_OPS)[0])
+    while len(cigar) > 0 and cigar[-1][0] not in match_set:
+        cigar = cigar[:-1]
+    if len(cigar) == 0:
+        return np.array([0.0], dtype=np.float64)
 
-    # Final knot
-    ref_to_query_knots.append((ref_pos, query_pos))
+    ops, lens = map(np.array, zip(*cigar))
+    is_match = MATCH_OPS[ops]
+    match_counts = lens[is_match]
+    # offsets shape (2, n_match): row 0 = match_count, row 1 = 1
+    offsets = np.array([match_counts, np.ones_like(match_counts)])
 
-    if not ref_to_query_knots:
-        return np.array([0], dtype=np.int64)
+    # Build ref knots: cumulative ref-consuming lengths, then place
+    # start (end - count) and end-1 (end - 1) for each match block
+    ref_cumsum = np.cumsum(np.where(REF_OPS[ops], lens, 0))
+    ref_knots = np.concatenate(
+        [[0], (ref_cumsum[is_match] - offsets).T.flatten(), [ref_cumsum[-1]]]
+    )
 
-    # Interpolate to get ref_to_query for every ref position
-    ref_positions = np.array([k[0] for k in ref_to_query_knots])
-    query_positions = np.array([k[1] for k in ref_to_query_knots])
+    # Build query knots similarly
+    query_cumsum = np.cumsum(np.where(QUERY_OPS[ops], lens, 0))
+    query_knots = np.concatenate(
+        [[0], (query_cumsum[is_match] - offsets).T.flatten(), [query_cumsum[-1]]]
+    )
 
-    ref_len = ref_pos
-    all_ref = np.arange(ref_len + 1)
-    ref_to_query = np.interp(all_ref, ref_positions, query_positions)
+    # Interpolate to get mapping for every ref position
+    ref_to_query = np.interp(np.arange(ref_knots[-1] + 1), ref_knots, query_knots)
 
-    return np.floor(ref_to_query).astype(np.int64)
+    return ref_to_query
 
 
 def compute_ref_to_signal(
@@ -357,9 +362,9 @@ def compute_ref_to_signal(
     """
     Compute reference-to-signal mapping via ref->query->signal chain.
 
-    This is the full pipeline for reference-anchored mode:
-    1. Build ref->query mapping from CIGAR
-    2. Interpolate through query->signal mapping
+    This matches remora's compute_ref_to_signal + map_ref_to_signal:
+    1. Build ref->query mapping from CIGAR (float, preserving 1:1 in matches)
+    2. Interpolate float query positions through query->signal mapping
 
     Args:
         query_to_signal: Base-to-signal mapping for basecalled sequence,
@@ -372,14 +377,13 @@ def compute_ref_to_signal(
     """
     ref_to_query = make_ref_to_query_mapping(cigar_tuples)
 
-    # Clamp ref_to_query values to valid query indices
-    max_query = len(query_to_signal) - 1
-    ref_to_query_clamped = np.clip(ref_to_query, 0, max_query)
-
-    # Map through query_to_signal
-    query_indices = np.arange(len(query_to_signal))
+    # Map float query positions through query_to_signal (remora's map_ref_to_signal)
     ref_to_signal = np.floor(
-        np.interp(ref_to_query_clamped, query_indices, query_to_signal)
+        np.interp(
+            ref_to_query,
+            np.arange(query_to_signal.size),
+            query_to_signal,
+        )
     ).astype(np.int64)
 
     return ref_to_signal

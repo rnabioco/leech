@@ -16,7 +16,7 @@ Key functions:
 """
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -84,49 +84,45 @@ def extract_levels(
     sequence: str,
     kmer_to_level: dict[str, float],
     kmer_len: int,
+    center_idx: int | None = None,
 ) -> np.ndarray:
     """
     Extract expected signal levels for each position in a sequence.
 
-    For each position i, looks up the kmer centered at i and returns the
-    expected signal level. Positions near the edges use truncated kmers
-    if available, otherwise use the nearest valid kmer's level.
+    Matches remora's extract_levels: for each valid kmer window, looks up the
+    expected level and assigns it to the center position. Edge positions where
+    a full kmer cannot be formed are left at 0.
 
     Args:
         sequence: DNA/RNA sequence
         kmer_to_level: Mapping from kmer string to expected level
         kmer_len: Length of kmers in the table
+        center_idx: Position within the kmer that corresponds to the
+            "center" base (from model metadata). Defaults to kmer_len // 2.
 
     Returns:
-        Array of expected levels, length = len(sequence)
+        Array of expected levels, length = len(sequence).
+        Positions where a valid kmer cannot be formed are 0.
     """
-    if HAS_RUST:
-        return np.asarray(_rs_extract_levels(sequence, kmer_to_level, kmer_len))
+    if center_idx is None:
+        center_idx = kmer_len // 2
+
+    # Note: Rust extract_levels is NOT used here because the PyO3 HashMap
+    # conversion copies all 262k entries per call, making it ~230x slower
+    # than the optimized Python loop below.
 
     seq_len = len(sequence)
     levels = np.zeros(seq_len, dtype=np.float64)
-    half_k = kmer_len // 2
 
-    for i in range(seq_len):
-        start = i - half_k
-        end = i + half_k + 1
+    # Pre-process sequence once: uppercase and U->T replacement
+    seq_upper = sequence.upper().replace("U", "T")
 
-        if start < 0 or end > seq_len:
-            # Edge: use nearest valid kmer
-            clamped_start = max(0, min(start, seq_len - kmer_len))
-            clamped_end = clamped_start + kmer_len
-            kmer = sequence[clamped_start:clamped_end].upper()
-        else:
-            kmer = sequence[start:end].upper()
-
-        # RNA uses U instead of T
-        kmer = kmer.replace("U", "T")
-
+    # Iterate over all valid kmer positions (matching remora's Cython)
+    for pos in range(seq_len - kmer_len + 1):
+        kmer = seq_upper[pos : pos + kmer_len]
         level = kmer_to_level.get(kmer)
         if level is not None:
-            levels[i] = level
-        elif i > 0:
-            levels[i] = levels[i - 1]  # Fallback to previous
+            levels[pos + center_idx] = level
 
     return levels
 
@@ -181,6 +177,61 @@ def rough_rescale(
             return ((signal - b) / a).astype(signal.dtype)
 
     return signal
+
+
+def rough_rescale_quantile(
+    signal: np.ndarray,
+    expected_levels: np.ndarray,
+    seq_to_sig_map: np.ndarray,
+    clip_bases: int = 10,
+) -> np.ndarray:
+    """
+    Rough rescaling using quantile-based fitting (remora convention).
+
+    Uses center-of-base signal values and quantile fitting to match
+    expected kmer levels. This exactly replicates remora's rough_rescale_lstsq.
+
+    The transform is: new_signal = scale_est * signal + shift_est
+    where shift_est and scale_est are fitted to map quantiles of the
+    center-of-base signal to quantiles of expected levels.
+
+    Args:
+        signal: Normalized signal array
+        expected_levels: Expected levels per base from kmer table
+        seq_to_sig_map: Base-to-signal mapping
+        clip_bases: Number of bases to clip from each end
+
+    Returns:
+        Rescaled signal
+    """
+    # Use center-of-base signal values (remora convention)
+    centers = (seq_to_sig_map[:-1] + seq_to_sig_map[1:]) // 2
+    center_signal = signal[centers].astype(np.float64)
+    levels = expected_levels.copy()
+
+    # Clip bases from each end
+    if clip_bases > 0 and len(center_signal) > clip_bases * 2:
+        center_signal = center_signal[clip_bases:-clip_bases]
+        levels = levels[clip_bases:-clip_bases]
+
+    # Quantile-based fitting (remora convention)
+    quants = np.arange(0.05, 1, 0.05)
+    sig_qs = np.quantile(center_signal, quants)
+    level_qs = np.quantile(levels, quants)
+
+    # Fit: level = shift_est + scale_est * norm_signal
+    coeffs = np.linalg.lstsq(
+        np.column_stack([np.ones_like(sig_qs), sig_qs]),
+        level_qs,
+        rcond=None,
+    )[0]
+    shift_est, scale_est = coeffs
+
+    if abs(scale_est) < 1e-10:
+        return signal
+
+    # Apply: new_signal = scale_est * signal + shift_est
+    return (scale_est * signal + shift_est).astype(signal.dtype)
 
 
 def compute_sig_band(
@@ -327,17 +378,34 @@ class SigMapRefiner:
     """
     Signal map refiner using expected kmer signal levels.
 
+    Matches remora's SigMapRefiner architecture:
+    - rough_rescale updates normalization (shift/scale) to match kmer levels
+    - refine_sig_map (banded DP) refines base boundaries (only if scale_iters >= 0)
+
     Attributes:
         kmer_to_level: Mapping from kmer string to expected signal level
         kmer_len: Length of kmers in the table
         half_bandwidth: Half-width of the DP band in signal samples
         do_rough_rescale: Whether to rough-rescale signal before refinement
+        scale_iters: Number of rescaling iterations during refinement.
+            -1 = no banded DP (rough rescale only).
+            0 = one round of banded DP without rescaling.
+            >0 = N rounds of banded DP with rescaling between rounds.
+        center_idx: Position within kmer that is the "center" base.
+            From model metadata (remora's refine_kmer_center_idx).
+            Defaults to kmer_len // 2.
     """
 
     kmer_to_level: dict[str, float]
     kmer_len: int
     half_bandwidth: int = 300
     do_rough_rescale: bool = True
+    scale_iters: int = -1
+    center_idx: int = -1
+
+    def __post_init__(self):
+        if self.center_idx < 0:
+            self.center_idx = self.kmer_len // 2
 
     @classmethod
     def from_table(
@@ -345,6 +413,8 @@ class SigMapRefiner:
         table_path: Path,
         half_bandwidth: int = 300,
         do_rough_rescale: bool = True,
+        scale_iters: int = -1,
+        center_idx: int = -1,
     ) -> "SigMapRefiner":
         """Create refiner from a kmer level table file."""
         kmer_to_level, kmer_len = load_kmer_table(table_path)
@@ -353,6 +423,8 @@ class SigMapRefiner:
             kmer_len=kmer_len,
             half_bandwidth=half_bandwidth,
             do_rough_rescale=do_rough_rescale,
+            scale_iters=scale_iters,
+            center_idx=center_idx if center_idx >= 0 else kmer_len // 2,
         )
 
     def refine(
@@ -360,9 +432,13 @@ class SigMapRefiner:
         signal: np.ndarray,
         sequence: str,
         seq_to_sig_map: np.ndarray,
-    ) -> np.ndarray:
+    ) -> tuple[np.ndarray, np.ndarray]:
         """
-        Refine signal-to-sequence mapping using expected kmer levels.
+        Refine signal normalization and mapping using expected kmer levels.
+
+        Matches remora's two-step refinement:
+        1. Rough rescale: update signal normalization to match kmer levels
+        2. Banded DP: refine base boundaries (only if scale_iters >= 0)
 
         Args:
             signal: Normalized signal array
@@ -370,25 +446,32 @@ class SigMapRefiner:
             seq_to_sig_map: Initial base-to-signal mapping (from move table)
 
         Returns:
-            Refined seq_to_sig_map
+            Tuple of (rescaled_signal, refined_seq_to_sig_map).
+            If scale_iters == -1, mapping is unchanged (only normalization updated).
         """
-        sig_len = len(signal)
-        expected = extract_levels(sequence, self.kmer_to_level, self.kmer_len)
+        expected = extract_levels(
+            sequence, self.kmer_to_level, self.kmer_len, self.center_idx
+        )
 
-        work_signal = signal.astype(np.float64)
+        # Step 1: Rough rescale normalization (remora convention)
         if self.do_rough_rescale:
-            work_signal = rough_rescale(work_signal, expected, seq_to_sig_map).astype(np.float64)
+            signal = rough_rescale_quantile(signal, expected, seq_to_sig_map)
 
-        band_starts, band_ends = compute_sig_band(seq_to_sig_map, self.half_bandwidth)
+        # Step 2: Banded DP refinement (only if scale_iters >= 0)
+        if self.scale_iters >= 0:
+            sig_len = len(signal)
+            work_signal = signal.astype(np.float64)
+            band_starts, band_ends = compute_sig_band(seq_to_sig_map, self.half_bandwidth)
+            refined = seq_banded_dp(work_signal, expected, band_starts, band_ends, sig_len)
 
-        refined = seq_banded_dp(work_signal, expected, band_starts, band_ends, sig_len)
+            # Validate: boundaries must be monotonically increasing
+            for i in range(1, len(refined)):
+                if refined[i] <= refined[i - 1]:
+                    logger.debug(
+                        f"Non-monotonic refinement at position {i}, falling back to original mapping"
+                    )
+                    return signal, seq_to_sig_map
 
-        # Validate: boundaries must be monotonically increasing
-        for i in range(1, len(refined)):
-            if refined[i] <= refined[i - 1]:
-                logger.debug(
-                    f"Non-monotonic refinement at position {i}, falling back to original mapping"
-                )
-                return seq_to_sig_map
+            return signal, refined
 
-        return refined
+        return signal, seq_to_sig_map
