@@ -15,10 +15,13 @@ This project uses [uv](https://docs.astral.sh/uv/) for fast, reliable Python pac
 # Install uv if you don't have it
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Install all dependencies (from project root)
+# CLI only (default — no snakemake)
 uv sync
 
-# Install with dev tools
+# With pipeline/Snakemake support
+uv sync --extra pipeline
+
+# All extras (dev, notebook, pipeline)
 uv sync --all-extras
 ```
 

@@ -30,10 +30,6 @@ dependencies = [
   "rich>=13.0.0",
   "rich-click>=1.7.0",
   "scikit-learn>=1.5.0",
-  "snakefmt>=0.10.3",
-  "snakemake>=9.0.0",
-  "snakemake-executor-plugin-lsf>=0.2.5",
-  "snakemake-executor-plugin-slurm>=1.9.2",
   "torch>=2.5.0",
 ]
 
@@ -47,6 +43,12 @@ dev = [
   "ruff>=0.3.0",  # Modern linter/formatter (replaces black + flake8)
   "ty>=0.0.1a10",
   "nbqa>=1.7.0",  # Quality assurance for Jupyter notebooks
+]
+pipeline = [
+  "snakefmt>=0.10.3",
+  "snakemake>=9.0.0",
+  "snakemake-executor-plugin-lsf>=0.2.5",
+  "snakemake-executor-plugin-slurm>=1.9.2",
 ]
 notebook = [
   "polars>=1.0.0",

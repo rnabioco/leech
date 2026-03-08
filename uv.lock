@@ -925,10 +925,6 @@ dependencies = [
     { name = "rich" },
     { name = "rich-click" },
     { name = "scikit-learn" },
-    { name = "snakefmt" },
-    { name = "snakemake" },
-    { name = "snakemake-executor-plugin-lsf" },
-    { name = "snakemake-executor-plugin-slurm" },
     { name = "torch" },
 ]
 
@@ -947,6 +943,12 @@ notebook = [
     { name = "seaborn" },
     { name = "statsmodels" },
     { name = "tabulate" },
+]
+pipeline = [
+    { name = "snakefmt" },
+    { name = "snakemake" },
+    { name = "snakemake-executor-plugin-lsf" },
+    { name = "snakemake-executor-plugin-slurm" },
 ]
 
 [package.dev-dependencies]
@@ -980,16 +982,16 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.3.0" },
     { name = "scikit-learn", specifier = ">=1.5.0" },
     { name = "seaborn", marker = "extra == 'notebook'", specifier = ">=0.13.0" },
-    { name = "snakefmt", specifier = ">=0.10.3" },
-    { name = "snakemake", specifier = ">=9.0.0" },
-    { name = "snakemake-executor-plugin-lsf", specifier = ">=0.2.5" },
-    { name = "snakemake-executor-plugin-slurm", specifier = ">=1.9.2" },
+    { name = "snakefmt", marker = "extra == 'pipeline'", specifier = ">=0.10.3" },
+    { name = "snakemake", marker = "extra == 'pipeline'", specifier = ">=9.0.0" },
+    { name = "snakemake-executor-plugin-lsf", marker = "extra == 'pipeline'", specifier = ">=0.2.5" },
+    { name = "snakemake-executor-plugin-slurm", marker = "extra == 'pipeline'", specifier = ">=1.9.2" },
     { name = "statsmodels", marker = "extra == 'notebook'", specifier = ">=0.14.0" },
     { name = "tabulate", marker = "extra == 'notebook'", specifier = ">=0.9.0" },
     { name = "torch", specifier = ">=2.5.0" },
     { name = "ty", marker = "extra == 'dev'", specifier = ">=0.0.1a10" },
 ]
-provides-extras = ["dev", "notebook"]
+provides-extras = ["dev", "pipeline", "notebook"]
 
 [package.metadata.requires-dev]
 dev = [
