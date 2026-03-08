@@ -23,59 +23,77 @@ class TestMakeRefToQueryMapping:
         np.testing.assert_array_equal(mapping, expected)
 
     def test_insertion(self):
-        """Test CIGAR with insertion."""
+        """Test CIGAR with insertion (remora knot algorithm)."""
         # 5M 2I 5M: 10 ref bases, 12 query bases
         cigar = [(0, 5), (1, 2), (0, 5)]
         mapping = make_ref_to_query_mapping(cigar)
-        # Knots: (0,0), then after 5M -> (5,5), then 2I -> query jumps to 7,
-        # then (5,7) and after 5M -> (10,12)
-        # Interpolation between (0,0)-(5,5) and (5,7)-(10,12)
+        # Remora knot algorithm: knots at start and end-1 of each match block
+        # Match1: ref 0-4, query 0-4 → knots (0,0) and (4,4)
+        # Ins: query 5-6 (not in ref)
+        # Match2: ref 5-9, query 7-11 → knots (5,7) and (9,11)
+        # ref[4] = query[4] (end-1 of first match)
+        # ref[5] = query[7] (start of second match, insertion jumped)
         assert len(mapping) == 11  # 10 ref positions + 1
         assert mapping[0] == 0
-        # ref positions 0-4 map linearly between (0,0) and (5,5)
-        assert mapping[5] == 7  # After insertion, first knot of second M block
+        assert mapping[4] == 4  # End-1 of first match block
+        assert mapping[5] == 7  # Start of second match (after insertion)
         assert mapping[10] == 12
 
     def test_deletion(self):
-        """Test CIGAR with deletion."""
+        """Test CIGAR with deletion (remora knot algorithm)."""
         # 5M 3D 5M: 13 ref bases, 10 query bases
         cigar = [(0, 5), (2, 3), (0, 5)]
         mapping = make_ref_to_query_mapping(cigar)
-        # ref[0..4] -> query[0..4]
-        # deletion: ref[5..7] -> query stays at 5
-        # ref[8..12] -> query[5..9]
+        # Remora knot algorithm: knots at start and end-1 of each match block
+        # Match1: ref 0-4, query 0-4 → knots (0,0) and (4,4)
+        # Del: ref 5-7
+        # Match2: ref 8-12, query 5-9 → knots (8,5) and (12,9)
+        # Deletion region ref[5-7] interpolates between query 4 and 5
         assert len(mapping) == 14  # 13 ref positions + 1
         assert mapping[0] == 0
         assert mapping[4] == 4
-        assert mapping[5] == 5  # Start of deletion
-        assert mapping[7] == 5  # Still at query 5 during deletion
-        assert mapping[8] == 5  # End of deletion
+        # Deletion region: interpolates between (4,4) and (8,5)
+        np.testing.assert_allclose(mapping[5], 4.25, atol=0.01)
+        np.testing.assert_allclose(mapping[6], 4.5, atol=0.01)
+        np.testing.assert_allclose(mapping[7], 4.75, atol=0.01)
+        assert mapping[8] == 5  # Start of second match block
         assert mapping[13] == 10
 
     def test_soft_clip(self):
-        """Test CIGAR with soft clips."""
+        """Test CIGAR with soft clips (remora knot algorithm)."""
         # 3S 5M 2S: 5 ref bases, 10 query bases
         cigar = [(4, 3), (0, 5), (4, 2)]
         mapping = make_ref_to_query_mapping(cigar)
-        # Soft clip consumes query only: 3S moves query to 3,
-        # then 5M: ref 0-4 -> query 3-7, then 2S moves query to 10
-        # Knots: (0,3), (5,8), final knot (5,10) from 2S
-        # So interpolation: ref[0..5] -> query[3..10]
+        # Remora strips trailing non-match ops (2S stripped)
+        # Remaining: 3S 5M
+        # Soft clip 3S: query advances to 3
+        # Match 5M: ref 0-4, query 3-7 → knots (0,3),(4,7)
+        # Final ref_knots[-1] = 5
         assert len(mapping) == 6  # 5 ref positions + 1
         assert mapping[0] == 3  # After 3S
+        assert mapping[4] == 7
+        assert mapping[5] == 8  # Final position
 
     def test_complex_cigar(self):
-        """Test complex CIGAR with mix of operations."""
+        """Test complex CIGAR with mix of operations (remora knot algorithm)."""
         # 3M 1I 2M 1D 4M
         cigar = [(0, 3), (1, 1), (0, 2), (2, 1), (0, 4)]
         mapping = make_ref_to_query_mapping(cigar)
         # ref_len = 3 + 2 + 1 + 4 = 10
         # query_len = 3 + 1 + 2 + 4 = 10
+        # Match1(3M): ref 0-2, query 0-2 → knots (0,0),(2,2)
+        # Ins(1I): query 3
+        # Match2(2M): ref 3-4, query 4-5 → knots (3,4),(4,5)
+        # Del(1D): ref 5
+        # Match3(4M): ref 6-9, query 6-9 → knots (6,6),(9,9)
         assert len(mapping) == 11
         assert mapping[0] == 0
-        assert mapping[3] == 4  # After 3M + 1I
-        assert mapping[5] == 6  # After 3M + 1I + 2M
-        assert mapping[6] == 6  # During deletion
+        assert mapping[2] == 2  # End-1 of first match
+        assert mapping[3] == 4  # Start of second match (after 1I)
+        assert mapping[4] == 5  # End-1 of second match
+        # Deletion at ref 5: interpolates between (4,5) and (6,6)
+        np.testing.assert_allclose(mapping[5], 5.5, atol=0.01)
+        assert mapping[6] == 6  # Start of third match
         assert mapping[10] == 10
 
     def test_empty_cigar(self):
@@ -143,8 +161,8 @@ class TestPaScalingNormalization:
     def test_pa_scaling_basic(self):
         """Test basic pa_scaling normalization."""
         raw = np.array([100.0, 200.0, 300.0, 400.0], dtype=np.float32)
-        # Calibration: pA = (DAC - offset) * scale
-        cal_offset = 50.0
+        # POD5 calibration: pA = (DAC + offset) * scale
+        cal_offset = -50.0
         cal_scale = 2.0
         # pA = (100-50)*2=100, (200-50)*2=300, (300-50)*2=500, (400-50)*2=700
         # norm = (pA - mean) / stdev

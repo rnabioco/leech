@@ -46,6 +46,7 @@ def build_leech_read(
     cal_scale: float | None = None,
     refine_signal_map: bool = False,
     signal_refiner: "SigMapRefiner | None" = None,
+    compute_features: bool = True,
 ) -> "LeechRead":
     """
     Build a LeechRead from raw components.
@@ -73,8 +74,22 @@ def build_leech_read(
     Returns:
         LeechRead with all features computed
     """
+    # Trim signal to basecalled region [ts:ns], then optionally reverse.
+    # This matches remora's trim_signal + adjust_move_table convention:
+    #   signal = raw[ts:ns][::-1]
+    #   mapping = sig_len - mapping[::-1]  (reversed and re-indexed)
+    ts = move_table.trim_offset
+    ns = move_table.num_samples
+    raw_signal = raw_signal[ts:ns]
+
+    query_to_sig_map = move_table.to_seq_to_sig_map()
+    # Shift mapping so it's relative to the trimmed signal [0, ns-ts]
+    query_to_sig_map = query_to_sig_map - ts
+
     if reverse_signal:
+        sig_len = len(raw_signal)
         raw_signal = raw_signal[::-1]
+        query_to_sig_map = sig_len - query_to_sig_map[::-1]
 
     norm_signal, norm_params = normalize_signal(
         raw_signal,
@@ -84,7 +99,6 @@ def build_leech_read(
         cal_offset=cal_offset,
         cal_scale=cal_scale,
     )
-    query_to_sig_map = move_table.to_seq_to_sig_map()
 
     # Determine which sequence and mapping to use
     if anchor == "reference" and reference_sequence is not None and cigar_tuples is not None:
@@ -108,11 +122,18 @@ def build_leech_read(
         from leech.signal_refine import SigMapRefiner
 
         if isinstance(signal_refiner, SigMapRefiner):
-            seq_to_sig_map = signal_refiner.refine(norm_signal, use_sequence, seq_to_sig_map)
+            norm_signal, seq_to_sig_map = signal_refiner.refine(
+                norm_signal, use_sequence, seq_to_sig_map
+            )
 
     dwells = np.diff(seq_to_sig_map)
-    dwell_feats = compute_dwell_features(dwells)
-    signal_feats = compute_signal_features(norm_signal, seq_to_sig_map)
+
+    if compute_features:
+        dwell_feats = compute_dwell_features(dwells)
+        signal_feats = compute_signal_features(norm_signal, seq_to_sig_map)
+    else:
+        dwell_feats = {}
+        signal_feats = {}
 
     meta = {"normalization": norm_params}
     if metadata:
@@ -167,6 +188,7 @@ def iter_bam_with_pod5(
     pa_stdev: float | None = None,
     refine_signal_map: bool = False,
     signal_refiner: "SigMapRefiner | None" = None,
+    compute_features: bool = True,
 ) -> Iterator[LeechRead]:
     """
     Iterate over aligned reads, loading signal from POD5.
@@ -195,8 +217,23 @@ def iter_bam_with_pod5(
     if require_tags is None:
         require_tags = ["mv", "ns"]
 
+    # First pass: collect all BAM alignments to get read IDs for batched POD5 access
+    alignments: list = []
+    read_ids: list[str] = []
+    for aln in iter_bam_alignments(bam_path, min_mapq=min_mapq, require_tags=require_tags):
+        rid = aln.query_name
+        if rid is not None and aln.query_sequence is not None:
+            alignments.append(aln)
+            read_ids.append(rid)
+
+    if not alignments:
+        return
+
+    # Batch-preload all POD5 signals (single traversal plan vs per-read)
     with POD5Reader(pod5_path) as pod5_reader:
-        for aln in iter_bam_alignments(bam_path, min_mapq=min_mapq, require_tags=require_tags):
+        pod5_reader.preload(read_ids)
+
+        for aln in alignments:
             try:
                 move_table = extract_move_table(aln)
                 read_id = aln.query_name
@@ -247,6 +284,7 @@ def iter_bam_with_pod5(
                     cal_scale=cal_scale,
                     refine_signal_map=refine_signal_map,
                     signal_refiner=signal_refiner,
+                    compute_features=compute_features,
                 )
 
             except Exception as e:

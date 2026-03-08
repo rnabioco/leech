@@ -40,6 +40,10 @@ def _make_mock_alignment(read_id="test_read", num_bases=20, stride=5):
 
     Returns an alignment where every base gets exactly `stride` signal samples,
     with trim_offset=0, so signal boundaries are trivially predictable.
+
+    The move array has num_bases * stride entries (one move per stride positions).
+    Each entry corresponds to `stride` raw signal samples, so the total signal
+    length is num_bases * stride * stride = num_bases * stride^2.
     """
     aln = MagicMock()
     aln.query_name = read_id
@@ -61,7 +65,11 @@ def _make_mock_alignment(read_id="test_read", num_bases=20, stride=5):
         moves.extend([0] * (stride - 1))
     mv_tag = np.array([stride] + moves, dtype=np.int8)
 
-    num_samples = num_bases * stride
+    # num_samples = last move position * stride + stride = total signal length
+    # Move positions are at indices [0, stride, 2*stride, ...] in the array.
+    # Signal position = move_array_index * stride. The last base starts at
+    # (num_bases-1)*stride * stride and ends at num_bases*stride*stride.
+    num_samples = len(moves) * stride
 
     def has_tag(tag):
         return tag in ("mv", "ns")
@@ -120,7 +128,7 @@ class TestIterBamWithPod5ReverseSignal:
 
     def test_reverse_signal_true_reverses(self):
         """With reverse_signal=True, the normalized signal should come from reversed raw."""
-        raw_signal = _make_asymmetric_signal(1000)
+        raw_signal = _make_asymmetric_signal(10000)
         read, raw = self._run_iter(reverse_signal=True, raw_signal=raw_signal)
 
         # The signal stored in the LeechRead is normalized, so we can't compare
@@ -144,7 +152,7 @@ class TestIterBamWithPod5ReverseSignal:
 
     def test_reverse_signal_false_preserves(self):
         """With reverse_signal=False, the normalized signal should match original raw order."""
-        raw_signal = _make_asymmetric_signal(1000)
+        raw_signal = _make_asymmetric_signal(10000)
         read, raw = self._run_iter(reverse_signal=False, raw_signal=raw_signal)
 
         corr_original = np.corrcoef(read.signal, raw)[0, 1]

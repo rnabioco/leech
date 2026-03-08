@@ -1385,6 +1385,12 @@ def ablation(model, test_data, output_dir, device, no_plot):
     help="Do NOT reverse the raw signal. By default, signal is reversed for direct RNA sequencing (POD5 stores 3'→5', basecaller expects 5'→3'). Use this flag for DNA data.",
 )
 @click.option(
+    "--reference-anchored",
+    is_flag=True,
+    default=False,
+    help="Use reference-anchored mode: search motif in reference sequence and use ref->signal mapping via CIGAR. Matches Remora's --reference-anchored behavior.",
+)
+@click.option(
     "--motif",
     type=str,
     default=None,
@@ -1405,14 +1411,14 @@ def ablation(model, test_data, output_dir, device, no_plot):
 @click.option(
     "--min-mapq",
     type=int,
-    default=10,
-    help="Minimum mapping quality (default: 10)",
+    default=0,
+    help="Minimum mapping quality (default: 0)",
 )
 @click.option(
     "--workers",
     type=int,
     default=0,
-    help="Parallel chunk extraction workers (0=sequential, default: 0)",
+    help="Parallel chunk extraction workers (0=sequential). Only useful with GPU inference; CPU-only is faster with 0.",
 )
 def predict(
     model,
@@ -1426,6 +1432,7 @@ def predict(
     device,
     base_justify,
     no_reverse_signal,
+    reference_anchored,
     motif,
     motif_offset,
     batch_size,
@@ -1449,6 +1456,7 @@ def predict(
         raise click.UsageError("--pair and --all require --bundle")
 
     reverse_signal = not no_reverse_signal
+    anchor = "reference" if reference_anchored else "basecall"
 
     if bundle_path and run_all:
         # Multi-model inference: run all models in bundle
@@ -1497,6 +1505,7 @@ def predict(
             base_justify=base_justify,
             reverse_signal=reverse_signal,
             num_workers=workers,
+            anchor=anchor,
         )
 
     console.print("[bold green]Inference complete![/bold green]")

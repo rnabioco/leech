@@ -128,8 +128,8 @@ class TestGetChunkDwellMargin:
         expected_dwells = np.arange(expected_start, expected_end, dtype=np.float32)
         np.testing.assert_array_equal(chunk["dwell"], expected_dwells)
 
-    def test_boundary_rejection_with_margin(self, read_with_known_dwells):
-        """Bases near edges are rejected when margin requires more room."""
+    def test_boundary_with_margin_zero_pads(self, read_with_known_dwells):
+        """Bases near edges with dwell_margin get zero-padded dwells."""
         read = read_with_known_dwells
         kmer_context = 5
 
@@ -137,9 +137,11 @@ class TestGetChunkDwellMargin:
         chunk = read.get_chunk(base_idx=5, kmer_context=kmer_context, dwell_margin=0)
         assert chunk is not None
 
-        # base_idx=5 fails with margin=1 (needs 6 bases on left, only 5 available)
+        # base_idx=5 with margin=1: needs dwell_start=-1, gets zero-padded
         chunk = read.get_chunk(base_idx=5, kmer_context=kmer_context, dwell_margin=1)
-        assert chunk is None
+        assert chunk is not None
+        # First element should be zero (padded), rest are real values
+        assert chunk["dwell"][0] == 0.0
 
 
 class TestDatasetDwellOffset:

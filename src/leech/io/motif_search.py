@@ -150,11 +150,12 @@ def find_motif_in_sequence(
         end = len(sequence)
 
     positions = []
-    search_region = sequence[start:end]
-    pos = search_region.find(motif)
+    search_region = sequence[start:end].upper()
+    motif_upper = motif.upper()
+    pos = search_region.find(motif_upper)
     while pos != -1:
         positions.append(start + pos)
-        pos = search_region.find(motif, pos + 1)
+        pos = search_region.find(motif_upper, pos + 1)
 
     return positions
 

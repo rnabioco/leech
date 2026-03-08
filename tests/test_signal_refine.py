@@ -164,14 +164,14 @@ class TestSigMapRefiner:
         signal = np.random.randn(100).astype(np.float32)
         seq_to_sig = np.linspace(0, 100, len(sequence) + 1).astype(np.int64)
 
-        refined = refiner.refine(signal, sequence, seq_to_sig)
+        refined_signal, refined_map = refiner.refine(signal, sequence, seq_to_sig)
 
-        assert len(refined) == len(seq_to_sig)
+        assert len(refined_map) == len(seq_to_sig)
         # Should be monotonically non-decreasing (or fall back to original)
-        is_monotonic = all(refined[i] <= refined[i + 1] for i in range(len(refined) - 1))
+        is_monotonic = all(refined_map[i] <= refined_map[i + 1] for i in range(len(refined_map) - 1))
         if not is_monotonic:
             # Fallback case: should equal original
-            np.testing.assert_array_equal(refined, seq_to_sig)
+            np.testing.assert_array_equal(refined_map, seq_to_sig)
 
     def test_refine_fallback(self):
         """Test that refinement falls back to original on invalid result."""
@@ -188,5 +188,5 @@ class TestSigMapRefiner:
         sequence = "AAA"
         seq_to_sig = np.array([0, 3, 7, 10], dtype=np.int64)
 
-        refined = refiner.refine(signal, sequence, seq_to_sig)
-        assert len(refined) == len(seq_to_sig)
+        refined_signal, refined_map = refiner.refine(signal, sequence, seq_to_sig)
+        assert len(refined_map) == len(seq_to_sig)

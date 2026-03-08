@@ -148,57 +148,56 @@ pub fn seq_banded_dp<'py>(
 
 /// Extract expected signal levels for each position in a sequence.
 ///
-/// For each position i, looks up the kmer centered at i and returns the
-/// expected signal level. Positions near the edges use truncated kmers
-/// if available, otherwise use the nearest valid kmer's level.
+/// Matches remora's extract_levels: for each valid kmer window starting at pos,
+/// looks up the expected level and assigns it to position pos + center_idx.
+/// Edge positions where a full kmer cannot be formed are left at 0.
 ///
 /// Args:
 ///     sequence: DNA/RNA sequence
 ///     kmer_to_level: Mapping from kmer string to expected level
 ///     kmer_len: Length of kmers in the table
+///     center_idx: Position within the kmer that is the "center" base.
+///                 Use -1 for kmer_len / 2 (default).
 ///
 /// Returns:
 ///     Array of expected levels, length = len(sequence)
 #[pyfunction]
+#[pyo3(signature = (sequence, kmer_to_level, kmer_len, center_idx = -1))]
 pub fn extract_levels<'py>(
     py: Python<'py>,
     sequence: &str,
     kmer_to_level: HashMap<String, f64>,
     kmer_len: usize,
+    center_idx: i32,
 ) -> PyResult<Bound<'py, PyArray1<f64>>> {
     let seq_bytes = sequence.as_bytes();
     let seq_len = seq_bytes.len();
     let mut levels = Array1::<f64>::zeros(seq_len);
-    let half_k = kmer_len / 2;
+    let cidx = if center_idx < 0 {
+        kmer_len / 2
+    } else {
+        center_idx as usize
+    };
 
-    for i in 0..seq_len {
-        let start = i as isize - half_k as isize;
-        let end = i + half_k + 1;
+    if seq_len < kmer_len {
+        return Ok(levels.into_pyarray(py));
+    }
 
-        let (kmer_start, kmer_end) = if start < 0 || end > seq_len {
-            let clamped_start = (start.max(0) as usize).min(seq_len.saturating_sub(kmer_len));
-            (clamped_start, clamped_start + kmer_len)
-        } else {
-            (start as usize, end)
-        };
+    // Pre-process sequence: uppercase and U->T
+    let seq_upper: Vec<u8> = seq_bytes
+        .iter()
+        .map(|&b| {
+            let c = b.to_ascii_uppercase();
+            if c == b'U' { b'T' } else { c }
+        })
+        .collect();
 
-        // Build kmer string, replacing U with T and uppercasing
-        let kmer: String = seq_bytes[kmer_start..kmer_end]
-            .iter()
-            .map(|&b| {
-                let c = (b as char).to_ascii_uppercase();
-                if c == 'U' {
-                    'T'
-                } else {
-                    c
-                }
-            })
-            .collect();
-
-        if let Some(&level) = kmer_to_level.get(&kmer) {
-            levels[i] = level;
-        } else if i > 0 {
-            levels[i] = levels[i - 1];
+    // Iterate over all valid kmer positions (matching remora's Cython)
+    for pos in 0..=(seq_len - kmer_len) {
+        let kmer = std::str::from_utf8(&seq_upper[pos..pos + kmer_len])
+            .unwrap_or("");
+        if let Some(&level) = kmer_to_level.get(kmer) {
+            levels[pos + cidx] = level;
         }
     }
 

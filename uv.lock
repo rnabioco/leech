@@ -2,6 +2,12 @@ version = 1
 revision = 3
 requires-python = ">=3.12"
 
+[manifest]
+members = [
+    "leech",
+    "leech-core",
+]
+
 [[package]]
 name = "appdirs"
 version = "1.4.4"
@@ -911,6 +917,7 @@ version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
+    { name = "leech-core" },
     { name = "numpy" },
     { name = "nvitop" },
     { name = "pod5" },
@@ -958,6 +965,7 @@ docs = [
 requires-dist = [
     { name = "click", specifier = ">=8.1.0" },
     { name = "great-tables", marker = "extra == 'notebook'", specifier = ">=0.14.0" },
+    { name = "leech-core", editable = "rust" },
     { name = "nbqa", marker = "extra == 'dev'", specifier = ">=1.7.0" },
     { name = "numpy", specifier = ">=2.0.0" },
     { name = "nvitop", specifier = ">=1.6.1" },
@@ -994,6 +1002,11 @@ docs = [
     { name = "mkdocstrings", extras = ["python"], specifier = ">=0.30.1" },
     { name = "zensical" },
 ]
+
+[[package]]
+name = "leech-core"
+version = "0.1.0"
+source = { editable = "rust" }
 
 [[package]]
 name = "lib-pod5"

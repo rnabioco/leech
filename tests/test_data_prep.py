@@ -44,16 +44,30 @@ class TestLeechRead:
         assert "base_idx" in chunk
 
     def test_get_chunk_invalid_base_idx(self, sample_leech_read):
-        """Test that get_chunk returns None for invalid indices."""
-        # Too close to start
-        chunk = sample_leech_read.get_chunk(base_idx=2, kmer_context=5)
+        """Test that get_chunk returns None for truly invalid indices."""
+        # Negative index
+        chunk = sample_leech_read.get_chunk(base_idx=-1, kmer_context=5)
         assert chunk is None
 
-        # Too close to end
+        # Index beyond sequence length
+        chunk = sample_leech_read.get_chunk(
+            base_idx=sample_leech_read.num_bases, kmer_context=5
+        )
+        assert chunk is None
+
+    def test_get_chunk_edge_base_idx(self, sample_leech_read):
+        """Test that get_chunk handles edge positions with padding."""
+        # Near start - should return chunk with N-padded kmer
+        chunk = sample_leech_read.get_chunk(base_idx=2, kmer_context=5)
+        assert chunk is not None
+        assert "N" in chunk["sequence"]
+
+        # Near end - should return chunk with N-padded kmer
         chunk = sample_leech_read.get_chunk(
             base_idx=sample_leech_read.num_bases - 2, kmer_context=5
         )
-        assert chunk is None
+        assert chunk is not None
+        assert "N" in chunk["sequence"]
 
     def test_get_chunk_signal_length(self, sample_leech_read):
         """Test that signal chunk has correct length."""
@@ -364,8 +378,11 @@ class TestDataPrepEdgeCases:
             base_idx=base_idx, signal_context=(5000, 5000), kmer_context=5
         )
 
-        # Should return None due to insufficient signal context
-        assert chunk is None
+        # Should return zero-padded chunk (remora convention)
+        assert chunk is not None
+        assert len(chunk["signal"]) == 10000
+        # Signal should be mostly zeros (padded beyond boundaries)
+        assert np.sum(chunk["signal"] == 0.0) > 0
 
     def test_chunks_with_empty_features(self, sample_signal, sample_sequence, sample_move_table):
         """Test chunks with empty feature dict."""

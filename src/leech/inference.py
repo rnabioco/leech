@@ -11,9 +11,12 @@ Supports:
 - Signal-level kmer encoding (signal_kmer) and base-level one-hot (base_onehot)
 """
 
+import array
 import logging
 import multiprocessing as mp
+from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pysam
@@ -27,7 +30,59 @@ from leech.models.remora_compat import RemoraModelWrapper
 from leech.preparation import encode_kmer, iter_bam_with_pod5
 from leech.util import _instantiate_model, load_model_from_checkpoint
 
+if TYPE_CHECKING:
+    from leech.signal_refine import SigMapRefiner
+
 logger = logging.getLogger("leech.inference")
+
+
+def _extract_remora_metadata(model_path: Path) -> dict:
+    """Extract metadata from a Remora TorchScript model's embedded meta.txt."""
+    import json as _json
+
+    extra_files = {"meta.txt": ""}
+    torch.jit.load(str(model_path), map_location="cpu", _extra_files=extra_files)
+    meta_str = extra_files.get("meta.txt", "")
+    if not meta_str:
+        return {}
+    raw = _json.loads(meta_str)
+
+    # Derive chunk_context / chunk_len
+    if "chunk_context" not in raw:
+        raw["chunk_context"] = (
+            int(raw.get("chunk_context_0", 50)),
+            int(raw.get("chunk_context_1", 50)),
+        )
+    raw["chunk_len"] = sum(raw["chunk_context"])
+
+    # Derive kmer_context_bases / kmer_len
+    if "kmer_context_bases" not in raw:
+        raw["kmer_context_bases"] = (
+            int(raw.get("kmer_context_bases_0", 4)),
+            int(raw.get("kmer_context_bases_1", 4)),
+        )
+    raw["kmer_len"] = sum(raw["kmer_context_bases"]) + 1
+
+    # Derive motif
+    if "num_motifs" in raw:
+        num = int(raw["num_motifs"])
+        motifs = []
+        for i in range(num):
+            motifs.append((raw[f"motif_{i}"], int(raw[f"motif_offset_{i}"])))
+        raw["motifs"] = motifs
+        raw["motif"] = motifs[0]
+    elif "motif" in raw and "motif_offset" in raw:
+        raw["motif"] = (raw["motif"], int(raw["motif_offset"]))
+
+    # Derive signal refinement parameters
+    if "refine_half_bandwidth" in raw:
+        raw["refine_signal_map"] = True
+        raw["refine_half_bandwidth"] = int(raw["refine_half_bandwidth"])
+        raw["refine_do_rough_rescale"] = raw.get("refine_do_rough_rescale", True)
+        raw["refine_scale_iters"] = int(raw.get("refine_scale_iters", -1))
+        raw["refine_kmer_center_idx"] = int(raw.get("refine_kmer_center_idx", -1))
+
+    return raw
 
 
 def load_model_auto(
@@ -38,7 +93,7 @@ def load_model_auto(
 
     Auto-detects format:
     - Directory with config.json → leech checkpoint
-    - .pt file → Remora TorchScript model
+    - .pt file → Remora TorchScript model (reads embedded metadata)
 
     Args:
         model_path: Path to model directory or .pt file
@@ -55,11 +110,41 @@ def load_model_auto(
     elif path.suffix == ".pt" and not (path.parent / "config.json").exists():
         # Standalone .pt file without config.json → Remora TorchScript
         wrapper = RemoraModelWrapper(path, device=device)
+
+        # Extract metadata from the model
+        remora_meta = _extract_remora_metadata(path)
+
+        kmer_context = remora_meta.get("kmer_context_bases", (4, 4))
+        if isinstance(kmer_context, list):
+            kmer_context = tuple(kmer_context)
+        chunk_context = remora_meta.get("chunk_context", (50, 50))
+
         config = {
             "seq_encoding": "signal_kmer",
-            "signal_kmer_context": [4, 4],
+            "signal_kmer_context": list(kmer_context),
             "is_remora": True,
+            "signal_len": sum(chunk_context),
+            "kmer_len": sum(kmer_context) + 1,
+            "chunk_context": list(chunk_context),
         }
+
+        # Pass through motif if available
+        motif_info = remora_meta.get("motif")
+        if isinstance(motif_info, (list, tuple)) and len(motif_info) == 2:
+            config["motif"] = motif_info[0]
+            config["motif_offset"] = int(motif_info[1])
+
+        # Pass through signal refinement parameters
+        if remora_meta.get("refine_signal_map", False):
+            config["refine_signal_map"] = True
+            config["refine_half_bandwidth"] = remora_meta.get("refine_half_bandwidth", 5)
+            config["refine_do_rough_rescale"] = remora_meta.get("refine_do_rough_rescale", True)
+            config["refine_scale_iters"] = remora_meta.get("refine_scale_iters", -1)
+            config["refine_kmer_center_idx"] = remora_meta.get("refine_kmer_center_idx", -1)
+
+        logger.info(f"Remora model: signal_len={config['signal_len']}, "
+                     f"kmer_len={config['kmer_len']}")
+
         return wrapper, config
     else:
         raise ValueError(f"Cannot auto-detect model format for {model_path}")
@@ -70,7 +155,7 @@ def _encode_sequence_for_inference(
     seq_encoding: str,
     signal_len: int,
     signal_kmer_context: tuple[int, int] = (4, 4),
-) -> torch.Tensor:
+) -> torch.Tensor | None:
     """Encode sequence from a chunk for inference.
 
     Args:
@@ -80,7 +165,8 @@ def _encode_sequence_for_inference(
         signal_kmer_context: Kmer context for signal_kmer encoding
 
     Returns:
-        Encoded sequence tensor
+        Encoded sequence tensor, or None if signal_kmer encoding is required
+        but the chunk lacks the necessary fields.
     """
     if seq_encoding == "signal_kmer":
         seq_ctx = chunk.get("sequence_with_kmer_context")
@@ -90,9 +176,9 @@ def _encode_sequence_for_inference(
             enc = encode_signal_kmer(seq_ints, seq_to_sig, signal_len, signal_kmer_context)
             return torch.from_numpy(enc)
         else:
-            # Fall back to base_onehot if chunk lacks signal_kmer data
-            logger.debug("Chunk lacks signal_kmer fields, falling back to base_onehot")
-            return encode_kmer(chunk["sequence"])
+            # Cannot fall back to base_onehot for signal_kmer models
+            logger.debug("Chunk lacks signal_kmer fields, skipping")
+            return None
     else:
         return encode_kmer(chunk["sequence"])
 
@@ -155,8 +241,34 @@ def aggregate_one_vs_all(
     return predicted_aa, confidence, scores
 
 
+@dataclass
+class InferenceWorkerConfig:
+    """Configuration shared by all parallel inference workers."""
+
+    pod5_path: Path
+    motif: str | None
+    motif_offset: int
+    signal_context: tuple[int, int]
+    kmer_context: int
+    base_justify: str
+    seq_encoding: str
+    signal_kmer_context: tuple[int, int]
+    signal_len: int
+    kmer_len: int
+    dwell_offset: int
+    requires_features: bool
+    reverse_signal: bool
+    # Reference-anchored mode + normalization + refinement
+    anchor: str
+    norm_method: str
+    pa_mean: float | None
+    pa_stdev: float | None
+    refine_signal_map: bool
+    signal_refiner: "SigMapRefiner | None"
+
+
 def _inference_worker(
-    args: tuple,
+    args: tuple[list, InferenceWorkerConfig],
 ) -> list[tuple[str, int, np.ndarray, np.ndarray, np.ndarray | None]]:
     """
     Worker for parallel chunk extraction during inference.
@@ -168,84 +280,91 @@ def _inference_worker(
     """
     from pod5 import DatasetReader
 
-    (
-        read_infos,
-        pod5_path,
-        motif,
-        motif_offset,
-        signal_context,
-        kmer_context,
-        base_justify,
-        seq_encoding,
-        signal_kmer_context,
-        signal_len,
-        kmer_len,
-        dwell_offset,
-        requires_features,
-        reverse_signal,
-    ) = args
+    from leech.io.pod5_reader import _extract_pod5_metadata
+    from leech.preparation.reader import build_leech_read
+
+    read_infos, config = args
 
     results: list[tuple[str, int, np.ndarray, np.ndarray, np.ndarray | None]] = []
 
-    with DatasetReader(pod5_path) as pod5_reader:
+    # Batch-read all POD5 signals in one traversal (avoids per-read seeks on large files)
+    read_info_by_id = {ri.read_id: ri for ri in read_infos}
+    pod5_cache: dict[str, tuple] = {}  # read_id -> (signal, metadata)
+
+    with DatasetReader(config.pod5_path) as pod5_reader:
+        for read in pod5_reader.reads(list(read_info_by_id.keys())):
+            rid = str(read.read_id)
+            pod5_cache[rid] = (read.signal, _extract_pod5_metadata(read))
+
         for read_info in read_infos:
             try:
-                # Read signal from POD5
-                signal_found = False
-                for read in pod5_reader.reads([read_info.read_id]):
-                    raw_signal = read.signal
-                    signal_found = True
-                    break
-
-                if not signal_found:
+                cached = pod5_cache.get(read_info.read_id)
+                if cached is None:
                     continue
+                raw_signal, pod5_metadata = cached
 
-                # Build LeechRead via shared helper
-                from leech.preparation.reader import build_leech_read
-
+                # Build LeechRead via shared helper (with full params)
                 leech_read = build_leech_read(
                     read_id=read_info.read_id,
                     sequence=read_info.sequence,
                     raw_signal=raw_signal,
                     move_table=read_info.to_move_table(),
-                    reverse_signal=reverse_signal,
+                    reverse_signal=config.reverse_signal,
+                    compute_features=config.requires_features,
+                    anchor=config.anchor,
+                    reference_sequence=read_info.reference_sequence,
+                    cigar_tuples=read_info.cigar_tuples,
+                    norm_method=config.norm_method,
+                    pa_mean=config.pa_mean,
+                    pa_stdev=config.pa_stdev,
+                    cal_offset=pod5_metadata.get("calibration_offset"),
+                    cal_scale=pod5_metadata.get("calibration_scale"),
+                    refine_signal_map=config.refine_signal_map,
+                    signal_refiner=config.signal_refiner,
                 )
 
                 # Find motif positions
-                if motif is not None:
+                if config.motif is not None:
                     positions = [
-                        pos + motif_offset
-                        for pos in find_motif_in_sequence(leech_read.sequence, motif)
+                        pos + config.motif_offset
+                        for pos in find_motif_in_sequence(leech_read.sequence, config.motif)
                     ]
                 else:
-                    positions = list(range(kmer_context, leech_read.num_bases - kmer_context))
+                    positions = list(
+                        range(config.kmer_context, leech_read.num_bases - config.kmer_context)
+                    )
 
                 for base_idx in positions:
                     chunk = leech_read.get_chunk(
                         base_idx,
-                        signal_context=signal_context,
-                        kmer_context=kmer_context,
-                        base_justify=base_justify,
+                        signal_context=config.signal_context,
+                        kmer_context=config.kmer_context,
+                        base_justify=config.base_justify,
                     )
                     if chunk is None:
                         continue
 
                     # Signal
                     sig = chunk["signal"].astype(np.float32)
-                    if len(sig) < signal_len:
-                        sig = np.pad(sig, (0, signal_len - len(sig)), mode="constant")
-                    elif len(sig) > signal_len:
-                        start = (len(sig) - signal_len) // 2
-                        sig = sig[start : start + signal_len]
+                    if len(sig) < config.signal_len:
+                        sig = np.pad(
+                            sig, (0, config.signal_len - len(sig)), mode="constant"
+                        )
+                    elif len(sig) > config.signal_len:
+                        start = (len(sig) - config.signal_len) // 2
+                        sig = sig[start : start + config.signal_len]
 
                     # Sequence encoding
-                    if seq_encoding == "signal_kmer":
+                    if config.seq_encoding == "signal_kmer":
                         seq_ctx = chunk.get("sequence_with_kmer_context")
                         seq_to_sig = chunk.get("seq_to_sig_map")
                         if seq_ctx is not None and seq_to_sig is not None:
                             seq_ints = sequence_to_int(seq_ctx)
                             enc_seq = encode_signal_kmer(
-                                seq_ints, seq_to_sig, signal_len, tuple(signal_kmer_context)
+                                seq_ints,
+                                seq_to_sig,
+                                config.signal_len,
+                                tuple(config.signal_kmer_context),
                             )
                         else:
                             from leech.preparation.encoding import encode_kmer as _enc
@@ -258,14 +377,14 @@ def _inference_worker(
 
                     # Features
                     feat = None
-                    if requires_features:
+                    if config.requires_features:
                         feat_arr = chunk["features"]
                         if feat_arr.size > 0:
                             feat_arr = feat_arr.astype(np.float32)
-                            if feat_arr.shape[1] > kmer_len:
-                                margin = (feat_arr.shape[1] - kmer_len) // 2
-                                s = margin + dwell_offset
-                                feat_arr = feat_arr[:, s : s + kmer_len]
+                            if feat_arr.shape[1] > config.kmer_len:
+                                margin = (feat_arr.shape[1] - config.kmer_len) // 2
+                                s = margin + config.dwell_offset
+                                feat_arr = feat_arr[:, s : s + config.kmer_len]
                             feat = feat_arr
 
                     results.append((read_info.read_id, base_idx, sig, enc_seq, feat))
@@ -285,7 +404,7 @@ def run_inference(
     bam_path: Path | None = None,
     output_path: Path | None = None,
     device: str = "cuda",
-    min_mapq: int = 10,
+    min_mapq: int = 0,
     motif: str | None = None,
     motif_offset: int = 0,
     batch_size: int = 256,
@@ -293,6 +412,7 @@ def run_inference(
     reverse_signal: bool = True,
     num_workers: int = 0,
     chunk_size: int = 100,
+    anchor: str = "basecall",
 ) -> None:
     """
     Run inference on POD5 and BAM files.
@@ -313,8 +433,13 @@ def run_inference(
         batch_size: Chunks per forward pass
         base_justify: Signal justification within focus base
         reverse_signal: Whether to reverse signal for RNA
-        num_workers: Parallel chunk extraction workers (0=sequential)
+        num_workers: Parallel chunk extraction workers (0=sequential).
+            Only beneficial with GPU inference, where CPU chunk extraction
+            overlaps with GPU forward passes. For CPU-only inference, the
+            sequential path (0) is faster due to batched POD5 access and
+            no multiprocessing overhead.
         chunk_size: Reads per worker batch
+        anchor: "basecall" or "reference" for reference-anchored mode
     """
     # Load model
     if model_and_config is not None:
@@ -328,17 +453,49 @@ def run_inference(
     # Determine if this is a Remora model or a leech model
     is_remora = config.get("is_remora", False)
 
+    # Signal map refinement setup
+    refine_signal_map = False
+    signal_refiner = None
+
     if is_remora:
         model_wrapper = wrapper_or_model
-        # Remora models: motif MUST be provided
-        if motif is None:
-            raise ValueError("--motif is required for Remora models (no config.json)")
-        # Infer signal_len from a dummy pass or default
-        signal_len = 400  # Remora default
-        kmer_len = 9  # Remora default (4+1+4 kmer context)
+        signal_len = config.get("signal_len", 100)
+        kmer_len = config.get("kmer_len", 9)
         seq_encoding = "signal_kmer"
         signal_kmer_context = tuple(config.get("signal_kmer_context", (4, 4)))
         dwell_offset = 0
+
+        # Auto-read motif from model metadata
+        if motif is None and config.get("motif"):
+            motif = config["motif"]
+            motif_offset = config.get("motif_offset", motif_offset)
+            logger.info(f"Auto-read motif from remora model: {motif} (offset={motif_offset})")
+
+        if motif is None:
+            raise ValueError("--motif is required for Remora models (no config.json)")
+
+        # Set up signal map refinement if model specifies it
+        if config.get("refine_signal_map", False):
+            from leech.data import get_kmer_table
+            from leech.signal_refine import SigMapRefiner
+
+            kmer_table_path = get_kmer_table()
+            half_bw = config.get("refine_half_bandwidth", 5)
+            do_rescale = config.get("refine_do_rough_rescale", True)
+            scale_iters = config.get("refine_scale_iters", -1)
+            center_idx = config.get("refine_kmer_center_idx", -1)
+            signal_refiner = SigMapRefiner.from_table(
+                kmer_table_path,
+                half_bandwidth=half_bw,
+                do_rough_rescale=do_rescale,
+                scale_iters=scale_iters,
+                center_idx=center_idx,
+            )
+            refine_signal_map = True
+            logger.info(
+                f"Signal map refinement: half_bw={half_bw}, "
+                f"scale_iters={scale_iters}, center_idx={center_idx}"
+            )
     else:
         # Leech model
         if isinstance(wrapper_or_model, ModelInferenceWrapper):
@@ -375,6 +532,18 @@ def run_inference(
         if a.query_name is not None:
             alignment_by_read_id[a.query_name] = a
 
+    # Detect normalization method: for remora models, use sm/sd tags if available
+    norm_method = "median_mad"
+    pa_mean = None
+    pa_stdev = None
+    if is_remora and alignment_by_read_id:
+        first_aln = next(iter(alignment_by_read_id.values()))
+        if first_aln.has_tag("sm") and first_aln.has_tag("sd"):
+            pa_mean = float(first_aln.get_tag("sm"))
+            pa_stdev = float(first_aln.get_tag("sd"))
+            norm_method = "pa_scaling"
+            logger.info(f"Using pa_scaling normalization (sm={pa_mean}, sd={pa_stdev})")
+
     # Create output BAM
     output_path.parent.mkdir(parents=True, exist_ok=True)
     bam_out = pysam.AlignmentFile(str(output_path), "wb", template=bam_in)
@@ -386,6 +555,9 @@ def run_inference(
         model_wrapper.model.eval()
     if hasattr(model_wrapper, "eval"):
         model_wrapper.eval()
+
+    # Skip feature computation when model doesn't need them (big speedup)
+    compute_features = requires_features
 
     if num_workers > 0:
         # ---- Parallel path ----
@@ -406,25 +578,29 @@ def run_inference(
             read_infos[i : i + chunk_size] for i in range(0, len(read_infos), chunk_size)
         ]
 
-        worker_args = [
-            (
-                batch_reads,
-                pod5_path,
-                motif,
-                motif_offset,
-                signal_context,
-                kmer_context,
-                base_justify,
-                seq_encoding,
-                signal_kmer_context,
-                signal_len,
-                kmer_len,
-                dwell_offset,
-                requires_features,
-                reverse_signal,
-            )
-            for batch_reads in read_batches
-        ]
+        config = InferenceWorkerConfig(
+            pod5_path=pod5_path,
+            motif=motif,
+            motif_offset=motif_offset,
+            signal_context=signal_context,
+            kmer_context=kmer_context,
+            base_justify=base_justify,
+            seq_encoding=seq_encoding,
+            signal_kmer_context=signal_kmer_context,
+            signal_len=signal_len,
+            kmer_len=kmer_len,
+            dwell_offset=dwell_offset,
+            requires_features=requires_features,
+            reverse_signal=reverse_signal,
+            anchor=anchor,
+            norm_method=norm_method,
+            pa_mean=pa_mean,
+            pa_stdev=pa_stdev,
+            refine_signal_map=refine_signal_map,
+            signal_refiner=signal_refiner,
+        )
+
+        worker_args = [(batch_reads, config) for batch_reads in read_batches]
 
         # Collect all results, then batch and run model
         pending: dict[str, list[tuple[int, float]]] = {}
@@ -480,19 +656,44 @@ def run_inference(
             preds = pending.get(aln.query_name)
             if preds:
                 preds.sort(key=lambda x: x[0])
-                positions_list = [p[0] for p in preds]
+                positions_list = [int(p[0]) for p in preds]
                 ml_scores = [int(min(255, max(0, p[1] * 255))) for p in preds]
-                aln.set_tag("MP", positions_list, value_type="B")
-                aln.set_tag("ML", ml_scores, value_type="B")
+                aln.set_tag("MP", array.array("i", positions_list))
+                aln.set_tag("ML", array.array("B", ml_scores))
             bam_out.write(aln)
 
     else:
         # ---- Sequential path ----
+        # Accumulate chunks across reads for batched model forward passes
+        batch_signals: list[np.ndarray] = []
+        batch_seqs: list[np.ndarray] = []
+        batch_feats: list[np.ndarray | None] = []
+        batch_meta: list[tuple[str, int]] = []  # (read_id, base_idx)
+        pending: dict[str, list[tuple[int, float]]] = {}
+
+        def _flush_batch() -> None:
+            """Run accumulated chunks through model."""
+            nonlocal batch_signals, batch_seqs, batch_feats, batch_meta
+            if not batch_signals:
+                return
+            _run_batch(
+                batch_signals, batch_seqs, batch_feats, batch_meta,
+                model_wrapper, requires_features, device, pending,
+            )
+            batch_signals, batch_seqs, batch_feats, batch_meta = [], [], [], []
+
         with Progress() as progress:
             task = progress.add_task("[cyan]Running inference...", total=None)
 
             for leech_read in iter_bam_with_pod5(
-                bam_path, pod5_path, min_mapq=min_mapq, reverse_signal=reverse_signal
+                bam_path, pod5_path, min_mapq=min_mapq, reverse_signal=reverse_signal,
+                anchor=anchor,
+                norm_method=norm_method,
+                pa_mean=pa_mean,
+                pa_stdev=pa_stdev,
+                refine_signal_map=refine_signal_map,
+                signal_refiner=signal_refiner,
+                compute_features=compute_features,
             ):
                 total_reads += 1
                 progress.update(
@@ -514,8 +715,6 @@ def run_inference(
                         for pos in find_motif_in_sequence(leech_read.sequence, motif)
                     ]
 
-                predictions = []
-
                 for base_idx in positions:
                     chunk = leech_read.get_chunk(
                         base_idx,
@@ -535,20 +734,18 @@ def run_inference(
                     elif len(sig) > signal_len:
                         start = (len(sig) - signal_len) // 2
                         sig = sig[start : start + signal_len]
-                    signal_t = torch.from_numpy(sig).to(device).unsqueeze(0)
 
                     # Sequence
-                    seq_t = (
-                        _encode_sequence_for_inference(
-                            chunk, seq_encoding, signal_len, signal_kmer_context
-                        )
-                        .to(device)
-                        .unsqueeze(0)
+                    seq_enc = _encode_sequence_for_inference(
+                        chunk, seq_encoding, signal_len, signal_kmer_context
                     )
+                    if seq_enc is None:
+                        continue
 
-                    batch = {"signal": signal_t, "sequence": seq_t}
-
+                    batch_signals.append(sig)
+                    batch_seqs.append(seq_enc.numpy() if isinstance(seq_enc, torch.Tensor) else seq_enc)
                     # Features
+                    feat = None
                     if requires_features:
                         features_array = chunk["features"]
                         assert isinstance(features_array, np.ndarray)
@@ -557,24 +754,26 @@ def run_inference(
                             margin = (feat.shape[1] - kmer_len) // 2
                             s = margin + dwell_offset
                             feat = feat[:, s : s + kmer_len]
-                        batch["features"] = torch.from_numpy(feat).to(device).unsqueeze(0)
+                    batch_feats.append(feat)
+                    batch_meta.append((leech_read.read_id, base_idx))
 
-                    with torch.no_grad():
-                        logits = model_wrapper.forward_batch(batch, device)
-                        prob = torch.sigmoid(logits).item()
+                    if len(batch_signals) >= batch_size:
+                        _flush_batch()
 
-                    predictions.append((base_idx, prob))
+            # Flush remaining chunks
+            _flush_batch()
 
-                if predictions:
-                    predictions.sort(key=lambda x: x[0])
-                    positions_list = [p[0] for p in predictions]
-                    probs_list = [p[1] for p in predictions]
-                    ml_scores = [int(min(255, max(0, p * 255))) for p in probs_list]
-                    aln.set_tag("MP", positions_list, value_type="B")
-                    aln.set_tag("ML", ml_scores, value_type="B")
-                    total_predictions += len(predictions)
-
-                bam_out.write(aln)
+        # Write all results to BAM
+        total_predictions = sum(len(v) for v in pending.values())
+        for aln in alignment_by_read_id.values():
+            preds = pending.get(aln.query_name)
+            if preds:
+                preds.sort(key=lambda x: x[0])
+                positions_list = [int(p[0]) for p in preds]
+                ml_scores = [int(min(255, max(0, p[1] * 255))) for p in preds]
+                aln.set_tag("MP", array.array("i", positions_list))
+                aln.set_tag("ML", array.array("B", ml_scores))
+            bam_out.write(aln)
 
     bam_in.close()
     bam_out.close()
