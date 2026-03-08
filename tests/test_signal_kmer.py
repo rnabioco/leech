@@ -15,7 +15,6 @@ import torch
 from leech.features import encode_signal_kmer, sequence_to_int
 from leech.models import MODEL_REGISTRY, get_model
 
-
 # ---------------------------------------------------------------------------
 # sequence_to_int
 # ---------------------------------------------------------------------------
@@ -176,7 +175,9 @@ class TestModelsSignalKmer:
         elif model_name == "ResNetDwell":
             base.update({"num_features": 5, "base_channels": 4})
         elif model_name == "TCNDwell":
-            base.update({"num_features": 5, "hidden_channels": 16, "num_layers": 2, "kernel_size": 3})
+            base.update(
+                {"num_features": 5, "hidden_channels": 16, "num_layers": 2, "kernel_size": 3}
+            )
         return base
 
     def _make_inputs(self, requires_features: bool):

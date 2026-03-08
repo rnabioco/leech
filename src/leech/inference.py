@@ -21,6 +21,7 @@ import torch
 from rich.progress import Progress
 
 from leech.features import encode_signal_kmer, sequence_to_int
+from leech.io.motif_search import find_motif_in_sequence
 from leech.models.inference_wrapper import ModelInferenceWrapper
 from leech.models.remora_compat import RemoraModelWrapper
 from leech.preparation import encode_kmer, iter_bam_with_pod5
@@ -212,11 +213,10 @@ def _inference_worker(
 
                 # Find motif positions
                 if motif is not None:
-                    positions = []
-                    motif_len = len(motif)
-                    for i in range(len(leech_read.sequence) - motif_len + 1):
-                        if leech_read.sequence[i : i + motif_len] == motif:
-                            positions.append(i + motif_offset)
+                    positions = [
+                        pos + motif_offset
+                        for pos in find_motif_in_sequence(leech_read.sequence, motif)
+                    ]
                 else:
                     positions = list(range(kmer_context, leech_read.num_bases - kmer_context))
 
@@ -509,11 +509,10 @@ def run_inference(
                 if motif is None:
                     positions = list(range(kmer_context, leech_read.num_bases - kmer_context))
                 else:
-                    positions = []
-                    motif_len = len(motif)
-                    for i in range(len(leech_read.sequence) - motif_len + 1):
-                        if leech_read.sequence[i : i + motif_len] == motif:
-                            positions.append(i + motif_offset)
+                    positions = [
+                        pos + motif_offset
+                        for pos in find_motif_in_sequence(leech_read.sequence, motif)
+                    ]
 
                 predictions = []
 
@@ -718,11 +717,9 @@ def run_bundle_inference(
             if motif is None:
                 positions = list(range(kmer_context, leech_read.num_bases - kmer_context))
             else:
-                positions = []
-                motif_len = len(motif)
-                for i in range(len(leech_read.sequence) - motif_len + 1):
-                    if leech_read.sequence[i : i + motif_len] == motif:
-                        positions.append(i + motif_offset)
+                positions = [
+                    pos + motif_offset for pos in find_motif_in_sequence(leech_read.sequence, motif)
+                ]
 
             # Extract chunk once (use first valid position)
             if not positions:

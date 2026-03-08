@@ -133,6 +133,40 @@ class ReadInfo:
             trim_offset=self.trim_offset,
         )
 
+    def to_mock_alignment(self) -> "MockAlignment":
+        """
+        Create a lightweight mock alignment for reference-based motif search.
+
+        Returns a picklable object with the same attributes that
+        ``ReferenceMotifSearcher`` reads from ``pysam.AlignedSegment``.
+
+        Returns:
+            MockAlignment instance
+        """
+        return MockAlignment(self)
+
+
+class MockAlignment:
+    """Lightweight, picklable stand-in for ``pysam.AlignedSegment``.
+
+    Only exposes the attributes used by ``ReferenceMotifSearcher``.
+    """
+
+    __slots__ = (
+        "reference_name",
+        "reference_start",
+        "reference_end",
+        "cigartuples",
+        "is_reverse",
+    )
+
+    def __init__(self, read_info: "ReadInfo"):
+        self.reference_name = read_info.reference_name
+        self.reference_start = read_info.reference_start
+        self.reference_end = read_info.reference_end
+        self.cigartuples = read_info.cigar_tuples
+        self.is_reverse = read_info.is_reverse
+
 
 def collect_read_infos(
     bam_path: Path,

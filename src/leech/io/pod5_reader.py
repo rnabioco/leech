@@ -15,6 +15,28 @@ from pod5 import DatasetReader
 logger = logging.getLogger("leech.io.pod5_reader")
 
 
+def _extract_pod5_metadata(read) -> dict:
+    """
+    Extract standard metadata dict from a pod5 read object.
+
+    Args:
+        read: A pod5 read object (from DatasetReader.reads())
+
+    Returns:
+        Dictionary with read_id, channel, well, pore_type,
+        calibration_offset, calibration_scale, and sample_rate.
+    """
+    return {
+        "read_id": str(read.read_id),
+        "channel": read.pore.channel,
+        "well": read.pore.well,
+        "pore_type": read.pore.pore_type,
+        "calibration_offset": read.calibration.offset,
+        "calibration_scale": read.calibration.scale,
+        "sample_rate": read.run_info.sample_rate,
+    }
+
+
 def read_pod5_signal(pod5_path: Path, read_id: str) -> tuple[np.ndarray, dict]:
     """
     Read raw signal from POD5 file for a specific read.
@@ -37,15 +59,7 @@ def read_pod5_signal(pod5_path: Path, read_id: str) -> tuple[np.ndarray, dict]:
     with DatasetReader(pod5_path) as reader:
         for read in reader.reads([read_id]):
             signal = read.signal
-            metadata = {
-                "read_id": str(read.read_id),
-                "channel": read.pore.channel,
-                "well": read.pore.well,
-                "pore_type": read.pore.pore_type,
-                "calibration_offset": read.calibration.offset,
-                "calibration_scale": read.calibration.scale,
-                "sample_rate": read.run_info.sample_rate,
-            }
+            metadata = _extract_pod5_metadata(read)
             return signal, metadata
 
     raise ValueError(f"Read {read_id} not found in {pod5_path}")
@@ -80,15 +94,7 @@ def read_pod5_signals_batch(
         for read in reader.reads(read_ids):
             read_id = str(read.read_id)
             signal = read.signal
-            metadata = {
-                "read_id": read_id,
-                "channel": read.pore.channel,
-                "well": read.pore.well,
-                "pore_type": read.pore.pore_type,
-                "calibration_offset": read.calibration.offset,
-                "calibration_scale": read.calibration.scale,
-                "sample_rate": read.run_info.sample_rate,
-            }
+            metadata = _extract_pod5_metadata(read)
             results[read_id] = (signal, metadata)
 
     # Log if any reads were not found
@@ -154,15 +160,7 @@ class POD5Reader:
 
         for read in self._reader.reads([read_id]):
             signal = read.signal
-            metadata = {
-                "read_id": str(read.read_id),
-                "channel": read.pore.channel,
-                "well": read.pore.well,
-                "pore_type": read.pore.pore_type,
-                "calibration_offset": read.calibration.offset,
-                "calibration_scale": read.calibration.scale,
-                "sample_rate": read.run_info.sample_rate,
-            }
+            metadata = _extract_pod5_metadata(read)
             return signal, metadata
 
         raise ValueError(f"Read {read_id} not found in {self.pod5_path}")
@@ -188,15 +186,7 @@ class POD5Reader:
         for read in self._reader.reads(read_ids):
             read_id = str(read.read_id)
             signal = read.signal
-            metadata = {
-                "read_id": read_id,
-                "channel": read.pore.channel,
-                "well": read.pore.well,
-                "pore_type": read.pore.pore_type,
-                "calibration_offset": read.calibration.offset,
-                "calibration_scale": read.calibration.scale,
-                "sample_rate": read.run_info.sample_rate,
-            }
+            metadata = _extract_pod5_metadata(read)
             results[read_id] = (signal, metadata)
 
         return results
@@ -222,13 +212,5 @@ class POD5Reader:
         for read in self._reader.reads():
             read_id = str(read.read_id)
             signal = read.signal
-            metadata = {
-                "read_id": read_id,
-                "channel": read.pore.channel,
-                "well": read.pore.well,
-                "pore_type": read.pore.pore_type,
-                "calibration_offset": read.calibration.offset,
-                "calibration_scale": read.calibration.scale,
-                "sample_rate": read.run_info.sample_rate,
-            }
+            metadata = _extract_pod5_metadata(read)
             yield read_id, signal, metadata

@@ -8,156 +8,98 @@ training chunks from large datasets using multiple worker processes.
 import logging
 import multiprocessing as mp
 import sys
+from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 from pod5 import DatasetReader
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 
-from leech.chunking import LeechRead, extract_training_chunks
-from leech.features import (
-    compute_dwell_features,
-    compute_ref_to_signal,
-    compute_signal_features,
-    normalize_signal,
-)
+from leech.chunking import extract_training_chunks
 from leech.io import ReadInfo, collect_read_infos, get_motif_searcher
+from leech.io.pod5_reader import _extract_pod5_metadata
+from leech.preparation.reader import build_leech_read
+
+if TYPE_CHECKING:
+    from leech.signal_refine import SigMapRefiner
 
 logger = logging.getLogger("leech.preparation.parallel")
 
 
+@dataclass
+class WorkerConfig:
+    """Configuration shared by all parallel workers.
+
+    Groups the non-data parameters that are constant across worker
+    invocations so the worker receives ``(read_infos, config)``
+    instead of an 18-element tuple.  Standard ``@dataclass`` is
+    picklable by default.
+    """
+
+    pod5_path: Path
+    motif: str | None
+    motif_offset: int
+    label: str | None
+    label_int: int | None
+    motif_reference: str
+    reference_sequences: dict[str, str] | None
+    skip_motif_indels: bool
+    base_justify: str
+    dwell_margin: int
+    reverse_signal: bool
+    anchor: str
+    norm_method: str
+    pa_mean: float | None
+    pa_stdev: float | None
+    refine_signal_map: bool
+    signal_refiner: "SigMapRefiner | None"
+
+
 def _process_read_chunk_worker(
-    args: tuple,
+    args: tuple[list[ReadInfo], WorkerConfig],
 ) -> list[dict[str, np.ndarray | str | int | None]]:
     """
     Worker function to process a chunk of reads in parallel.
 
     Args:
-        args: Tuple of (read_infos, pod5_path, motif, motif_offset, label, label_int,
-                        motif_reference, reference_sequences, skip_motif_indels,
-                        base_justify, dwell_margin, reverse_signal, anchor,
-                        norm_method, pa_mean, pa_stdev, refine_signal_map,
-                        signal_refiner)
+        args: Tuple of (read_infos, config)
 
     Returns:
         List of extracted chunks from all reads in this chunk
     """
-    (
-        read_infos,
-        pod5_path,
-        motif,
-        motif_offset,
-        label,
-        label_int,
-        motif_reference,
-        reference_sequences,
-        skip_motif_indels,
-        base_justify,
-        dwell_margin,
-        reverse_signal,
-        anchor,
-        norm_method,
-        pa_mean,
-        pa_stdev,
-        refine_signal_map,
-        signal_refiner,
-    ) = args
+    read_infos, config = args
 
     # Get motif searcher
-    if motif is not None:
+    if config.motif is not None:
         motif_searcher = get_motif_searcher(
-            mode=motif_reference,
-            reference_sequences=reference_sequences,
-            skip_indels=skip_motif_indels,
+            mode=config.motif_reference,
+            reference_sequences=config.reference_sequences,
+            skip_indels=config.skip_motif_indels,
         )
     else:
         motif_searcher = None
 
-    all_chunks = []
+    all_chunks: list[dict[str, np.ndarray | str | int | None]] = []
 
     # Open POD5 once for this worker
-    with DatasetReader(pod5_path) as pod5_reader:
+    with DatasetReader(config.pod5_path) as pod5_reader:
         for read_info in read_infos:
             try:
                 # Read signal from POD5
                 signal_found = False
                 for read in pod5_reader.reads([read_info.read_id]):
                     raw_signal = read.signal
-
-                    # Reverse signal for RNA: POD5 stores 3'→5' sequencing order,
-                    # but mv/ts/ns tags reference the reversed (5'→3') signal space
-                    if reverse_signal:
-                        raw_signal = raw_signal[::-1]
-
-                    pod5_metadata = {
-                        "read_id": str(read.read_id),
-                        "channel": read.pore.channel,
-                        "well": read.pore.well,
-                        "pore_type": read.pore.pore_type,
-                        "calibration_offset": read.calibration.offset,
-                        "calibration_scale": read.calibration.scale,
-                        "sample_rate": read.run_info.sample_rate,
-                    }
+                    pod5_metadata = _extract_pod5_metadata(read)
                     signal_found = True
                     break
 
                 if not signal_found:
                     continue
 
-                # Reconstruct move table
-                move_table = read_info.to_move_table()
-
-                # Get calibration data for pa_scaling
-                cal_offset = pod5_metadata.get("calibration_offset")
-                cal_scale = pod5_metadata.get("calibration_scale")
-
-                # Normalize signal
-                norm_signal, norm_params = normalize_signal(
-                    raw_signal,
-                    method=norm_method,
-                    pa_mean=pa_mean,
-                    pa_stdev=pa_stdev,
-                    cal_offset=cal_offset,
-                    cal_scale=cal_scale,
-                )
-
-                # Compute seq-to-signal mapping
-                query_to_sig_map = move_table.to_seq_to_sig_map()
-
-                # Reference-anchored mode
-                use_sequence = read_info.sequence
-                if (
-                    anchor == "reference"
-                    and read_info.reference_sequence is not None
-                    and read_info.cigar_tuples is not None
-                ):
-                    ref_to_sig_map = compute_ref_to_signal(query_to_sig_map, read_info.cigar_tuples)
-                    sig_start = int(ref_to_sig_map[0])
-                    sig_end = int(ref_to_sig_map[-1])
-                    norm_signal = norm_signal[sig_start:sig_end]
-                    seq_to_sig_map = ref_to_sig_map - sig_start
-                    use_sequence = read_info.reference_sequence
-                else:
-                    seq_to_sig_map = query_to_sig_map
-
-                # Optional signal map refinement
-                if refine_signal_map and signal_refiner is not None:
-                    from leech.signal_refine import SigMapRefiner
-
-                    if isinstance(signal_refiner, SigMapRefiner):
-                        seq_to_sig_map = signal_refiner.refine(
-                            norm_signal, use_sequence, seq_to_sig_map
-                        )
-
-                # Compute features
-                dwells = np.diff(seq_to_sig_map)
-                dwell_feats = compute_dwell_features(dwells)
-                signal_feats = compute_signal_features(norm_signal, seq_to_sig_map)
-
-                # Build metadata (create mock alignment for reference-based search)
+                # Build metadata
                 metadata = {
                     **pod5_metadata,
-                    "normalization": norm_params,
                     "mapping_quality": read_info.mapping_quality,
                     "reference_name": read_info.reference_name,
                     "reference_start": read_info.reference_start,
@@ -165,41 +107,40 @@ def _process_read_chunk_worker(
                     "is_reverse": read_info.is_reverse,
                 }
 
-                # For reference-based motif search, create a mock alignment object
-                if motif_reference == "fasta" and reference_sequences is not None:
-                    # Create minimal mock alignment for CIGAR parsing
-                    class MockAlignment:
-                        def __init__(self, read_info: ReadInfo):
-                            self.reference_name = read_info.reference_name
-                            self.reference_start = read_info.reference_start
-                            self.reference_end = read_info.reference_end
-                            self.cigartuples = read_info.cigar_tuples
-                            self.is_reverse = read_info.is_reverse
+                # For reference-based motif search, add mock alignment
+                if config.motif_reference == "fasta" and config.reference_sequences is not None:
+                    metadata["alignment"] = read_info.to_mock_alignment()
 
-                    metadata["alignment"] = MockAlignment(read_info)
-
-                # Create LeechRead
-                leech_read = LeechRead(
+                # Build LeechRead via shared helper
+                leech_read = build_leech_read(
                     read_id=read_info.read_id,
-                    sequence=use_sequence,
-                    signal=norm_signal,
-                    seq_to_sig_map=seq_to_sig_map,
-                    dwells=dwells,
-                    dwell_features=dwell_feats,
-                    signal_features=signal_feats,
+                    sequence=read_info.sequence,
+                    raw_signal=raw_signal,
+                    move_table=read_info.to_move_table(),
+                    reverse_signal=config.reverse_signal,
                     metadata=metadata,
+                    anchor=config.anchor,
+                    reference_sequence=read_info.reference_sequence,
+                    cigar_tuples=read_info.cigar_tuples,
+                    norm_method=config.norm_method,
+                    pa_mean=config.pa_mean,
+                    pa_stdev=config.pa_stdev,
+                    cal_offset=pod5_metadata.get("calibration_offset"),
+                    cal_scale=pod5_metadata.get("calibration_scale"),
+                    refine_signal_map=config.refine_signal_map,
+                    signal_refiner=config.signal_refiner,
                 )
 
                 # Extract training chunks
                 read_chunks = extract_training_chunks(
                     leech_read,
-                    motif=motif,
-                    motif_offset=motif_offset,
-                    label=label,
-                    label_int=label_int,
+                    motif=config.motif,
+                    motif_offset=config.motif_offset,
+                    label=config.label,
+                    label_int=config.label_int,
                     motif_searcher=motif_searcher,
-                    base_justify=base_justify,
-                    dwell_margin=dwell_margin,
+                    base_justify=config.base_justify,
+                    dwell_margin=config.dwell_margin,
                 )
 
                 all_chunks.extend(read_chunks)
@@ -232,7 +173,7 @@ def prepare_training_data_parallel(
     pa_mean: float | None = None,
     pa_stdev: float | None = None,
     refine_signal_map: bool = False,
-    signal_refiner: object | None = None,
+    signal_refiner: "SigMapRefiner | None" = None,
 ) -> tuple[list[dict[str, np.ndarray | str | int | None]], dict[str, int]]:
     """
     Prepare training data from BAM and POD5 files using multiprocessing.
@@ -293,30 +234,29 @@ def prepare_training_data_parallel(
     read_chunks = [read_infos[i : i + chunk_size] for i in range(0, len(read_infos), chunk_size)]
     logger.info(f"Split into {len(read_chunks)} chunks of up to {chunk_size} reads each")
 
+    # Build shared config
+    config = WorkerConfig(
+        pod5_path=pod5_path,
+        motif=motif,
+        motif_offset=motif_offset,
+        label=label,
+        label_int=label_int,
+        motif_reference=motif_reference,
+        reference_sequences=reference_sequences,
+        skip_motif_indels=skip_motif_indels,
+        base_justify=base_justify,
+        dwell_margin=dwell_margin,
+        reverse_signal=reverse_signal,
+        anchor=anchor,
+        norm_method=norm_method,
+        pa_mean=pa_mean,
+        pa_stdev=pa_stdev,
+        refine_signal_map=refine_signal_map,
+        signal_refiner=signal_refiner,
+    )
+
     # Prepare worker arguments
-    worker_args = [
-        (
-            chunk,
-            pod5_path,
-            motif,
-            motif_offset,
-            label,
-            label_int,
-            motif_reference,
-            reference_sequences,
-            skip_motif_indels,
-            base_justify,
-            dwell_margin,
-            reverse_signal,
-            anchor,
-            norm_method,
-            pa_mean,
-            pa_stdev,
-            refine_signal_map,
-            signal_refiner,
-        )
-        for chunk in read_chunks
-    ]
+    worker_args = [(chunk, config) for chunk in read_chunks]
 
     # Second pass: parallel processing with progress bar
     logger.info("Pass 2: Processing reads in parallel...")

@@ -55,6 +55,13 @@ from typing import Any
 
 import numpy as np
 import pysam
+from numpy.lib.stride_tricks import sliding_window_view
+
+# Try to import Rust-accelerated implementations
+try:
+    from leech._rust_accel import HAS_RUST, _rs_encode_signal_kmer
+except ImportError:
+    HAS_RUST = False
 
 
 @dataclass
@@ -185,6 +192,18 @@ def compute_signal_levels(
     num_bases = len(seq_to_sig_map) - 1
     levels = np.zeros(num_bases, dtype=np.float32)
 
+    boundaries = seq_to_sig_map[:-1]
+    lengths = np.diff(seq_to_sig_map)
+    sig_len = len(signal)
+    valid = (lengths > 0) & (boundaries < sig_len)
+
+    # Vectorized mean using reduceat (fast path)
+    if stat == "mean" and np.any(valid):
+        sums = np.add.reduceat(signal, boundaries[valid])
+        levels[valid] = (sums / lengths[valid]).astype(np.float32)
+        return levels
+
+    # Loop for median/std/min/max (no vectorized numpy equivalent)
     stat_funcs: dict[str, Callable[[np.ndarray], Any]] = {
         "mean": np.mean,
         "median": np.median,
@@ -195,10 +214,12 @@ def compute_signal_levels(
     stat_func = stat_funcs[stat]
 
     for i in range(num_bases):
-        start_idx = seq_to_sig_map[i]
-        end_idx = seq_to_sig_map[i + 1]
-        base_signal = signal[start_idx:end_idx]
-        levels[i] = float(stat_func(base_signal)) if len(base_signal) > 0 else 0.0
+        if lengths[i] > 0:
+            start_idx = seq_to_sig_map[i]
+            end_idx = seq_to_sig_map[i + 1]
+            base_signal = signal[start_idx:end_idx]
+            if len(base_signal) > 0:
+                levels[i] = float(stat_func(base_signal))
 
     return levels
 
@@ -364,6 +385,19 @@ def compute_ref_to_signal(
     return ref_to_signal
 
 
+_BASE_LOOKUP = np.full(256, -1, dtype=np.int8)
+_BASE_LOOKUP[ord("A")] = 0
+_BASE_LOOKUP[ord("C")] = 1
+_BASE_LOOKUP[ord("G")] = 2
+_BASE_LOOKUP[ord("T")] = 3
+_BASE_LOOKUP[ord("U")] = 3
+_BASE_LOOKUP[ord("a")] = 0
+_BASE_LOOKUP[ord("c")] = 1
+_BASE_LOOKUP[ord("g")] = 2
+_BASE_LOOKUP[ord("t")] = 3
+_BASE_LOOKUP[ord("u")] = 3
+
+
 def sequence_to_int(sequence: str) -> np.ndarray:
     """
     Convert DNA/RNA sequence to integer encoding for signal_kmer encoding.
@@ -376,8 +410,7 @@ def sequence_to_int(sequence: str) -> np.ndarray:
     Returns:
         Integer array with values 0-3 for valid bases, -1 for unknown
     """
-    mapping = {"A": 0, "C": 1, "G": 2, "T": 3, "U": 3}
-    return np.array([mapping.get(b.upper(), -1) for b in sequence], dtype=np.int8)
+    return _BASE_LOOKUP[np.frombuffer(sequence.encode("ascii"), dtype=np.uint8)]
 
 
 def encode_signal_kmer(
@@ -408,6 +441,18 @@ def encode_signal_kmer(
         kmer_len = kmer_before + 1 + kmer_after.
     """
     kmer_before, kmer_after = kmer_context
+
+    if HAS_RUST:
+        return np.asarray(
+            _rs_encode_signal_kmer(
+                sequence_ints.astype(np.int8),
+                seq_to_sig_map.astype(np.int64),
+                signal_len,
+                kmer_before,
+                kmer_after,
+            )
+        )
+
     kmer_len = kmer_before + 1 + kmer_after
     enc = np.zeros((4 * kmer_len, signal_len), dtype=np.float32)
     seq_len = len(seq_to_sig_map) - 1
@@ -446,17 +491,13 @@ def compute_dwell_features(dwells: np.ndarray, window: int = 5) -> dict[str, np.
     eps = 1e-6
     dwell_log = np.log(dwells + eps)
 
-    # Compute local statistics with padding
+    # Compute local statistics with padding using vectorized sliding window
     pad_width = window // 2
     padded = np.pad(dwells, pad_width, mode="edge")
 
-    dwell_mean = np.array(
-        [np.mean(padded[i : i + window]) for i in range(len(dwells))], dtype=np.float32
-    )
-
-    dwell_std = np.array(
-        [np.std(padded[i : i + window]) for i in range(len(dwells))], dtype=np.float32
-    )
+    windows = sliding_window_view(padded, window)
+    dwell_mean = windows.mean(axis=1).astype(np.float32)
+    dwell_std = windows.std(axis=1).astype(np.float32)
 
     # Ratio of dwell to local mean (normalized dwell)
     dwell_ratio = dwells / (dwell_mean + eps)
@@ -496,15 +537,25 @@ def compute_signal_features(
         "level_range": np.zeros(num_bases, dtype=np.float32),
     }
 
-    for i in range(num_bases):
-        start = seq_to_sig_map[i]
-        end = seq_to_sig_map[i + 1]
-        base_sig = signal[start:end]
+    boundaries = seq_to_sig_map[:-1]
+    lengths = np.diff(seq_to_sig_map)
+    sig_len = len(signal)
+    valid = (lengths > 0) & (boundaries < sig_len)
 
-        if len(base_sig) > 0:
-            features["level_mean"][i] = np.mean(base_sig)
-            features["level_median"][i] = np.median(base_sig)
-            features["level_std"][i] = np.std(base_sig)
-            features["level_range"][i] = np.max(base_sig) - np.min(base_sig)
+    # Vectorized mean using reduceat
+    if np.any(valid):
+        sums = np.add.reduceat(signal, boundaries[valid])
+        features["level_mean"][valid] = (sums / lengths[valid]).astype(np.float32)
+
+    # Loop only for median/std/range (no vectorized numpy equivalent)
+    for i in range(num_bases):
+        if lengths[i] > 0:
+            start = seq_to_sig_map[i]
+            end = seq_to_sig_map[i + 1]
+            base_sig = signal[start:end]
+            if len(base_sig) > 0:
+                features["level_median"][i] = np.median(base_sig)
+                features["level_std"][i] = np.std(base_sig)
+                features["level_range"][i] = np.max(base_sig) - np.min(base_sig)
 
     return features

@@ -5,9 +5,29 @@ This module provides functions for converting DNA/RNA sequences into
 numeric representations suitable for model training and inference.
 """
 
-from typing import Any
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
 
 import numpy as np
+
+if TYPE_CHECKING:
+    import torch
+
+# Module-level lookup table for fast sequence-to-int conversion
+_SEQ_LOOKUP = np.full(256, 4, dtype=np.int64)
+_SEQ_LOOKUP[ord("A")] = 0
+_SEQ_LOOKUP[ord("C")] = 1
+_SEQ_LOOKUP[ord("G")] = 2
+_SEQ_LOOKUP[ord("T")] = 3
+_SEQ_LOOKUP[ord("U")] = 3
+_SEQ_LOOKUP[ord("N")] = 4
+_SEQ_LOOKUP[ord("a")] = 0
+_SEQ_LOOKUP[ord("c")] = 1
+_SEQ_LOOKUP[ord("g")] = 2
+_SEQ_LOOKUP[ord("t")] = 3
+_SEQ_LOOKUP[ord("u")] = 3
+_SEQ_LOOKUP[ord("n")] = 4
 
 
 def seq_to_int(seq: str) -> np.ndarray:
@@ -28,8 +48,7 @@ def seq_to_int(seq: str) -> np.ndarray:
         >>> seq_to_int("ACGTN")
         array([0, 1, 2, 3, 4])
     """
-    mapping = {"A": 0, "C": 1, "G": 2, "T": 3, "U": 3, "N": 4}
-    return np.array([mapping.get(b.upper(), 4) for b in seq], dtype=np.int64)
+    return _SEQ_LOOKUP[np.frombuffer(seq.encode("ascii"), dtype=np.uint8)]
 
 
 def int_to_seq(int_seq: np.ndarray) -> str:
@@ -52,7 +71,10 @@ def int_to_seq(int_seq: np.ndarray) -> str:
     return "".join(bases[i] if i < 5 else "N" for i in int_seq)
 
 
-def encode_kmer(sequence: str) -> Any:  # Returns torch.Tensor
+_BASE_TO_IDX = {"A": 0, "C": 1, "G": 2, "T": 3}
+
+
+def encode_kmer(sequence: str) -> torch.Tensor:
     """
     One-hot encode a DNA sequence for model input.
 
@@ -77,14 +99,13 @@ def encode_kmer(sequence: str) -> Any:  # Returns torch.Tensor
     """
     import torch
 
-    base_to_idx = {"A": 0, "C": 1, "G": 2, "T": 3}
     seq_len = len(sequence)
     encoded = torch.zeros(4, seq_len, dtype=torch.float32)
 
     for i, base in enumerate(sequence.upper()):
-        if base in base_to_idx:
-            encoded[base_to_idx[base], i] = 1.0
-        # If base not in dict (e.g., N), leave as zeros
+        idx = _BASE_TO_IDX.get(base)
+        if idx is not None:
+            encoded[idx, i] = 1.0
 
     return encoded
 
