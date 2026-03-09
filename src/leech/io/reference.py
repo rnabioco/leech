@@ -76,6 +76,9 @@ def load_reference_fasta(fasta_path: Path) -> dict[str, str]:
 
     references = {}
 
+    # Regenerate .fai index to prevent stale index failures
+    pysam.faidx(str(fasta_path))
+
     with pysam.FastaFile(str(fasta_path)) as fasta:
         for ref_name in fasta.references:
             references[ref_name] = fasta.fetch(ref_name)
