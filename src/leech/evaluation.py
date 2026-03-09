@@ -53,6 +53,7 @@ def evaluate_model(
         kmer_len = config["kmer_len"]
 
     model_type = config["model_name"]
+    num_out = config.get("num_out", 1)
 
     # Wrap model for unified forward pass
     model_wrapper = ModelInferenceWrapper(model, model_type)
@@ -92,7 +93,10 @@ def evaluate_model(
                 logits = model_wrapper.forward_batch(batch, device)
 
                 # Get predictions
-                probs = torch.sigmoid(logits).cpu().numpy()
+                if num_out > 1:
+                    probs = torch.softmax(logits, dim=-1)[:, 1].cpu().numpy()
+                else:
+                    probs = torch.sigmoid(logits).cpu().numpy()
                 preds = (probs > 0.5).astype(int)
 
                 all_labels.extend(labels.cpu().numpy().flatten())
