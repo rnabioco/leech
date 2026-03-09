@@ -178,9 +178,12 @@ class Trainer:
         if self.output_dir:
             self.output_dir.mkdir(parents=True, exist_ok=True)
 
-        # Resume from checkpoint
+        # Resume from checkpoint (skip if file doesn't exist)
         if resume_checkpoint is not None:
-            self._resume_from_checkpoint(resume_checkpoint)
+            if resume_checkpoint.exists():
+                self._resume_from_checkpoint(resume_checkpoint)
+            else:
+                logger.info(f"Checkpoint not found, starting fresh: {resume_checkpoint}")
 
     def _resume_from_checkpoint(self, checkpoint_path: Path) -> None:
         """Restore training state from a checkpoint."""
