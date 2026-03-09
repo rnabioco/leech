@@ -53,7 +53,11 @@ pub fn encode_signal_kmer<'py>(
             }
             let sig_start = sig_map_slice[seq_pos] as usize;
             let sig_end = sig_map_slice[seq_pos + 1] as usize;
-            let actual_start = if sig_start < sig_len { sig_start } else { sig_len };
+            let actual_start = if sig_start < sig_len {
+                sig_start
+            } else {
+                sig_len
+            };
             let actual_end = if sig_end < sig_len { sig_end } else { sig_len };
             if actual_start < actual_end {
                 let row = offset + base as usize;
