@@ -160,6 +160,7 @@ class GridSearchConfig:
     augment_jitter: float = 0.0
     augment_scale_min: float = 1.0
     augment_scale_max: float = 1.0
+    num_workers: int = 0
 
 
 def prepare_chunks_with_context(
@@ -259,6 +260,7 @@ def run_grid_point(
     augment_jitter: float = 0.0,
     augment_scale_min: float = 1.0,
     augment_scale_max: float = 1.0,
+    num_workers: int = 0,
 ) -> dict:
     """
     Train model for a single grid point.
@@ -327,6 +329,7 @@ def run_grid_point(
             augment_jitter=augment_jitter,
             augment_scale_min=augment_scale_min,
             augment_scale_max=augment_scale_max,
+            num_workers=num_workers,
         )
 
         train_time = time.time() - start_time
@@ -422,6 +425,7 @@ def _grid_point_worker(args: dict) -> dict:
         augment_jitter=args["augment_jitter"],
         augment_scale_min=args["augment_scale_min"],
         augment_scale_max=args["augment_scale_max"],
+        num_workers=args["num_workers"],
     )
 
 
@@ -556,6 +560,7 @@ def run_grid_search(config: GridSearchConfig) -> Path:
                 "augment_jitter": config.augment_jitter,
                 "augment_scale_min": config.augment_scale_min,
                 "augment_scale_max": config.augment_scale_max,
+                "num_workers": config.num_workers,
             }
         )
 

@@ -563,6 +563,7 @@ def train_model(
     augment_scale_min: float = 1.0,
     augment_scale_max: float = 1.0,
     resume_from: Path | None = None,
+    num_workers: int = 0,
     motif: str | None = None,
     motif_offset: int = 0,
     base_justify: str = "center",
@@ -670,23 +671,29 @@ def train_model(
         )
 
     # Create data loaders
-    # On CPU, workers compete for CPU time with training; with pre-tensorized
-    # data __getitem__ is trivially fast, so workers add overhead without benefit.
+    # Daemon processes (e.g. multiprocessing pool workers) cannot spawn children,
+    # so num_workers must be 0. On CPU, workers compete for CPU time with training;
+    # with pre-tensorized data __getitem__ is trivially fast, so workers add overhead.
     import multiprocessing
 
-    if device == "cpu" or multiprocessing.current_process().daemon:
-        num_workers = 0
+    if multiprocessing.current_process().daemon:
+        effective_workers = 0
+    elif num_workers > 0:
+        effective_workers = num_workers
+    elif device == "cpu":
+        effective_workers = 0
     else:
-        num_workers = 2
+        effective_workers = 8  # auto default for CUDA
 
     loader_kwargs: dict = {
         "collate_fn": collate_fn,
-        "num_workers": num_workers,
+        "num_workers": effective_workers,
     }
     if device != "cpu":
         loader_kwargs["pin_memory"] = True
-    if num_workers > 0:
+    if effective_workers > 0:
         loader_kwargs["persistent_workers"] = True
+        loader_kwargs["prefetch_factor"] = 4
 
     # Use drop_last=True for training to avoid BatchNorm issues with batch_size=1
     train_loader = DataLoader(
@@ -741,6 +748,11 @@ def train_model(
 
     model = get_model(model_name, **model_init_kwargs)
 
+    # Auto-detect cross-entropy models (num_out > 1)
+    if hasattr(model, "num_out") and model.num_out > 1 and loss_type == "bce":
+        loss_type = "cross_entropy"
+        logger.info(f"Model {model_name} has num_out={model.num_out}, switching to cross_entropy loss")
+
     # Save config
     output_dir.mkdir(parents=True, exist_ok=True)
     config = {
@@ -770,6 +782,7 @@ def train_model(
         "scheduler_factor": scheduler_factor,
         "warmup_epochs": warmup_epochs,
         "loss_type": loss_type,
+        "num_out": getattr(model, "num_out", 1),
         "focal_gamma": focal_gamma,
         "mixed_precision": mixed_precision,
         "augment_jitter": augment_jitter,
