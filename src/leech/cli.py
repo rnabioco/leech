@@ -405,9 +405,9 @@ def merge(input_chunks, output_dir, train_split, val_split, seed, comparison_spe
 )
 @click.option(
     "--resume",
-    type=click.Path(exists=True, path_type=Path),
+    type=click.Path(path_type=Path),
     default=None,
-    help="Resume training from a checkpoint file (e.g., model_last.pt)",
+    help="Resume training from a checkpoint file (e.g., model_last.pt). Ignored if file doesn't exist.",
 )
 @click.option(
     "--motif",
