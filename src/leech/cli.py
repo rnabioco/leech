@@ -433,6 +433,12 @@ def merge(input_chunks, output_dir, train_split, val_split, seed, comparison_spe
     default="base_onehot",
     help="Sequence encoding type: base_onehot (4, kmer_len) or signal_kmer (36, signal_len)",
 )
+@click.option(
+    "--num-workers",
+    type=int,
+    default=0,
+    help="DataLoader workers (0=auto: 8 for GPU, 0 for CPU)",
+)
 def train(
     train_data,
     val_data,
@@ -464,6 +470,7 @@ def train(
     motif_offset,
     base_justify,
     seq_encoding,
+    num_workers,
 ):
     """Train a model on prepared data."""
     from leech.training import train_model
@@ -507,6 +514,7 @@ def train(
         augment_scale_min=augment_scale_min,
         augment_scale_max=augment_scale_max,
         resume_from=resume,
+        num_workers=num_workers,
         motif=motif,
         motif_offset=motif_offset,
         base_justify=base_justify,
@@ -763,6 +771,12 @@ def export(model_dir, output):
     default=1,
     help="Number of grid points to run concurrently (default: 1, sequential). Each worker loads data independently.",
 )
+@click.option(
+    "--num-workers",
+    type=int,
+    default=0,
+    help="DataLoader workers (0=auto: 8 for GPU, 0 for CPU)",
+)
 def optimize(
     train_data,
     val_data,
@@ -793,6 +807,7 @@ def optimize(
     augment_jitter,
     augment_scale_min,
     augment_scale_max,
+    num_workers,
 ):
     """Optimize model hyperparameters using grid search over chunk contexts."""
     from leech.gridsearch import GridSearchConfig, parse_context_grid, parse_values, run_grid_search
@@ -842,6 +857,7 @@ def optimize(
         augment_jitter=augment_jitter,
         augment_scale_min=augment_scale_min,
         augment_scale_max=augment_scale_max,
+        num_workers=num_workers,
     )
 
     # Run grid search
