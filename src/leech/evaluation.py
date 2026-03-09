@@ -54,6 +54,8 @@ def evaluate_model(
 
     model_type = config["model_name"]
     num_out = config.get("num_out", 1)
+    left_context = config.get("left_context")
+    right_context = config.get("right_context")
 
     # Wrap model for unified forward pass
     model_wrapper = ModelInferenceWrapper(model, model_type)
@@ -65,7 +67,12 @@ def evaluate_model(
     # Load test dataset
     logger.info(f"\nLoading test data from {test_data_path}")
     test_dataset = LeechDataset(
-        test_data_path, signal_len=signal_len, kmer_len=kmer_len, model_type=model_type
+        test_data_path,
+        signal_len=signal_len,
+        kmer_len=kmer_len,
+        model_type=model_type,
+        left_context=left_context,
+        right_context=right_context,
     )
 
     test_loader = DataLoader(

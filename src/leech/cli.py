@@ -563,7 +563,7 @@ def train(
 )
 @click.option(
     "--comparison-type",
-    type=click.Choice(["pairwise", "one_vs_all"]),
+    type=click.Choice(["pairwise", "one_vs_all", "group"]),
     default="pairwise",
     help="Comparison type (default: pairwise)",
 )
@@ -731,8 +731,9 @@ def export(model_dir, output):
 @click.option(
     "--context-grid",
     type=str,
-    required=True,
-    help="Context values to test. Comma-separated (e.g., '200,500,1000') or range as start:stop:step (e.g., '200:1000:200')",
+    required=False,
+    default=None,
+    help="Fallback context values when --left-contexts or --right-contexts are not provided. Comma-separated (e.g., '200,500,1000') or range as start:stop:step (e.g., '200:1000:200')",
 )
 @click.option(
     "--left-contexts",
@@ -811,6 +812,13 @@ def optimize(
 ):
     """Optimize model hyperparameters using grid search over chunk contexts."""
     from leech.gridsearch import GridSearchConfig, parse_context_grid, parse_values, run_grid_search
+
+    # Validate: need context_grid as fallback if left/right not both provided
+    if context_grid is None and (left_contexts is None or right_contexts is None):
+        raise click.UsageError(
+            "--context-grid is required when --left-contexts or "
+            "--right-contexts is not provided"
+        )
 
     # Parse context grids
     left_contexts_list, right_contexts_list = parse_context_grid(

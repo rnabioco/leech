@@ -572,6 +572,8 @@ def train_model(
     base_justify: str = "center",
     seq_encoding: str = "base_onehot",
     signal_kmer_context: tuple[int, int] = (4, 4),
+    left_context: int | None = None,
+    right_context: int | None = None,
     **model_kwargs: Any,
 ) -> dict[str, Any]:
     """
@@ -635,6 +637,10 @@ def train_model(
     torch.manual_seed(seed)
     np.random.seed(seed)
 
+    # Override signal_len from asymmetric context if both provided
+    if left_context is not None and right_context is not None:
+        signal_len = left_context + right_context
+
     # Extract dwell_offset from model_kwargs (grid search param, not model init param)
     dwell_offset = model_kwargs.pop("dwell_offset", 0)
 
@@ -658,6 +664,8 @@ def train_model(
         augmentation=augmentation,
         seq_encoding=seq_encoding,
         signal_kmer_context=signal_kmer_context,
+        left_context=left_context,
+        right_context=right_context,
     )
 
     val_dataset = None
@@ -671,6 +679,8 @@ def train_model(
             chunks=val_chunks,
             seq_encoding=seq_encoding,
             signal_kmer_context=signal_kmer_context,
+            left_context=left_context,
+            right_context=right_context,
         )
 
     # Create data loaders
@@ -732,10 +742,6 @@ def train_model(
         pos_weight_tensor = compute_class_weights(train_dataset)
 
     # Create model
-    # Remove grid-search context parameters (not model init params)
-    model_kwargs.pop("left_context", None)
-    model_kwargs.pop("right_context", None)
-
     # Only pass num_features to models that need it
     model_init_kwargs = {
         "signal_len": signal_len,
@@ -767,6 +773,8 @@ def train_model(
         "motif": motif,
         "motif_offset": motif_offset,
         "base_justify": base_justify,
+        "left_context": left_context,
+        "right_context": right_context,
         "seq_encoding": seq_encoding,
         "signal_kmer_context": list(signal_kmer_context),
         "epochs": epochs,

@@ -19,6 +19,7 @@ from rich.console import Console
 from rich.table import Table
 
 from leech.chunking import extract_training_chunks, load_chunks, save_chunks
+from leech.models.inference_wrapper import ModelInferenceWrapper
 from leech.preparation import iter_bam_with_pod5
 from leech.training import train_model
 
@@ -76,7 +77,7 @@ def parse_values(spec: str) -> list[int]:
 
 
 def parse_context_grid(
-    context_grid: str,
+    context_grid: str | None = None,
     left_contexts: str | None = None,
     right_contexts: str | None = None,
 ) -> tuple[list[int], list[int]]:
@@ -86,12 +87,17 @@ def parse_context_grid(
     and single values.
 
     Args:
-        context_grid: Context values (e.g., "200,500,1000" or "200:1000:200")
+        context_grid: Fallback context values when left/right not provided
+            (e.g., "200,500,1000" or "200:1000:200")
         left_contexts: Override left contexts, or None to use context_grid
         right_contexts: Override right contexts, or None to use context_grid
 
     Returns:
         Tuple of (left_contexts_list, right_contexts_list)
+
+    Raises:
+        ValueError: If context_grid is None and either left_contexts or
+            right_contexts is also None
 
     Examples:
         >>> parse_context_grid("200,500,1000")
@@ -100,7 +106,17 @@ def parse_context_grid(
         ([200, 400, 600, 800, 1000], [200, 400, 600, 800, 1000])
         >>> parse_context_grid("200,500", left_contexts="100,200", right_contexts="300,400")
         ([100, 200], [300, 400])
+        >>> parse_context_grid(left_contexts="100,200", right_contexts="300,400")
+        ([100, 200], [300, 400])
     """
+    if context_grid is None:
+        if left_contexts is None or right_contexts is None:
+            msg = (
+                "--context-grid is required when --left-contexts or "
+                "--right-contexts is not provided"
+            )
+            raise ValueError(msg)
+
     left_list = parse_values(left_contexts if left_contexts is not None else context_grid)
     right_list = parse_values(right_contexts if right_contexts is not None else context_grid)
 
@@ -330,6 +346,8 @@ def run_grid_point(
             augment_scale_min=augment_scale_min,
             augment_scale_max=augment_scale_max,
             num_workers=num_workers,
+            left_context=left_context,
+            right_context=right_context,
         )
 
         train_time = time.time() - start_time
@@ -395,7 +413,7 @@ def _init_worker(
 
 def _grid_point_worker(args: dict) -> dict:
     """Run a single grid point using worker-cached chunks."""
-    return run_grid_point(
+    result = run_grid_point(
         train_data_path=args["train_data_path"],
         val_data_path=args["val_data_path"],
         model_name=args["model_name"],
@@ -427,6 +445,16 @@ def _grid_point_worker(args: dict) -> dict:
         augment_scale_max=args["augment_scale_max"],
         num_workers=args["num_workers"],
     )
+    # Free CUDA memory between grid points to prevent accumulation
+    if args.get("device", "cpu") != "cpu":
+        import gc
+
+        import torch
+
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    return result
 
 
 def run_grid_search(config: GridSearchConfig) -> Path:
@@ -452,6 +480,15 @@ def run_grid_search(config: GridSearchConfig) -> Path:
 
     # Default dwell_offsets to [0] if not provided
     dwell_offsets = config.dwell_offsets if config.dwell_offsets is not None else [0]
+
+    # Skip dwell_offset grid for models without a feature branch
+    if config.model_name not in ModelInferenceWrapper.FEATURE_MODELS:
+        if dwell_offsets != [0]:
+            logger.info(
+                f"Model {config.model_name} has no feature branch; "
+                f"collapsing dwell_offsets to [0]"
+            )
+            dwell_offsets = [0]
 
     logger.info("=" * 80)
     logger.info("Starting Grid Search")
@@ -571,7 +608,9 @@ def run_grid_search(config: GridSearchConfig) -> Path:
         logger.info(
             f"Running {len(grid_points)} grid points with {config.n_parallel} parallel workers"
         )
-        with multiprocessing.Pool(
+        # CUDA does not support fork; use spawn to avoid hangs with multiple GPU workers
+        ctx = multiprocessing.get_context("spawn" if config.device != "cpu" else "fork")
+        with ctx.Pool(
             processes=config.n_parallel,
             initializer=_init_worker,
             initargs=(config.train_data_path, config.val_data_path, pos_weight),
@@ -628,7 +667,7 @@ def run_grid_search(config: GridSearchConfig) -> Path:
                 f"{r.get('best_val_f1', 0):.4f}",
                 f"{r.get('best_val_auc', 0):.4f}",
                 str(r.get("best_epoch", 0)),
-                f"{r.get('training_time_sec', 0):.1f}s",
+                f"{r.get('train_time_sec', 0):.1f}s",
                 style="bold" if r == sorted_results[0] else None,
             )
 

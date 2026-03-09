@@ -79,6 +79,8 @@ class LeechDataset(Dataset):
         augmentation: dict | None = None,
         seq_encoding: str = "base_onehot",
         signal_kmer_context: tuple[int, int] = (4, 4),
+        left_context: int | None = None,
+        right_context: int | None = None,
     ):
         """
         Initialize dataset.
@@ -96,6 +98,10 @@ class LeechDataset(Dataset):
             augmentation: Signal augmentation config dict. Keys:
                 - jitter_std (float): Gaussian noise std dev (0 = disabled)
                 - scale_range (tuple[float, float]): Random scale range (1.0, 1.0 = disabled)
+            left_context: Left signal context (samples before focus base).
+                When both left_context and right_context are provided, crop
+                asymmetrically around the focus base instead of center-cropping.
+            right_context: Right signal context (samples after focus base).
         """
         self.chunk_path = chunk_path
         self.signal_len = signal_len
@@ -105,6 +111,8 @@ class LeechDataset(Dataset):
         self.augmentation = augmentation
         self.seq_encoding = seq_encoding
         self.signal_kmer_context = signal_kmer_context
+        self.left_context = left_context
+        self.right_context = right_context
 
         # Use pre-loaded chunks or load from file
         if chunks is not None:
@@ -231,7 +239,20 @@ class LeechDataset(Dataset):
 
         # Process signal - pad or truncate to signal_len (already float32)
         signal = chunk["signal"]
-        if len(signal) < self.signal_len:
+        if self.left_context is not None and self.right_context is not None:
+            # Asymmetric crop around focus base (at center of symmetrically-prepared chunk)
+            focus_pos = len(signal) // 2
+            start = focus_pos - self.left_context
+            end = focus_pos + self.right_context
+            if start < 0 or end > len(signal):
+                cropped = np.zeros(self.signal_len, dtype=np.float32)
+                src_start, src_end = max(0, start), min(len(signal), end)
+                dst_start = max(0, -start)
+                cropped[dst_start : dst_start + (src_end - src_start)] = signal[src_start:src_end]
+                signal = cropped
+            else:
+                signal = signal[start:end]
+        elif len(signal) < self.signal_len:
             signal = np.pad(signal, (0, self.signal_len - len(signal)), mode="constant")
         elif len(signal) > self.signal_len:
             start = (len(signal) - self.signal_len) // 2

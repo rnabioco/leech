@@ -9,7 +9,7 @@ magic numbers, and configuration constants used throughout the codebase.
 REQUIRED_BAM_TAGS = ["mv", "ns"]
 
 # Signal processing defaults
-DEFAULT_SIGNAL_CONTEXT = (200, 200)  # (left, right) signal samples around focus base
+DEFAULT_SIGNAL_CONTEXT = (225, 225)  # (left, right) signal samples around focus base
 DEFAULT_KMER_CONTEXT = 5  # Number of bases on each side of focus base
 DEFAULT_DWELL_MARGIN = 15  # Extra bases on each side for dwell_offset tuning
 
