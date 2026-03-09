@@ -90,8 +90,8 @@ pub fn seq_banded_dp<'py>(
 
                 // Score for assigning signal[prev_t..t] to base b-1
                 let mut seg_score = 0.0f64;
-                for s in prev_t..t {
-                    let diff = sig_slice[s] - level;
+                for &s in &sig_slice[prev_t..t] {
+                    let diff = s - level;
                     seg_score -= 0.5 * diff * diff;
                 }
 
@@ -188,14 +188,17 @@ pub fn extract_levels<'py>(
         .iter()
         .map(|&b| {
             let c = b.to_ascii_uppercase();
-            if c == b'U' { b'T' } else { c }
+            if c == b'U' {
+                b'T'
+            } else {
+                c
+            }
         })
         .collect();
 
     // Iterate over all valid kmer positions (matching remora's Cython)
     for pos in 0..=(seq_len - kmer_len) {
-        let kmer = std::str::from_utf8(&seq_upper[pos..pos + kmer_len])
-            .unwrap_or("");
+        let kmer = std::str::from_utf8(&seq_upper[pos..pos + kmer_len]).unwrap_or("");
         if let Some(&level) = kmer_to_level.get(kmer) {
             levels[pos + cidx] = level;
         }
