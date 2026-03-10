@@ -726,10 +726,18 @@ def train_model(
         loader_kwargs["persistent_workers"] = True
         loader_kwargs["prefetch_factor"] = 4
 
+    # Cap batch_size so drop_last doesn't discard all data
+    effective_batch_size = min(batch_size, len(train_dataset))
+    if effective_batch_size < batch_size:
+        logger.warning(
+            f"Batch size {batch_size} > dataset size {len(train_dataset)}, "
+            f"reducing to {effective_batch_size}"
+        )
+
     # Use drop_last=True for training to avoid BatchNorm issues with batch_size=1
     train_loader = DataLoader(
         train_dataset,
-        batch_size=batch_size,
+        batch_size=effective_batch_size,
         shuffle=True,
         drop_last=True,
         **loader_kwargs,

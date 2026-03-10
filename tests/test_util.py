@@ -362,6 +362,145 @@ class TestModelBundle:
 
         return model_dirs
 
+    def _create_fake_kfold_dirs(self, tmp_path, model_config, pair_names, n_folds=3):
+        """Helper to create fake k-fold model directories for testing."""
+        for pair in pair_names:
+            pair_dir = tmp_path / pair
+            pair_dir.mkdir(parents=True)
+            for fold_idx in range(n_folds):
+                fold_dir = pair_dir / f"fold_{fold_idx}"
+                fold_dir.mkdir()
+
+                config = {
+                    "model_name": "ConvLSTMDwell",
+                    **model_config,
+                    "epochs": 10,
+                    "batch_size": 32,
+                    "learning_rate": 0.001,
+                    "device": "cpu",
+                    "seed": 42,
+                }
+                with open(fold_dir / "config.json", "w") as f:
+                    json.dump(config, f)
+
+                model = get_model("ConvLSTMDwell", **model_config)
+                torch.save(
+                    {"model_state_dict": model.state_dict()},
+                    fold_dir / "model_best.pt",
+                )
+
+                # Write summary.json with different F1 scores per fold
+                f1_score = 0.80 + 0.05 * fold_idx  # fold_2 is best
+                with open(fold_dir / "summary.json", "w") as f:
+                    json.dump({"best_val_f1": f1_score}, f)
+
+    def test_kfold_discovery_picks_best_fold(self, tmp_path, model_config):
+        """Bundle CLI discovers fold_* subdirs and picks best fold by val F1."""
+        from leech.cli import _pick_best_fold
+
+        pairs = ["Ala_notAla", "Gly_notGly"]
+        root = tmp_path / "models"
+        self._create_fake_kfold_dirs(root, model_config, pairs, n_folds=3)
+
+        # Simulate the CLI discovery logic
+        model_dirs = {}
+        for subdir in sorted(root.iterdir()):
+            if not subdir.is_dir():
+                continue
+            if (subdir / "model_best.pt").exists() and (subdir / "config.json").exists():
+                model_dirs[subdir.name] = subdir
+                continue
+            fold_dirs = sorted(subdir.glob("fold_*/"))
+            valid_folds = [
+                f
+                for f in fold_dirs
+                if (f / "model_best.pt").exists() and (f / "config.json").exists()
+            ]
+            if valid_folds:
+                best_fold = _pick_best_fold(valid_folds)
+                model_dirs[subdir.name] = best_fold
+
+        assert len(model_dirs) == 2
+        # fold_2 has highest F1 (0.90) in our setup
+        for pair in pairs:
+            assert model_dirs[pair].name == "fold_2"
+
+        # Verify the discovered dirs can be bundled
+        bundle_path = tmp_path / "kfold_bundle.pt"
+        create_bundle(model_dirs, bundle_path, "one_vs_all", "1.0.0")
+        assert bundle_path.exists()
+
+        metadata = list_bundle_models(bundle_path)
+        assert metadata["num_models"] == 2
+        assert set(metadata["pairs"]) == set(pairs)
+
+    def test_kfold_discovery_fallback_no_summary(self, tmp_path, model_config):
+        """When no summary.json exists, falls back to first fold."""
+        from leech.cli import _pick_best_fold
+
+        pair_dir = tmp_path / "models" / "Ala_notAla"
+        pair_dir.mkdir(parents=True)
+        for fold_idx in range(3):
+            fold_dir = pair_dir / f"fold_{fold_idx}"
+            fold_dir.mkdir()
+            config = {"model_name": "ConvLSTMDwell", **model_config}
+            with open(fold_dir / "config.json", "w") as f:
+                json.dump(config, f)
+            model = get_model("ConvLSTMDwell", **model_config)
+            torch.save(
+                {"model_state_dict": model.state_dict()},
+                fold_dir / "model_best.pt",
+            )
+            # No summary.json
+
+        fold_dirs = sorted(pair_dir.glob("fold_*/"))
+        valid_folds = [
+            f
+            for f in fold_dirs
+            if (f / "model_best.pt").exists() and (f / "config.json").exists()
+        ]
+        best = _pick_best_fold(valid_folds)
+        assert best.name == "fold_0"  # fallback to first
+
+    def test_mixed_flat_and_kfold(self, tmp_path, model_config):
+        """Bundle discovery handles mix of flat and k-fold pair dirs."""
+        from leech.cli import _pick_best_fold
+
+        root = tmp_path / "models"
+
+        # Flat pair (no folds)
+        flat_pairs = ["Ser_notSer"]
+        self._create_fake_model_dirs(root, model_config, flat_pairs)
+
+        # K-fold pair
+        kfold_pairs = ["Ala_notAla"]
+        self._create_fake_kfold_dirs(root, model_config, kfold_pairs, n_folds=2)
+
+        model_dirs = {}
+        for subdir in sorted(root.iterdir()):
+            if not subdir.is_dir():
+                continue
+            if (subdir / "model_best.pt").exists() and (subdir / "config.json").exists():
+                model_dirs[subdir.name] = subdir
+                continue
+            fold_dirs = sorted(subdir.glob("fold_*/"))
+            valid_folds = [
+                f
+                for f in fold_dirs
+                if (f / "model_best.pt").exists() and (f / "config.json").exists()
+            ]
+            if valid_folds:
+                best_fold = _pick_best_fold(valid_folds)
+                model_dirs[subdir.name] = best_fold
+
+        assert len(model_dirs) == 2
+        assert "Ser_notSer" in model_dirs
+        assert "Ala_notAla" in model_dirs
+        # Flat dir points to the pair dir itself
+        assert model_dirs["Ser_notSer"].name == "Ser_notSer"
+        # K-fold dir points to a fold subdir
+        assert model_dirs["Ala_notAla"].name.startswith("fold_")
+
     def test_create_and_load_bundle(self, tmp_path, model_config):
         """Round-trip: create 3 fake models, bundle, load one, verify forward pass."""
         pairs = ["Ala_Gly", "Ala_Ser", "Gly_Ser"]
