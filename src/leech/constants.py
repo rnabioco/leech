@@ -11,7 +11,9 @@ REQUIRED_BAM_TAGS = ["mv", "ns"]
 # Signal processing defaults
 DEFAULT_SIGNAL_CONTEXT = (225, 225)  # (left, right) signal samples around focus base
 DEFAULT_KMER_CONTEXT = 5  # Number of bases on each side of focus base
-DEFAULT_DWELL_MARGIN = 15  # Extra bases on each side for dwell_offset tuning
+DEFAULT_DWELL_MARGIN = 15  # Extra bases on each side for dwell_offset tuning (symmetric fallback)
+DEFAULT_DWELL_MARGIN_LEFT = 3  # Extra bases toward tRNA body (keep small to avoid isoacceptor confounds)
+DEFAULT_DWELL_MARGIN_RIGHT = 15  # Extra bases toward 3' adaptor (safe: constant sequence)
 
 # Model architecture defaults
 DEFAULT_CONV_CHANNELS = [4, 16, 256]  # Channel sizes for conv layers

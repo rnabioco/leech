@@ -75,6 +75,8 @@ class LeechRead:
         kmer_context: int = DEFAULT_KMER_CONTEXT,
         base_justify: str = "center",
         dwell_margin: int = 0,
+        dwell_margin_left: int | None = None,
+        dwell_margin_right: int | None = None,
     ) -> dict[str, np.ndarray | str | int | None] | None:
         """
         Extract a training chunk centered on a specific base.
@@ -91,7 +93,12 @@ class LeechRead:
                   base). Useful for tRNA aa-charging where the amino acid is
                   attached to the 3' hydroxyl of the terminal A.
             dwell_margin: Extra bases on each side of dwell/feature arrays for
-                runtime dwell_offset tuning. Sequence is unaffected.
+                runtime dwell_offset tuning (symmetric fallback). Sequence is
+                unaffected.
+            dwell_margin_left: Override left margin (toward tRNA body). If None,
+                falls back to dwell_margin.
+            dwell_margin_right: Override right margin (toward 3' adaptor). If None,
+                falls back to dwell_margin.
 
         Returns:
             Dictionary with 'signal', 'kmer', 'dwell', 'features' arrays,
@@ -159,8 +166,11 @@ class LeechRead:
             kmer_seq = "".join(parts)
 
         # Extract dwell features with safe boundary handling
-        dwell_start = base_idx - kmer_context - dwell_margin
-        dwell_end = base_idx + kmer_context + 1 + dwell_margin
+        # Support asymmetric margins: left (into tRNA body), right (into adaptor)
+        eff_margin_left = dwell_margin_left if dwell_margin_left is not None else dwell_margin
+        eff_margin_right = dwell_margin_right if dwell_margin_right is not None else dwell_margin
+        dwell_start = base_idx - kmer_context - eff_margin_left
+        dwell_end = base_idx + kmer_context + 1 + eff_margin_right
         dwell_width = dwell_end - dwell_start
         safe_start = max(0, dwell_start)
         safe_end = min(len(self.dwells), dwell_end)
@@ -228,6 +238,7 @@ class LeechRead:
             "sequence": kmer_seq,
             "dwell": dwell_chunk,
             "features": np.stack(features, axis=0) if features else np.array([]),
+            "dwell_margin_left": eff_margin_left,
             "base_idx": base_idx,
             "label": self.labels[base_idx] if self.labels is not None else None,
             "seq_to_sig_map": chunk_seq_to_sig,
@@ -244,6 +255,8 @@ def extract_training_chunks(
     motif_searcher: MotifSearcher | None = None,
     base_justify: str = "center",
     dwell_margin: int = 0,
+    dwell_margin_left: int | None = None,
+    dwell_margin_right: int | None = None,
 ) -> list[dict[str, np.ndarray | str | int | None]]:
     """
     Extract all training chunks from a read, optionally filtered by motif.
@@ -256,7 +269,9 @@ def extract_training_chunks(
         label_int: Optional numeric label (0, 1) - assigned during merge for pairwise comparisons
         motif_searcher: MotifSearcher instance (required if motif is provided)
         dwell_margin: Extra bases on each side of dwell/feature arrays for
-            runtime dwell_offset tuning
+            runtime dwell_offset tuning (symmetric fallback)
+        dwell_margin_left: Override left margin (toward tRNA body)
+        dwell_margin_right: Override right margin (toward 3' adaptor)
 
     Returns:
         List of chunk dictionaries
@@ -304,7 +319,13 @@ def extract_training_chunks(
 
     # Extract chunks
     for base_idx in focus_bases:
-        chunk = leech_read.get_chunk(base_idx, base_justify=base_justify, dwell_margin=dwell_margin)
+        chunk = leech_read.get_chunk(
+            base_idx,
+            base_justify=base_justify,
+            dwell_margin=dwell_margin,
+            dwell_margin_left=dwell_margin_left,
+            dwell_margin_right=dwell_margin_right,
+        )
         if chunk is not None:
             chunk["read_id"] = leech_read.read_id
             # Rename numeric "label" from get_chunk() to "label_int"

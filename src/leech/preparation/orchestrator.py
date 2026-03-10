@@ -33,6 +33,8 @@ def prepare_training_data(
     min_mapq: int = 0,
     base_justify: str = "center",
     dwell_margin: int = 0,
+    dwell_margin_left: int | None = None,
+    dwell_margin_right: int | None = None,
     reverse_signal: bool = True,
 ) -> tuple[list[dict[str, np.ndarray | str | int | None]], dict[str, int]]:
     """
@@ -91,6 +93,8 @@ def prepare_training_data(
             motif_searcher=motif_searcher,
             base_justify=base_justify,
             dwell_margin=dwell_margin,
+            dwell_margin_left=dwell_margin_left,
+            dwell_margin_right=dwell_margin_right,
         )
 
         # Track whether this read had motif matches
@@ -145,6 +149,8 @@ def prepare_training_data_with_split(
     progress_callback: Callable[[int], None] | None = None,
     base_justify: str = "center",
     dwell_margin: int = 0,
+    dwell_margin_left: int | None = None,
+    dwell_margin_right: int | None = None,
     reverse_signal: bool = True,
     anchor: str = "basecall",
     norm_method: str = "median_mad",
@@ -248,6 +254,8 @@ def prepare_training_data_with_split(
             motif_searcher=motif_searcher,
             base_justify=base_justify,
             dwell_margin=dwell_margin,
+            dwell_margin_left=dwell_margin_left,
+            dwell_margin_right=dwell_margin_right,
         )
         chunks.extend(read_chunks)
 
