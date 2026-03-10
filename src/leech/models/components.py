@@ -25,6 +25,7 @@ class SignalBranch(nn.Module):
     Args:
         conv_channels: List of channel sizes for conv layers (default: [4, 16, 256])
         kernel_size: Kernel size for convolutions (default: 5)
+        use_batchnorm: Insert BatchNorm1d after each Conv1d (default: False)
 
     Input shape:
         (batch_size, signal_len)
@@ -37,30 +38,22 @@ class SignalBranch(nn.Module):
         self,
         conv_channels: list[int] | None = None,
         kernel_size: int = DEFAULT_SIGNAL_KERNEL,
+        use_batchnorm: bool = False,
     ):
         super().__init__()
 
         if conv_channels is None:
             conv_channels = DEFAULT_CONV_CHANNELS
 
-        self.conv_layers = nn.Sequential(
-            nn.Conv1d(1, conv_channels[0], kernel_size=kernel_size, padding=kernel_size // 2),
-            nn.ReLU(),
-            nn.Conv1d(
-                conv_channels[0],
-                conv_channels[1],
-                kernel_size=kernel_size,
-                padding=kernel_size // 2,
-            ),
-            nn.ReLU(),
-            nn.Conv1d(
-                conv_channels[1],
-                conv_channels[2],
-                kernel_size=kernel_size,
-                padding=kernel_size // 2,
-            ),
-            nn.ReLU(),
-        )
+        layers: list[nn.Module] = []
+        in_ch = 1
+        for out_ch in conv_channels:
+            layers.append(nn.Conv1d(in_ch, out_ch, kernel_size=kernel_size, padding=kernel_size // 2))
+            if use_batchnorm:
+                layers.append(nn.BatchNorm1d(out_ch))
+            layers.append(nn.ReLU())
+            in_ch = out_ch
+        self.conv_layers = nn.Sequential(*layers)
 
     def forward(self, signal: torch.Tensor) -> torch.Tensor:
         """
@@ -89,6 +82,7 @@ class SequenceBranch(nn.Module):
         in_channels: Number of input channels (4 for base_onehot, 36 for signal_kmer with (4,4) context)
         conv_channels: List of channel sizes for conv layers (default: [4, 16, 256])
         kernel_size: Kernel size for convolutions (default: 3)
+        use_batchnorm: Insert BatchNorm1d after each Conv1d (default: False)
 
     Input shape:
         (batch_size, in_channels, seq_len)
@@ -102,32 +96,22 @@ class SequenceBranch(nn.Module):
         in_channels: int = 4,
         conv_channels: list[int] | None = None,
         kernel_size: int = DEFAULT_SEQ_KERNEL,
+        use_batchnorm: bool = False,
     ):
         super().__init__()
 
         if conv_channels is None:
             conv_channels = DEFAULT_CONV_CHANNELS
 
-        self.conv_layers = nn.Sequential(
-            nn.Conv1d(
-                in_channels, conv_channels[0], kernel_size=kernel_size, padding=kernel_size // 2
-            ),
-            nn.ReLU(),
-            nn.Conv1d(
-                conv_channels[0],
-                conv_channels[1],
-                kernel_size=kernel_size,
-                padding=kernel_size // 2,
-            ),
-            nn.ReLU(),
-            nn.Conv1d(
-                conv_channels[1],
-                conv_channels[2],
-                kernel_size=kernel_size,
-                padding=kernel_size // 2,
-            ),
-            nn.ReLU(),
-        )
+        layers: list[nn.Module] = []
+        in_ch = in_channels
+        for out_ch in conv_channels:
+            layers.append(nn.Conv1d(in_ch, out_ch, kernel_size=kernel_size, padding=kernel_size // 2))
+            if use_batchnorm:
+                layers.append(nn.BatchNorm1d(out_ch))
+            layers.append(nn.ReLU())
+            in_ch = out_ch
+        self.conv_layers = nn.Sequential(*layers)
 
     def forward(self, sequence: torch.Tensor) -> torch.Tensor:
         """
@@ -153,6 +137,7 @@ class FeatureBranch(nn.Module):
         num_features: Number of input feature channels (e.g., 5 for dwell + 4 signal stats)
         conv_channels: List of channel sizes for conv layers (default: [4, 16, 256])
         kernel_size: Kernel size for convolutions (default: 3)
+        use_batchnorm: Insert BatchNorm1d after each Conv1d (default: False)
 
     Input shape:
         (batch_size, num_features, kmer_len)
@@ -166,32 +151,22 @@ class FeatureBranch(nn.Module):
         num_features: int,
         conv_channels: list[int] | None = None,
         kernel_size: int = DEFAULT_FEATURE_KERNEL,
+        use_batchnorm: bool = False,
     ):
         super().__init__()
 
         if conv_channels is None:
             conv_channels = DEFAULT_CONV_CHANNELS
 
-        self.conv_layers = nn.Sequential(
-            nn.Conv1d(
-                num_features, conv_channels[0], kernel_size=kernel_size, padding=kernel_size // 2
-            ),
-            nn.ReLU(),
-            nn.Conv1d(
-                conv_channels[0],
-                conv_channels[1],
-                kernel_size=kernel_size,
-                padding=kernel_size // 2,
-            ),
-            nn.ReLU(),
-            nn.Conv1d(
-                conv_channels[1],
-                conv_channels[2],
-                kernel_size=kernel_size,
-                padding=kernel_size // 2,
-            ),
-            nn.ReLU(),
-        )
+        layers: list[nn.Module] = []
+        in_ch = num_features
+        for out_ch in conv_channels:
+            layers.append(nn.Conv1d(in_ch, out_ch, kernel_size=kernel_size, padding=kernel_size // 2))
+            if use_batchnorm:
+                layers.append(nn.BatchNorm1d(out_ch))
+            layers.append(nn.ReLU())
+            in_ch = out_ch
+        self.conv_layers = nn.Sequential(*layers)
 
     def forward(self, features: torch.Tensor) -> torch.Tensor:
         """
