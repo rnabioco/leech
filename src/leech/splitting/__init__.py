@@ -7,6 +7,7 @@ classification tasks.
 """
 
 from leech.splitting.splitter import (
+    merge_and_kfold_split_chunks,
     merge_and_split_chunks,
     parse_comparison_spec,
     process_comparison_spec,
@@ -16,6 +17,7 @@ from leech.splitting.splitter import (
 __all__ = [
     "split_chunks_by_read",
     "merge_and_split_chunks",
+    "merge_and_kfold_split_chunks",
     "parse_comparison_spec",
     "process_comparison_spec",
 ]

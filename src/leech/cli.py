@@ -338,12 +338,18 @@ def model():
     help="Random seed for reproducibility",
 )
 @click.option(
+    "--k-fold",
+    type=int,
+    default=1,
+    help="Number of cross-validation folds. When > 1, creates k-fold splits instead of a single train/val/test split. Must be >= 3 when used.",
+)
+@click.option(
     "--comparison-spec",
     type=click.Path(exists=True, path_type=Path),
     default=None,
     help="TSV file with comparison specifications (4 columns: meta_label1, label_set1, meta_label2, label_set2). When provided, input-chunks should be directories.",
 )
-def merge(input_chunks, output_dir, train_split, val_split, seed, comparison_spec):
+def merge(input_chunks, output_dir, train_split, val_split, seed, k_fold, comparison_spec):
     """Merge multiple chunk files and split at read level to prevent data leakage.
 
     This command implements the correct workflow for multi-sample datasets:
@@ -362,17 +368,30 @@ def merge(input_chunks, output_dir, train_split, val_split, seed, comparison_spe
 
         # Batch processing from TSV spec
         leech data merge -i chunks/dir1 -i chunks/dir2 --comparison-spec spec.tsv -o merged/
-    """
-    from leech.commands import handle_merge_and_split
 
-    handle_merge_and_split(
-        input_chunks=input_chunks,
-        output_dir=output_dir,
-        train_split=train_split,
-        val_split=val_split,
-        seed=seed,
-        comparison_spec=comparison_spec,
-    )
+        # 5-fold cross-validation
+        leech data merge -i Ala=ala.npz -i Gly=gly.npz -o kfold/ --k-fold 5
+    """
+    if k_fold > 1:
+        from leech.commands import handle_merge_and_split_kfold
+
+        handle_merge_and_split_kfold(
+            input_chunks=input_chunks,
+            output_dir=output_dir,
+            k_fold=k_fold,
+            seed=seed,
+        )
+    else:
+        from leech.commands import handle_merge_and_split
+
+        handle_merge_and_split(
+            input_chunks=input_chunks,
+            output_dir=output_dir,
+            train_split=train_split,
+            val_split=val_split,
+            seed=seed,
+            comparison_spec=comparison_spec,
+        )
 
 
 @model.command()

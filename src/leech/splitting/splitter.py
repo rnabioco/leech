@@ -337,6 +337,222 @@ def merge_and_split_chunks(
         return train_chunks, val_chunks, test_chunks
 
 
+def merge_and_kfold_split_chunks(
+    input_paths: list[Path],
+    output_dir: Path,
+    k_fold: int,
+    seed: int | None = None,
+    relabel_pairwise: tuple[str | list[str], str | list[str]] | None = None,
+) -> dict[str, Any]:
+    """
+    Merge multiple chunk files and split into k folds at read level for cross-validation.
+
+    This implements k-fold cross-validation with read-level splitting to prevent
+    data leakage. For each fold i:
+    - test = partition[i]
+    - val = partition[(i+1) % k]
+    - train = all remaining partitions
+
+    Memory-efficient implementation: First pass collects only read IDs to determine
+    fold assignments, second pass loads and assigns chunks to appropriate folds.
+
+    Args:
+        input_paths: List of paths to .npz chunk files to merge
+        output_dir: Directory to save fold splits (fold_0/, fold_1/, ...)
+        k_fold: Number of folds (must be >= 3)
+        seed: Random seed for reproducibility
+        relabel_pairwise: Optional tuple of (group1, group2) for pairwise comparison.
+            Each group can be a single label (str) or multiple labels (list[str]).
+            Chunks matching group1 get label_int=0, chunks matching group2 get label_int=1.
+
+    Returns:
+        Dictionary with statistics:
+        {
+            'k_fold': int,
+            'n_total': int,
+            'folds': [
+                {'n_train': int, 'n_val': int, 'n_test': int, 'output_files': {...}},
+                ...
+            ]
+        }
+
+    Raises:
+        ValueError: If k_fold < 3
+
+    Example:
+        >>> result = merge_and_kfold_split_chunks(
+        ...     [Path("ala.npz"), Path("gly.npz")],
+        ...     output_dir=Path("kfold/Ala_vs_Gly"),
+        ...     k_fold=5,
+        ...     relabel_pairwise=("Ala", "Gly"),
+        ...     seed=42
+        ... )
+    """
+    from leech.util import setup_random_seed
+
+    if k_fold < 3:
+        raise ValueError(f"k_fold must be >= 3, got {k_fold}")
+
+    # Setup seed and output directory
+    output_dir.mkdir(parents=True, exist_ok=True)
+    setup_random_seed(seed, output_dir)
+
+    logger.info(f"Merging {len(input_paths)} chunk files for {k_fold}-fold cross-validation")
+
+    # ---- Pass 1: collect read IDs ----
+    logger.info("Pass 1: Collecting read IDs for fold assignment")
+    all_read_ids: set[str] = set()
+    file_chunk_counts = []
+
+    for chunk_path in input_paths:
+        logger.info(f"  Scanning {chunk_path}")
+        with np.load(chunk_path, allow_pickle=True) as data:
+            read_ids = data["read_ids"]
+            all_read_ids.update(str(rid) for rid in read_ids)
+            file_chunk_counts.append(len(read_ids))
+            logger.info(f"    Found {len(read_ids)} chunks")
+
+    logger.info(f"Total unique reads across all files: {len(all_read_ids)}")
+
+    # Shuffle read IDs deterministically
+    if seed is not None:
+        random.seed(seed)
+
+    read_ids_list = list(all_read_ids)
+    random.shuffle(read_ids_list)
+
+    # Partition into k groups
+    partitions = np.array_split(read_ids_list, k_fold)
+    partition_sets = [set(p.tolist()) for p in partitions]
+
+    for i, part in enumerate(partition_sets):
+        logger.info(f"  Partition {i}: {len(part)} reads")
+
+    # Build fold assignments: for each fold i, determine train/val/test read sets
+    fold_read_assignments: list[dict[str, set[str]]] = []
+    for i in range(k_fold):
+        test_ids = partition_sets[i]
+        val_ids = partition_sets[(i + 1) % k_fold]
+        train_ids: set[str] = set()
+        for j in range(k_fold):
+            if j != i and j != (i + 1) % k_fold:
+                train_ids.update(partition_sets[j])
+        fold_read_assignments.append({
+            "train": train_ids,
+            "val": val_ids,
+            "test": test_ids,
+        })
+        logger.info(
+            f"  Fold {i}: train={len(train_ids)} reads, "
+            f"val={len(val_ids)} reads, test={len(test_ids)} reads"
+        )
+
+    # ---- Pass 2: load chunks and assign to folds ----
+    logger.info("Pass 2: Loading chunks and assigning to folds")
+
+    # Initialize accumulators for each fold
+    fold_chunks: list[dict[str, list[dict]]] = [
+        {"train": [], "val": [], "test": []} for _ in range(k_fold)
+    ]
+
+    for chunk_path in input_paths:
+        logger.info(f"  Processing {chunk_path}")
+        chunks = load_chunks(chunk_path)
+
+        # Relabel chunks if pairwise comparison is requested
+        if relabel_pairwise is not None:
+            group1, group2 = relabel_pairwise
+            group1_labels = [group1] if isinstance(group1, str) else group1
+            group2_labels = [group2] if isinstance(group2, str) else group2
+
+            relabeled_count = 0
+            skipped_count = 0
+            for chunk in chunks:
+                chunk_label = chunk.get("label")
+                if chunk_label in group1_labels:
+                    chunk["label_int"] = 0
+                    relabeled_count += 1
+                elif chunk_label in group2_labels:
+                    chunk["label_int"] = 1
+                    relabeled_count += 1
+                else:
+                    logger.warning(
+                        f"Chunk with label='{chunk_label}' does not match "
+                        f"pairwise comparison (group1={group1_labels}, group2={group2_labels}), keeping original label"
+                    )
+                    skipped_count += 1
+            if relabeled_count > 0:
+                logger.info(
+                    f"    Relabeled {relabeled_count} chunks for pairwise comparison "
+                    f"(group1={group1_labels}->0, group2={group2_labels}->1)"
+                )
+            if skipped_count > 0:
+                logger.warning(f"    Skipped {skipped_count} chunks with mismatched labels")
+
+        # Distribute chunks to folds based on read ID membership
+        for chunk in chunks:
+            read_id = chunk["read_id"]
+            for i in range(k_fold):
+                assignments = fold_read_assignments[i]
+                if read_id in assignments["test"]:
+                    fold_chunks[i]["test"].append(chunk)
+                elif read_id in assignments["val"]:
+                    fold_chunks[i]["val"].append(chunk)
+                elif read_id in assignments["train"]:
+                    fold_chunks[i]["train"].append(chunk)
+
+        logger.info(f"    Assigned {len(chunks)} chunks")
+        del chunks
+
+    # Save each fold
+    folds_stats: list[dict[str, Any]] = []
+    n_total = 0
+
+    for i in range(k_fold):
+        fold_dir = output_dir / f"fold_{i}"
+        fold_dir.mkdir(parents=True, exist_ok=True)
+
+        train_file = fold_dir / "train.npz"
+        val_file = fold_dir / "val.npz"
+        test_file = fold_dir / "test.npz"
+
+        train_chunks = fold_chunks[i]["train"]
+        val_chunks = fold_chunks[i]["val"]
+        test_chunks = fold_chunks[i]["test"]
+
+        save_chunks(train_chunks, train_file)
+        save_chunks(val_chunks, val_file)
+        save_chunks(test_chunks, test_file)
+
+        fold_total = len(train_chunks) + len(val_chunks) + len(test_chunks)
+        if i == 0:
+            n_total = fold_total
+
+        logger.info(
+            f"Fold {i}: train={len(train_chunks)}, val={len(val_chunks)}, "
+            f"test={len(test_chunks)} chunks -> {fold_dir}"
+        )
+
+        folds_stats.append({
+            "n_train": len(train_chunks),
+            "n_val": len(val_chunks),
+            "n_test": len(test_chunks),
+            "output_files": {
+                "train": train_file,
+                "val": val_file,
+                "test": test_file,
+            },
+        })
+
+    logger.info(f"Saved {k_fold} folds to {output_dir}")
+
+    return {
+        "k_fold": k_fold,
+        "n_total": n_total,
+        "folds": folds_stats,
+    }
+
+
 def parse_comparison_spec(tsv_path: Path) -> list[tuple[str, list[str], str, list[str]]]:
     """
     Parse TSV comparison spec file into list of comparison specifications.
