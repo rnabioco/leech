@@ -109,7 +109,13 @@ def load_model_from_checkpoint(
         raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_file}")
 
     checkpoint = torch.load(checkpoint_file, map_location=device)
-    model.load_state_dict(checkpoint["model_state_dict"])
+
+    # Strip _orig_mod. prefix added by torch.compile()
+    state_dict = checkpoint["model_state_dict"]
+    state_dict = {
+        k.removeprefix("_orig_mod."): v for k, v in state_dict.items()
+    }
+    model.load_state_dict(state_dict)
     model = model.to(device)
     model.eval()
 
@@ -430,8 +436,14 @@ def create_torchscript_bundle(
             raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
         checkpoint = torch.load(checkpoint_path, map_location="cpu")
 
+        # Strip _orig_mod. prefix added by torch.compile()
+        state_dict = checkpoint["model_state_dict"]
+        state_dict = {
+            k.removeprefix("_orig_mod."): v for k, v in state_dict.items()
+        }
+
         model = _instantiate_model(ref_arch_config)
-        model.load_state_dict(checkpoint["model_state_dict"])
+        model.load_state_dict(state_dict)
         traced = trace_model(model, ref_arch_config)
         traced_bytes = serialize_traced_model(traced)
 
