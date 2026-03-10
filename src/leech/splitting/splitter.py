@@ -18,6 +18,21 @@ from leech.chunking import load_chunks, save_chunks
 logger = logging.getLogger("leech.splitting.splitter")
 
 
+def _source_group_from_path(chunk_path: Path) -> str:
+    """Extract source group name from a chunk file path.
+
+    For charging paths like ``.../charging/ThrRS_thr_b1/charged/all.npz``,
+    the parent dir is ``charged`` or ``uncharged``, so we go up one more level
+    to get the sample name (``ThrRS_thr_b1``).
+
+    For standard paths like ``.../Ala/all.npz``, the parent dir is the label.
+    """
+    parent_name = chunk_path.parent.name
+    if parent_name in ("charged", "uncharged"):
+        return chunk_path.parent.parent.name
+    return parent_name
+
+
 def split_chunks_by_read(
     chunks: list[dict],
     train_frac: float = 0.7,
@@ -237,6 +252,11 @@ def merge_and_split_chunks(
         # Load chunks from this file using the standard loader
         chunks = load_chunks(chunk_path)
 
+        # Tag chunks with source group from file path
+        source_group = _source_group_from_path(chunk_path)
+        for chunk in chunks:
+            chunk["source_group"] = source_group
+
         # Relabel chunks if pairwise comparison is requested
         if relabel_pairwise is not None:
             group1, group2 = relabel_pairwise
@@ -289,8 +309,17 @@ def merge_and_split_chunks(
     logger.info(f"  Val: {len(val_chunks)} chunks")
     logger.info(f"  Test: {len(test_chunks)} chunks")
 
-    # Check label distribution and warn if all labels are the same
+    # Log source group distribution
     all_chunks_combined = train_chunks + val_chunks + test_chunks
+    source_group_counts: dict[str, int] = {}
+    for chunk in all_chunks_combined:
+        sg = chunk.get("source_group")
+        if sg:
+            source_group_counts[sg] = source_group_counts.get(sg, 0) + 1
+    if source_group_counts:
+        logger.info(f"Source group distribution: {source_group_counts}")
+
+    # Check label distribution and warn if all labels are the same
     unique_labels = {chunk["label"] for chunk in all_chunks_combined if chunk["label"] is not None}
     if len(unique_labels) == 1:
         logger.warning(
@@ -458,6 +487,11 @@ def merge_and_kfold_split_chunks(
     for chunk_path in input_paths:
         logger.info(f"  Processing {chunk_path}")
         chunks = load_chunks(chunk_path)
+
+        # Tag chunks with source group from file path
+        source_group = _source_group_from_path(chunk_path)
+        for chunk in chunks:
+            chunk["source_group"] = source_group
 
         # Relabel chunks if pairwise comparison is requested
         if relabel_pairwise is not None:

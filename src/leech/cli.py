@@ -474,6 +474,11 @@ def merge(input_chunks, output_dir, train_split, val_split, seed, k_fold, compar
     default=0,
     help="DataLoader workers (0=auto: 8 for GPU, 0 for CPU)",
 )
+@click.option(
+    "--balance-groups/--no-balance-groups",
+    default=False,
+    help="Balance sampling across source groups (e.g., per-AA) so each group contributes equally per epoch",
+)
 def train(
     train_data,
     val_data,
@@ -506,6 +511,7 @@ def train(
     base_justify,
     seq_encoding,
     num_workers,
+    balance_groups,
 ):
     """Train a model on prepared data."""
     from leech.training import train_model
@@ -554,6 +560,7 @@ def train(
         motif_offset=motif_offset,
         base_justify=base_justify,
         seq_encoding=seq_encoding,
+        balance_groups=balance_groups,
         **model_kwargs,
     )
 
@@ -842,6 +849,11 @@ def export(model_dir, output):
     default=0,
     help="DataLoader workers (0=auto: 8 for GPU, 0 for CPU)",
 )
+@click.option(
+    "--balance-groups/--no-balance-groups",
+    default=False,
+    help="Balance sampling across source groups (e.g., per-AA) so each group contributes equally per epoch",
+)
 def optimize(
     train_data,
     val_data,
@@ -873,6 +885,7 @@ def optimize(
     augment_scale_min,
     augment_scale_max,
     num_workers,
+    balance_groups,
 ):
     """Optimize model hyperparameters using grid search over chunk contexts."""
     from leech.gridsearch import GridSearchConfig, parse_context_grid, parse_values, run_grid_search
@@ -930,6 +943,7 @@ def optimize(
         augment_scale_min=augment_scale_min,
         augment_scale_max=augment_scale_max,
         num_workers=num_workers,
+        balance_groups=balance_groups,
     )
 
     # Run grid search

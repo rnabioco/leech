@@ -177,6 +177,7 @@ class GridSearchConfig:
     augment_scale_min: float = 1.0
     augment_scale_max: float = 1.0
     num_workers: int = 0
+    balance_groups: bool = False
 
 
 def prepare_chunks_with_context(
@@ -277,6 +278,7 @@ def run_grid_point(
     augment_scale_min: float = 1.0,
     augment_scale_max: float = 1.0,
     num_workers: int = 0,
+    balance_groups: bool = False,
 ) -> dict:
     """
     Train model for a single grid point.
@@ -348,6 +350,7 @@ def run_grid_point(
             num_workers=num_workers,
             left_context=left_context,
             right_context=right_context,
+            balance_groups=balance_groups,
         )
 
         train_time = time.time() - start_time
@@ -444,6 +447,7 @@ def _grid_point_worker(args: dict) -> dict:
         augment_scale_min=args["augment_scale_min"],
         augment_scale_max=args["augment_scale_max"],
         num_workers=args["num_workers"],
+        balance_groups=args.get("balance_groups", False),
     )
     # Free CUDA memory between grid points to prevent accumulation
     if args.get("device", "cpu") != "cpu":
@@ -598,6 +602,7 @@ def run_grid_search(config: GridSearchConfig) -> Path:
                 "augment_scale_min": config.augment_scale_min,
                 "augment_scale_max": config.augment_scale_max,
                 "num_workers": config.num_workers,
+                "balance_groups": config.balance_groups,
             }
         )
 
