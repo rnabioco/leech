@@ -20,7 +20,7 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 
 from leech.dataset import LeechDataset, collate_fn
 from leech.losses import FocalBCEWithLogitsLoss
@@ -586,6 +586,7 @@ def train_model(
     signal_kmer_context: tuple[int, int] = (4, 4),
     left_context: int | None = None,
     right_context: int | None = None,
+    balance_groups: bool = False,
     **model_kwargs: Any,
 ) -> dict[str, Any]:
     """
@@ -734,11 +735,38 @@ def train_model(
             f"reducing to {effective_batch_size}"
         )
 
+    # Build balanced sampler if requested
+    train_sampler = None
+    if balance_groups:
+        # Compute per-chunk weights so each source group is equally represented
+        group_counts: dict[str, int] = {}
+        for chunk in train_dataset.chunks:
+            sg = chunk.get("source_group") or "unknown"
+            group_counts[sg] = group_counts.get(sg, 0) + 1
+
+        if len(group_counts) > 1:
+            weights = []
+            for chunk in train_dataset.chunks:
+                sg = chunk.get("source_group") or "unknown"
+                weights.append(1.0 / group_counts[sg])
+            train_sampler = WeightedRandomSampler(
+                weights, num_samples=len(train_dataset), replacement=True
+            )
+            logger.info(f"Balanced sampling enabled across {len(group_counts)} source groups:")
+            for sg, count in sorted(group_counts.items(), key=lambda x: -x[1]):
+                logger.info(f"  {sg}: {count} chunks, weight={1.0 / count:.6f}")
+        else:
+            logger.warning(
+                f"balance_groups enabled but only 1 source group found "
+                f"({list(group_counts.keys())}). Falling back to shuffle."
+            )
+
     # Use drop_last=True for training to avoid BatchNorm issues with batch_size=1
     train_loader = DataLoader(
         train_dataset,
         batch_size=effective_batch_size,
-        shuffle=True,
+        shuffle=(train_sampler is None),
+        sampler=train_sampler,
         drop_last=True,
         **loader_kwargs,
     )
@@ -838,6 +866,7 @@ def train_model(
         "augment_jitter": augment_jitter,
         "augment_scale_min": augment_scale_min,
         "augment_scale_max": augment_scale_max,
+        "balance_groups": balance_groups,
         **model_kwargs,
     }
 
