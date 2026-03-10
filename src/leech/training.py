@@ -775,6 +775,19 @@ def train_model(
 
     model = get_model(model_name, **model_init_kwargs)
 
+    # Enable cuDNN autotuner for fixed-size inputs (finds fastest conv algorithms)
+    if device != "cpu":
+        torch.backends.cudnn.benchmark = True
+        logger.info("cuDNN benchmark enabled")
+
+    # Compile model with torch.compile for graph-level optimizations (PyTorch 2+)
+    if device != "cpu" and hasattr(torch, "compile"):
+        try:
+            model = torch.compile(model)
+            logger.info("torch.compile enabled")
+        except Exception as e:
+            logger.warning(f"torch.compile failed, falling back to eager mode: {e}")
+
     # Auto-detect cross-entropy models (num_out > 1)
     if hasattr(model, "num_out") and model.num_out > 1 and loss_type == "bce":
         loss_type = "cross_entropy"
