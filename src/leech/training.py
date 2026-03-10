@@ -689,7 +689,8 @@ def train_model(
     # with pre-tensorized data __getitem__ is trivially fast, so workers add overhead.
     import multiprocessing
 
-    if multiprocessing.current_process().daemon:
+    is_daemon = multiprocessing.current_process().daemon
+    if is_daemon:
         effective_workers = 0
     elif num_workers > 0:
         effective_workers = num_workers
@@ -697,6 +698,11 @@ def train_model(
         effective_workers = 0
     else:
         effective_workers = 8  # auto default for CUDA
+
+    logger.info(
+        f"DataLoader workers: {effective_workers} "
+        f"(requested={num_workers}, daemon={is_daemon}, device={device})"
+    )
 
     loader_kwargs: dict = {
         "collate_fn": collate_fn,
