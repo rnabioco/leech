@@ -24,3 +24,20 @@ except ImportError:
     _rs_rough_rescale = None
     _rs_seq_banded_dp = None
     logger.debug("Rust acceleration not available, using pure Python fallbacks")
+
+
+def check_rust() -> None:
+    """Print Rust acceleration status."""
+    if HAS_RUST:
+        import leech_core
+
+        version = getattr(leech_core, "__version__", None)
+        label = f"leech_core {version}" if version else "leech_core"
+        print(f"Rust acceleration: enabled ({label})")
+        funcs = ["encode_signal_kmer", "extract_levels", "rough_rescale", "seq_banded_dp"]
+        for f in funcs:
+            status = "ok" if getattr(leech_core, f, None) is not None else "missing"
+            print(f"  {f}: {status}")
+    else:
+        print("Rust acceleration: not available")
+        print("Install with: uv sync --extra rust")

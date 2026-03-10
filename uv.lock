@@ -917,7 +917,6 @@ version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
-    { name = "leech-core" },
     { name = "numpy" },
     { name = "nvitop" },
     { name = "pod5" },
@@ -950,6 +949,9 @@ pipeline = [
     { name = "snakemake-executor-plugin-lsf" },
     { name = "snakemake-executor-plugin-slurm" },
 ]
+rust = [
+    { name = "leech-core" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -967,7 +969,7 @@ docs = [
 requires-dist = [
     { name = "click", specifier = ">=8.1.0" },
     { name = "great-tables", marker = "extra == 'notebook'", specifier = ">=0.14.0" },
-    { name = "leech-core", editable = "rust" },
+    { name = "leech-core", marker = "extra == 'rust'", editable = "rust" },
     { name = "nbqa", marker = "extra == 'dev'", specifier = ">=1.7.0" },
     { name = "numpy", specifier = ">=2.0.0" },
     { name = "nvitop", specifier = ">=1.6.1" },
@@ -991,7 +993,7 @@ requires-dist = [
     { name = "torch", specifier = ">=2.5.0" },
     { name = "ty", marker = "extra == 'dev'", specifier = ">=0.0.1a10" },
 ]
-provides-extras = ["dev", "pipeline", "notebook"]
+provides-extras = ["rust", "dev", "pipeline", "notebook"]
 
 [package.metadata.requires-dev]
 dev = [
