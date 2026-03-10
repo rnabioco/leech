@@ -54,6 +54,8 @@ def save_chunks(chunks: list[dict], output_path: Path) -> None:
     seq_to_sig_maps = []
     sequences_with_kmer_context = []
 
+    dwell_margin_lefts = []
+
     for chunk in chunks:
         signals.append(chunk["signal"])
         sequences.append(chunk["sequence"])
@@ -65,6 +67,7 @@ def save_chunks(chunks: list[dict], output_path: Path) -> None:
         )  # Numeric label or -1
         read_ids.append(chunk["read_id"])
         base_indices.append(chunk["base_idx"])
+        dwell_margin_lefts.append(chunk.get("dwell_margin_left", 0))
         # Signal-level kmer encoding fields (may be None for old chunks)
         s2s = chunk.get("seq_to_sig_map")
         seq_ctx = chunk.get("sequence_with_kmer_context")
@@ -81,6 +84,7 @@ def save_chunks(chunks: list[dict], output_path: Path) -> None:
     labels_int_arr = np.array(labels_int, dtype=np.int64)  # Numeric labels
     read_ids_arr = np.array(read_ids, dtype=str)
     base_indices_arr = np.array(base_indices, dtype=np.int64)
+    dwell_margin_lefts_arr = np.array(dwell_margin_lefts, dtype=np.int64)
     seq_to_sig_maps_arr = np.array(seq_to_sig_maps, dtype=object)
     sequences_with_kmer_context_arr = np.array(sequences_with_kmer_context, dtype=str)
 
@@ -98,6 +102,7 @@ def save_chunks(chunks: list[dict], output_path: Path) -> None:
         labels_int=labels_int_arr,
         read_ids=read_ids_arr,
         base_indices=base_indices_arr,
+        dwell_margin_lefts=dwell_margin_lefts_arr,
         seq_to_sig_maps=seq_to_sig_maps_arr,
         sequences_with_kmer_context=sequences_with_kmer_context_arr,
     )
@@ -144,6 +149,11 @@ def load_chunks(input_path: Path) -> list[dict]:
             seq_to_sig_maps = data["seq_to_sig_maps"]
             sequences_with_kmer_context = data["sequences_with_kmer_context"]
 
+        # Asymmetric dwell margin (backward compatible)
+        has_dwell_margin = "dwell_margin_lefts" in data
+        if has_dwell_margin:
+            dwell_margin_lefts = data["dwell_margin_lefts"]
+
         n_chunks = len(labels_arr)
         chunks = []
 
@@ -165,6 +175,8 @@ def load_chunks(input_path: Path) -> list[dict]:
                 seq_ctx = str(sequences_with_kmer_context[i])
                 chunk["seq_to_sig_map"] = s2s if len(s2s) > 0 else None
                 chunk["sequence_with_kmer_context"] = seq_ctx if seq_ctx else None
+            if has_dwell_margin:
+                chunk["dwell_margin_left"] = int(dwell_margin_lefts[i])
 
             chunks.append(chunk)
 

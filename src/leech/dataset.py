@@ -60,6 +60,9 @@ _BASE_MAP[ord("t")] = 3
 # Models that require dwell/signal features as third input
 FEATURE_MODELS = ModelInferenceWrapper.FEATURE_MODELS
 
+# Models that receive the full dwell margin (no dwell_offset slicing)
+WIDE_FEATURE_MODELS = ModelInferenceWrapper.WIDE_FEATURE_MODELS
+
 
 class LeechDataset(Dataset):
     """
@@ -272,15 +275,21 @@ class LeechDataset(Dataset):
                 raise ValueError(f"Expected k-mer length {self.kmer_len}, got {len(sequence)}")
 
         # Process dwell/features — apply dwell_offset slicing if margin exists
+        # Wide feature models (e.g., ConvLSTMDwellAttn) receive the full margin
+        # so cross-attention can learn the offset
         dwell = chunk["dwell"]
         features = chunk["features"]
-        if len(dwell) > self.kmer_len:
-            margin = (len(dwell) - self.kmer_len) // 2
-            if self.dwell_offset > margin:
+        if self.model_type in WIDE_FEATURE_MODELS:
+            # Pass full-width features (kmer_len + margin_left + margin_right)
+            pass
+        elif len(dwell) > self.kmer_len:
+            # Use stored dwell_margin_left for correct slicing with asymmetric margins
+            margin_left = chunk.get("dwell_margin_left", (len(dwell) - self.kmer_len) // 2)
+            if self.dwell_offset + margin_left > len(dwell) - self.kmer_len:
                 raise ValueError(
-                    f"dwell_offset ({self.dwell_offset}) exceeds available dwell_margin ({margin})"
+                    f"dwell_offset ({self.dwell_offset}) exceeds dwell_margin"
                 )
-            start = margin + self.dwell_offset
+            start = margin_left + self.dwell_offset
             dwell = dwell[start : start + self.kmer_len]
             if features.size > 0:
                 features = features[:, start : start + self.kmer_len]

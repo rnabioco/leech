@@ -163,7 +163,19 @@ def data():
     "--dwell-margin",
     type=int,
     default=0,
-    help="Extra bases on each side of dwell/feature arrays for runtime dwell_offset tuning (default: 0, use 15 for grid search over dwell offsets)",
+    help="Extra bases on each side of dwell/feature arrays (symmetric fallback, default: 0). Overridden by --dwell-margin-left/--dwell-margin-right if provided.",
+)
+@click.option(
+    "--dwell-margin-left",
+    type=int,
+    default=None,
+    help="Extra dwell bases toward tRNA body (left of focus). Keep small to avoid isoacceptor confounds.",
+)
+@click.option(
+    "--dwell-margin-right",
+    type=int,
+    default=None,
+    help="Extra dwell bases toward 3' adaptor (right of focus). Safe to be generous (constant sequence).",
 )
 @click.option(
     "--no-reverse-signal",
@@ -227,6 +239,8 @@ def prepare(
     chunk_size,
     base_justify,
     dwell_margin,
+    dwell_margin_left,
+    dwell_margin_right,
     no_reverse_signal,
     anchor,
     signal_norm,
@@ -266,6 +280,8 @@ def prepare(
         chunk_size=chunk_size,
         base_justify=base_justify,
         dwell_margin=dwell_margin,
+        dwell_margin_left=dwell_margin_left,
+        dwell_margin_right=dwell_margin_right,
         reverse_signal=not no_reverse_signal,
         anchor=anchor,
         signal_norm=signal_norm,

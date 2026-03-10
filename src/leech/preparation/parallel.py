@@ -47,6 +47,8 @@ class WorkerConfig:
     skip_motif_indels: bool
     base_justify: str
     dwell_margin: int
+    dwell_margin_left: int | None
+    dwell_margin_right: int | None
     reverse_signal: bool
     anchor: str
     norm_method: str
@@ -142,6 +144,8 @@ def _process_read_chunk_worker(
                     motif_searcher=motif_searcher,
                     base_justify=config.base_justify,
                     dwell_margin=config.dwell_margin,
+                    dwell_margin_left=config.dwell_margin_left,
+                    dwell_margin_right=config.dwell_margin_right,
                 )
 
                 all_chunks.extend(read_chunks)
@@ -168,6 +172,8 @@ def prepare_training_data_parallel(
     chunk_size: int = 100,
     base_justify: str = "center",
     dwell_margin: int = 0,
+    dwell_margin_left: int | None = None,
+    dwell_margin_right: int | None = None,
     reverse_signal: bool = True,
     anchor: str = "basecall",
     norm_method: str = "median_mad",
@@ -247,6 +253,8 @@ def prepare_training_data_parallel(
         skip_motif_indels=skip_motif_indels,
         base_justify=base_justify,
         dwell_margin=dwell_margin,
+        dwell_margin_left=dwell_margin_left,
+        dwell_margin_right=dwell_margin_right,
         reverse_signal=reverse_signal,
         anchor=anchor,
         norm_method=norm_method,
