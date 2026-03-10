@@ -382,6 +382,18 @@ class Trainer:
         total_epochs = max(0, epochs - self.start_epoch + 1)
         last_epoch = self.start_epoch - 1
 
+        # If training already completed (resume past final epoch), save best and exit
+        if self.start_epoch > epochs:
+            logger.info(
+                f"Training already complete (resumed at epoch {self.start_epoch - 1}, "
+                f"requested {epochs}). Saving checkpoints and exiting."
+            )
+            if self.output_dir:
+                self.save_checkpoint("model_best.pt", epoch=self.best_epoch)
+                self.save_checkpoint("model_last.pt", epoch=self.start_epoch - 1)
+                self.save_history()
+            return self.history
+
         # Create progress bars
         with Progress(
             SpinnerColumn(),
