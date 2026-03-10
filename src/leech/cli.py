@@ -574,6 +574,24 @@ def train(
     console.print(table)
 
 
+def _pick_best_fold(fold_dirs: list[Path]) -> Path:
+    """Select the fold with highest best_val_f1 from summary.json."""
+    best_f1 = -1.0
+    best_dir = fold_dirs[0]  # fallback to first fold
+    for fold_dir in fold_dirs:
+        summary_path = fold_dir / "summary.json"
+        if summary_path.exists():
+            with open(summary_path) as f:
+                summary = json.load(f)
+            f1 = summary.get("best_val_f1", -1.0)
+        else:
+            f1 = -1.0
+        if f1 > best_f1:
+            best_f1 = f1
+            best_dir = fold_dir
+    return best_dir
+
+
 @model.command()
 @click.option(
     "--model-dir",
@@ -614,12 +632,23 @@ def bundle(model_dir, output, bundle_version, comparison_type, torchscript):
     # Auto-discover pair subdirectories
     model_dirs = {}
     for subdir in sorted(model_dir.iterdir()):
-        if (
-            subdir.is_dir()
-            and (subdir / "model_best.pt").exists()
-            and (subdir / "config.json").exists()
-        ):
+        if not subdir.is_dir():
+            continue
+        # Direct model (no folds)
+        if (subdir / "model_best.pt").exists() and (subdir / "config.json").exists():
             model_dirs[subdir.name] = subdir
+            continue
+        # K-fold: pick best fold by val F1
+        fold_dirs = sorted(subdir.glob("fold_*/"))
+        valid_folds = [
+            f
+            for f in fold_dirs
+            if (f / "model_best.pt").exists() and (f / "config.json").exists()
+        ]
+        if valid_folds:
+            best_fold = _pick_best_fold(valid_folds)
+            model_dirs[subdir.name] = best_fold
+            logger.info(f"{subdir.name}: selected {best_fold.name} (best val F1)")
 
     if not model_dirs:
         console.print(f"[bold red]No model directories found in {model_dir}[/bold red]")
