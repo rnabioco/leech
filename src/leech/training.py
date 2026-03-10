@@ -751,7 +751,7 @@ def train_model(
         **model_kwargs,
     }
     # Models without a feature branch don't take num_features
-    no_feature_models = {"ConvLSTMBase", "ConvLSTMRemoraBase"}
+    no_feature_models = {"ConvLSTMBase", "ConvLSTMBaseBN", "ConvLSTMBaseAttn", "ConvLSTMRemoraBase"}
     if model_name not in no_feature_models:
         model_init_kwargs["num_features"] = num_features
 

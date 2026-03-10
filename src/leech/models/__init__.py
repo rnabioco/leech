@@ -15,7 +15,11 @@ from typing import Any
 import torch.nn as nn
 
 from leech.models.conv_lstm_base import ConvLSTMBase
+from leech.models.conv_lstm_base_attn import ConvLSTMBaseAttn
+from leech.models.conv_lstm_base_bn import ConvLSTMBaseBN
 from leech.models.conv_lstm_dwell import ConvLSTMDwell
+from leech.models.conv_lstm_dwell_attn import ConvLSTMDwellAttn
+from leech.models.conv_lstm_dwell_bn import ConvLSTMDwellBN
 from leech.models.conv_lstm_remora import ConvLSTMRemora, ConvLSTMRemoraBase
 from leech.models.conv_only import ConvOnly
 from leech.models.inference_wrapper import ModelInferenceWrapper, TracedModelWrapper
@@ -26,7 +30,11 @@ from leech.models.transformer_dwell import TransformerDwell
 
 __all__ = [
     "ConvLSTMBase",
+    "ConvLSTMBaseAttn",
+    "ConvLSTMBaseBN",
     "ConvLSTMDwell",
+    "ConvLSTMDwellAttn",
+    "ConvLSTMDwellBN",
     "ConvLSTMRemora",
     "ConvLSTMRemoraBase",
     "TransformerDwell",
@@ -42,7 +50,11 @@ __all__ = [
 # Model registry for dynamic loading
 MODEL_REGISTRY = {
     "ConvLSTMBase": ConvLSTMBase,
+    "ConvLSTMBaseAttn": ConvLSTMBaseAttn,
+    "ConvLSTMBaseBN": ConvLSTMBaseBN,
     "ConvLSTMDwell": ConvLSTMDwell,
+    "ConvLSTMDwellAttn": ConvLSTMDwellAttn,
+    "ConvLSTMDwellBN": ConvLSTMDwellBN,
     "ConvLSTMRemora": ConvLSTMRemora,
     "ConvLSTMRemoraBase": ConvLSTMRemoraBase,
     "TransformerDwell": TransformerDwell,

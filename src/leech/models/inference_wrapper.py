@@ -30,11 +30,18 @@ class ModelInferenceWrapper:
     # Models that require dwell/signal features as third input
     FEATURE_MODELS = {
         "ConvLSTMDwell",
+        "ConvLSTMDwellAttn",
+        "ConvLSTMDwellBN",
         "ConvLSTMRemora",
         "TransformerDwell",
         "ConvOnly",
         "TCNDwell",
         "ResNetDwell",
+    }
+
+    # Models that receive the full dwell margin (no dwell_offset slicing)
+    WIDE_FEATURE_MODELS = {
+        "ConvLSTMDwellAttn",
     }
 
     def __init__(self, model: nn.Module, model_type: str):

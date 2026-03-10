@@ -30,6 +30,10 @@ from leech.constants import (
 MODEL_CHOICES = [
     "ConvLSTMDwell",
     "ConvLSTMBase",
+    "ConvLSTMDwellBN",
+    "ConvLSTMBaseBN",
+    "ConvLSTMDwellAttn",
+    "ConvLSTMBaseAttn",
     "ConvLSTMRemora",
     "ConvLSTMRemoraBase",
     "TransformerDwell",

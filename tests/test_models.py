@@ -27,7 +27,11 @@ class TestModelRegistry:
         """Test that MODEL_REGISTRY contains all expected models."""
         expected_models = {
             "ConvLSTMBase",
+            "ConvLSTMBaseAttn",
+            "ConvLSTMBaseBN",
             "ConvLSTMDwell",
+            "ConvLSTMDwellAttn",
+            "ConvLSTMDwellBN",
             "ConvLSTMRemora",
             "ConvLSTMRemoraBase",
             "TransformerDwell",
