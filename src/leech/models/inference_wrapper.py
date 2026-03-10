@@ -32,6 +32,7 @@ class ModelInferenceWrapper:
         "ConvLSTMDwell",
         "ConvLSTMDwellAttn",
         "ConvLSTMDwellBN",
+        "ConvLSTMDwellBNAttn",
         "ConvLSTMRemora",
         "TransformerDwell",
         "ConvOnly",
@@ -42,6 +43,7 @@ class ModelInferenceWrapper:
     # Models that receive the full dwell margin (no dwell_offset slicing)
     WIDE_FEATURE_MODELS = {
         "ConvLSTMDwellAttn",
+        "ConvLSTMDwellBNAttn",
     }
 
     def __init__(self, model: nn.Module, model_type: str):

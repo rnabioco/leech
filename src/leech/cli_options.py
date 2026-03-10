@@ -34,6 +34,8 @@ MODEL_CHOICES = [
     "ConvLSTMBaseBN",
     "ConvLSTMDwellAttn",
     "ConvLSTMBaseAttn",
+    "ConvLSTMDwellBNAttn",
+    "ConvLSTMBaseBNAttn",
     "ConvLSTMRemora",
     "ConvLSTMRemoraBase",
     "TransformerDwell",

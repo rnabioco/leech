@@ -17,9 +17,11 @@ import torch.nn as nn
 from leech.models.conv_lstm_base import ConvLSTMBase
 from leech.models.conv_lstm_base_attn import ConvLSTMBaseAttn
 from leech.models.conv_lstm_base_bn import ConvLSTMBaseBN
+from leech.models.conv_lstm_base_bn_attn import ConvLSTMBaseBNAttn
 from leech.models.conv_lstm_dwell import ConvLSTMDwell
 from leech.models.conv_lstm_dwell_attn import ConvLSTMDwellAttn
 from leech.models.conv_lstm_dwell_bn import ConvLSTMDwellBN
+from leech.models.conv_lstm_dwell_bn_attn import ConvLSTMDwellBNAttn
 from leech.models.conv_lstm_remora import ConvLSTMRemora, ConvLSTMRemoraBase
 from leech.models.conv_only import ConvOnly
 from leech.models.inference_wrapper import ModelInferenceWrapper, TracedModelWrapper
@@ -32,9 +34,11 @@ __all__ = [
     "ConvLSTMBase",
     "ConvLSTMBaseAttn",
     "ConvLSTMBaseBN",
+    "ConvLSTMBaseBNAttn",
     "ConvLSTMDwell",
     "ConvLSTMDwellAttn",
     "ConvLSTMDwellBN",
+    "ConvLSTMDwellBNAttn",
     "ConvLSTMRemora",
     "ConvLSTMRemoraBase",
     "TransformerDwell",
@@ -52,9 +56,11 @@ MODEL_REGISTRY = {
     "ConvLSTMBase": ConvLSTMBase,
     "ConvLSTMBaseAttn": ConvLSTMBaseAttn,
     "ConvLSTMBaseBN": ConvLSTMBaseBN,
+    "ConvLSTMBaseBNAttn": ConvLSTMBaseBNAttn,
     "ConvLSTMDwell": ConvLSTMDwell,
     "ConvLSTMDwellAttn": ConvLSTMDwellAttn,
     "ConvLSTMDwellBN": ConvLSTMDwellBN,
+    "ConvLSTMDwellBNAttn": ConvLSTMDwellBNAttn,
     "ConvLSTMRemora": ConvLSTMRemora,
     "ConvLSTMRemoraBase": ConvLSTMRemoraBase,
     "TransformerDwell": TransformerDwell,
