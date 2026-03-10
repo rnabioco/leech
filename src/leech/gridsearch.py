@@ -10,8 +10,6 @@ import itertools
 import json
 import logging
 import multiprocessing
-import multiprocessing.context
-import multiprocessing.pool
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,45 +25,6 @@ from leech.training import train_model
 
 logger = logging.getLogger("leech.gridsearch")
 console = Console()
-
-
-class _NoDaemonSpawnProcess(multiprocessing.context.SpawnProcess):
-    """SpawnProcess that ignores the daemon flag set by Pool."""
-
-    @property
-    def daemon(self):
-        return False
-
-    @daemon.setter
-    def daemon(self, value):
-        pass
-
-
-class _NoDaemonForkProcess(multiprocessing.context.ForkProcess):
-    """ForkProcess that ignores the daemon flag set by Pool."""
-
-    @property
-    def daemon(self):
-        return False
-
-    @daemon.setter
-    def daemon(self, value):
-        pass
-
-
-class _NoDaemonPool(multiprocessing.pool.Pool):
-    """Process pool with non-daemon workers.
-
-    Standard Pool creates daemon workers that cannot spawn child processes.
-    DataLoader requires child workers for parallel data loading on GPU.
-    This pool uses module-level non-daemon process classes (picklable by spawn).
-    """
-
-    @staticmethod
-    def Process(ctx, *args, **kwds):
-        if ctx.get_start_method() == "spawn":
-            return _NoDaemonSpawnProcess(*args, **kwds)
-        return _NoDaemonForkProcess(*args, **kwds)
 
 
 def parse_values(spec: str) -> list[int]:
@@ -651,11 +610,10 @@ def run_grid_search(config: GridSearchConfig) -> Path:
         )
         # CUDA does not support fork; use spawn to avoid hangs with multiple GPU workers
         ctx = multiprocessing.get_context("spawn" if config.device != "cpu" else "fork")
-        with _NoDaemonPool(
+        with ctx.Pool(
             processes=config.n_parallel,
             initializer=_init_worker,
             initargs=(config.train_data_path, config.val_data_path, pos_weight),
-            context=ctx,
         ) as pool:
             for i, result in enumerate(pool.imap_unordered(_grid_point_worker, grid_args), 1):
                 results.append(result)
