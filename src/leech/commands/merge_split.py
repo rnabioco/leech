@@ -175,6 +175,75 @@ def _parse_and_validate_inputs(
     return all_files, relabel_tuple, (meta1, meta2)
 
 
+def handle_merge_and_split_kfold(
+    input_chunks: tuple[str, ...],
+    output_dir: Path,
+    k_fold: int,
+    seed: int | None = DEFAULT_SEED,
+) -> dict[str, Any]:
+    """
+    Handle the merge-and-split command with k-fold cross-validation.
+
+    Args:
+        input_chunks: Tuple of input specifications (label=file.npz format)
+        output_dir: Output directory for fold splits
+        k_fold: Number of folds for cross-validation
+        seed: Random seed for reproducibility
+
+    Returns:
+        Dictionary with k-fold split statistics
+    """
+    from leech.splitting import merge_and_kfold_split_chunks
+
+    logger.info(f"Merging and splitting chunks with {k_fold}-fold cross-validation")
+
+    # Parse and validate inputs
+    all_files, relabel_tuple, meta_labels = _parse_and_validate_inputs(input_chunks)
+
+    logger.info(
+        f"Relabeling for comparison: {meta_labels[0]} = label_int 0, {meta_labels[1]} = label_int 1"
+    )
+
+    # Merge and k-fold split at read level
+    result = merge_and_kfold_split_chunks(
+        input_paths=all_files,
+        output_dir=output_dir,
+        k_fold=k_fold,
+        seed=seed,
+        relabel_pairwise=relabel_tuple,
+    )
+
+    # Display per-fold statistics
+    _display_kfold_results(result)
+
+    console.print("[bold green]K-fold merge and split complete![/bold green]")
+
+    return result
+
+
+def _display_kfold_results(result: dict[str, Any]) -> None:
+    """Display results for k-fold cross-validation split."""
+    table = Table(
+        title=f"{result['k_fold']}-Fold Cross-Validation Split (Read-Level)",
+        show_header=True,
+        header_style="bold magenta",
+    )
+    table.add_column("Fold", style="cyan")
+    table.add_column("Train", justify="right", style="green")
+    table.add_column("Val", justify="right", style="yellow")
+    table.add_column("Test", justify="right", style="red")
+
+    for i, fold in enumerate(result["folds"]):
+        table.add_row(
+            str(i),
+            str(fold["n_train"]),
+            str(fold["n_val"]),
+            str(fold["n_test"]),
+        )
+
+    console.print(table)
+
+
 def _display_single_comparison_results(result: dict[str, Any]) -> None:
     """Display results for a single comparison."""
     table = Table(
