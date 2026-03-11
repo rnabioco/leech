@@ -8,7 +8,9 @@ classification tasks.
 
 from leech.splitting.splitter import (
     merge_and_kfold_split_chunks,
+    merge_and_kfold_split_multiclass,
     merge_and_split_chunks,
+    merge_and_split_multiclass,
     parse_comparison_spec,
     process_comparison_spec,
     split_chunks_by_read,
@@ -18,6 +20,8 @@ __all__ = [
     "split_chunks_by_read",
     "merge_and_split_chunks",
     "merge_and_kfold_split_chunks",
+    "merge_and_split_multiclass",
+    "merge_and_kfold_split_multiclass",
     "parse_comparison_spec",
     "process_comparison_spec",
 ]
