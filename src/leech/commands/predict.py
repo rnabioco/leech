@@ -46,6 +46,7 @@ def handle_predict(
     base_justify: str,
     no_reverse_signal: bool,
     reference_anchored: bool,
+    reference_fasta: Path | None,
     motif: str | None,
     motif_offset: int,
     batch_size: int,
@@ -68,6 +69,7 @@ def handle_predict(
         base_justify: Signal chunk centering
         no_reverse_signal: Disable signal reversal
         reference_anchored: Use reference-anchored mode
+        reference_fasta: Reference FASTA for reference-anchored mode
         motif: Motif to search for
         motif_offset: Offset within motif
         batch_size: Chunks per forward pass
@@ -97,6 +99,8 @@ def handle_predict(
             base_justify=base_justify,
             reverse_signal=reverse_signal,
             raw=raw,
+            anchor=anchor,
+            reference_fasta=reference_fasta,
         )
     else:
         # Single-model inference (auto-detects leech vs Remora)

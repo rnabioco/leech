@@ -910,6 +910,8 @@ def run_bundle_inference(
     base_justify: str = "center",
     reverse_signal: bool = True,
     raw: bool = False,
+    anchor: str = "basecall",
+    reference_fasta: Path | None = None,
 ) -> None:
     """
     Run all models from a bundle on each read, aggregate to a single AA prediction.
@@ -933,6 +935,8 @@ def run_bundle_inference(
         base_justify: Signal justification within focus base
         reverse_signal: Whether to reverse signal for RNA
         raw: If True, also write per-pair probabilities (pn/pp tags)
+        anchor: "basecall" or "reference" for reference-anchored mode
+        reference_fasta: Path to reference FASTA (for reference-anchored mode)
     """
     bundle = torch.load(bundle_path, map_location=device)
     metadata = bundle["metadata"]
@@ -1030,6 +1034,16 @@ def run_bundle_inference(
 
     pair_names_str = ",".join(pairs)
 
+    # Load reference sequences for reference-anchored mode
+    reference_sequences = None
+    if anchor == "reference":
+        from leech.io import get_reference_sequences
+
+        reference_sequences = get_reference_sequences(bam_path, reference_fasta)
+        logger.info(
+            f"Reference-anchored mode: loaded {len(reference_sequences)} reference sequences"
+        )
+
     # Open BAM files and index alignments by read ID (avoids O(n^2) scanning)
     bam_in = pysam.AlignmentFile(str(bam_path), "rb")
     alignment_by_read_id: dict[str, pysam.AlignedSegment] = {}
@@ -1045,7 +1059,12 @@ def run_bundle_inference(
         task = progress.add_task("[cyan]Running bundle inference...", total=None)
 
         for leech_read in iter_bam_with_pod5(
-            bam_path, pod5_path, min_mapq=min_mapq, reverse_signal=reverse_signal
+            bam_path,
+            pod5_path,
+            min_mapq=min_mapq,
+            reverse_signal=reverse_signal,
+            anchor=anchor,
+            reference_sequences=reference_sequences,
         ):
             total_reads += 1
             progress.update(task, advance=1, description=f"[cyan]Processed {total_reads} reads...")
@@ -1056,11 +1075,14 @@ def run_bundle_inference(
                 continue
 
             # Find prediction position(s)
+            # When anchor="reference", leech_read.sequence IS the reference,
+            # so find_motif_in_sequence searches in reference coordinates directly.
             if motif is None:
                 positions = list(range(kmer_context, leech_read.num_bases - kmer_context))
             else:
                 positions = [
-                    pos + motif_offset for pos in find_motif_in_sequence(leech_read.sequence, motif)
+                    pos + motif_offset
+                    for pos in find_motif_in_sequence(leech_read.sequence, motif)
                 ]
 
             # Extract chunk once (use first valid position)
