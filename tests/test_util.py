@@ -389,10 +389,16 @@ class TestModelBundle:
                     fold_dir / "model_best.pt",
                 )
 
-                # Write summary.json with different F1 scores per fold
-                f1_score = 0.80 + 0.05 * fold_idx  # fold_2 is best
+                # Write summary.json with different F1 scores and val losses per fold
+                # fold_0 has lowest val loss (best generalization)
+                # fold_2 has highest F1 but worst val loss (overfitting)
+                f1_score = 0.80 + 0.05 * fold_idx
+                val_loss = 0.10 + 0.10 * fold_idx
                 with open(fold_dir / "summary.json", "w") as f:
-                    json.dump({"best_val_f1": f1_score}, f)
+                    json.dump({
+                        "best_val_f1": f1_score,
+                        "final_val_loss": val_loss,
+                    }, f)
 
     def test_kfold_discovery_picks_best_fold(self, tmp_path, model_config):
         """Bundle CLI discovers fold_* subdirs and picks best fold by val F1."""
@@ -421,9 +427,9 @@ class TestModelBundle:
                 model_dirs[subdir.name] = best_fold
 
         assert len(model_dirs) == 2
-        # fold_2 has highest F1 (0.90) in our setup
+        # fold_0 has lowest val loss (0.10) in our setup
         for pair in pairs:
-            assert model_dirs[pair].name == "fold_2"
+            assert model_dirs[pair].name == "fold_0"
 
         # Verify the discovered dirs can be bundled
         bundle_path = tmp_path / "kfold_bundle.pt"
@@ -459,6 +465,43 @@ class TestModelBundle:
         ]
         best = pick_best_fold(valid_folds)
         assert best.name == "fold_0"  # fallback to first
+
+    def test_kfold_overfitting_selects_lower_loss(self, tmp_path, model_config):
+        """Fold with highest F1 but worst final_val_loss should NOT be selected."""
+        from leech.commands.bundle import pick_best_fold
+
+        pair_dir = tmp_path / "models" / "Asn_notAsn"
+        pair_dir.mkdir(parents=True)
+
+        # Simulate the real overfitting scenario:
+        # fold_0: moderate F1 but low val loss (good generalization)
+        # fold_2: highest F1 but high val loss (overfitting)
+        fold_specs = [
+            {"best_val_f1": 0.899, "final_val_loss": 0.105},  # fold_0
+            {"best_val_f1": 0.870, "final_val_loss": 0.150},  # fold_1
+            {"best_val_f1": 0.943, "final_val_loss": 0.344},  # fold_2 (overfitted)
+        ]
+        for fold_idx, spec in enumerate(fold_specs):
+            fold_dir = pair_dir / f"fold_{fold_idx}"
+            fold_dir.mkdir()
+            config = {"model_name": "ConvLSTMDwell", **model_config}
+            with open(fold_dir / "config.json", "w") as f:
+                json.dump(config, f)
+            model = get_model("ConvLSTMDwell", **model_config)
+            torch.save(
+                {"model_state_dict": model.state_dict()},
+                fold_dir / "model_best.pt",
+            )
+            with open(fold_dir / "summary.json", "w") as f:
+                json.dump(spec, f)
+
+        fold_dirs = sorted(pair_dir.glob("fold_*/"))
+        valid_folds = [
+            f for f in fold_dirs if (f / "model_best.pt").exists() and (f / "config.json").exists()
+        ]
+        best = pick_best_fold(valid_folds)
+        # Must select fold_0 (lowest val loss), NOT fold_2 (highest F1)
+        assert best.name == "fold_0"
 
     def test_mixed_flat_and_kfold(self, tmp_path, model_config):
         """Bundle discovery handles mix of flat and k-fold pair dirs."""
