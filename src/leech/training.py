@@ -99,6 +99,7 @@ class Trainer:
         focal_gamma: float = 2.0,
         use_mixed_precision: bool = False,
         resume_checkpoint: Path | None = None,
+        num_out: int | None = None,
     ):
         # Wrap model with inference wrapper for unified forward pass
         self.model_wrapper = ModelInferenceWrapper(model, model_type)
@@ -119,16 +120,17 @@ class Trainer:
 
         # Setup loss
         self.loss_type = loss_type
+        self._num_out = num_out if num_out is not None else 1
         pw = pos_weight.to(device) if pos_weight is not None else None
         if loss_type == "cross_entropy":
             # CrossEntropyLoss expects (B, num_classes) logits and (B,) integer labels
-            if pw is not None:
-                # Convert pos_weight to per-class weights for CE
+            if pw is not None and self._num_out <= 2:
+                # Convert pos_weight to per-class weights for CE (binary case)
                 ce_weights = torch.tensor([1.0, pw.item()], dtype=torch.float32).to(device)
                 self.criterion = nn.CrossEntropyLoss(weight=ce_weights)
             else:
                 self.criterion = nn.CrossEntropyLoss()
-            logger.info("Using CrossEntropyLoss (2-class softmax)")
+            logger.info(f"Using CrossEntropyLoss ({self._num_out}-class)")
         elif loss_type == "focal":
             self.criterion = FocalBCEWithLogitsLoss(gamma=focal_gamma, pos_weight=pw)
             logger.info(f"Using focal loss (gamma={focal_gamma})")
@@ -277,8 +279,12 @@ class Trainer:
 
             # Track metrics
             total_loss += loss.item()
-            if self.loss_type == "cross_entropy":
-                # For CE: probabilities via softmax, take class 1
+            if self.loss_type == "cross_entropy" and self._num_out > 2:
+                # Multi-class: argmax predictions
+                preds = torch.argmax(logits, dim=-1).detach().cpu().numpy()
+                all_preds.extend(preds.flatten())
+            elif self.loss_type == "cross_entropy":
+                # Binary CE: probabilities via softmax, take class 1
                 probs = torch.softmax(logits, dim=-1)[:, 1].detach().cpu().numpy()
                 all_preds.extend(probs.flatten())
             else:
@@ -292,8 +298,12 @@ class Trainer:
 
         # Compute metrics
         avg_loss = total_loss / len(self.train_loader)
-        all_preds_binary = (np.array(all_preds) > 0.5).astype(int)
-        accuracy = accuracy_score(all_labels, all_preds_binary)
+        if self._num_out > 2:
+            # Multi-class: preds are already class indices
+            accuracy = accuracy_score(all_labels, all_preds)
+        else:
+            all_preds_binary = (np.array(all_preds) > 0.5).astype(int)
+            accuracy = accuracy_score(all_labels, all_preds_binary)
 
         return avg_loss, accuracy
 
@@ -346,7 +356,10 @@ class Trainer:
 
                 # Track metrics
                 total_loss += loss.item()
-                if self.loss_type == "cross_entropy":
+                if self.loss_type == "cross_entropy" and self._num_out > 2:
+                    preds = torch.argmax(logits, dim=-1).cpu().numpy()
+                    all_preds.extend(preds.flatten())
+                elif self.loss_type == "cross_entropy":
                     probs = torch.softmax(logits, dim=-1)[:, 1].cpu().numpy()
                     all_preds.extend(probs.flatten())
                 else:
@@ -360,10 +373,16 @@ class Trainer:
 
         # Compute metrics
         avg_loss = total_loss / len(self.val_loader)
-        all_preds_binary = (np.array(all_preds) > 0.5).astype(int)
-        accuracy = accuracy_score(all_labels, all_preds_binary)
-        auc = roc_auc_score(all_labels, all_preds) if len(np.unique(all_labels)) > 1 else 0.0
-        f1 = f1_score(all_labels, all_preds_binary, zero_division=0.0)
+        if self._num_out > 2:
+            # Multi-class: preds are already class indices
+            accuracy = accuracy_score(all_labels, all_preds)
+            f1 = f1_score(all_labels, all_preds, average="macro", zero_division=0.0)
+            auc = 0.0  # ROC AUC needs probability estimates per class
+        else:
+            all_preds_binary = (np.array(all_preds) > 0.5).astype(int)
+            accuracy = accuracy_score(all_labels, all_preds_binary)
+            auc = roc_auc_score(all_labels, all_preds) if len(np.unique(all_labels)) > 1 else 0.0
+            f1 = f1_score(all_labels, all_preds_binary, zero_division=0.0)
 
         return avg_loss, accuracy, auc, f1
 
@@ -587,6 +606,7 @@ def train_model(
     left_context: int | None = None,
     right_context: int | None = None,
     balance_groups: bool = False,
+    label_map: dict[str, int] | None = None,
     **model_kwargs: Any,
 ) -> dict[str, Any]:
     """
@@ -832,11 +852,9 @@ def train_model(
 
     # Auto-detect cross-entropy models (num_out > 1)
     num_out: int = getattr(model, "num_out", 1)
-    if num_out > 1 and loss_type == "bce":
+    if num_out > 1 and loss_type != "cross_entropy":
         loss_type = "cross_entropy"
-        logger.info(
-            f"Model {model_name} has num_out={model.num_out}, switching to cross_entropy loss"
-        )
+        logger.info(f"Model {model_name} has num_out={num_out}, switching to cross_entropy loss")
 
     # Introspect dwell margin from raw training data (source of truth for feature width)
     _dwell_margin_left = 0
@@ -845,9 +863,7 @@ def train_model(
     _raw_features = _raw_chunk.get("features")
     if _raw_features is not None and _raw_features.ndim > 1 and _raw_features.shape[1] > kmer_len:
         _feat_width = _raw_features.shape[1]
-        _dwell_margin_left = int(_raw_chunk.get(
-            "dwell_margin_left", (_feat_width - kmer_len) // 2
-        ))
+        _dwell_margin_left = int(_raw_chunk.get("dwell_margin_left", (_feat_width - kmer_len) // 2))
         _dwell_margin_right = _feat_width - kmer_len - _dwell_margin_left
 
     # Save config
@@ -890,6 +906,7 @@ def train_model(
         "augment_scale_min": augment_scale_min,
         "augment_scale_max": augment_scale_max,
         "balance_groups": balance_groups,
+        "label_map": label_map,
         **model_kwargs,
     }
 
@@ -916,6 +933,7 @@ def train_model(
         focal_gamma=focal_gamma,
         use_mixed_precision=mixed_precision,
         resume_checkpoint=resume_from,
+        num_out=num_out,
     )
 
     # Train

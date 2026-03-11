@@ -149,6 +149,10 @@ class LeechDataset(Dataset):
                 )
                 self._effective_seq_encoding = "base_onehot"
 
+        # Detect multi-class: if any label_int > 1, use long dtype for CrossEntropyLoss
+        max_label = max(c["label_int"] for c in self.chunks)
+        self._multiclass = max_label > 1
+
         for chunk in self.chunks:
             if self._effective_seq_encoding == "signal_kmer":
                 self._encoded_seqs.append(
@@ -158,8 +162,11 @@ class LeechDataset(Dataset):
                 # Pre-encode sequence (vectorized, no Python loop)
                 self._encoded_seqs.append(self._encode_sequence(chunk["sequence"]))
 
-            # Pre-create label tensor
-            self._labels.append(torch.tensor([chunk["label_int"]], dtype=torch.float32))
+            # Pre-create label tensor: long for multi-class, float for binary
+            if self._multiclass:
+                self._labels.append(torch.tensor(chunk["label_int"], dtype=torch.long))
+            else:
+                self._labels.append(torch.tensor([chunk["label_int"]], dtype=torch.float32))
 
             # Convert signal and features to float32 in-place (avoid per-epoch astype)
             if chunk["signal"].dtype != np.float32:
