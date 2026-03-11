@@ -591,6 +591,256 @@ def merge_and_kfold_split_chunks(
     }
 
 
+def merge_and_split_multiclass(
+    input_paths: list[Path],
+    labels: list[str],
+    output_dir: Path,
+    train_frac: float = 0.7,
+    val_frac: float = 0.15,
+    seed: int | None = None,
+) -> dict[str, Any]:
+    """Merge N chunk files into a multi-class dataset with label_int 0..N-1.
+
+    Each input path is assigned the corresponding label from ``labels``.
+    Read-level splitting prevents data leakage.
+
+    Args:
+        input_paths: Paths to .npz chunk files (one per class).
+        labels: Class label for each path (same order/length as input_paths).
+        output_dir: Directory to write train.npz / val.npz / test.npz.
+        train_frac: Training fraction.
+        val_frac: Validation fraction.
+        seed: Random seed.
+
+    Returns:
+        Statistics dict with n_total, n_train, n_val, n_test, label_map.
+    """
+    from leech.util import setup_random_seed
+
+    if len(input_paths) != len(labels):
+        raise ValueError(
+            f"input_paths ({len(input_paths)}) and labels ({len(labels)}) must have same length"
+        )
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    setup_random_seed(seed, output_dir)
+
+    # Build label -> int mapping (stable alphabetical order)
+    unique_labels = sorted(set(labels))
+    label_to_int = {label: i for i, label in enumerate(unique_labels)}
+    logger.info(f"Multi-class label map ({len(unique_labels)} classes): {label_to_int}")
+
+    # Save label map for downstream use
+    label_map_path = output_dir / "label_map.json"
+    with open(label_map_path, "w") as f:
+        json.dump(label_to_int, f, indent=2)
+
+    # First pass: collect read IDs
+    logger.info("Pass 1: Collecting read IDs")
+    all_read_ids: set[str] = set()
+    for chunk_path in input_paths:
+        with np.load(chunk_path, allow_pickle=True) as data:
+            read_ids = data["read_ids"]
+            all_read_ids.update(str(rid) for rid in read_ids)
+
+    logger.info(f"Total unique reads: {len(all_read_ids)}")
+
+    # Split reads
+    if seed is not None:
+        random.seed(seed)
+
+    read_ids_list = list(all_read_ids)
+    random.shuffle(read_ids_list)
+
+    n_reads = len(read_ids_list)
+    n_train = int(n_reads * train_frac)
+    n_val = int(n_reads * val_frac)
+
+    train_read_ids = set(read_ids_list[:n_train])
+    val_read_ids = set(read_ids_list[n_train : n_train + n_val])
+    test_read_ids = set(read_ids_list[n_train + n_val :])
+
+    # Second pass: load, relabel, and assign
+    logger.info("Pass 2: Loading and assigning chunks")
+    train_chunks: list[dict] = []
+    val_chunks: list[dict] = []
+    test_chunks: list[dict] = []
+
+    for chunk_path, label in zip(input_paths, labels, strict=True):
+        label_int = label_to_int[label]
+        chunks = load_chunks(chunk_path)
+
+        source_group = _source_group_from_path(chunk_path)
+        for chunk in chunks:
+            chunk["label_int"] = label_int
+            chunk["label"] = label
+            chunk["source_group"] = source_group
+
+            read_id = chunk["read_id"]
+            if read_id in train_read_ids:
+                train_chunks.append(chunk)
+            elif read_id in val_read_ids:
+                val_chunks.append(chunk)
+            elif read_id in test_read_ids:
+                test_chunks.append(chunk)
+
+        logger.info(f"  {chunk_path.name}: {len(chunks)} chunks -> label_int={label_int} ({label})")
+        del chunks
+
+    # Save splits
+    save_chunks(train_chunks, output_dir / "train.npz")
+    save_chunks(val_chunks, output_dir / "val.npz")
+    save_chunks(test_chunks, output_dir / "test.npz")
+
+    n_total = len(train_chunks) + len(val_chunks) + len(test_chunks)
+    logger.info(
+        f"Multi-class split: train={len(train_chunks)}, "
+        f"val={len(val_chunks)}, test={len(test_chunks)}"
+    )
+
+    return {
+        "n_total": n_total,
+        "n_train": len(train_chunks),
+        "n_val": len(val_chunks),
+        "n_test": len(test_chunks),
+        "label_map": label_to_int,
+        "output_files": {
+            "train": output_dir / "train.npz",
+            "val": output_dir / "val.npz",
+            "test": output_dir / "test.npz",
+        },
+    }
+
+
+def merge_and_kfold_split_multiclass(
+    input_paths: list[Path],
+    labels: list[str],
+    output_dir: Path,
+    k_fold: int,
+    seed: int | None = None,
+) -> dict[str, Any]:
+    """Merge N chunk files and split into k folds for multi-class cross-validation.
+
+    Args:
+        input_paths: Paths to .npz chunk files (one per class).
+        labels: Class label for each path.
+        output_dir: Base output directory (fold_0/, fold_1/, ...).
+        k_fold: Number of folds (>= 3).
+        seed: Random seed.
+
+    Returns:
+        Statistics dict with k_fold, n_total, label_map, folds.
+    """
+    from leech.util import setup_random_seed
+
+    if k_fold < 3:
+        raise ValueError(f"k_fold must be >= 3, got {k_fold}")
+    if len(input_paths) != len(labels):
+        raise ValueError(
+            f"input_paths ({len(input_paths)}) and labels ({len(labels)}) must have same length"
+        )
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    setup_random_seed(seed, output_dir)
+
+    # Build label map
+    unique_labels = sorted(set(labels))
+    label_to_int = {label: i for i, label in enumerate(unique_labels)}
+    logger.info(f"Multi-class label map ({len(unique_labels)} classes): {label_to_int}")
+
+    label_map_path = output_dir / "label_map.json"
+    with open(label_map_path, "w") as f:
+        json.dump(label_to_int, f, indent=2)
+
+    # Collect read IDs
+    all_read_ids: set[str] = set()
+    for chunk_path in input_paths:
+        with np.load(chunk_path, allow_pickle=True) as data:
+            all_read_ids.update(str(rid) for rid in data["read_ids"])
+
+    # Partition reads into folds
+    if seed is not None:
+        random.seed(seed)
+    read_ids_list = list(all_read_ids)
+    random.shuffle(read_ids_list)
+
+    partitions = np.array_split(read_ids_list, k_fold)
+    partition_sets = [set(p.tolist()) for p in partitions]
+
+    # Build fold assignments
+    fold_read_assignments = []
+    for i in range(k_fold):
+        test_ids = partition_sets[i]
+        val_ids = partition_sets[(i + 1) % k_fold]
+        train_ids: set[str] = set()
+        for j in range(k_fold):
+            if j != i and j != (i + 1) % k_fold:
+                train_ids.update(partition_sets[j])
+        fold_read_assignments.append({"train": train_ids, "val": val_ids, "test": test_ids})
+
+    # Initialize fold accumulators
+    fold_chunks: list[dict[str, list[dict]]] = [
+        {"train": [], "val": [], "test": []} for _ in range(k_fold)
+    ]
+
+    # Load chunks and distribute
+    for chunk_path, label in zip(input_paths, labels, strict=True):
+        label_int = label_to_int[label]
+        chunks = load_chunks(chunk_path)
+
+        source_group = _source_group_from_path(chunk_path)
+        for chunk in chunks:
+            chunk["label_int"] = label_int
+            chunk["label"] = label
+            chunk["source_group"] = source_group
+
+            read_id = chunk["read_id"]
+            for i in range(k_fold):
+                assignments = fold_read_assignments[i]
+                if read_id in assignments["test"]:
+                    fold_chunks[i]["test"].append(chunk)
+                elif read_id in assignments["val"]:
+                    fold_chunks[i]["val"].append(chunk)
+                elif read_id in assignments["train"]:
+                    fold_chunks[i]["train"].append(chunk)
+        del chunks
+
+    # Save folds
+    folds_stats: list[dict[str, Any]] = []
+    n_total = 0
+    for i in range(k_fold):
+        fold_dir = output_dir / f"fold_{i}"
+        fold_dir.mkdir(parents=True, exist_ok=True)
+
+        save_chunks(fold_chunks[i]["train"], fold_dir / "train.npz")
+        save_chunks(fold_chunks[i]["val"], fold_dir / "val.npz")
+        save_chunks(fold_chunks[i]["test"], fold_dir / "test.npz")
+
+        fold_total = sum(len(fold_chunks[i][s]) for s in ("train", "val", "test"))
+        if i == 0:
+            n_total = fold_total
+
+        folds_stats.append(
+            {
+                "n_train": len(fold_chunks[i]["train"]),
+                "n_val": len(fold_chunks[i]["val"]),
+                "n_test": len(fold_chunks[i]["test"]),
+                "output_files": {
+                    "train": fold_dir / "train.npz",
+                    "val": fold_dir / "val.npz",
+                    "test": fold_dir / "test.npz",
+                },
+            }
+        )
+
+    return {
+        "k_fold": k_fold,
+        "n_total": n_total,
+        "label_map": label_to_int,
+        "folds": folds_stats,
+    }
+
+
 def parse_comparison_spec(tsv_path: Path) -> list[tuple[str, list[str], str, list[str]]]:
     """
     Parse TSV comparison spec file into list of comparison specifications.

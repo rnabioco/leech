@@ -59,6 +59,7 @@ class ConvLSTMDwellBNAttn(BaseModel):
         dropout: float = DEFAULT_DROPOUT,
         seq_encoding: str = "base_onehot",
         signal_kmer_context: tuple[int, int] = DEFAULT_SIGNAL_KMER_CONTEXT,
+        num_out: int = 1,
     ):
         super().__init__()
 
@@ -71,6 +72,7 @@ class ConvLSTMDwellBNAttn(BaseModel):
         self.dwell_margin = dwell_margin
         self.lstm_hidden = lstm_hidden
         self.seq_encoding = seq_encoding
+        self.num_out = num_out
 
         # Compute sequence input channels
         if seq_encoding == "signal_kmer":
@@ -130,7 +132,7 @@ class ConvLSTMDwellBNAttn(BaseModel):
             nn.Linear(lstm_hidden * 2, DEFAULT_FC_HIDDEN),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(DEFAULT_FC_HIDDEN, 1),
+            nn.Linear(DEFAULT_FC_HIDDEN, num_out),
         )
 
     def forward(
@@ -147,7 +149,7 @@ class ConvLSTMDwellBNAttn(BaseModel):
                 (batch, num_features, kmer_len + 2*dwell_margin)
 
         Returns:
-            Logits for binary classification (batch, 1)
+            Logits (batch, num_out)
         """
         # Signal branch
         signal_feat = self.signal_branch(signal)  # (batch, 256, signal_len)
