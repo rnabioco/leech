@@ -16,7 +16,11 @@ class TestLeechDataset:
     def test_initialization(self, temp_chunks_file):
         """Test dataset initialization."""
         dataset = LeechDataset(
-            temp_chunks_file, signal_len=400, kmer_len=11, model_type="ConvLSTMDwell"
+            temp_chunks_file,
+            signal_len=400,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding="base_onehot",
         )
         assert len(dataset) > 0
         assert dataset.signal_len == 400
@@ -41,12 +45,16 @@ class TestLeechDataset:
         )
 
         with pytest.raises(ValueError, match="No valid chunks found"):
-            LeechDataset(chunks_file, signal_len=400, kmer_len=11)
+            LeechDataset(chunks_file, signal_len=400, kmer_len=11, seq_encoding="base_onehot")
 
     def test_getitem_structure(self, temp_chunks_file):
         """Test that __getitem__ returns correct structure."""
         dataset = LeechDataset(
-            temp_chunks_file, signal_len=400, kmer_len=11, model_type="ConvLSTMDwell"
+            temp_chunks_file,
+            signal_len=400,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding="base_onehot",
         )
 
         item = dataset[0]
@@ -62,9 +70,13 @@ class TestLeechDataset:
         assert isinstance(item["label"], torch.Tensor)
 
     def test_getitem_shapes(self, temp_chunks_file):
-        """Test that __getitem__ returns correct shapes."""
+        """Test that __getitem__ returns correct shapes with base_onehot encoding."""
         dataset = LeechDataset(
-            temp_chunks_file, signal_len=400, kmer_len=11, model_type="ConvLSTMDwell"
+            temp_chunks_file,
+            signal_len=400,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding="base_onehot",
         )
 
         item = dataset[0]
@@ -77,7 +89,11 @@ class TestLeechDataset:
     def test_signal_padding(self, temp_chunks_file):
         """Test that signals shorter than signal_len are padded."""
         dataset = LeechDataset(
-            temp_chunks_file, signal_len=1000, kmer_len=11, model_type="ConvLSTMDwell"
+            temp_chunks_file,
+            signal_len=1000,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding="base_onehot",
         )
 
         item = dataset[0]
@@ -86,7 +102,11 @@ class TestLeechDataset:
     def test_signal_truncation(self, temp_chunks_file):
         """Test that signals longer than signal_len are truncated."""
         dataset = LeechDataset(
-            temp_chunks_file, signal_len=100, kmer_len=11, model_type="ConvLSTMDwell"
+            temp_chunks_file,
+            signal_len=100,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding="base_onehot",
         )
 
         item = dataset[0]
@@ -95,7 +115,11 @@ class TestLeechDataset:
     def test_model_type_base_no_features(self, temp_chunks_file):
         """Test that ConvLSTMBase dataset doesn't include features."""
         dataset = LeechDataset(
-            temp_chunks_file, signal_len=400, kmer_len=11, model_type="ConvLSTMBase"
+            temp_chunks_file,
+            signal_len=400,
+            kmer_len=11,
+            model_type="ConvLSTMBase",
+            seq_encoding="base_onehot",
         )
 
         item = dataset[0]
@@ -104,7 +128,11 @@ class TestLeechDataset:
     def test_model_type_dwell_has_features(self, temp_chunks_file):
         """Test that ConvLSTMDwell dataset includes features."""
         dataset = LeechDataset(
-            temp_chunks_file, signal_len=400, kmer_len=11, model_type="ConvLSTMDwell"
+            temp_chunks_file,
+            signal_len=400,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding="base_onehot",
         )
 
         item = dataset[0]
@@ -113,7 +141,11 @@ class TestLeechDataset:
     def test_model_type_transformer_has_features(self, temp_chunks_file):
         """Test that TransformerDwell dataset includes features."""
         dataset = LeechDataset(
-            temp_chunks_file, signal_len=400, kmer_len=11, model_type="TransformerDwell"
+            temp_chunks_file,
+            signal_len=400,
+            kmer_len=11,
+            model_type="TransformerDwell",
+            seq_encoding="base_onehot",
         )
 
         item = dataset[0]
@@ -122,7 +154,11 @@ class TestLeechDataset:
     def test_sequence_one_hot_encoding(self, temp_chunks_file):
         """Test that sequences are properly one-hot encoded."""
         dataset = LeechDataset(
-            temp_chunks_file, signal_len=400, kmer_len=11, model_type="ConvLSTMDwell"
+            temp_chunks_file,
+            signal_len=400,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding="base_onehot",
         )
 
         item = dataset[0]
@@ -137,7 +173,11 @@ class TestLeechDataset:
     def test_label_dtype(self, temp_chunks_file):
         """Test that labels are float32."""
         dataset = LeechDataset(
-            temp_chunks_file, signal_len=400, kmer_len=11, model_type="ConvLSTMDwell"
+            temp_chunks_file,
+            signal_len=400,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding="base_onehot",
         )
 
         item = dataset[0]
@@ -146,7 +186,11 @@ class TestLeechDataset:
     def test_iteration(self, temp_chunks_file):
         """Test iterating over dataset."""
         dataset = LeechDataset(
-            temp_chunks_file, signal_len=400, kmer_len=11, model_type="ConvLSTMDwell"
+            temp_chunks_file,
+            signal_len=400,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding="base_onehot",
         )
 
         items = list(dataset)
@@ -159,7 +203,11 @@ class TestCollateFn:
     def test_collate_basic(self, temp_chunks_file):
         """Test basic collation of batch."""
         dataset = LeechDataset(
-            temp_chunks_file, signal_len=400, kmer_len=11, model_type="ConvLSTMDwell"
+            temp_chunks_file,
+            signal_len=400,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding="base_onehot",
         )
 
         # Get a few items
@@ -174,7 +222,11 @@ class TestCollateFn:
     def test_collate_shapes(self, temp_chunks_file):
         """Test that collated batch has correct shapes."""
         dataset = LeechDataset(
-            temp_chunks_file, signal_len=400, kmer_len=11, model_type="ConvLSTMDwell"
+            temp_chunks_file,
+            signal_len=400,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding="base_onehot",
         )
 
         batch_size = min(4, len(dataset))
@@ -189,7 +241,11 @@ class TestCollateFn:
     def test_collate_with_features(self, temp_chunks_file):
         """Test collation with features included."""
         dataset = LeechDataset(
-            temp_chunks_file, signal_len=400, kmer_len=11, model_type="ConvLSTMDwell"
+            temp_chunks_file,
+            signal_len=400,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding="base_onehot",
         )
 
         batch = [dataset[i] for i in range(min(4, len(dataset)))]
@@ -202,7 +258,11 @@ class TestCollateFn:
     def test_collate_without_features(self, temp_chunks_file):
         """Test collation without features (ConvLSTMBase)."""
         dataset = LeechDataset(
-            temp_chunks_file, signal_len=400, kmer_len=11, model_type="ConvLSTMBase"
+            temp_chunks_file,
+            signal_len=400,
+            kmer_len=11,
+            model_type="ConvLSTMBase",
+            seq_encoding="base_onehot",
         )
 
         batch = [dataset[i] for i in range(min(4, len(dataset)))]
@@ -213,7 +273,11 @@ class TestCollateFn:
     def test_collate_single_item(self, temp_chunks_file):
         """Test collation with single item (batch_size=1)."""
         dataset = LeechDataset(
-            temp_chunks_file, signal_len=400, kmer_len=11, model_type="ConvLSTMDwell"
+            temp_chunks_file,
+            signal_len=400,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding="base_onehot",
         )
 
         batch = [dataset[0]]
@@ -232,7 +296,11 @@ class TestDatasetIntegration:
         from torch.utils.data import DataLoader
 
         dataset = LeechDataset(
-            temp_chunks_file, signal_len=400, kmer_len=11, model_type="ConvLSTMDwell"
+            temp_chunks_file,
+            signal_len=400,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding="base_onehot",
         )
 
         loader = DataLoader(dataset, batch_size=2, shuffle=True, collate_fn=collate_fn)
@@ -247,7 +315,11 @@ class TestDatasetIntegration:
         from torch.utils.data import DataLoader
 
         dataset = LeechDataset(
-            temp_chunks_file, signal_len=400, kmer_len=11, model_type="ConvLSTMDwell"
+            temp_chunks_file,
+            signal_len=400,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding="base_onehot",
         )
 
         loader = DataLoader(dataset, batch_size=2, shuffle=False, collate_fn=collate_fn)
@@ -262,7 +334,11 @@ class TestDatasetIntegration:
         from torch.utils.data import DataLoader
 
         dataset = LeechDataset(
-            temp_chunks_file, signal_len=400, kmer_len=11, model_type="ConvLSTMDwell"
+            temp_chunks_file,
+            signal_len=400,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding="base_onehot",
         )
 
         # Create two loaders with different seeds and collect all indices

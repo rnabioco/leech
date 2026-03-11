@@ -15,6 +15,7 @@ Key functions:
     refine_signal_mapping(): Main refinement function
 """
 
+import gzip
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -56,7 +57,8 @@ def load_kmer_table(table_path: Path) -> tuple[dict[str, float], int]:
     kmer_to_level: dict[str, float] = {}
     kmer_len = 0
 
-    with open(table_path) as f:
+    opener = gzip.open if str(table_path).endswith(".gz") else open
+    with opener(table_path, "rt") as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith("#"):

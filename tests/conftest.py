@@ -221,6 +221,7 @@ def sample_dataloader(temp_chunks_file, model_config):
         model_type="ConvLSTMDwell",
         signal_len=model_config["signal_len"],
         kmer_len=model_config["kmer_len"],
+        seq_encoding="base_onehot",
     )
 
     dataloader = DataLoader(

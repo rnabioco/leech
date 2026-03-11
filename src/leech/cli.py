@@ -461,8 +461,8 @@ def merge(input_chunks, output_dir, train_split, val_split, seed, k_fold, compar
 @click.option(
     "--seq-encoding",
     type=click.Choice(["base_onehot", "signal_kmer"]),
-    default="base_onehot",
-    help="Sequence encoding type: base_onehot (4, kmer_len) or signal_kmer (36, signal_len)",
+    default="signal_kmer",
+    help="Sequence encoding type: signal_kmer (36, signal_len) or base_onehot (4, kmer_len)",
 )
 @click.option(
     "--num-workers",

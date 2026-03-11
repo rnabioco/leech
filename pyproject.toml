@@ -78,7 +78,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/leech"]
-artifacts = ["src/leech/data/*.txt"]
+artifacts = ["src/leech/data/*.txt", "src/leech/data/*.txt.gz"]
 
 [tool.nbqa.addopts]
 ruff = ["--ignore=E402"]

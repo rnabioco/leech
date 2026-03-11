@@ -4,11 +4,11 @@ from importlib import resources
 from pathlib import Path
 
 
-def get_kmer_table(name: str = "rna004_9mer_levels_v1.txt") -> Path:
+def get_kmer_table(name: str = "rna004_9mer_levels_v1.txt.gz") -> Path:
     """Return the path to a bundled kmer level table.
 
     Args:
-        name: Filename of the kmer table (default: rna004_9mer_levels_v1.txt)
+        name: Filename of the kmer table (default: rna004_9mer_levels_v1.txt.gz)
 
     Returns:
         Path to the kmer table file

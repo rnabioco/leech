@@ -478,9 +478,14 @@ class TestCheckpointRecovery:
             signal_len=config["signal_len"],
             kmer_len=config["kmer_len"],
             num_features=config["num_features"],
+            seq_encoding=config.get("seq_encoding", "base_onehot"),
         )
         dataset = LeechDataset(
-            temp_chunks_file, signal_len=400, kmer_len=11, model_type="ConvLSTMDwell"
+            temp_chunks_file,
+            signal_len=400,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding=config.get("seq_encoding", "base_onehot"),
         )
         loader = DataLoader(dataset, batch_size=2, collate_fn=collate_fn)
 

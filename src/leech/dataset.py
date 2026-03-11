@@ -80,7 +80,7 @@ class LeechDataset(Dataset):
         dwell_offset: int = 0,
         chunks: list[dict] | None = None,
         augmentation: dict | None = None,
-        seq_encoding: str = "base_onehot",
+        seq_encoding: str = "signal_kmer",
         signal_kmer_context: tuple[int, int] = (4, 4),
         left_context: int | None = None,
         right_context: int | None = None,
