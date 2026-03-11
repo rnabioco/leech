@@ -1125,16 +1125,23 @@ def ablation(model, test_data, output_dir, device, no_plot):
     help="Do NOT reverse the raw signal. By default, signal is reversed for direct RNA sequencing (POD5 stores 3'→5', basecaller expects 5'→3'). Use this flag for DNA data.",
 )
 @click.option(
+    "--anchor",
+    type=click.Choice(["basecall", "reference"]),
+    default="basecall",
+    help='Anchor mode: "basecall" uses basecalled sequence, "reference" uses ref sequence + ref->signal mapping via CIGAR',
+)
+@click.option(
     "--reference-anchored",
     is_flag=True,
     default=False,
-    help="Use reference-anchored mode: search motif in reference sequence and use ref->signal mapping via CIGAR. Matches Remora's --reference-anchored behavior.",
+    hidden=True,
+    help="Deprecated: use --anchor reference instead.",
 )
 @click.option(
     "--reference-fasta",
     type=click.Path(exists=True, path_type=Path),
     default=None,
-    help="Reference FASTA file for --reference-anchored mode (required if BAM header lacks embedded sequences).",
+    help="Reference FASTA file for --anchor reference mode (required if BAM header lacks embedded sequences).",
 )
 @click.option(
     "--motif",
@@ -1184,6 +1191,7 @@ def predict(
     device,
     base_justify,
     no_reverse_signal,
+    anchor,
     reference_anchored,
     reference_fasta,
     motif,
@@ -1194,7 +1202,17 @@ def predict(
     aggregation,
 ):
     """Run inference on new data to generate predictions."""
+    import warnings
+
     from leech.commands.predict import handle_predict
+
+    if reference_anchored:
+        warnings.warn(
+            "--reference-anchored is deprecated, use --anchor reference instead",
+            FutureWarning,
+            stacklevel=2,
+        )
+        anchor = "reference"
 
     handle_predict(
         model=model,
@@ -1208,7 +1226,7 @@ def predict(
         device=device,
         base_justify=base_justify,
         no_reverse_signal=no_reverse_signal,
-        reference_anchored=reference_anchored,
+        anchor=anchor,
         reference_fasta=reference_fasta,
         motif=motif,
         motif_offset=motif_offset,

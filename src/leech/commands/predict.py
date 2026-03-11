@@ -45,7 +45,7 @@ def handle_predict(
     device: str,
     base_justify: str,
     no_reverse_signal: bool,
-    reference_anchored: bool,
+    anchor: str,
     reference_fasta: Path | None,
     motif: str | None,
     motif_offset: int,
@@ -69,7 +69,7 @@ def handle_predict(
         device: Device for inference
         base_justify: Signal chunk centering
         no_reverse_signal: Disable signal reversal
-        reference_anchored: Use reference-anchored mode
+        anchor: Anchor mode ("basecall" or "reference")
         reference_fasta: Reference FASTA for reference-anchored mode
         motif: Motif to search for
         motif_offset: Offset within motif
@@ -83,7 +83,6 @@ def handle_predict(
     validate_predict_args(model, bundle_path, pair, run_all)
 
     reverse_signal = not no_reverse_signal
-    anchor = "reference" if reference_anchored else "basecall"
 
     if bundle_path and run_all:
         # Multi-model inference: run all models in bundle

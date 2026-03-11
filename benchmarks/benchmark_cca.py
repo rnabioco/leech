@@ -138,7 +138,8 @@ def run_leech(
         "CCAGGC",
         "--motif-offset",
         "3",
-        "--reference-anchored",
+        "--anchor",
+        "reference",
         "--workers",
         str(num_workers),
     ]
