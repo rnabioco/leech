@@ -18,21 +18,31 @@ console = Console()
 
 
 def pick_best_fold(fold_dirs: list[Path]) -> Path:
-    """Select the fold with highest best_val_f1 from summary.json."""
-    best_f1 = -1.0
-    best_dir = fold_dirs[0]  # fallback to first fold
+    """Select fold with lowest final_val_loss to avoid overfitting.
+
+    Falls back to highest best_val_f1 if final_val_loss unavailable.
+    """
+    candidates = []
     for fold_dir in fold_dirs:
         summary_path = fold_dir / "summary.json"
         if summary_path.exists():
             with open(summary_path) as f:
                 summary = json.load(f)
-            f1 = summary.get("best_val_f1", -1.0)
+            candidates.append((
+                summary.get("final_val_loss", float("inf")),
+                -summary.get("best_val_f1", -1.0),
+                fold_dir,
+            ))
         else:
-            f1 = -1.0
-        if f1 > best_f1:
-            best_f1 = f1
-            best_dir = fold_dir
-    return best_dir
+            candidates.append((float("inf"), 0.0, fold_dir))
+
+    candidates.sort(key=lambda x: (x[0], x[1]))
+    best = candidates[0]
+    logger.info(
+        f"Selected {best[2].name} "
+        f"(final_val_loss={best[0]:.4f}, best_val_f1={-best[1]:.4f})"
+    )
+    return best[2]
 
 
 def handle_bundle(
@@ -74,7 +84,7 @@ def handle_bundle(
         if valid_folds:
             best_fold = pick_best_fold(valid_folds)
             model_dirs[subdir.name] = best_fold
-            logger.info(f"{subdir.name}: selected {best_fold.name} (best val F1)")
+            logger.info(f"{subdir.name}: selected {best_fold.name} (lowest val loss)")
 
     if not model_dirs:
         console.print(f"[bold red]No model directories found in {model_dir}[/bold red]")
