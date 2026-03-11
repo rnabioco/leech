@@ -190,6 +190,7 @@ def iter_bam_with_pod5(
     refine_signal_map: bool = False,
     signal_refiner: "SigMapRefiner | None" = None,
     compute_features: bool = True,
+    reference_sequences: dict[str, str] | None = None,
 ) -> Iterator[LeechRead]:
     """
     Iterate over aligned reads, loading signal from POD5.
@@ -252,10 +253,15 @@ def iter_bam_with_pod5(
                 ref_seq = None
                 cigar_tuples = None
                 if anchor == "reference":
-                    try:
-                        ref_seq = aln.get_reference_sequence()
-                    except Exception:
-                        ref_seq = None
+                    if reference_sequences and aln.reference_name in reference_sequences:
+                        # Extract aligned portion of the full reference
+                        full_ref = reference_sequences[aln.reference_name]
+                        ref_seq = full_ref[aln.reference_start : aln.reference_end]
+                    else:
+                        try:
+                            ref_seq = aln.get_reference_sequence()
+                        except Exception:
+                            ref_seq = None
                     cigar_tuples = aln.cigartuples
 
                 metadata = {
