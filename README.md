@@ -95,7 +95,7 @@ uv run leech predict \
 | Group | Commands | Purpose |
 |-------|----------|---------|
 | `leech data` | `prepare`, `merge` | Extract features, merge and split datasets |
-| `leech model` | `train`, `optimize`, `bundle`, `bundle-info` | Train, tune, and package models |
+| `leech model` | `train`, `optimize`, `bundle`, `bundle-info`, `calibrate`, `export` | Train, tune, calibrate, and package models |
 | `leech eval` | `test`, `compare`, `importance`, `ablation` | Evaluate and analyze models |
 | `leech predict` | | Run inference (single model or bundle) |
 
@@ -112,6 +112,8 @@ uv run leech predict \
 | TCNDwell | Temporal Convolutional Network |
 | ResNetDwell | Residual network |
 
+Batch normalization (BN) and attention pooling variants are available for ConvLSTMBase and ConvLSTMDwell models (e.g., ConvLSTMDwellBN, ConvLSTMDwellAttn, ConvLSTMDwellBNAttn).
+
 ## Training features
 
 - **Loss functions**: BCE, focal loss (for class imbalance), and cross-entropy
@@ -123,6 +125,10 @@ uv run leech predict \
 - **Class balancing**: automatic class weight computation
 - **Checkpoint resume**: continue training from any checkpoint
 - **Sequence encoding**: base one-hot or signal-level kmer encoding
+- **Balance-groups sampling**: equal contribution per source group per epoch
+- **K-fold cross-validation**: stratified read-level k-fold splits
+- **Platt calibration**: post-hoc Platt scaling for probability calibration
+- **TorchScript export**: standalone model export for deployment without leech
 
 ## Snakemake pipeline
 

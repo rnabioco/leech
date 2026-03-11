@@ -112,9 +112,7 @@ def load_model_from_checkpoint(
 
     # Strip _orig_mod. prefix added by torch.compile()
     state_dict = checkpoint["model_state_dict"]
-    state_dict = {
-        k.removeprefix("_orig_mod."): v for k, v in state_dict.items()
-    }
+    state_dict = {k.removeprefix("_orig_mod."): v for k, v in state_dict.items()}
     model.load_state_dict(state_dict)
     model = model.to(device)
     model.eval()
@@ -348,7 +346,9 @@ def create_bundle(
                 platt_data = json.load(f)
             model_entry["platt_a"] = platt_data["platt_a"]
             model_entry["platt_b"] = platt_data["platt_b"]
-            logger.info(f"{pair}: platt a={platt_data['platt_a']:.4f}, b={platt_data['platt_b']:.4f}")
+            logger.info(
+                f"{pair}: platt a={platt_data['platt_a']:.4f}, b={platt_data['platt_b']:.4f}"
+            )
 
         models_dict[pair] = model_entry
 
@@ -449,9 +449,7 @@ def create_torchscript_bundle(
 
         # Strip _orig_mod. prefix added by torch.compile()
         state_dict = checkpoint["model_state_dict"]
-        state_dict = {
-            k.removeprefix("_orig_mod."): v for k, v in state_dict.items()
-        }
+        state_dict = {k.removeprefix("_orig_mod."): v for k, v in state_dict.items()}
 
         model = _instantiate_model(ref_arch_config)
         model.load_state_dict(state_dict)

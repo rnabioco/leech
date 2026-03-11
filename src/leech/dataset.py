@@ -286,9 +286,7 @@ class LeechDataset(Dataset):
             # Use stored dwell_margin_left for correct slicing with asymmetric margins
             margin_left = chunk.get("dwell_margin_left", (len(dwell) - self.kmer_len) // 2)
             if self.dwell_offset + margin_left > len(dwell) - self.kmer_len:
-                raise ValueError(
-                    f"dwell_offset ({self.dwell_offset}) exceeds dwell_margin"
-                )
+                raise ValueError(f"dwell_offset ({self.dwell_offset}) exceeds dwell_margin")
             start = margin_left + self.dwell_offset
             dwell = dwell[start : start + self.kmer_len]
             if features.size > 0:

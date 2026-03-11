@@ -1,13 +1,21 @@
 """
 Model architectures for leech.
 
-Available models:
+Available models (14 total):
 - ConvLSTMBase: Baseline model (signal + sequence only)
-- ConvLSTMDwell: Full model with dwell time features
-- TransformerDwell: Transformer-based model with self-attention (Priority 1)
-- ConvOnly: Pure CNN baseline with multi-scale convolutions (Priority 1)
-- TCNDwell: Temporal Convolutional Network with dilated convolutions (Priority 2)
-- ResNetDwell: Residual Network with skip connections (Priority 2)
+- ConvLSTMBaseAttn: ConvLSTMBase with attention pooling
+- ConvLSTMBaseBN: ConvLSTMBase with batch normalization
+- ConvLSTMBaseBNAttn: ConvLSTMBase with batch normalization and attention
+- ConvLSTMDwell: Full model with dwell time features (recommended)
+- ConvLSTMDwellAttn: ConvLSTMDwell with attention pooling
+- ConvLSTMDwellBN: ConvLSTMDwell with batch normalization
+- ConvLSTMDwellBNAttn: ConvLSTMDwell with batch normalization and attention
+- ConvLSTMRemora: Remora-compatible architecture with dwell features
+- ConvLSTMRemoraBase: Remora-compatible architecture without dwell features
+- TransformerDwell: Transformer-based model with self-attention
+- ConvOnly: Pure CNN baseline with multi-scale convolutions
+- TCNDwell: Temporal Convolutional Network with dilated convolutions
+- ResNetDwell: Residual Network with skip connections
 """
 
 from typing import Any

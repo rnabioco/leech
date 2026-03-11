@@ -489,8 +489,7 @@ def run_grid_search(config: GridSearchConfig) -> Path:
     if config.model_name not in ModelInferenceWrapper.FEATURE_MODELS:
         if dwell_offsets != [0]:
             logger.info(
-                f"Model {config.model_name} has no feature branch; "
-                f"collapsing dwell_offsets to [0]"
+                f"Model {config.model_name} has no feature branch; collapsing dwell_offsets to [0]"
             )
             dwell_offsets = [0]
 

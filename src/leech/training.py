@@ -805,7 +805,13 @@ def train_model(
         **model_kwargs,
     }
     # Models without a feature branch don't take num_features
-    no_feature_models = {"ConvLSTMBase", "ConvLSTMBaseBN", "ConvLSTMBaseAttn", "ConvLSTMBaseBNAttn", "ConvLSTMRemoraBase"}
+    no_feature_models = {
+        "ConvLSTMBase",
+        "ConvLSTMBaseBN",
+        "ConvLSTMBaseAttn",
+        "ConvLSTMBaseBNAttn",
+        "ConvLSTMRemoraBase",
+    }
     if model_name not in no_feature_models:
         model_init_kwargs["num_features"] = num_features
 
@@ -825,9 +831,12 @@ def train_model(
             logger.warning(f"torch.compile failed, falling back to eager mode: {e}")
 
     # Auto-detect cross-entropy models (num_out > 1)
-    if hasattr(model, "num_out") and model.num_out > 1 and loss_type == "bce":
+    num_out: int = getattr(model, "num_out", 1)
+    if num_out > 1 and loss_type == "bce":
         loss_type = "cross_entropy"
-        logger.info(f"Model {model_name} has num_out={model.num_out}, switching to cross_entropy loss")
+        logger.info(
+            f"Model {model_name} has num_out={model.num_out}, switching to cross_entropy loss"
+        )
 
     # Save config
     output_dir.mkdir(parents=True, exist_ok=True)
