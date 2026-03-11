@@ -904,6 +904,16 @@ def run_bundle_inference(
     seq_encoding = config.get("seq_encoding", "base_onehot")
     signal_kmer_context = tuple(config.get("signal_kmer_context", (4, 4)))
 
+    # Auto-read motif/offset/justify from bundle config if not provided on CLI
+    if motif is None and config.get("motif"):
+        motif = config["motif"]
+        motif_offset = config.get("motif_offset", motif_offset)
+        logger.info(f"Auto-read motif from bundle config: {motif} (offset={motif_offset})")
+
+    if base_justify == "center" and config.get("base_justify"):
+        base_justify = config["base_justify"]
+        logger.info(f"Auto-read base_justify from bundle config: {base_justify}")
+
     signal_context = (signal_len // 2, signal_len // 2)
     kmer_context = kmer_len // 2
 
