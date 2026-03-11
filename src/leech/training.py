@@ -838,6 +838,18 @@ def train_model(
             f"Model {model_name} has num_out={model.num_out}, switching to cross_entropy loss"
         )
 
+    # Introspect dwell margin from raw training data (source of truth for feature width)
+    _dwell_margin_left = 0
+    _dwell_margin_right = 0
+    _raw_chunk = train_dataset.chunks[0]
+    _raw_features = _raw_chunk.get("features")
+    if _raw_features is not None and _raw_features.ndim > 1 and _raw_features.shape[1] > kmer_len:
+        _feat_width = _raw_features.shape[1]
+        _dwell_margin_left = int(_raw_chunk.get(
+            "dwell_margin_left", (_feat_width - kmer_len) // 2
+        ))
+        _dwell_margin_right = _feat_width - kmer_len - _dwell_margin_left
+
     # Save config
     output_dir.mkdir(parents=True, exist_ok=True)
     config = {
@@ -846,6 +858,8 @@ def train_model(
         "kmer_len": kmer_len,
         "num_features": num_features,
         "dwell_offset": dwell_offset,
+        "dwell_margin_left": _dwell_margin_left,
+        "dwell_margin_right": _dwell_margin_right,
         "motif": motif,
         "motif_offset": motif_offset,
         "base_justify": base_justify,
