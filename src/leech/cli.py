@@ -1131,6 +1131,12 @@ def ablation(model, test_data, output_dir, device, no_plot):
     help="Use reference-anchored mode: search motif in reference sequence and use ref->signal mapping via CIGAR. Matches Remora's --reference-anchored behavior.",
 )
 @click.option(
+    "--reference-fasta",
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
+    help="Reference FASTA file for --reference-anchored mode (required if BAM header lacks embedded sequences).",
+)
+@click.option(
     "--motif",
     type=str,
     default=None,
@@ -1179,6 +1185,7 @@ def predict(
     base_justify,
     no_reverse_signal,
     reference_anchored,
+    reference_fasta,
     motif,
     motif_offset,
     batch_size,
@@ -1202,6 +1209,7 @@ def predict(
         base_justify=base_justify,
         no_reverse_signal=no_reverse_signal,
         reference_anchored=reference_anchored,
+        reference_fasta=reference_fasta,
         motif=motif,
         motif_offset=motif_offset,
         batch_size=batch_size,
