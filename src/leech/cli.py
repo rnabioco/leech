@@ -481,6 +481,12 @@ def merge(input_chunks, output_dir, train_split, val_split, seed, k_fold, compar
     default=False,
     help="Balance sampling across source groups (e.g., per-AA) so each group contributes equally per epoch",
 )
+@click.option(
+    "--num-out",
+    type=int,
+    default=1,
+    help="Number of output classes. 1 = binary (BCE), >1 = multi-class (CrossEntropy). Default: 1.",
+)
 def train(
     train_data,
     val_data,
@@ -514,6 +520,7 @@ def train(
     seq_encoding,
     num_workers,
     balance_groups,
+    num_out,
 ):
     """Train a model on prepared data."""
     from leech.commands.train import handle_train
@@ -551,6 +558,7 @@ def train(
         base_justify=base_justify,
         seq_encoding=seq_encoding,
         balance_groups=balance_groups,
+        num_out=num_out,
     )
 
 
@@ -1152,6 +1160,12 @@ def ablation(model, test_data, output_dir, device, no_plot):
     default=0,
     help="Parallel chunk extraction workers (0=sequential). Only useful with GPU inference; CPU-only is faster with 0.",
 )
+@click.option(
+    "--aggregation",
+    type=click.Choice(["naive", "weighted", "tournament"]),
+    default="naive",
+    help='Pairwise aggregation method: "naive" (sum votes), "weighted" (confidence-weighted), "tournament" (two-round elimination). Default: naive.',
+)
 def predict(
     model,
     bundle_path,
@@ -1170,6 +1184,7 @@ def predict(
     batch_size,
     min_mapq,
     workers,
+    aggregation,
 ):
     """Run inference on new data to generate predictions."""
     from leech.commands.predict import handle_predict
@@ -1192,6 +1207,7 @@ def predict(
         batch_size=batch_size,
         min_mapq=min_mapq,
         workers=workers,
+        aggregation=aggregation,
     )
 
 

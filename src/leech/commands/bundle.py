@@ -28,19 +28,20 @@ def pick_best_fold(fold_dirs: list[Path]) -> Path:
         if summary_path.exists():
             with open(summary_path) as f:
                 summary = json.load(f)
-            candidates.append((
-                summary.get("final_val_loss", float("inf")),
-                -summary.get("best_val_f1", -1.0),
-                fold_dir,
-            ))
+            candidates.append(
+                (
+                    summary.get("final_val_loss", float("inf")),
+                    -summary.get("best_val_f1", -1.0),
+                    fold_dir,
+                )
+            )
         else:
             candidates.append((float("inf"), 0.0, fold_dir))
 
     candidates.sort(key=lambda x: (x[0], x[1]))
     best = candidates[0]
     logger.info(
-        f"Selected {best[2].name} "
-        f"(final_val_loss={best[0]:.4f}, best_val_f1={-best[1]:.4f})"
+        f"Selected {best[2].name} (final_val_loss={best[0]:.4f}, best_val_f1={-best[1]:.4f})"
     )
     return best[2]
 

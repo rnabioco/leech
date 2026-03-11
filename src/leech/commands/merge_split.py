@@ -67,7 +67,32 @@ def handle_merge_and_split(
     logger.info("Merging and splitting chunks at read level")
 
     # Parse and validate inputs
-    all_files, relabel_tuple, meta_labels = _parse_and_validate_inputs(input_chunks)
+    parsed = _parse_and_validate_inputs(input_chunks)
+
+    # Multi-class mode (N > 2 unique labels)
+    if (
+        isinstance(parsed, tuple)
+        and len(parsed) == 2
+        and isinstance(parsed[1], list)
+        and isinstance(parsed[1][0], str)
+    ):
+        all_files, all_labels = parsed
+        logger.info(f"Multi-class mode: {len(set(all_labels))} classes")
+        from leech.splitting import merge_and_split_multiclass
+
+        result = merge_and_split_multiclass(
+            input_paths=all_files,
+            labels=all_labels,
+            output_dir=output_dir,
+            train_frac=train_split,
+            val_frac=val_split,
+            seed=seed,
+        )
+        _display_single_comparison_results(result)
+        console.print("[bold green]Multi-class merge and split complete![/bold green]")
+        return result
+
+    all_files, relabel_tuple, meta_labels = parsed
 
     logger.info(
         f"Relabeling for comparison: {meta_labels[0]} = label_int 0, {meta_labels[1]} = label_int 1"
@@ -151,12 +176,22 @@ def _parse_and_validate_inputs(
                 }
                 meta_to_chunk_labels[meta_label].update(chunk_labels)
 
-    # Validate we have exactly 2 groups for binary classification
-    if len(meta_to_files) != 2:
+    # Validate we have at least 2 groups
+    if len(meta_to_files) < 2:
         raise ValueError(
-            f"Expected exactly 2 unique meta-labels for binary classification, "
+            f"Expected at least 2 unique meta-labels, "
             f"got {len(meta_to_files)}: {list(meta_to_files.keys())}"
         )
+
+    # For N > 2 groups, return multi-class format instead of pairwise
+    if len(meta_to_files) > 2:
+        all_files = []
+        all_labels = []
+        for meta_label in meta_order:
+            for f in meta_to_files[meta_label]:
+                all_files.append(f)
+                all_labels.append(meta_label)
+        return all_files, all_labels  # type: ignore[return-value]
 
     # Build relabel_pairwise tuple: (group1_chunk_labels, group2_chunk_labels)
     # First seen meta-label = 0, second = 1
@@ -198,7 +233,31 @@ def handle_merge_and_split_kfold(
     logger.info(f"Merging and splitting chunks with {k_fold}-fold cross-validation")
 
     # Parse and validate inputs
-    all_files, relabel_tuple, meta_labels = _parse_and_validate_inputs(input_chunks)
+    parsed = _parse_and_validate_inputs(input_chunks)
+
+    # Multi-class mode (N > 2 unique labels)
+    if (
+        isinstance(parsed, tuple)
+        and len(parsed) == 2
+        and isinstance(parsed[1], list)
+        and isinstance(parsed[1][0], str)
+    ):
+        all_files, all_labels = parsed
+        logger.info(f"Multi-class {k_fold}-fold mode: {len(set(all_labels))} classes")
+        from leech.splitting import merge_and_kfold_split_multiclass
+
+        result = merge_and_kfold_split_multiclass(
+            input_paths=all_files,
+            labels=all_labels,
+            output_dir=output_dir,
+            k_fold=k_fold,
+            seed=seed,
+        )
+        _display_kfold_results(result)
+        console.print("[bold green]Multi-class k-fold merge and split complete![/bold green]")
+        return result
+
+    all_files, relabel_tuple, meta_labels = parsed
 
     logger.info(
         f"Relabeling for comparison: {meta_labels[0]} = label_int 0, {meta_labels[1]} = label_int 1"

@@ -243,6 +243,54 @@ def aggregate_pairwise(pairs: list[str], probs: list[float]) -> tuple[str, float
     return predicted_aa, confidence, votes
 
 
+def aggregate_pairwise_weighted(
+    pairs: list[str], probs: list[float]
+) -> tuple[str, float, dict[str, float]]:
+    """Pairwise aggregation with confidence weighting.
+
+    Models seeing OOD data produce p ~ 0.5 (uncertain). Weight each
+    model's vote by its confidence: w = |2p - 1|, so uncertain models
+    contribute near-zero and confident models dominate.
+    """
+    votes: dict[str, float] = {}
+    for pair, prob in zip(pairs, probs, strict=True):
+        aa_a, aa_b = pair.split("_", 1)
+        confidence = abs(2 * prob - 1)  # 0 at p=0.5, 1 at p=0 or p=1
+        votes[aa_a] = votes.get(aa_a, 0.0) + (1.0 - prob) * confidence
+        votes[aa_b] = votes.get(aa_b, 0.0) + prob * confidence
+    total = sum(votes.values())
+    predicted_aa = max(votes, key=votes.__getitem__)
+    confidence_score = votes[predicted_aa] / total if total > 0 else 0.0
+    return predicted_aa, confidence_score, votes
+
+
+def aggregate_pairwise_tournament(
+    pairs: list[str], probs: list[float], top_k: int = 5
+) -> tuple[str, float, dict[str, float]]:
+    """Tournament-style aggregation.
+
+    Round 1: naive vote to identify top-K candidates.
+    Round 2: only aggregate models involving top-K AAs.
+    Eliminates 90%+ of OOD noise.
+    """
+    # Round 1: get initial rankings
+    _, _, initial_votes = aggregate_pairwise(pairs, probs)
+    top_aas = sorted(initial_votes, key=initial_votes.__getitem__, reverse=True)[:top_k]
+
+    # Round 2: only use relevant models
+    final_votes: dict[str, float] = dict.fromkeys(top_aas, 0.0)
+    for pair, prob in zip(pairs, probs, strict=True):
+        aa_a, aa_b = pair.split("_", 1)
+        if aa_a in final_votes and aa_b in final_votes:
+            final_votes[aa_a] += 1.0 - prob
+            final_votes[aa_b] += prob
+
+    total = sum(final_votes.values())
+    predicted_aa = max(final_votes, key=final_votes.__getitem__)
+    confidence_score = final_votes[predicted_aa] / total if total > 0 else 0.0
+    return predicted_aa, confidence_score, final_votes
+
+
 def aggregate_one_vs_all(
     pairs: list[str], probs: list[float]
 ) -> tuple[str, float, dict[str, float]]:
@@ -374,8 +422,12 @@ def _inference_worker(
                         signal_context=config.signal_context,
                         kmer_context=config.kmer_context,
                         base_justify=config.base_justify,
-                        dwell_margin_left=config.dwell_margin_left if config.dwell_margin_left else None,
-                        dwell_margin_right=config.dwell_margin_right if config.dwell_margin_right else None,
+                        dwell_margin_left=config.dwell_margin_left
+                        if config.dwell_margin_left
+                        else None,
+                        dwell_margin_right=config.dwell_margin_right
+                        if config.dwell_margin_right
+                        else None,
                     )
                     if chunk is None:
                         continue
@@ -544,7 +596,7 @@ def run_inference(
         signal_len = config["signal_len"]
         kmer_len = config["kmer_len"]
         dwell_offset = config.get("dwell_offset", 0)
-        seq_encoding = config.get("seq_encoding", "base_onehot")
+        seq_encoding = config.get("seq_encoding", "signal_kmer")
         signal_kmer_context = tuple(config.get("signal_kmer_context", (4, 4)))
 
         # Auto-read motif from model config if not provided
@@ -570,7 +622,11 @@ def run_inference(
     dwell_margin_right = config.get("dwell_margin_right", 0)
     if wide_features and dwell_margin_left == 0 and dwell_margin_right == 0:
         # Fallback for old models without explicit margins: use model default
-        _model_margin = getattr(model_wrapper.model, "dwell_margin", 0) if hasattr(model_wrapper, "model") else 0
+        _model_margin = (
+            getattr(model_wrapper.model, "dwell_margin", 0)
+            if hasattr(model_wrapper, "model")
+            else 0
+        )
         if _model_margin:
             dwell_margin_left = _model_margin
             dwell_margin_right = _model_margin
@@ -579,7 +635,19 @@ def run_inference(
                 f"falling back to model default: {_model_margin}"
             )
 
+    # Detect multi-class model
+    num_out = config.get("num_out", 1)
+    label_map = config.get("label_map")  # {name: int} or None
+    if label_map:
+        # Invert to {int: name}
+        int_to_label = {v: k for k, v in label_map.items()}
+    else:
+        int_to_label = None
+    is_multiclass = num_out > 1
+
     logger.info(f"Signal length: {signal_len}, K-mer length: {kmer_len}")
+    if is_multiclass:
+        logger.info(f"Multi-class model: num_out={num_out}")
     logger.info(f"Signal context: {signal_context}")
     logger.info(f"Sequence encoding: {seq_encoding}")
     if dwell_margin_left or dwell_margin_right:
@@ -737,14 +805,16 @@ def run_inference(
         batch_seqs: list[np.ndarray] = []
         batch_feats: list[np.ndarray | None] = []
         batch_meta: list[tuple[str, int]] = []  # (read_id, base_idx)
-        pending: dict[str, list[tuple[int, float]]] = {}
+        pending: dict[str, list] = {}
+
+        _batch_fn = _run_batch_multiclass if is_multiclass else _run_batch
 
         def _flush_batch() -> None:
             """Run accumulated chunks through model."""
             nonlocal batch_signals, batch_seqs, batch_feats, batch_meta
             if not batch_signals:
                 return
-            _run_batch(
+            _batch_fn(
                 batch_signals,
                 batch_seqs,
                 batch_feats,
@@ -849,15 +919,40 @@ def run_inference(
 
         # Write all results to BAM
         total_predictions = sum(len(v) for v in pending.values())
-        for aln in alignment_by_read_id.values():
-            preds = pending.get(aln.query_name)
-            if preds:
-                preds.sort(key=lambda x: x[0])
-                positions_list = [int(p[0]) for p in preds]
-                ml_scores = [int(min(255, max(0, p[1] * 255))) for p in preds]
-                aln.set_tag("MP", array.array("i", positions_list))
-                aln.set_tag("ML", array.array("B", ml_scores))
-            bam_out.write(aln)
+        if is_multiclass:
+            # Multi-class: write aa/ac tags + full softmax (pn/pp)
+            # pn:Z — comma-separated class names (sorted by label_int)
+            if int_to_label:
+                class_names = [int_to_label[i] for i in range(num_out)]
+                class_names_str = ",".join(class_names)
+            else:
+                class_names_str = ",".join(str(i) for i in range(num_out))
+
+            for aln in alignment_by_read_id.values():
+                preds = pending.get(aln.query_name)
+                if preds:
+                    # Take first prediction (typically one motif per read)
+                    _, cls_idx, conf, all_probs = preds[0]
+                    if int_to_label:
+                        predicted_aa = int_to_label.get(cls_idx, str(cls_idx))
+                    else:
+                        predicted_aa = str(cls_idx)
+                    aln.set_tag("aa", predicted_aa)
+                    aln.set_tag("ac", conf)
+                    # Full softmax distribution
+                    aln.set_tag("pn", class_names_str)  # Z type (string)
+                    aln.set_tag("pp", all_probs)  # B:f type (float array)
+                bam_out.write(aln)
+        else:
+            for aln in alignment_by_read_id.values():
+                preds = pending.get(aln.query_name)
+                if preds:
+                    preds.sort(key=lambda x: x[0])
+                    positions_list = [int(p[0]) for p in preds]
+                    ml_scores = [int(min(255, max(0, p[1] * 255))) for p in preds]
+                    aln.set_tag("MP", array.array("i", positions_list))
+                    aln.set_tag("ML", array.array("B", ml_scores))
+                bam_out.write(aln)
 
     bam_in.close()
     bam_out.close()
@@ -866,6 +961,40 @@ def run_inference(
     logger.info(f"Reads processed: {total_reads}")
     logger.info(f"Total predictions: {total_predictions}")
     logger.info(f"Output written to: {output_path}")
+
+
+def _run_batch_multiclass(
+    signals: list[np.ndarray],
+    sequences: list[np.ndarray],
+    features: list[np.ndarray | None],
+    meta: list[tuple[str, int]],
+    model_wrapper: ModelInferenceWrapper | TracedModelWrapper | RemoraModelWrapper,
+    requires_features: bool,
+    device: str,
+    pending: dict[str, list[tuple[int, int, float, list[float]]]],
+) -> None:
+    """Run a multi-class batch: store (base_idx, class_idx, confidence, all_probs) per read."""
+    signal_t = torch.from_numpy(np.stack(signals)).to(device)
+    seq_t = torch.from_numpy(np.stack(sequences)).to(device)
+    batch = {"signal": signal_t, "sequence": seq_t}
+
+    if requires_features:
+        valid_feats = [f for f in features if f is not None]
+        if valid_feats:
+            batch["features"] = torch.from_numpy(np.stack(valid_feats)).to(device)
+
+    with torch.no_grad():
+        logits = model_wrapper.forward_batch(batch, device)
+        probs = torch.softmax(logits, dim=-1).cpu().numpy()
+        class_indices = np.argmax(probs, axis=-1)
+        confidences = probs.max(axis=-1)
+
+    for (read_id, base_idx), cls_idx, conf, prob_vec in zip(
+        meta, class_indices.flatten(), confidences.flatten(), probs, strict=True
+    ):
+        if read_id not in pending:
+            pending[read_id] = []
+        pending[read_id].append((base_idx, int(cls_idx), float(conf), [float(p) for p in prob_vec]))
 
 
 def _run_batch(
@@ -910,6 +1039,7 @@ def run_bundle_inference(
     base_justify: str = "center",
     reverse_signal: bool = True,
     raw: bool = False,
+    aggregation: str = "naive",
 ) -> None:
     """
     Run all models from a bundle on each read, aggregate to a single AA prediction.
@@ -945,7 +1075,7 @@ def run_bundle_inference(
     kmer_len = config["kmer_len"]
     model_type = config.get("model_name", metadata.get("architecture", ""))
     dwell_offset = config.get("dwell_offset", 0)
-    seq_encoding = config.get("seq_encoding", "base_onehot")
+    seq_encoding = config.get("seq_encoding", "signal_kmer")
     signal_kmer_context = tuple(config.get("signal_kmer_context", (4, 4)))
 
     # Auto-read motif/offset/justify from bundle config if not provided on CLI
@@ -988,6 +1118,10 @@ def run_bundle_inference(
             )
 
     logger.info(f"Signal context: {signal_context}, kmer_len: {kmer_len}")
+    logger.info(f"seq_encoding: {seq_encoding}, base_justify: {base_justify}")
+    logger.info(
+        f"dwell_offset: {dwell_offset}, margins: L={dwell_margin_left} R={dwell_margin_right}"
+    )
     if dwell_margin_left or dwell_margin_right:
         logger.info(
             f"Dwell margins: left={dwell_margin_left}, right={dwell_margin_right} "
@@ -996,7 +1130,18 @@ def run_bundle_inference(
 
     # Select aggregation function
     if comparison_type == "pairwise":
-        aggregate_fn = aggregate_pairwise
+        _pairwise_agg = {
+            "naive": aggregate_pairwise,
+            "weighted": aggregate_pairwise_weighted,
+            "tournament": aggregate_pairwise_tournament,
+        }
+        if aggregation not in _pairwise_agg:
+            raise ValueError(
+                f"Unknown aggregation '{aggregation}'. "
+                f"Available for pairwise: {list(_pairwise_agg.keys())}"
+            )
+        aggregate_fn = _pairwise_agg[aggregation]
+        logger.info(f"Pairwise aggregation method: {aggregation}")
     else:
         aggregate_fn = aggregate_one_vs_all
 

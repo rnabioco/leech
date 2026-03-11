@@ -51,6 +51,7 @@ def handle_predict(
     batch_size: int,
     min_mapq: int,
     workers: int,
+    aggregation: str = "naive",
 ) -> None:
     """
     Handle the predict command logic.
@@ -97,6 +98,7 @@ def handle_predict(
             base_justify=base_justify,
             reverse_signal=reverse_signal,
             raw=raw,
+            aggregation=aggregation,
         )
     else:
         # Single-model inference (auto-detects leech vs Remora)
