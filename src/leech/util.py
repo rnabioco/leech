@@ -335,11 +335,22 @@ def create_bundle(
             raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
         checkpoint = torch.load(checkpoint_path, map_location="cpu")
 
-        models_dict[pair] = {
+        model_entry = {
             "state_dict": checkpoint["model_state_dict"],
             "best_val_acc": checkpoint.get("best_val_acc"),
             "best_epoch": checkpoint.get("best_epoch"),
         }
+
+        # Include Platt scaling if calibrated
+        platt_path = model_dir / "platt.json"
+        if platt_path.exists():
+            with open(platt_path) as f:
+                platt_data = json.load(f)
+            model_entry["platt_a"] = platt_data["platt_a"]
+            model_entry["platt_b"] = platt_data["platt_b"]
+            logger.info(f"{pair}: platt a={platt_data['platt_a']:.4f}, b={platt_data['platt_b']:.4f}")
+
+        models_dict[pair] = model_entry
 
     bundle = {
         "metadata": {

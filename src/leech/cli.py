@@ -742,6 +742,98 @@ def bundle_info(bundle):
     "--model-dir",
     required=True,
     type=click.Path(exists=True, path_type=Path),
+    help="Model directory (with config.json and model_best.pt), or parent with pair subdirs",
+)
+@click.option(
+    "--val-data",
+    required=True,
+    type=click.Path(exists=True, path_type=Path),
+    help="Validation data (.npz) used to learn Platt scaling parameters",
+)
+@click.option(
+    "--device",
+    type=str,
+    default="cpu",
+    help="Device for inference (default: cpu)",
+)
+@click.option(
+    "--batch-size",
+    type=int,
+    default=1024,
+    help="Batch size for validation pass (default: 1024)",
+)
+@click.option(
+    "--num-workers",
+    type=int,
+    default=0,
+    help="DataLoader workers (default: 0)",
+)
+def calibrate(model_dir, val_data, device, batch_size, num_workers):
+    """Learn post-hoc Platt scaling on the validation set.
+
+    Fits two parameters (a, b) per model so that sigmoid(a*logit + b) is
+    better calibrated. This handles both confidence scaling (a) and decision
+    threshold shift (b) — critical when class imbalance biases the boundary.
+
+    Writes platt.json to the model directory.
+
+    For a parent directory with pair subdirs (e.g., one_vs_all/Ala_notAla/),
+    calibrates each pair independently.
+    """
+    from leech.calibration import calibrate_model
+
+    # Check if model_dir is a single model or a parent with pair subdirs
+    if (model_dir / "config.json").exists():
+        # Single model directory
+        a, b = calibrate_model(
+            model_dir, val_data, device=device,
+            batch_size=batch_size, num_workers=num_workers,
+        )
+        console.print(f"[green]Platt: a={a:.4f}, b={b:.4f}[/green]")
+    else:
+        # Parent directory — calibrate each pair subdir
+        console.print(f"[cyan]Scanning {model_dir} for model subdirectories...[/cyan]")
+        pairs_done = 0
+        for subdir in sorted(model_dir.iterdir()):
+            if not subdir.is_dir():
+                continue
+            # Direct model
+            if (subdir / "config.json").exists():
+                console.print(f"  [cyan]{subdir.name}[/cyan]", end=" ")
+                a, b = calibrate_model(
+                    subdir, val_data, device=device,
+                    batch_size=batch_size, num_workers=num_workers,
+                )
+                console.print(f"[green]a={a:.4f}, b={b:.4f}[/green]")
+                pairs_done += 1
+                continue
+            # K-fold: calibrate best fold
+            fold_dirs = sorted(subdir.glob("fold_*/"))
+            valid_folds = [
+                f for f in fold_dirs
+                if (f / "model_best.pt").exists() and (f / "config.json").exists()
+            ]
+            if valid_folds:
+                best_fold = _pick_best_fold(valid_folds)
+                console.print(f"  [cyan]{subdir.name}/{best_fold.name}[/cyan]", end=" ")
+                a, b = calibrate_model(
+                    best_fold, val_data, device=device,
+                    batch_size=batch_size, num_workers=num_workers,
+                )
+                console.print(f"[green]a={a:.4f}, b={b:.4f}[/green]")
+                pairs_done += 1
+
+        if pairs_done == 0:
+            console.print("[bold red]No model directories found[/bold red]")
+            raise SystemExit(1)
+        console.print(f"[bold green]Calibrated {pairs_done} models[/bold green]")
+
+
+@model.command()
+@click.option(
+    "--model-dir",
+    required=True,
+    type=click.Path(exists=True, path_type=Path),
     help="Model checkpoint directory (with config.json and model_best.pt)",
 )
 @click.option(

@@ -928,10 +928,23 @@ def run_bundle_inference(
     else:
         for pair in pairs:
             m = _instantiate_model(config)
-            m.load_state_dict(bundle["models"][pair]["state_dict"])
+            state_dict = bundle["models"][pair]["state_dict"]
+            # Strip _orig_mod. prefix from torch.compile'd state dicts
+            state_dict = {k.removeprefix("_orig_mod."): v for k, v in state_dict.items()}
+            m.load_state_dict(state_dict)
             m = m.to(device)
             m.eval()
             wrappers[pair] = ModelInferenceWrapper(m, model_type)
+
+    # Load per-model Platt scaling params (for post-hoc calibration)
+    platt_params: dict[str, tuple[float, float]] = {}
+    for pair in pairs:
+        a = bundle["models"][pair].get("platt_a")
+        b = bundle["models"][pair].get("platt_b")
+        if a is not None and b is not None:
+            platt_params[pair] = (a, b)
+    if platt_params:
+        logger.info(f"Platt scaling enabled for {len(platt_params)}/{len(pairs)} models")
 
     pair_names_str = ",".join(pairs)
 
@@ -1014,6 +1027,10 @@ def run_bundle_inference(
             with torch.no_grad():
                 for pair in pairs:
                     logits = wrappers[pair].forward_batch(batch, device)
+                    pp = platt_params.get(pair)
+                    if pp is not None:
+                        a, b = pp
+                        logits = a * logits + b
                     prob = torch.sigmoid(logits).item()
                     probs.append(prob)
 
