@@ -89,6 +89,17 @@ def learn_platt(
 
     # a must be positive (monotonicity); clamp to reasonable range
     a_val = max(a_val, 0.01)
+    if a_val > 10.0:
+        logger.warning(
+            f"Platt a={a_val:.4f} exceeds 10.0 — clamping. "
+            "This may indicate overfitting or degenerate logits."
+        )
+        a_val = 10.0
+    if abs(b_val) < 0.01:
+        logger.warning(
+            f"Platt b={b_val:.4f} is near zero — possible degenerate fit. "
+            "Check that validation set has sufficient class diversity."
+        )
 
     logger.info(f"Learned Platt params: a={a_val:.4f}, b={b_val:.4f}")
     return a_val, b_val
@@ -194,6 +205,11 @@ def calibrate_model(
     post_probs = torch.sigmoid(a * logits + b)
     post_ece = _expected_calibration_error(post_probs, labels)
 
+    if post_ece >= pre_ece:
+        logger.warning(
+            f"Calibration did not improve ECE: {pre_ece:.4f} -> {post_ece:.4f}. "
+            "Platt params may be unreliable for this model."
+        )
     logger.info(f"ECE: {pre_ece:.4f} -> {post_ece:.4f} (a={a:.4f}, b={b:.4f})")
 
     result = {
