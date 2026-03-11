@@ -141,8 +141,11 @@ def calibrate_model(
         "signal_kmer_context": signal_kmer_context,
     }
     no_feature_models = {
-        "ConvLSTMBase", "ConvLSTMBaseBN", "ConvLSTMBaseAttn",
-        "ConvLSTMBaseBNAttn", "ConvLSTMRemoraBase",
+        "ConvLSTMBase",
+        "ConvLSTMBaseBN",
+        "ConvLSTMBaseAttn",
+        "ConvLSTMBaseBNAttn",
+        "ConvLSTMRemoraBase",
     }
     if model_name not in no_feature_models and "num_features" in config:
         model_kwargs["num_features"] = config["num_features"]

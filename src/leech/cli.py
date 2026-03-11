@@ -4,27 +4,23 @@ Command-line interface for leech.
 Designed for Snakemake integration with clear input/output paths.
 """
 
-import json
 import logging
+from importlib.metadata import version as pkg_version
 from pathlib import Path
 
 import rich_click as click
-from rich.table import Table
 
 from leech.cli_config import configure_rich_click, console
 from leech.cli_options import MODEL_CHOICES, training_hyperparams
 from leech.constants import DEFAULT_DEVICE, DEFAULT_SEED
 from leech.logging_config import setup_logging
 
-# Setup logging for CLI
-logger = logging.getLogger("leech.cli")
-
 # Apply rich-click styling
 configure_rich_click()
 
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
-@click.version_option(version="0.1.0", prog_name="leech")
+@click.version_option(version=pkg_version("leech"), prog_name="leech")
 def cli():
     """LEECH - Learning Enhanced Electrical Classifiers from Hanopore signals
 
@@ -514,34 +510,23 @@ def train(
     balance_groups,
 ):
     """Train a model on prepared data."""
-    from leech.training import train_model
+    from leech.commands.train import handle_train
 
-    # display_logo()
-
-    logger.info(f"Training {model} model")
-    logger.info(f"Train data: {train_data}")
-    logger.info(f"Output: {output_dir}")
-
-    # Load model config if provided
-    model_kwargs = {}
-    if model_config is not None:
-        with open(model_config) as f:
-            model_kwargs = json.load(f)
-
-    # Train model
-    history = train_model(
-        train_data_path=train_data,
-        val_data_path=val_data,
+    handle_train(
+        train_data=train_data,
+        val_data=val_data,
         model_name=model,
+        model_config=model_config,
         output_dir=output_dir,
         epochs=epochs,
         batch_size=batch_size,
         learning_rate=learning_rate,
         device=device,
         seed=seed,
-        early_stopping_patience=early_stopping,
+        early_stopping=early_stopping,
         use_class_weights=use_class_weights,
         pos_weight=pos_weight,
+        resume=resume,
         weight_decay=weight_decay,
         max_grad_norm=max_grad_norm,
         scheduler=scheduler,
@@ -554,49 +539,13 @@ def train(
         augment_jitter=augment_jitter,
         augment_scale_min=augment_scale_min,
         augment_scale_max=augment_scale_max,
-        resume_from=resume,
         num_workers=num_workers,
         motif=motif,
         motif_offset=motif_offset,
         base_justify=base_justify,
         seq_encoding=seq_encoding,
         balance_groups=balance_groups,
-        **model_kwargs,
     )
-
-    console.print("[bold green]Training complete![/bold green]")
-
-    # Display final metrics in a table
-    table = Table(title="Training Summary", show_header=True, header_style="bold magenta")
-    table.add_column("Metric", style="cyan")
-    table.add_column("Value", justify="right", style="green")
-
-    if "val_acc" in history and history["val_acc"]:
-        table.add_row("Best Validation Accuracy", f"{history['val_acc'][-1]:.4f}")
-    if "val_loss" in history and history["val_loss"]:
-        table.add_row("Final Validation Loss", f"{history['val_loss'][-1]:.4f}")
-
-    table.add_row("Model saved to", str(output_dir))
-
-    console.print(table)
-
-
-def _pick_best_fold(fold_dirs: list[Path]) -> Path:
-    """Select the fold with highest best_val_f1 from summary.json."""
-    best_f1 = -1.0
-    best_dir = fold_dirs[0]  # fallback to first fold
-    for fold_dir in fold_dirs:
-        summary_path = fold_dir / "summary.json"
-        if summary_path.exists():
-            with open(summary_path) as f:
-                summary = json.load(f)
-            f1 = summary.get("best_val_f1", -1.0)
-        else:
-            f1 = -1.0
-        if f1 > best_f1:
-            best_f1 = f1
-            best_dir = fold_dir
-    return best_dir
 
 
 @model.command()
@@ -634,64 +583,15 @@ def _pick_best_fold(fold_dirs: list[Path]) -> Path:
 )
 def bundle(model_dir, output, bundle_version, comparison_type, torchscript):
     """Bundle trained models into a single versioned file."""
-    from leech.util import create_bundle, create_torchscript_bundle
+    from leech.commands.bundle import handle_bundle
 
-    # Auto-discover pair subdirectories
-    model_dirs = {}
-    for subdir in sorted(model_dir.iterdir()):
-        if not subdir.is_dir():
-            continue
-        # Direct model (no folds)
-        if (subdir / "model_best.pt").exists() and (subdir / "config.json").exists():
-            model_dirs[subdir.name] = subdir
-            continue
-        # K-fold: pick best fold by val F1
-        fold_dirs = sorted(subdir.glob("fold_*/"))
-        valid_folds = [
-            f
-            for f in fold_dirs
-            if (f / "model_best.pt").exists() and (f / "config.json").exists()
-        ]
-        if valid_folds:
-            best_fold = _pick_best_fold(valid_folds)
-            model_dirs[subdir.name] = best_fold
-            logger.info(f"{subdir.name}: selected {best_fold.name} (best val F1)")
-
-    if not model_dirs:
-        console.print(f"[bold red]No model directories found in {model_dir}[/bold red]")
-        raise SystemExit(1)
-
-    logger.info(f"Found {len(model_dirs)} model directories")
-
-    if torchscript:
-        bundle_path = create_torchscript_bundle(
-            model_dirs=model_dirs,
-            output_path=output,
-            comparison_type=comparison_type,
-            version=bundle_version,
-        )
-    else:
-        bundle_path = create_bundle(
-            model_dirs=model_dirs,
-            output_path=output,
-            comparison_type=comparison_type,
-            version=bundle_version,
-        )
-
-    # Print summary table
-    table = Table(title="Bundle Summary", show_header=True, header_style="bold magenta")
-    table.add_column("Property", style="cyan")
-    table.add_column("Value", style="green")
-    table.add_row("Version", bundle_version)
-    table.add_row("Format", "TorchScript" if torchscript else "state_dict")
-    table.add_row("Comparison type", comparison_type)
-    table.add_row("Models", str(len(model_dirs)))
-    table.add_row("Output", str(bundle_path))
-    size_mb = bundle_path.stat().st_size / (1024 * 1024)
-    table.add_row("File size", f"{size_mb:.1f} MB")
-
-    console.print(table)
-    console.print("[bold green]Bundle created![/bold green]")
+    handle_bundle(
+        model_dir=model_dir,
+        output=output,
+        bundle_version=bundle_version,
+        comparison_type=comparison_type,
+        torchscript=torchscript,
+    )
 
 
 @model.command(name="bundle-info")
@@ -703,38 +603,9 @@ def bundle(model_dir, output, bundle_version, comparison_type, torchscript):
 )
 def bundle_info(bundle):
     """Display metadata from a model bundle."""
-    from leech.util import list_bundle_models
+    from leech.commands.bundle import handle_bundle_info
 
-    metadata = list_bundle_models(bundle)
-
-    table = Table(title="Bundle Info", show_header=True, header_style="bold magenta")
-    table.add_column("Property", style="cyan")
-    table.add_column("Value", style="green")
-
-    table.add_row("Bundle version", metadata.get("bundle_version", "unknown"))
-    table.add_row("Format version", str(metadata.get("format_version", "unknown")))
-    is_ts = metadata.get("torchscript", False)
-    table.add_row("Format", "TorchScript" if is_ts else "state_dict")
-    table.add_row("Architecture", metadata.get("architecture", "unknown"))
-    table.add_row("Comparison type", metadata.get("comparison_type", "unknown"))
-    table.add_row("Number of models", str(metadata.get("num_models", 0)))
-    table.add_row("Created at", metadata.get("created_at", "unknown"))
-    size_mb = Path(bundle).stat().st_size / (1024 * 1024)
-    table.add_row("File size", f"{size_mb:.1f} MB")
-
-    console.print(table)
-
-    # Print pairs
-    pairs = metadata.get("pairs", [])
-    if pairs:
-        pairs_table = Table(
-            title=f"Models ({len(pairs)})", show_header=True, header_style="bold magenta"
-        )
-        pairs_table.add_column("#", style="dim", width=4)
-        pairs_table.add_column("Pair", style="cyan")
-        for i, pair in enumerate(pairs, 1):
-            pairs_table.add_row(str(i), pair)
-        console.print(pairs_table)
+    handle_bundle_info(bundle)
 
 
 @model.command()
@@ -780,53 +651,15 @@ def calibrate(model_dir, val_data, device, batch_size, num_workers):
     For a parent directory with pair subdirs (e.g., one_vs_all/Ala_notAla/),
     calibrates each pair independently.
     """
-    from leech.calibration import calibrate_model
+    from leech.commands.calibrate import handle_calibrate
 
-    # Check if model_dir is a single model or a parent with pair subdirs
-    if (model_dir / "config.json").exists():
-        # Single model directory
-        a, b = calibrate_model(
-            model_dir, val_data, device=device,
-            batch_size=batch_size, num_workers=num_workers,
-        )
-        console.print(f"[green]Platt: a={a:.4f}, b={b:.4f}[/green]")
-    else:
-        # Parent directory — calibrate each pair subdir
-        console.print(f"[cyan]Scanning {model_dir} for model subdirectories...[/cyan]")
-        pairs_done = 0
-        for subdir in sorted(model_dir.iterdir()):
-            if not subdir.is_dir():
-                continue
-            # Direct model
-            if (subdir / "config.json").exists():
-                console.print(f"  [cyan]{subdir.name}[/cyan]", end=" ")
-                a, b = calibrate_model(
-                    subdir, val_data, device=device,
-                    batch_size=batch_size, num_workers=num_workers,
-                )
-                console.print(f"[green]a={a:.4f}, b={b:.4f}[/green]")
-                pairs_done += 1
-                continue
-            # K-fold: calibrate best fold
-            fold_dirs = sorted(subdir.glob("fold_*/"))
-            valid_folds = [
-                f for f in fold_dirs
-                if (f / "model_best.pt").exists() and (f / "config.json").exists()
-            ]
-            if valid_folds:
-                best_fold = _pick_best_fold(valid_folds)
-                console.print(f"  [cyan]{subdir.name}/{best_fold.name}[/cyan]", end=" ")
-                a, b = calibrate_model(
-                    best_fold, val_data, device=device,
-                    batch_size=batch_size, num_workers=num_workers,
-                )
-                console.print(f"[green]a={a:.4f}, b={b:.4f}[/green]")
-                pairs_done += 1
-
-        if pairs_done == 0:
-            console.print("[bold red]No model directories found[/bold red]")
-            raise SystemExit(1)
-        console.print(f"[bold green]Calibrated {pairs_done} models[/bold green]")
+    handle_calibrate(
+        model_dir=model_dir,
+        val_data=val_data,
+        device=device,
+        batch_size=batch_size,
+        num_workers=num_workers,
+    )
 
 
 @model.command()
@@ -849,20 +682,9 @@ def export(model_dir, output):
     The exported file is loadable with just torch.jit.load() — no leech
     codebase required. Model config is embedded in the file.
     """
-    from leech.util import export_single_model
+    from leech.commands.bundle import handle_export
 
-    output_path = export_single_model(model_dir, output)
-    size_mb = output_path.stat().st_size / (1024 * 1024)
-
-    table = Table(title="Export Summary", show_header=True, header_style="bold magenta")
-    table.add_column("Property", style="cyan")
-    table.add_column("Value", style="green")
-    table.add_row("Source", str(model_dir))
-    table.add_row("Output", str(output_path))
-    table.add_row("File size", f"{size_mb:.1f} MB")
-
-    console.print(table)
-    console.print("[bold green]TorchScript export complete![/bold green]")
+    handle_export(model_dir=model_dir, output=output)
 
 
 @model.command()
@@ -980,48 +802,26 @@ def optimize(
     balance_groups,
 ):
     """Optimize model hyperparameters using grid search over chunk contexts."""
-    from leech.gridsearch import GridSearchConfig, parse_context_grid, parse_values, run_grid_search
+    from leech.commands.optimize import handle_optimize
 
-    # Validate: need context_grid as fallback if left/right not both provided
-    if context_grid is None and (left_contexts is None or right_contexts is None):
-        raise click.UsageError(
-            "--context-grid is required when --left-contexts or "
-            "--right-contexts is not provided"
-        )
-
-    # Parse context grids
-    left_contexts_list, right_contexts_list = parse_context_grid(
-        context_grid, left_contexts, right_contexts
-    )
-
-    # Parse dwell offsets
-    dwell_offsets_list = parse_values(dwell_offsets)
-
-    logger.info(
-        f"Starting grid search with {len(left_contexts_list)} x {len(right_contexts_list)} x {len(dwell_offsets_list)} grid points"
-    )
-    logger.info(f"Left contexts: {left_contexts_list}")
-    logger.info(f"Right contexts: {right_contexts_list}")
-    logger.info(f"Dwell offsets: {dwell_offsets_list}")
-
-    # Create config
-    config = GridSearchConfig(
-        train_data_path=train_data,
-        val_data_path=val_data,
+    handle_optimize(
+        train_data=train_data,
+        val_data=val_data,
         model_name=model,
         output_dir=output_dir,
-        left_contexts=left_contexts_list,
-        right_contexts=right_contexts_list,
+        context_grid=context_grid,
+        left_contexts=left_contexts,
+        right_contexts=right_contexts,
         kmer_context=kmer_context,
         epochs=epochs,
         batch_size=batch_size,
         learning_rate=learning_rate,
         device=device,
         seed=seed,
-        early_stopping_patience=early_stopping,
+        early_stopping=early_stopping,
         base_justify=base_justify,
-        dwell_offsets=dwell_offsets_list,
-        n_parallel=parallel,
+        dwell_offsets=dwell_offsets,
+        parallel=parallel,
         weight_decay=weight_decay,
         max_grad_norm=max_grad_norm,
         scheduler=scheduler,
@@ -1037,12 +837,6 @@ def optimize(
         num_workers=num_workers,
         balance_groups=balance_groups,
     )
-
-    # Run grid search
-    summary_path = run_grid_search(config)
-
-    console.print("[bold green]Grid search complete![/bold green]")
-    logger.info(f"Results saved to: {summary_path}")
 
 
 # ============================================================================
@@ -1084,22 +878,9 @@ def eval():
 )
 def test(model, test_data, output, device):
     """Test a trained model on a holdout test set."""
-    from leech.evaluation import evaluate_model
+    from leech.commands.eval import handle_test
 
-    logger.info(f"Testing model: {model}")
-    logger.info(f"Test data: {test_data}")
-    logger.info(f"Output: {output}")
-
-    # Run evaluation
-    evaluate_model(
-        model_path=model,
-        test_data_path=test_data,
-        output_path=output,
-        device=device,
-    )
-
-    console.print("[bold green]Testing complete![/bold green]")
-    logger.info(f"Results saved to {output}")
+    handle_test(model=model, test_data=test_data, output=output, device=device)
 
 
 @eval.command()
@@ -1259,20 +1040,6 @@ def ablation(model, test_data, output_dir, device, no_plot):
 # ============================================================================
 
 
-def _validate_predict_args(model, bundle_path, pair, run_all):
-    """Validate mutually exclusive predict command arguments."""
-    if model and bundle_path:
-        raise click.UsageError("--model and --bundle are mutually exclusive")
-    if not model and not bundle_path:
-        raise click.UsageError("Either --model or --bundle is required")
-    if bundle_path and not pair and not run_all:
-        raise click.UsageError("--bundle requires either --pair or --all")
-    if pair and run_all:
-        raise click.UsageError("--pair and --all are mutually exclusive")
-    if (pair or run_all) and not bundle_path:
-        raise click.UsageError("--pair and --all require --bundle")
-
-
 @cli.command()
 @click.option(
     "--model",
@@ -1399,66 +1166,27 @@ def predict(
     workers,
 ):
     """Run inference on new data to generate predictions."""
-    from leech.inference import run_bundle_inference, run_inference
-    from leech.util import load_model_from_bundle
+    from leech.commands.predict import handle_predict
 
-    _validate_predict_args(model, bundle_path, pair, run_all)
-
-    reverse_signal = not no_reverse_signal
-    anchor = "reference" if reference_anchored else "basecall"
-
-    if bundle_path and run_all:
-        # Multi-model inference: run all models in bundle
-        logger.info(f"Running multi-model inference with bundle: {bundle_path}")
-        run_bundle_inference(
-            bundle_path=bundle_path,
-            pod5_path=pod5,
-            bam_path=bam,
-            output_path=output,
-            device=device,
-            min_mapq=min_mapq,
-            motif=motif,
-            motif_offset=motif_offset,
-            base_justify=base_justify,
-            reverse_signal=reverse_signal,
-            raw=raw,
-        )
-    else:
-        # Single-model inference (auto-detects leech vs Remora)
-        if bundle_path and pair:
-            loaded_model, config = load_model_from_bundle(bundle_path, pair, device=device)
-            logger.info(f"Running inference with pair '{pair}' from bundle: {bundle_path}")
-            model_and_config = (loaded_model, config)
-            model_path_arg = None
-        elif model is not None:
-            # Use load_model_auto for auto-detection of leech vs Remora
-            model_and_config = None
-            model_path_arg = Path(model)
-        else:
-            raise click.UsageError("Either --model or --bundle is required")
-
-        logger.info(f"Input: {pod5}, {bam}")
-        logger.info(f"Output: {output}")
-
-        run_inference(
-            model_and_config=model_and_config,
-            model_path=model_path_arg,
-            pod5_path=pod5,
-            bam_path=bam,
-            output_path=output,
-            device=device,
-            min_mapq=min_mapq,
-            motif=motif,
-            motif_offset=motif_offset,
-            batch_size=batch_size,
-            base_justify=base_justify,
-            reverse_signal=reverse_signal,
-            num_workers=workers,
-            anchor=anchor,
-        )
-
-    console.print("[bold green]Inference complete![/bold green]")
-    logger.info(f"Predictions saved to {output}")
+    handle_predict(
+        model=model,
+        bundle_path=bundle_path,
+        pair=pair,
+        run_all=run_all,
+        raw=raw,
+        pod5=pod5,
+        bam=bam,
+        output=output,
+        device=device,
+        base_justify=base_justify,
+        no_reverse_signal=no_reverse_signal,
+        reference_anchored=reference_anchored,
+        motif=motif,
+        motif_offset=motif_offset,
+        batch_size=batch_size,
+        min_mapq=min_mapq,
+        workers=workers,
+    )
 
 
 def main():

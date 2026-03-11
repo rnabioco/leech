@@ -466,11 +466,13 @@ def merge_and_kfold_split_chunks(
         for j in range(k_fold):
             if j != i and j != (i + 1) % k_fold:
                 train_ids.update(partition_sets[j])
-        fold_read_assignments.append({
-            "train": train_ids,
-            "val": val_ids,
-            "test": test_ids,
-        })
+        fold_read_assignments.append(
+            {
+                "train": train_ids,
+                "val": val_ids,
+                "test": test_ids,
+            }
+        )
         logger.info(
             f"  Fold {i}: train={len(train_ids)} reads, "
             f"val={len(val_ids)} reads, test={len(test_ids)} reads"
@@ -567,16 +569,18 @@ def merge_and_kfold_split_chunks(
             f"test={len(test_chunks)} chunks -> {fold_dir}"
         )
 
-        folds_stats.append({
-            "n_train": len(train_chunks),
-            "n_val": len(val_chunks),
-            "n_test": len(test_chunks),
-            "output_files": {
-                "train": train_file,
-                "val": val_file,
-                "test": test_file,
-            },
-        })
+        folds_stats.append(
+            {
+                "n_train": len(train_chunks),
+                "n_val": len(val_chunks),
+                "n_test": len(test_chunks),
+                "output_files": {
+                    "train": train_file,
+                    "val": val_file,
+                    "test": test_file,
+                },
+            }
+        )
 
     logger.info(f"Saved {k_fold} folds to {output_dir}")
 

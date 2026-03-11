@@ -48,7 +48,9 @@ class SignalBranch(nn.Module):
         layers: list[nn.Module] = []
         in_ch = 1
         for out_ch in conv_channels:
-            layers.append(nn.Conv1d(in_ch, out_ch, kernel_size=kernel_size, padding=kernel_size // 2))
+            layers.append(
+                nn.Conv1d(in_ch, out_ch, kernel_size=kernel_size, padding=kernel_size // 2)
+            )
             if use_batchnorm:
                 layers.append(nn.BatchNorm1d(out_ch))
             layers.append(nn.ReLU())
@@ -106,7 +108,9 @@ class SequenceBranch(nn.Module):
         layers: list[nn.Module] = []
         in_ch = in_channels
         for out_ch in conv_channels:
-            layers.append(nn.Conv1d(in_ch, out_ch, kernel_size=kernel_size, padding=kernel_size // 2))
+            layers.append(
+                nn.Conv1d(in_ch, out_ch, kernel_size=kernel_size, padding=kernel_size // 2)
+            )
             if use_batchnorm:
                 layers.append(nn.BatchNorm1d(out_ch))
             layers.append(nn.ReLU())
@@ -161,7 +165,9 @@ class FeatureBranch(nn.Module):
         layers: list[nn.Module] = []
         in_ch = num_features
         for out_ch in conv_channels:
-            layers.append(nn.Conv1d(in_ch, out_ch, kernel_size=kernel_size, padding=kernel_size // 2))
+            layers.append(
+                nn.Conv1d(in_ch, out_ch, kernel_size=kernel_size, padding=kernel_size // 2)
+            )
             if use_batchnorm:
                 layers.append(nn.BatchNorm1d(out_ch))
             layers.append(nn.ReLU())

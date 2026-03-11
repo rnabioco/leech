@@ -9,7 +9,7 @@ The CLI is organized into workflow-based command groups:
 | Group | Commands | Purpose |
 |-------|----------|---------|
 | `leech data` | `prepare`, `merge` | Extract features, merge and split datasets |
-| `leech model` | `train`, `optimize`, `bundle`, `bundle-info` | Train, tune, and package models |
+| `leech model` | `train`, `optimize`, `bundle`, `bundle-info`, `calibrate`, `export` | Train, tune, calibrate, and package models |
 | `leech eval` | `test`, `compare`, `importance`, `ablation` | Evaluate and analyze models |
 | `leech predict` | *(top-level)* | Run inference on new data |
 
@@ -112,6 +112,7 @@ leech data merge -i LABEL=FILE -i LABEL=FILE -o DIR [OPTIONS]
 | `--train-split` | `0.7` | Fraction for training |
 | `--val-split` | `0.15` | Fraction for validation |
 | `--seed` | `42` | Random seed |
+| `--k-fold` | `1` | Number of cross-validation folds. When > 1, creates k-fold splits (must be >= 3) |
 | `--comparison-spec` | -- | TSV file with batch comparison specs |
 
 **Examples:**
@@ -127,6 +128,11 @@ leech data merge \
   -i basic=lys.npz -i basic=arg.npz \
   -i acidic=asp.npz -i acidic=glu.npz \
   -o merged/
+
+# 5-fold cross-validation
+leech data merge \
+  -i Ala=ala.npz -i Gly=gly.npz \
+  -o kfold/ --k-fold 5
 ```
 
 ---
@@ -215,6 +221,9 @@ leech model train --train-data FILES --val-data FILES --model MODEL --output-dir
 | `--motif-offset INT` | `0` | Focus base within motif |
 | `--base-justify STR` | `center` | Signal justification |
 | `--model-config FILE` | -- | JSON file with model architecture overrides |
+| `--seq-encoding STR` | `base_onehot` | Sequence encoding: `base_onehot` or `signal_kmer` |
+| `--num-workers INT` | `0` | DataLoader workers (0=auto) |
+| `--balance-groups / --no-balance-groups` | disabled | Balance sampling across source groups (e.g., per-AA) so each group contributes equally per epoch |
 
 **Output files:**
 
@@ -350,6 +359,53 @@ leech model bundle-info --bundle FILE
 ```
 
 Shows architecture, version, comparison type, included pairs, and file size.
+
+### leech model calibrate
+
+Learn post-hoc Platt scaling on the validation set. Fits two parameters (a, b) per model so that `sigmoid(a*logit + b)` is better calibrated.
+
+```bash
+leech model calibrate --model-dir DIR --val-data FILE [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--model-dir DIR` | *(required)* | Model directory or parent with pair subdirs |
+| `--val-data FILE` | *(required)* | Validation data (`.npz`) |
+| `--device STR` | `cpu` | Device for inference |
+| `--batch-size INT` | `1024` | Batch size for validation pass |
+| `--num-workers INT` | `0` | DataLoader workers |
+
+Writes `platt.json` to the model directory. For a parent directory with pair subdirs, calibrates each pair independently.
+
+**Examples:**
+
+```bash
+# Calibrate a single model
+leech model calibrate --model-dir models/Ala_vs_Gly/ --val-data val.npz
+
+# Calibrate all pairs in a directory
+leech model calibrate --model-dir models/one_vs_all/ --val-data val.npz
+```
+
+### leech model export
+
+Export a trained model as a standalone TorchScript file, loadable with `torch.jit.load()` without the leech codebase.
+
+```bash
+leech model export --model-dir DIR --output FILE
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--model-dir DIR` | *(required)* | Model checkpoint directory |
+| `-o, --output FILE` | *(required)* | Output TorchScript `.pt` file |
+
+**Example:**
+
+```bash
+leech model export --model-dir models/best/ -o exported_model.pt
+```
 
 ---
 

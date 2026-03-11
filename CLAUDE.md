@@ -105,6 +105,12 @@ uv run leech model bundle --model-dir results/models/pairwise/ --output bundle.p
 # Inspect bundle metadata
 uv run leech model bundle-info --bundle bundle.pt
 
+# Calibrate model probabilities (Platt scaling)
+uv run leech model calibrate --model-dir models/ --val-data chunks/val.npz
+
+# Export model as standalone TorchScript
+uv run leech model export --model-dir models/ -o exported_model.pt
+
 # Run inference (single model)
 uv run leech predict --model models/ --pod5 reads.pod5 --bam alignments.bam --output predictions.bam
 
@@ -250,6 +256,11 @@ uv run leech data prepare --pod5 data.pod5 --bam alignments.bam \
 - Supports pairwise and one-vs-all aggregation modes
 - Provenance tracking: motif, motif_offset, base_justify stored per model
 
+**`PlattScaling` / `calibrate_model()` (calibration.py)**
+- Post-hoc Platt scaling for probability calibration
+- Fits two parameters (a, b) per model: sigmoid(a*logit + b)
+- Essential for one-vs-all bundles with different positive-class rates
+
 ### Module Organization
 
 ```
@@ -260,6 +271,12 @@ src/leech/           # Main package source
 ├── commands/        # CLI command handlers
 │   ├── prepare.py   # Prepare command implementation
 │   ├── merge_split.py  # Merge-and-split command
+│   ├── train.py     # Train command handler
+│   ├── bundle.py    # Bundle, bundle-info, export handlers
+│   ├── calibrate.py # Platt scaling calibration handler
+│   ├── eval.py      # Test command handler
+│   ├── optimize.py  # Grid search optimization handler
+│   ├── predict.py   # Inference/predict handler
 │   └── analyze.py   # Analysis command handlers (importance, ablation)
 ├── io/              # Input/output operations
 │   ├── bam_reader.py    # BAM file reading
@@ -284,6 +301,7 @@ src/leech/           # Main package source
 ├── gridsearch.py    # Grid search for chunk context optimization
 ├── util.py          # Helper functions (model loading, bundling, metrics)
 ├── losses.py        # Loss function implementations (BCE, focal, cross-entropy)
+├── calibration.py   # Post-hoc Platt scaling for model calibration
 ├── signal_refine.py # Signal map refinement via kmer level tables
 ├── _rust_accel.py   # Rust acceleration wrapper for vectorized operations
 ├── config.py        # Configuration management
@@ -294,7 +312,13 @@ src/leech/           # Main package source
     ├── components.py          # Reusable model components
     ├── inference_wrapper.py   # Inference wrapper pattern
     ├── conv_lstm_dwell.py     # ConvLSTMDwell architecture
+    ├── conv_lstm_dwell_bn.py  # ConvLSTMDwellBN (batch normalization)
+    ├── conv_lstm_dwell_attn.py  # ConvLSTMDwellAttn (attention pooling)
+    ├── conv_lstm_dwell_bn_attn.py  # ConvLSTMDwellBNAttn (BN + attention)
     ├── conv_lstm_base.py      # ConvLSTMBase architecture
+    ├── conv_lstm_base_bn.py   # ConvLSTMBaseBN (batch normalization)
+    ├── conv_lstm_base_attn.py # ConvLSTMBaseAttn (attention pooling)
+    ├── conv_lstm_base_bn_attn.py  # ConvLSTMBaseBNAttn (BN + attention)
     ├── conv_lstm_remora.py    # ConvLSTMRemora / ConvLSTMRemoraBase
     ├── transformer_dwell.py   # TransformerDwell architecture
     ├── tcn_dwell.py           # TCNDwell architecture
@@ -317,6 +341,11 @@ tests/               # pytest tests
 - **Sequence encoding**: `base_onehot` (default 4-channel) or `signal_kmer` (36-dimensional signal-level kmers)
 - **Feature concatenation**: Models expect 3 inputs: (signal, sequence, features) where features combines dwell and signal statistics
 
+### Platt Scaling and Balance-Groups
+- **Platt scaling** (`calibration.py`): Post-hoc calibration fitting `sigmoid(a*logit + b)` on validation data. Essential for one-vs-all bundles where models trained with different positive-class rates must produce comparable probabilities for argmax aggregation.
+- **Balance-groups sampling**: When `--balance-groups` is enabled, training balances sampling across `source_group` labels (tracked per chunk) so each group contributes equally per epoch. Prevents dominant groups from biasing the model.
+- **K-fold cross-validation**: `leech data merge --k-fold K` creates K stratified read-level splits for cross-validation. Bundle discovery auto-selects the best fold by validation F1 when k-fold directories are present.
+
 ### Move Table Format
 The BAM `mv` tag format:
 - First element: stride (basecaller downsampling factor, typically 5)
@@ -334,7 +363,8 @@ Training chunks are dictionaries:
     'features': np.ndarray,    # Stacked features [num_features, kmer_len]
     'label': int,              # 0=uncharged, 1=charged
     'read_id': str,
-    'base_idx': int
+    'base_idx': int,
+    'source_group': str,       # Source group label (e.g., amino acid identity)
 }
 ```
 
@@ -377,8 +407,8 @@ The workflow is designed to integrate with the leech CLI commands and supports b
 
 The codebase is feature-complete (v0.2.0):
 - ✓ Feature extraction with dwell offset tuning and signal map refinement
-- ✓ 8 model architectures (ConvLSTMDwell, ConvLSTMBase, ConvLSTMRemora, ConvLSTMRemoraBase, TransformerDwell, TCNDwell, ResNetDwell, ConvOnly)
-- ✓ CLI organized into 4 command groups: `data` (prepare, merge), `model` (train, optimize, bundle, bundle-info), `eval` (test, compare, importance, ablation), `predict`
+- ✓ 14 model architectures: 8 base + BN/Attention variants for ConvLSTM models
+- ✓ CLI organized into 4 command groups: `data` (prepare, merge), `model` (train, optimize, bundle, bundle-info, calibrate, export), `eval` (test, compare, importance, ablation), `predict`
 - ✓ Training with focal loss, mixup augmentation, cosine annealing, gradient clipping
 - ✓ Grid search with range syntax, parallel execution, dwell offset tuning
 - ✓ Model bundling for multi-model pairwise deployment
@@ -387,5 +417,9 @@ The codebase is feature-complete (v0.2.0):
 - ✓ Reference-anchored mode matching Remora convention
 - ✓ Rust acceleration for vectorized operations
 - ✓ Snakemake workflow for production pipelines
+- ✓ Platt scaling for post-hoc model calibration
+- ✓ Balance-groups sampling for equal source group contribution
+- ✓ K-fold cross-validation with read-level stratification
+- ✓ TorchScript export for standalone model deployment
 
 All core functionality is implemented and ready for use.

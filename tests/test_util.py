@@ -396,7 +396,7 @@ class TestModelBundle:
 
     def test_kfold_discovery_picks_best_fold(self, tmp_path, model_config):
         """Bundle CLI discovers fold_* subdirs and picks best fold by val F1."""
-        from leech.cli import _pick_best_fold
+        from leech.commands.bundle import pick_best_fold
 
         pairs = ["Ala_notAla", "Gly_notGly"]
         root = tmp_path / "models"
@@ -417,7 +417,7 @@ class TestModelBundle:
                 if (f / "model_best.pt").exists() and (f / "config.json").exists()
             ]
             if valid_folds:
-                best_fold = _pick_best_fold(valid_folds)
+                best_fold = pick_best_fold(valid_folds)
                 model_dirs[subdir.name] = best_fold
 
         assert len(model_dirs) == 2
@@ -436,7 +436,7 @@ class TestModelBundle:
 
     def test_kfold_discovery_fallback_no_summary(self, tmp_path, model_config):
         """When no summary.json exists, falls back to first fold."""
-        from leech.cli import _pick_best_fold
+        from leech.commands.bundle import pick_best_fold
 
         pair_dir = tmp_path / "models" / "Ala_notAla"
         pair_dir.mkdir(parents=True)
@@ -455,16 +455,14 @@ class TestModelBundle:
 
         fold_dirs = sorted(pair_dir.glob("fold_*/"))
         valid_folds = [
-            f
-            for f in fold_dirs
-            if (f / "model_best.pt").exists() and (f / "config.json").exists()
+            f for f in fold_dirs if (f / "model_best.pt").exists() and (f / "config.json").exists()
         ]
-        best = _pick_best_fold(valid_folds)
+        best = pick_best_fold(valid_folds)
         assert best.name == "fold_0"  # fallback to first
 
     def test_mixed_flat_and_kfold(self, tmp_path, model_config):
         """Bundle discovery handles mix of flat and k-fold pair dirs."""
-        from leech.cli import _pick_best_fold
+        from leech.commands.bundle import pick_best_fold
 
         root = tmp_path / "models"
 
@@ -490,7 +488,7 @@ class TestModelBundle:
                 if (f / "model_best.pt").exists() and (f / "config.json").exists()
             ]
             if valid_folds:
-                best_fold = _pick_best_fold(valid_folds)
+                best_fold = pick_best_fold(valid_folds)
                 model_dirs[subdir.name] = best_fold
 
         assert len(model_dirs) == 2
