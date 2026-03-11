@@ -252,7 +252,13 @@ def prepare(
     if signal_norm == "pa_scaling" and (pa_mean is None or pa_stdev is None):
         raise click.UsageError("--signal-norm pa_scaling requires --pa-mean and --pa-stdev")
     if refine_signal_map and kmer_table is None:
-        raise click.UsageError("--refine-signal-map requires --kmer-table")
+        from leech.data import get_kmer_table
+
+        kmer_table = get_kmer_table()
+        if not kmer_table.exists():
+            raise click.UsageError(
+                "--refine-signal-map requires --kmer-table (bundled table not found)"
+            )
 
     # display_logo()
 
