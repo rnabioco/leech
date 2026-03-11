@@ -75,7 +75,7 @@ def data():
     "--motif-offset",
     type=int,
     default=0,
-    help="Offset within motif for focus base",
+    help="Offset within motif for focus base (0-indexed)",
 )
 @click.option(
     "--motif-reference",
@@ -450,7 +450,7 @@ def merge(input_chunks, output_dir, train_split, val_split, seed, k_fold, compar
     "--motif-offset",
     type=int,
     default=0,
-    help="Offset within motif for focus base (recorded in config)",
+    help="Offset within motif for focus base (0-indexed, recorded in config)",
 )
 @click.option(
     "--base-justify",
