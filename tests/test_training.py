@@ -27,7 +27,11 @@ class TestTrainer:
     def sample_dataloader(self, temp_chunks_file):
         """Create a sample dataloader."""
         dataset = LeechDataset(
-            temp_chunks_file, signal_len=400, kmer_len=11, model_type="ConvLSTMDwell"
+            temp_chunks_file,
+            signal_len=400,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding="base_onehot",
         )
         return DataLoader(dataset, batch_size=2, shuffle=True, collate_fn=collate_fn)
 
@@ -394,7 +398,11 @@ class TestClassWeighting:
     def test_compute_class_weights_balanced(self, temp_chunks_file):
         """Test class weight computation for balanced dataset."""
         dataset = LeechDataset(
-            temp_chunks_file, signal_len=400, kmer_len=11, model_type="ConvLSTMDwell"
+            temp_chunks_file,
+            signal_len=400,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding="base_onehot",
         )
 
         pos_weight = compute_class_weights(dataset)

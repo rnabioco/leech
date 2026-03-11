@@ -47,7 +47,7 @@ def handle_train(
     motif: str | None = None,
     motif_offset: int = 0,
     base_justify: str = "center",
-    seq_encoding: str = "base_onehot",
+    seq_encoding: str = "signal_kmer",
     balance_groups: bool = False,
     **model_kwargs: Any,
 ) -> dict[str, Any]:

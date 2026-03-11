@@ -582,7 +582,7 @@ def train_model(
     motif: str | None = None,
     motif_offset: int = 0,
     base_justify: str = "center",
-    seq_encoding: str = "base_onehot",
+    seq_encoding: str = "signal_kmer",
     signal_kmer_context: tuple[int, int] = (4, 4),
     left_context: int | None = None,
     right_context: int | None = None,
