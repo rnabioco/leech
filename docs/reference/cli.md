@@ -218,7 +218,7 @@ leech model train --train-data FILES --val-data FILES --model MODEL --output-dir
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--motif STR` | -- | Motif used for chunk extraction |
-| `--motif-offset INT` | `0` | Focus base within motif |
+| `--motif-offset INT` | `0` | Focus base within motif (0-indexed) |
 | `--base-justify STR` | `center` | Signal justification |
 | `--model-config FILE` | -- | JSON file with model architecture overrides |
 | `--seq-encoding STR` | `base_onehot` | Sequence encoding: `base_onehot` or `signal_kmer` |
