@@ -6,7 +6,8 @@ the Click interface layer. Each command module exports handler functions that
 can be called from cli.py or other interfaces (API, Snakemake, etc.).
 """
 
-from leech.commands.bundle import handle_bundle, handle_bundle_info, handle_export, pick_best_fold
+from leech.commands._utils import discover_model_dirs, pick_best_fold
+from leech.commands.bundle import handle_bundle, handle_bundle_info, handle_export
 from leech.commands.calibrate import handle_calibrate
 from leech.commands.eval import handle_test
 from leech.commands.merge_split import handle_merge_and_split, handle_merge_and_split_kfold
@@ -16,6 +17,7 @@ from leech.commands.prepare import handle_prepare
 from leech.commands.train import handle_train
 
 __all__ = [
+    "discover_model_dirs",
     "handle_bundle",
     "handle_bundle_info",
     "handle_calibrate",

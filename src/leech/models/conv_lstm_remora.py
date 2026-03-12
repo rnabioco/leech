@@ -1,17 +1,20 @@
 """
-Remora-style ConvLSTM model variants.
+Remora-style ConvLSTM model.
 
-ConvLSTMRemoraBase: Pure reproduction of Remora's ConvLSTM architecture
-    - Signal + Sequence only (no feature branch)
-    - BatchNorm + SiLU activations
-    - Strided convolutions (no AdaptiveAvgPool)
-    - Merge convolution
-    - Manual bidirectional LSTM (flip trick), take last position
-    - CrossEntropyLoss compatible (num_out=2)
+ConvLSTMRemora is a unified Remora-compatible architecture that optionally
+includes a dwell/signal feature branch:
 
-ConvLSTMRemora: Remora architecture + leech's dwell/signal feature branch
-    - All of above + Feature branch with BatchNorm + SiLU
-    - 3-branch merge convolution
+- ``num_features=None`` (or omitted) -> 2-branch (signal + sequence)
+- ``num_features=int`` -> 3-branch (signal + sequence + features)
+
+ConvLSTMRemoraBase is a thin subclass that forces ``num_features=None``.
+
+Architecture details:
+- BatchNorm + SiLU activations
+- Strided convolutions (no AdaptiveAvgPool)
+- Merge convolution to fuse branches
+- Manual bidirectional LSTM (flip trick), take last position
+- CrossEntropyLoss compatible (num_out=2)
 """
 
 import torch
@@ -103,115 +106,18 @@ class _RemoraLSTM(nn.Module):
         return (fwd_last + rev_last) / 2  # (B, H)
 
 
-class ConvLSTMRemoraBase(BaseModel):
-    """
-    Pure Remora ConvLSTM reproduction (signal + sequence only).
-
-    Architecture matches Remora's default ConvLSTM:
-    - BatchNorm + SiLU activations
-    - Strided convolutions for downsampling
-    - Merge convolution to fuse branches
-    - Manual bidirectional LSTM (flip trick)
-    - Single linear output layer
-
-    Args:
-        signal_len: Length of input signal
-        kmer_len: Length of k-mer sequence (unused, kept for API compat)
-        size: Channel width throughout the network (default: 64)
-        num_out: Number of output classes (default: 2 for CrossEntropyLoss)
-        dropout: Dropout probability (default: 0.3)
-        seq_encoding: Sequence encoding type ("signal_kmer" expected)
-        signal_kmer_context: Kmer context for signal_kmer encoding
-    """
-
-    def __init__(
-        self,
-        signal_len: int = 400,
-        kmer_len: int = 11,
-        size: int = DEFAULT_REMORA_SIZE,
-        num_out: int = 2,
-        dropout: float = DEFAULT_REMORA_DROPOUT,
-        seq_encoding: str = "signal_kmer",
-        signal_kmer_context: tuple[int, int] = (4, 4),
-    ):
-        super().__init__()
-        self.signal_len = signal_len
-        self.kmer_len = kmer_len
-        self.size = size
-        self.num_out = num_out
-        self.seq_encoding = seq_encoding
-
-        if seq_encoding == "signal_kmer":
-            seq_in_channels = 4 * (signal_kmer_context[0] + signal_kmer_context[1] + 1)
-        else:
-            seq_in_channels = 4
-
-        self.signal_branch = _RemoraSignalBranch(size)
-        self.seq_branch = _RemoraSequenceBranch(seq_in_channels, size)
-
-        # Merge conv: fuse signal + sequence
-        self.merge_conv = nn.Sequential(
-            nn.Conv1d(size * 2, size, kernel_size=5, padding=2),
-            nn.BatchNorm1d(size),
-            nn.SiLU(),
-        )
-
-        self.lstm = _RemoraLSTM(size, size)
-        self.dropout = nn.Dropout(dropout)
-        self.fc = nn.Linear(size, num_out)
-
-    def forward(self, signal: torch.Tensor, sequence: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass.
-
-        Args:
-            signal: (B, signal_len)
-            sequence: (B, C, signal_len) for signal_kmer or (B, 4, kmer_len) for base_onehot
-
-        Returns:
-            (B, num_out) logits
-        """
-        sig_feat = self.signal_branch(signal)
-        seq_feat = self.seq_branch(sequence)
-
-        # Match lengths (stride=3 may produce different lengths)
-        min_len = min(sig_feat.shape[2], seq_feat.shape[2])
-        sig_feat = sig_feat[:, :, :min_len]
-        seq_feat = seq_feat[:, :, :min_len]
-
-        merged = torch.cat([sig_feat, seq_feat], dim=1)
-        merged = self.merge_conv(merged)
-
-        # (B, C, L) -> (B, L, C) for LSTM
-        merged = merged.transpose(1, 2)
-        out = self.lstm(merged)  # (B, size)
-        out = self.dropout(out)
-        logits: torch.Tensor = self.fc(out)  # (B, num_out)
-        return logits
-
-    def predict_proba(self, *args, **kwargs) -> torch.Tensor:
-        """Predict probability of positive class."""
-        self.eval()
-        with torch.no_grad():
-            logits = self.forward(*args, **kwargs)
-            if self.num_out == 2:
-                probs = torch.softmax(logits, dim=-1)[:, 1:2]
-            else:
-                probs = torch.sigmoid(logits)
-        return probs
-
-
 class ConvLSTMRemora(BaseModel):
     """
-    Remora architecture + leech's dwell/signal feature branch.
+    Remora-compatible architecture with optional feature branch.
 
-    Same as ConvLSTMRemoraBase but with a third branch for engineered features
-    (dwell times + signal level statistics).
+    When ``num_features`` is ``None`` (or omitted), this is a pure Remora
+    reproduction (signal + sequence only). When ``num_features`` is an int,
+    a third branch for engineered features is added.
 
     Args:
         signal_len: Length of input signal
         kmer_len: Length of k-mer sequence (unused, kept for API compat)
-        num_features: Number of feature channels (dwell + signal levels)
+        num_features: Number of feature channels, or None for no feature branch
         size: Channel width throughout the network (default: 64)
         num_out: Number of output classes (default: 2 for CrossEntropyLoss)
         dropout: Dropout probability (default: 0.3)
@@ -223,7 +129,7 @@ class ConvLSTMRemora(BaseModel):
         self,
         signal_len: int = 400,
         kmer_len: int = 11,
-        num_features: int = DEFAULT_NUM_FEATURES,
+        num_features: int | None = DEFAULT_NUM_FEATURES,
         size: int = DEFAULT_REMORA_SIZE,
         num_out: int = 2,
         dropout: float = DEFAULT_REMORA_DROPOUT,
@@ -245,11 +151,15 @@ class ConvLSTMRemora(BaseModel):
 
         self.signal_branch = _RemoraSignalBranch(size)
         self.seq_branch = _RemoraSequenceBranch(seq_in_channels, size)
-        self.feature_branch = _RemoraFeatureBranch(num_features, size)
 
-        # Merge conv: fuse all three branches
+        if num_features is not None:
+            self.feature_branch = _RemoraFeatureBranch(num_features, size)
+            merge_input = size * 3
+        else:
+            merge_input = size * 2
+
         self.merge_conv = nn.Sequential(
-            nn.Conv1d(size * 3, size, kernel_size=5, padding=2),
+            nn.Conv1d(merge_input, size, kernel_size=5, padding=2),
             nn.BatchNorm1d(size),
             nn.SiLU(),
         )
@@ -259,7 +169,10 @@ class ConvLSTMRemora(BaseModel):
         self.fc = nn.Linear(size, num_out)
 
     def forward(
-        self, signal: torch.Tensor, sequence: torch.Tensor, features: torch.Tensor
+        self,
+        signal: torch.Tensor,
+        sequence: torch.Tensor,
+        features: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """
         Forward pass.
@@ -267,22 +180,32 @@ class ConvLSTMRemora(BaseModel):
         Args:
             signal: (B, signal_len)
             sequence: (B, C, signal_len) for signal_kmer or (B, 4, kmer_len) for base_onehot
-            features: (B, num_features, kmer_len)
+            features: (B, num_features, kmer_len) — required when num_features is set
 
         Returns:
             (B, num_out) logits
         """
         sig_feat = self.signal_branch(signal)
         seq_feat = self.seq_branch(sequence)
-        feat_feat = self.feature_branch(features)
 
-        # Match lengths (stride=3 produces different lengths from different inputs)
-        min_len = min(sig_feat.shape[2], seq_feat.shape[2], feat_feat.shape[2])
-        sig_feat = sig_feat[:, :, :min_len]
-        seq_feat = seq_feat[:, :, :min_len]
-        feat_feat = feat_feat[:, :, :min_len]
+        if self.num_features is not None and features is not None:
+            feat_feat = self.feature_branch(features)
 
-        merged = torch.cat([sig_feat, seq_feat, feat_feat], dim=1)
+            # Match lengths (stride=3 produces different lengths from different inputs)
+            min_len = min(sig_feat.shape[2], seq_feat.shape[2], feat_feat.shape[2])
+            sig_feat = sig_feat[:, :, :min_len]
+            seq_feat = seq_feat[:, :, :min_len]
+            feat_feat = feat_feat[:, :, :min_len]
+
+            merged = torch.cat([sig_feat, seq_feat, feat_feat], dim=1)
+        else:
+            # Match lengths (stride=3 may produce different lengths)
+            min_len = min(sig_feat.shape[2], seq_feat.shape[2])
+            sig_feat = sig_feat[:, :, :min_len]
+            seq_feat = seq_feat[:, :, :min_len]
+
+            merged = torch.cat([sig_feat, seq_feat], dim=1)
+
         merged = self.merge_conv(merged)
 
         # (B, C, L) -> (B, L, C) for LSTM
@@ -302,3 +225,11 @@ class ConvLSTMRemora(BaseModel):
             else:
                 probs = torch.sigmoid(logits)
         return probs
+
+
+class ConvLSTMRemoraBase(ConvLSTMRemora):
+    """Pure Remora ConvLSTM reproduction (signal + sequence only)."""
+
+    def __init__(self, **kwargs):
+        kwargs.pop("num_features", None)
+        super().__init__(num_features=None, **kwargs)

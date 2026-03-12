@@ -8,6 +8,33 @@ import torch
 import torch.nn as nn
 
 
+def _forward_batch(model: nn.Module, requires_features: bool, batch: dict, device: str) -> torch.Tensor:
+    """Shared forward-pass logic for batch dictionaries.
+
+    Moves tensors to device and calls the model with the correct arguments
+    based on whether it requires a features input.
+
+    Args:
+        model: PyTorch model (or traced model)
+        requires_features: Whether to pass features tensor
+        batch: Batch dict with "signal", "sequence", and optionally "features"
+        device: Device to move tensors to
+
+    Returns:
+        Model logits
+    """
+    signal = batch["signal"].to(device)
+    sequence = batch["sequence"].to(device)
+
+    output: torch.Tensor
+    if requires_features:
+        features = batch["features"].to(device)
+        output = model(signal, sequence, features)
+    else:
+        output = model(signal, sequence)
+    return output
+
+
 class ModelInferenceWrapper:
     """
     Wrapper that provides unified forward pass interface for all model types.
@@ -71,16 +98,7 @@ class ModelInferenceWrapper:
         Returns:
             Model logits
         """
-        signal = batch["signal"].to(device)
-        sequence = batch["sequence"].to(device)
-
-        output: torch.Tensor
-        if self.requires_features:
-            features = batch["features"].to(device)
-            output = self.model(signal, sequence, features)
-        else:
-            output = self.model(signal, sequence)
-        return output
+        return _forward_batch(self.model, self.requires_features, batch, device)
 
     def __call__(self, *args, **kwargs) -> torch.Tensor:
         """
@@ -141,16 +159,7 @@ class TracedModelWrapper:
 
     def forward_batch(self, batch: dict, device: str) -> torch.Tensor:
         """Forward pass from batch dictionary."""
-        signal = batch["signal"].to(device)
-        sequence = batch["sequence"].to(device)
-
-        output: torch.Tensor
-        if self.requires_features:
-            features = batch["features"].to(device)
-            output = self.model(signal, sequence, features)
-        else:
-            output = self.model(signal, sequence)
-        return output
+        return _forward_batch(self.model, self.requires_features, batch, device)
 
     def __call__(self, *args, **kwargs) -> torch.Tensor:
         output: torch.Tensor = self.model(*args, **kwargs)

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from rich.console import Console
 
-from leech.commands.bundle import pick_best_fold
+from leech.commands._utils import discover_model_dirs
 
 logger = logging.getLogger("leech.commands.calibrate")
 console = Console()
@@ -55,43 +55,21 @@ def handle_calibrate(
 
     # Parent directory — calibrate each pair subdir
     console.print(f"[cyan]Scanning {model_dir} for model subdirectories...[/cyan]")
-    pairs_done = 0
-    for subdir in sorted(model_dir.iterdir()):
-        if not subdir.is_dir():
-            continue
-        # Direct model
-        if (subdir / "config.json").exists():
-            console.print(f"  [cyan]{subdir.name}[/cyan]", end=" ")
-            a, b = calibrate_model(
-                subdir,
-                val_data,
-                device=device,
-                batch_size=batch_size,
-                num_workers=num_workers,
-            )
-            console.print(f"[green]a={a:.4f}, b={b:.4f}[/green]")
-            pairs_done += 1
-            continue
-        # K-fold: calibrate best fold
-        fold_dirs = sorted(subdir.glob("fold_*/"))
-        valid_folds = [
-            f for f in fold_dirs if (f / "model_best.pt").exists() and (f / "config.json").exists()
-        ]
-        if valid_folds:
-            best_fold = pick_best_fold(valid_folds)
-            console.print(f"  [cyan]{subdir.name}/{best_fold.name}[/cyan]", end=" ")
-            a, b = calibrate_model(
-                best_fold,
-                val_data,
-                device=device,
-                batch_size=batch_size,
-                num_workers=num_workers,
-            )
-            console.print(f"[green]a={a:.4f}, b={b:.4f}[/green]")
-            pairs_done += 1
+    pair_dirs = discover_model_dirs(model_dir)
 
-    if pairs_done == 0:
+    for name, pair_path in sorted(pair_dirs.items()):
+        console.print(f"  [cyan]{name}[/cyan]", end=" ")
+        a, b = calibrate_model(
+            pair_path,
+            val_data,
+            device=device,
+            batch_size=batch_size,
+            num_workers=num_workers,
+        )
+        console.print(f"[green]a={a:.4f}, b={b:.4f}[/green]")
+
+    if not pair_dirs:
         console.print("[bold red]No model directories found[/bold red]")
         raise SystemExit(1)
-    console.print(f"[bold green]Calibrated {pairs_done} models[/bold green]")
-    return pairs_done
+    console.print(f"[bold green]Calibrated {len(pair_dirs)} models[/bold green]")
+    return len(pair_dirs)
