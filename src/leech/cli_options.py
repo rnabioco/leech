@@ -45,6 +45,43 @@ MODEL_CHOICES = [
 ]
 
 
+def device_option(f):
+    """Shared ``--device`` option (cuda/cpu)."""
+    return click.option(
+        "--device",
+        type=click.Choice(["cuda", "cpu"]),
+        default=DEFAULT_DEVICE,
+        help="Device for computation",
+    )(f)
+
+
+def motif_options(f):
+    """Shared ``--motif`` and ``--motif-offset`` options."""
+    f = click.option(
+        "--motif-offset",
+        type=int,
+        default=0,
+        help="Offset within motif for focus base (0-indexed)",
+    )(f)
+    f = click.option(
+        "--motif",
+        type=str,
+        default=None,
+        help="Sequence motif to extract (e.g., 'CCAGGC')",
+    )(f)
+    return f
+
+
+def base_justify_option(f):
+    """Shared ``--base-justify`` option."""
+    return click.option(
+        "--base-justify",
+        type=click.Choice(["start", "center", "end"]),
+        default="center",
+        help='Where to center signal chunk within the focus base: "start", "center" (default), or "end"',
+    )(f)
+
+
 def training_hyperparams(f):
     """Training hyperparameter options shared by ``train`` and ``optimize``.
 

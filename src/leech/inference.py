@@ -15,6 +15,7 @@ import array
 import json
 import logging
 import multiprocessing as mp
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -214,6 +215,49 @@ def _encode_sequence_for_inference(
         return encode_kmer(chunk["sequence"])
 
 
+def _accumulate_votes(
+    pairs: list[str],
+    probs: list[float],
+    weight_fn: Callable | None = None,
+    candidate_filter: set[str] | None = None,
+) -> dict[str, float]:
+    """Shared pair-parsing + vote accumulation.
+
+    Args:
+        pairs: List of pair names (e.g., ["Ala_Gly", "Ala_Ser"])
+        probs: Sigmoid probabilities, one per pair
+        weight_fn: Optional function (prob) -> (vote_a, vote_b). Default: (1-p, p).
+        candidate_filter: If set, only accumulate votes for these AAs.
+
+    Returns:
+        Dict mapping amino acid -> total vote strength
+    """
+    votes: dict[str, float] = {} if candidate_filter is None else dict.fromkeys(candidate_filter, 0.0)
+    for pair, prob in zip(pairs, probs, strict=True):
+        aa_a, aa_b = pair.split("_", 1)
+        if candidate_filter is not None and (aa_a not in candidate_filter or aa_b not in candidate_filter):
+            continue
+        if weight_fn is not None:
+            vote_a, vote_b = weight_fn(prob)
+        else:
+            vote_a, vote_b = 1.0 - prob, prob
+        votes[aa_a] = votes.get(aa_a, 0.0) + vote_a
+        votes[aa_b] = votes.get(aa_b, 0.0) + vote_b
+    return votes
+
+
+def _pick_winner(votes: dict[str, float]) -> tuple[str, float, dict[str, float]]:
+    """Pick the winner from accumulated votes.
+
+    Returns:
+        Tuple of (predicted_aa, confidence, votes)
+    """
+    total = sum(votes.values())
+    predicted_aa = max(votes, key=votes.__getitem__)
+    confidence = votes[predicted_aa] / total if total > 0 else 0.0
+    return predicted_aa, confidence, votes
+
+
 def aggregate_pairwise(pairs: list[str], probs: list[float]) -> tuple[str, float, dict[str, float]]:
     """
     Aggregate pairwise model probabilities into a single amino acid prediction.
@@ -231,16 +275,8 @@ def aggregate_pairwise(pairs: list[str], probs: list[float]) -> tuple[str, float
         - confidence: winner's vote fraction (winner_total / sum_all_totals)
         - vote_totals: dict mapping amino acid -> total vote strength
     """
-    votes: dict[str, float] = {}
-    for pair, prob in zip(pairs, probs, strict=True):
-        aa_a, aa_b = pair.split("_", 1)
-        votes[aa_a] = votes.get(aa_a, 0.0) + (1.0 - prob)
-        votes[aa_b] = votes.get(aa_b, 0.0) + prob
-
-    total = sum(votes.values())
-    predicted_aa = max(votes, key=votes.__getitem__)
-    confidence = votes[predicted_aa] / total if total > 0 else 0.0
-    return predicted_aa, confidence, votes
+    votes = _accumulate_votes(pairs, probs)
+    return _pick_winner(votes)
 
 
 def aggregate_pairwise_weighted(
@@ -252,16 +288,13 @@ def aggregate_pairwise_weighted(
     model's vote by its confidence: w = |2p - 1|, so uncertain models
     contribute near-zero and confident models dominate.
     """
-    votes: dict[str, float] = {}
-    for pair, prob in zip(pairs, probs, strict=True):
-        aa_a, aa_b = pair.split("_", 1)
-        confidence = abs(2 * prob - 1)  # 0 at p=0.5, 1 at p=0 or p=1
-        votes[aa_a] = votes.get(aa_a, 0.0) + (1.0 - prob) * confidence
-        votes[aa_b] = votes.get(aa_b, 0.0) + prob * confidence
-    total = sum(votes.values())
-    predicted_aa = max(votes, key=votes.__getitem__)
-    confidence_score = votes[predicted_aa] / total if total > 0 else 0.0
-    return predicted_aa, confidence_score, votes
+
+    def _confidence_weight(prob: float) -> tuple[float, float]:
+        w = abs(2 * prob - 1)  # 0 at p=0.5, 1 at p=0 or p=1
+        return (1.0 - prob) * w, prob * w
+
+    votes = _accumulate_votes(pairs, probs, weight_fn=_confidence_weight)
+    return _pick_winner(votes)
 
 
 def aggregate_pairwise_tournament(
@@ -278,17 +311,8 @@ def aggregate_pairwise_tournament(
     top_aas = sorted(initial_votes, key=initial_votes.__getitem__, reverse=True)[:top_k]
 
     # Round 2: only use relevant models
-    final_votes: dict[str, float] = dict.fromkeys(top_aas, 0.0)
-    for pair, prob in zip(pairs, probs, strict=True):
-        aa_a, aa_b = pair.split("_", 1)
-        if aa_a in final_votes and aa_b in final_votes:
-            final_votes[aa_a] += 1.0 - prob
-            final_votes[aa_b] += prob
-
-    total = sum(final_votes.values())
-    predicted_aa = max(final_votes, key=final_votes.__getitem__)
-    confidence_score = final_votes[predicted_aa] / total if total > 0 else 0.0
-    return predicted_aa, confidence_score, final_votes
+    final_votes = _accumulate_votes(pairs, probs, candidate_filter=set(top_aas))
+    return _pick_winner(final_votes)
 
 
 def aggregate_one_vs_all(
@@ -963,6 +987,25 @@ def run_inference(
     logger.info(f"Output written to: {output_path}")
 
 
+def _prepare_batch(
+    signals: list[np.ndarray],
+    sequences: list[np.ndarray],
+    features: list[np.ndarray | None],
+    requires_features: bool,
+    device: str,
+) -> dict[str, torch.Tensor]:
+    """Stack numpy arrays into a batch dict of tensors on device."""
+    batch: dict[str, torch.Tensor] = {
+        "signal": torch.from_numpy(np.stack(signals)).to(device),
+        "sequence": torch.from_numpy(np.stack(sequences)).to(device),
+    }
+    if requires_features:
+        valid_feats = [f for f in features if f is not None]
+        if valid_feats:
+            batch["features"] = torch.from_numpy(np.stack(valid_feats)).to(device)
+    return batch
+
+
 def _run_batch_multiclass(
     signals: list[np.ndarray],
     sequences: list[np.ndarray],
@@ -974,14 +1017,7 @@ def _run_batch_multiclass(
     pending: dict[str, list[tuple[int, int, float, list[float]]]],
 ) -> None:
     """Run a multi-class batch: store (base_idx, class_idx, confidence, all_probs) per read."""
-    signal_t = torch.from_numpy(np.stack(signals)).to(device)
-    seq_t = torch.from_numpy(np.stack(sequences)).to(device)
-    batch = {"signal": signal_t, "sequence": seq_t}
-
-    if requires_features:
-        valid_feats = [f for f in features if f is not None]
-        if valid_feats:
-            batch["features"] = torch.from_numpy(np.stack(valid_feats)).to(device)
+    batch = _prepare_batch(signals, sequences, features, requires_features, device)
 
     with torch.no_grad():
         logits = model_wrapper.forward_batch(batch, device)
@@ -1008,14 +1044,7 @@ def _run_batch(
     pending: dict[str, list[tuple[int, float]]],
 ) -> None:
     """Run a batch through the model and accumulate results into pending."""
-    signal_t = torch.from_numpy(np.stack(signals)).to(device)
-    seq_t = torch.from_numpy(np.stack(sequences)).to(device)
-    batch = {"signal": signal_t, "sequence": seq_t}
-
-    if requires_features:
-        valid_feats = [f for f in features if f is not None]
-        if valid_feats:
-            batch["features"] = torch.from_numpy(np.stack(valid_feats)).to(device)
+    batch = _prepare_batch(signals, sequences, features, requires_features, device)
 
     with torch.no_grad():
         logits = model_wrapper.forward_batch(batch, device)

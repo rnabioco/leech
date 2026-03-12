@@ -2,6 +2,7 @@
 Training loop and utilities for leech models.
 """
 
+import contextlib
 import json
 import logging
 from pathlib import Path
@@ -213,6 +214,59 @@ class Trainer:
             f"at epoch {self.best_epoch})"
         )
 
+    def _maybe_autocast(self):
+        """Context manager for optional mixed precision."""
+        if self.use_mixed_precision:
+            return torch.amp.autocast("cuda")
+        return contextlib.nullcontext()
+
+    def _compute_loss(self, batch: dict) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Forward pass + loss computation (shared by train_epoch and validate).
+
+        Returns:
+            Tuple of (logits, labels, loss)
+        """
+        labels = batch["label"].to(self.device)
+        logits = self.model_wrapper.forward_batch(batch, self.device)
+        if self.loss_type == "cross_entropy":
+            ce_labels = labels.squeeze(-1).long()
+            loss = self.criterion(logits, ce_labels)
+        else:
+            loss = self.criterion(logits, labels)
+        return logits, labels, loss
+
+    def _extract_predictions(self, logits: torch.Tensor) -> np.ndarray:
+        """Extract predictions from logits (binary or multiclass)."""
+        if self.loss_type == "cross_entropy" and self._num_out > 2:
+            return torch.argmax(logits, dim=-1).detach().cpu().numpy().flatten()
+        elif self.loss_type == "cross_entropy":
+            return torch.softmax(logits, dim=-1)[:, 1].detach().cpu().numpy().flatten()
+        else:
+            return torch.sigmoid(logits).detach().cpu().numpy().flatten()
+
+    def _compute_epoch_metrics(
+        self, all_preds: list[float], all_labels: list[float], is_validation: bool = False
+    ) -> tuple:
+        """Compute accuracy, and optionally AUC/F1 for validation.
+
+        Returns:
+            (accuracy,) for training, or (accuracy, auc, f1) for validation.
+        """
+        if self._num_out > 2:
+            accuracy = accuracy_score(all_labels, all_preds)
+            if is_validation:
+                f1 = f1_score(all_labels, all_preds, average="macro", zero_division=0.0)
+                return accuracy, 0.0, f1
+            return (accuracy,)
+        else:
+            all_preds_binary = (np.array(all_preds) > 0.5).astype(int)
+            accuracy = accuracy_score(all_labels, all_preds_binary)
+            if is_validation:
+                auc = roc_auc_score(all_labels, all_preds) if len(np.unique(all_labels)) > 1 else 0.0
+                f1 = f1_score(all_labels, all_preds_binary, zero_division=0.0)
+                return accuracy, auc, f1
+            return (accuracy,)
+
     def train_epoch(
         self, progress: Progress | None = None, task_id: TaskID | None = None
     ) -> tuple[float, float]:
@@ -232,79 +286,34 @@ class Trainer:
         all_labels: list[float] = []
 
         for batch in self.train_loader:
-            # Move labels to device
-            labels = batch["label"].to(self.device)
-
-            # Adapt labels for CrossEntropyLoss
-            if self.loss_type == "cross_entropy":
-                ce_labels = labels.squeeze(-1).long()
-            else:
-                ce_labels = None
-
-            # Forward pass (wrapper handles moving tensors and calling model correctly)
             self.optimizer.zero_grad()
 
             if self.use_mixed_precision:
-                with torch.amp.autocast("cuda"):
-                    logits = self.model_wrapper.forward_batch(batch, self.device)
-                    if ce_labels is not None:
-                        loss = self.criterion(logits, ce_labels)
-                    else:
-                        loss = self.criterion(logits, labels)
+                with self._maybe_autocast():
+                    logits, labels, loss = self._compute_loss(batch)
 
-                # Scaled backward pass
                 self.scaler.scale(loss).backward()
-
-                # Gradient clipping with mixed precision
                 if self.max_grad_norm > 0:
                     self.scaler.unscale_(self.optimizer)
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
-
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
             else:
-                logits = self.model_wrapper.forward_batch(batch, self.device)
-                if ce_labels is not None:
-                    loss = self.criterion(logits, ce_labels)
-                else:
-                    loss = self.criterion(logits, labels)
-
+                logits, labels, loss = self._compute_loss(batch)
                 loss.backward()
-
-                # Gradient clipping
                 if self.max_grad_norm > 0:
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
-
                 self.optimizer.step()
 
-            # Track metrics
             total_loss += loss.item()
-            if self.loss_type == "cross_entropy" and self._num_out > 2:
-                # Multi-class: argmax predictions
-                preds = torch.argmax(logits, dim=-1).detach().cpu().numpy()
-                all_preds.extend(preds.flatten())
-            elif self.loss_type == "cross_entropy":
-                # Binary CE: probabilities via softmax, take class 1
-                probs = torch.softmax(logits, dim=-1)[:, 1].detach().cpu().numpy()
-                all_preds.extend(probs.flatten())
-            else:
-                preds = torch.sigmoid(logits).detach().cpu().numpy()
-                all_preds.extend(preds.flatten())
+            all_preds.extend(self._extract_predictions(logits))
             all_labels.extend(labels.cpu().numpy().flatten())
 
-            # Update progress if provided
             if progress is not None and task_id is not None:
                 progress.update(task_id, advance=1)
 
-        # Compute metrics
         avg_loss = total_loss / len(self.train_loader)
-        if self._num_out > 2:
-            # Multi-class: preds are already class indices
-            accuracy = accuracy_score(all_labels, all_preds)
-        else:
-            all_preds_binary = (np.array(all_preds) > 0.5).astype(int)
-            accuracy = accuracy_score(all_labels, all_preds_binary)
-
+        (accuracy,) = self._compute_epoch_metrics(all_preds, all_labels)
         return avg_loss, accuracy
 
     def validate(
@@ -330,60 +339,18 @@ class Trainer:
 
         with torch.no_grad():
             for batch in self.val_loader:
-                # Move labels to device
-                labels = batch["label"].to(self.device)
+                with self._maybe_autocast():
+                    logits, labels, loss = self._compute_loss(batch)
 
-                # Adapt labels for CrossEntropyLoss
-                if self.loss_type == "cross_entropy":
-                    ce_labels = labels.squeeze(-1).long()
-                else:
-                    ce_labels = None
-
-                # Forward pass (wrapper handles moving tensors and calling model correctly)
-                if self.use_mixed_precision:
-                    with torch.amp.autocast("cuda"):
-                        logits = self.model_wrapper.forward_batch(batch, self.device)
-                        if ce_labels is not None:
-                            loss = self.criterion(logits, ce_labels)
-                        else:
-                            loss = self.criterion(logits, labels)
-                else:
-                    logits = self.model_wrapper.forward_batch(batch, self.device)
-                    if ce_labels is not None:
-                        loss = self.criterion(logits, ce_labels)
-                    else:
-                        loss = self.criterion(logits, labels)
-
-                # Track metrics
                 total_loss += loss.item()
-                if self.loss_type == "cross_entropy" and self._num_out > 2:
-                    preds = torch.argmax(logits, dim=-1).cpu().numpy()
-                    all_preds.extend(preds.flatten())
-                elif self.loss_type == "cross_entropy":
-                    probs = torch.softmax(logits, dim=-1)[:, 1].cpu().numpy()
-                    all_preds.extend(probs.flatten())
-                else:
-                    preds = torch.sigmoid(logits).cpu().numpy()
-                    all_preds.extend(preds.flatten())
+                all_preds.extend(self._extract_predictions(logits))
                 all_labels.extend(labels.cpu().numpy().flatten())
 
-                # Update progress if provided
                 if progress is not None and task_id is not None:
                     progress.update(task_id, advance=1)
 
-        # Compute metrics
         avg_loss = total_loss / len(self.val_loader)
-        if self._num_out > 2:
-            # Multi-class: preds are already class indices
-            accuracy = accuracy_score(all_labels, all_preds)
-            f1 = f1_score(all_labels, all_preds, average="macro", zero_division=0.0)
-            auc = 0.0  # ROC AUC needs probability estimates per class
-        else:
-            all_preds_binary = (np.array(all_preds) > 0.5).astype(int)
-            accuracy = accuracy_score(all_labels, all_preds_binary)
-            auc = roc_auc_score(all_labels, all_preds) if len(np.unique(all_labels)) > 1 else 0.0
-            f1 = f1_score(all_labels, all_preds_binary, zero_division=0.0)
-
+        accuracy, auc, f1 = self._compute_epoch_metrics(all_preds, all_labels, is_validation=True)
         return avg_loss, accuracy, auc, f1
 
     def train(self, epochs: int, early_stopping_patience: int = 10) -> dict[str, Any]:

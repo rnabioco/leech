@@ -402,7 +402,7 @@ class TestModelBundle:
 
     def test_kfold_discovery_picks_best_fold(self, tmp_path, model_config):
         """Bundle CLI discovers fold_* subdirs and picks best fold by val F1."""
-        from leech.commands.bundle import pick_best_fold
+        from leech.commands._utils import pick_best_fold
 
         pairs = ["Ala_notAla", "Gly_notGly"]
         root = tmp_path / "models"
@@ -442,7 +442,7 @@ class TestModelBundle:
 
     def test_kfold_discovery_fallback_no_summary(self, tmp_path, model_config):
         """When no summary.json exists, falls back to first fold."""
-        from leech.commands.bundle import pick_best_fold
+        from leech.commands._utils import pick_best_fold
 
         pair_dir = tmp_path / "models" / "Ala_notAla"
         pair_dir.mkdir(parents=True)
@@ -468,7 +468,7 @@ class TestModelBundle:
 
     def test_kfold_overfitting_selects_lower_loss(self, tmp_path, model_config):
         """Fold with highest F1 but worst final_val_loss should NOT be selected."""
-        from leech.commands.bundle import pick_best_fold
+        from leech.commands._utils import pick_best_fold
 
         pair_dir = tmp_path / "models" / "Asn_notAsn"
         pair_dir.mkdir(parents=True)
@@ -505,7 +505,7 @@ class TestModelBundle:
 
     def test_mixed_flat_and_kfold(self, tmp_path, model_config):
         """Bundle discovery handles mix of flat and k-fold pair dirs."""
-        from leech.commands.bundle import pick_best_fold
+        from leech.commands._utils import pick_best_fold
 
         root = tmp_path / "models"
 

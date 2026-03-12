@@ -33,6 +33,155 @@ def _source_group_from_path(chunk_path: Path) -> str:
     return parent_name
 
 
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+
+def _collect_read_ids(input_paths: list[Path]) -> set[str]:
+    """Pass 1: collect unique read IDs from .npz files."""
+    all_read_ids: set[str] = set()
+    for chunk_path in input_paths:
+        logger.info(f"  Scanning {chunk_path}")
+        with np.load(chunk_path, allow_pickle=True) as data:
+            read_ids = data["read_ids"]
+            all_read_ids.update(str(rid) for rid in read_ids)
+            logger.info(f"    Found {len(read_ids)} chunks")
+    logger.info(f"Total unique reads across all files: {len(all_read_ids)}")
+    return all_read_ids
+
+
+def _assign_holdout_splits(
+    read_ids: set[str], train_frac: float, val_frac: float, seed: int | None
+) -> dict[str, set[str]]:
+    """Partition reads into train/val/test sets."""
+    if seed is not None:
+        random.seed(seed)
+
+    read_ids_list = list(read_ids)
+    random.shuffle(read_ids_list)
+
+    n_reads = len(read_ids_list)
+    n_train = int(n_reads * train_frac)
+    n_val = int(n_reads * val_frac)
+
+    return {
+        "train": set(read_ids_list[:n_train]),
+        "val": set(read_ids_list[n_train : n_train + n_val]),
+        "test": set(read_ids_list[n_train + n_val :]),
+    }
+
+
+def _assign_kfold_splits(
+    read_ids: set[str], k_fold: int, seed: int | None
+) -> list[dict[str, set[str]]]:
+    """Partition reads into k fold assignments."""
+    if seed is not None:
+        random.seed(seed)
+
+    read_ids_list = list(read_ids)
+    random.shuffle(read_ids_list)
+
+    partitions = np.array_split(read_ids_list, k_fold)
+    partition_sets = [set(p.tolist()) for p in partitions]
+
+    for i, part in enumerate(partition_sets):
+        logger.info(f"  Partition {i}: {len(part)} reads")
+
+    fold_assignments: list[dict[str, set[str]]] = []
+    for i in range(k_fold):
+        test_ids = partition_sets[i]
+        val_ids = partition_sets[(i + 1) % k_fold]
+        train_ids: set[str] = set()
+        for j in range(k_fold):
+            if j != i and j != (i + 1) % k_fold:
+                train_ids.update(partition_sets[j])
+        fold_assignments.append({"train": train_ids, "val": val_ids, "test": test_ids})
+        logger.info(
+            f"  Fold {i}: train={len(train_ids)} reads, "
+            f"val={len(val_ids)} reads, test={len(test_ids)} reads"
+        )
+    return fold_assignments
+
+
+def _relabel_pairwise(
+    chunks: list[dict],
+    relabel_pairwise: tuple[str | list[str], str | list[str]],
+) -> None:
+    """Relabel chunks in-place for pairwise classification."""
+    group1, group2 = relabel_pairwise
+    group1_labels = [group1] if isinstance(group1, str) else group1
+    group2_labels = [group2] if isinstance(group2, str) else group2
+
+    relabeled_count = 0
+    skipped_count = 0
+    for chunk in chunks:
+        chunk_label = chunk.get("label")
+        if chunk_label in group1_labels:
+            chunk["label_int"] = 0
+            relabeled_count += 1
+        elif chunk_label in group2_labels:
+            chunk["label_int"] = 1
+            relabeled_count += 1
+        else:
+            logger.warning(
+                f"Chunk with label='{chunk_label}' does not match "
+                f"pairwise comparison (group1={group1_labels}, group2={group2_labels}), keeping original label"
+            )
+            skipped_count += 1
+    if relabeled_count > 0:
+        logger.info(
+            f"    Relabeled {relabeled_count} chunks for pairwise comparison "
+            f"(group1={group1_labels}->0, group2={group2_labels}->1)"
+        )
+    if skipped_count > 0:
+        logger.warning(f"    Skipped {skipped_count} chunks with mismatched labels")
+
+
+def _distribute_chunks_to_split(
+    chunks: list[dict], assignments: dict[str, set[str]]
+) -> tuple[list[dict], list[dict], list[dict]]:
+    """Distribute chunks into train/val/test lists based on read ID membership."""
+    train, val, test = [], [], []
+    for chunk in chunks:
+        read_id = chunk["read_id"]
+        if read_id in assignments["train"]:
+            train.append(chunk)
+        elif read_id in assignments["val"]:
+            val.append(chunk)
+        elif read_id in assignments["test"]:
+            test.append(chunk)
+    return train, val, test
+
+
+def _save_splits(
+    train_chunks: list[dict],
+    val_chunks: list[dict],
+    test_chunks: list[dict],
+    output_dir: Path,
+) -> dict[str, Path]:
+    """Save train/val/test chunks to disk and return file paths."""
+    train_file = output_dir / "train.npz"
+    val_file = output_dir / "val.npz"
+    test_file = output_dir / "test.npz"
+
+    save_chunks(train_chunks, train_file)
+    logger.info(f"Saved {len(train_chunks)} train chunks to {train_file}")
+
+    save_chunks(val_chunks, val_file)
+    logger.info(f"Saved {len(val_chunks)} val chunks to {val_file}")
+
+    save_chunks(test_chunks, test_file)
+    logger.info(f"Saved {len(test_chunks)} test chunks to {test_file}")
+
+    return {"train": train_file, "val": val_file, "test": test_file}
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+
 def split_chunks_by_read(
     chunks: list[dict],
     train_frac: float = 0.7,
@@ -197,110 +346,45 @@ def merge_and_split_chunks(
         output_dir.mkdir(parents=True, exist_ok=True)
         setup_random_seed(seed, output_dir)
     elif seed is not None:
-        # If no output_dir but seed provided, just set the seed
         random.seed(seed)
         logger.info(f"Using provided seed: {seed}")
 
     logger.info(f"Merging {len(input_paths)} chunk files (memory-efficient mode)")
 
-    # First pass: collect only read IDs from all files (minimal memory)
+    # Pass 1: collect read IDs
     logger.info("Pass 1: Collecting read IDs for split assignment")
-    all_read_ids: set[str] = set()
-    file_chunk_counts = []
-
-    for chunk_path in input_paths:
-        logger.info(f"  Scanning {chunk_path}")
-        # Load only read_ids array (much smaller than full data)
-        with np.load(chunk_path, allow_pickle=True) as data:
-            read_ids = data["read_ids"]
-            all_read_ids.update(str(rid) for rid in read_ids)
-            file_chunk_counts.append(len(read_ids))
-            logger.info(f"    Found {len(read_ids)} chunks")
-
-    logger.info(f"Total unique reads across all files: {len(all_read_ids)}")
+    all_read_ids = _collect_read_ids(input_paths)
 
     # Determine read-level splits
-    if seed is not None:
-        random.seed(seed)
-
-    read_ids_list = list(all_read_ids)
-    random.shuffle(read_ids_list)
-
-    n_reads = len(read_ids_list)
-    n_train = int(n_reads * train_frac)
-    n_val = int(n_reads * val_frac)
-
-    train_read_ids = set(read_ids_list[:n_train])
-    val_read_ids = set(read_ids_list[n_train : n_train + n_val])
-    test_read_ids = set(read_ids_list[n_train + n_val :])
-
+    assignments = _assign_holdout_splits(all_read_ids, train_frac, val_frac, seed)
+    n_reads = len(all_read_ids)
     logger.info(f"Split {n_reads} unique reads:")
-    logger.info(
-        f"  Train: {len(train_read_ids)} reads ({len(train_read_ids) / n_reads * 100:.1f}%)"
-    )
-    logger.info(f"  Val: {len(val_read_ids)} reads ({len(val_read_ids) / n_reads * 100:.1f}%)")
-    logger.info(f"  Test: {len(test_read_ids)} reads ({len(test_read_ids) / n_reads * 100:.1f}%)")
+    for split_name in ("train", "val", "test"):
+        n = len(assignments[split_name])
+        logger.info(f"  {split_name.title()}: {n} reads ({n / n_reads * 100:.1f}%)")
 
-    # Second pass: load chunks and assign to splits (one file at a time)
+    # Pass 2: load chunks and assign to splits
     logger.info("Pass 2: Loading chunks and assigning to splits")
-    train_chunks = []
-    val_chunks = []
-    test_chunks = []
+    train_chunks: list[dict] = []
+    val_chunks: list[dict] = []
+    test_chunks: list[dict] = []
 
     for chunk_path in input_paths:
         logger.info(f"  Processing {chunk_path}")
-        # Load chunks from this file using the standard loader
         chunks = load_chunks(chunk_path)
 
-        # Tag chunks with source group from file path
         source_group = _source_group_from_path(chunk_path)
         for chunk in chunks:
             chunk["source_group"] = source_group
 
-        # Relabel chunks if pairwise comparison is requested
         if relabel_pairwise is not None:
-            group1, group2 = relabel_pairwise
-            # Normalize to lists for uniform handling
-            group1_labels = [group1] if isinstance(group1, str) else group1
-            group2_labels = [group2] if isinstance(group2, str) else group2
+            _relabel_pairwise(chunks, relabel_pairwise)
 
-            relabeled_count = 0
-            skipped_count = 0
-            for chunk in chunks:
-                chunk_label = chunk.get("label")
-                if chunk_label in group1_labels:
-                    chunk["label_int"] = 0
-                    relabeled_count += 1
-                elif chunk_label in group2_labels:
-                    chunk["label_int"] = 1
-                    relabeled_count += 1
-                else:
-                    # Skip chunks that don't match either group
-                    logger.warning(
-                        f"Chunk with label='{chunk_label}' does not match "
-                        f"pairwise comparison (group1={group1_labels}, group2={group2_labels}), keeping original label"
-                    )
-                    skipped_count += 1
-            if relabeled_count > 0:
-                logger.info(
-                    f"    Relabeled {relabeled_count} chunks for pairwise comparison "
-                    f"(group1={group1_labels}→0, group2={group2_labels}→1)"
-                )
-            if skipped_count > 0:
-                logger.warning(f"    Skipped {skipped_count} chunks with mismatched labels")
-
-        # Assign to appropriate split
-        for chunk in chunks:
-            read_id = chunk["read_id"]
-            if read_id in train_read_ids:
-                train_chunks.append(chunk)
-            elif read_id in val_read_ids:
-                val_chunks.append(chunk)
-            elif read_id in test_read_ids:
-                test_chunks.append(chunk)
-
+        t, v, te = _distribute_chunks_to_split(chunks, assignments)
+        train_chunks.extend(t)
+        val_chunks.extend(v)
+        test_chunks.extend(te)
         logger.info(f"    Assigned {len(chunks)} chunks")
-        # Clear chunks to free memory before loading next file
         del chunks
 
     n_total = len(train_chunks) + len(val_chunks) + len(test_chunks)
@@ -323,7 +407,7 @@ def merge_and_split_chunks(
     unique_labels = {chunk["label"] for chunk in all_chunks_combined if chunk["label"] is not None}
     if len(unique_labels) == 1:
         logger.warning(
-            f"⚠️  WARNING: All chunks have the same label ({list(unique_labels)[0]})! "
+            f"WARNING: All chunks have the same label ({list(unique_labels)[0]})! "
             "This suggests pairwise relabeling may not have worked correctly. "
             "Check that label values match the relabel_pairwise argument."
         )
@@ -337,32 +421,15 @@ def merge_and_split_chunks(
 
     # If output_dir provided, save splits and return statistics
     if output_dir is not None:
-        train_file = output_dir / "train.npz"
-        val_file = output_dir / "val.npz"
-        test_file = output_dir / "test.npz"
-
-        save_chunks(train_chunks, train_file)
-        logger.info(f"Saved {len(train_chunks)} train chunks to {train_file}")
-
-        save_chunks(val_chunks, val_file)
-        logger.info(f"Saved {len(val_chunks)} val chunks to {val_file}")
-
-        save_chunks(test_chunks, test_file)
-        logger.info(f"Saved {len(test_chunks)} test chunks to {test_file}")
-
+        output_files = _save_splits(train_chunks, val_chunks, test_chunks, output_dir)
         return {
             "n_total": n_total,
             "n_train": len(train_chunks),
             "n_val": len(val_chunks),
             "n_test": len(test_chunks),
-            "output_files": {
-                "train": train_file,
-                "val": val_file,
-                "test": test_file,
-            },
+            "output_files": output_files,
         }
     else:
-        # Legacy behavior: return tuple of chunks without saving
         return train_chunks, val_chunks, test_chunks
 
 
@@ -422,66 +489,20 @@ def merge_and_kfold_split_chunks(
     if k_fold < 3:
         raise ValueError(f"k_fold must be >= 3, got {k_fold}")
 
-    # Setup seed and output directory
     output_dir.mkdir(parents=True, exist_ok=True)
     setup_random_seed(seed, output_dir)
 
     logger.info(f"Merging {len(input_paths)} chunk files for {k_fold}-fold cross-validation")
 
-    # ---- Pass 1: collect read IDs ----
+    # Pass 1: collect read IDs
     logger.info("Pass 1: Collecting read IDs for fold assignment")
-    all_read_ids: set[str] = set()
-    file_chunk_counts = []
+    all_read_ids = _collect_read_ids(input_paths)
 
-    for chunk_path in input_paths:
-        logger.info(f"  Scanning {chunk_path}")
-        with np.load(chunk_path, allow_pickle=True) as data:
-            read_ids = data["read_ids"]
-            all_read_ids.update(str(rid) for rid in read_ids)
-            file_chunk_counts.append(len(read_ids))
-            logger.info(f"    Found {len(read_ids)} chunks")
+    # Build fold assignments
+    fold_read_assignments = _assign_kfold_splits(all_read_ids, k_fold, seed)
 
-    logger.info(f"Total unique reads across all files: {len(all_read_ids)}")
-
-    # Shuffle read IDs deterministically
-    if seed is not None:
-        random.seed(seed)
-
-    read_ids_list = list(all_read_ids)
-    random.shuffle(read_ids_list)
-
-    # Partition into k groups
-    partitions = np.array_split(read_ids_list, k_fold)
-    partition_sets = [set(p.tolist()) for p in partitions]
-
-    for i, part in enumerate(partition_sets):
-        logger.info(f"  Partition {i}: {len(part)} reads")
-
-    # Build fold assignments: for each fold i, determine train/val/test read sets
-    fold_read_assignments: list[dict[str, set[str]]] = []
-    for i in range(k_fold):
-        test_ids = partition_sets[i]
-        val_ids = partition_sets[(i + 1) % k_fold]
-        train_ids: set[str] = set()
-        for j in range(k_fold):
-            if j != i and j != (i + 1) % k_fold:
-                train_ids.update(partition_sets[j])
-        fold_read_assignments.append(
-            {
-                "train": train_ids,
-                "val": val_ids,
-                "test": test_ids,
-            }
-        )
-        logger.info(
-            f"  Fold {i}: train={len(train_ids)} reads, "
-            f"val={len(val_ids)} reads, test={len(test_ids)} reads"
-        )
-
-    # ---- Pass 2: load chunks and assign to folds ----
+    # Pass 2: load chunks and distribute to folds
     logger.info("Pass 2: Loading chunks and assigning to folds")
-
-    # Initialize accumulators for each fold
     fold_chunks: list[dict[str, list[dict]]] = [
         {"train": [], "val": [], "test": []} for _ in range(k_fold)
     ]
@@ -490,52 +511,19 @@ def merge_and_kfold_split_chunks(
         logger.info(f"  Processing {chunk_path}")
         chunks = load_chunks(chunk_path)
 
-        # Tag chunks with source group from file path
         source_group = _source_group_from_path(chunk_path)
         for chunk in chunks:
             chunk["source_group"] = source_group
 
-        # Relabel chunks if pairwise comparison is requested
         if relabel_pairwise is not None:
-            group1, group2 = relabel_pairwise
-            group1_labels = [group1] if isinstance(group1, str) else group1
-            group2_labels = [group2] if isinstance(group2, str) else group2
+            _relabel_pairwise(chunks, relabel_pairwise)
 
-            relabeled_count = 0
-            skipped_count = 0
-            for chunk in chunks:
-                chunk_label = chunk.get("label")
-                if chunk_label in group1_labels:
-                    chunk["label_int"] = 0
-                    relabeled_count += 1
-                elif chunk_label in group2_labels:
-                    chunk["label_int"] = 1
-                    relabeled_count += 1
-                else:
-                    logger.warning(
-                        f"Chunk with label='{chunk_label}' does not match "
-                        f"pairwise comparison (group1={group1_labels}, group2={group2_labels}), keeping original label"
-                    )
-                    skipped_count += 1
-            if relabeled_count > 0:
-                logger.info(
-                    f"    Relabeled {relabeled_count} chunks for pairwise comparison "
-                    f"(group1={group1_labels}->0, group2={group2_labels}->1)"
-                )
-            if skipped_count > 0:
-                logger.warning(f"    Skipped {skipped_count} chunks with mismatched labels")
-
-        # Distribute chunks to folds based on read ID membership
         for chunk in chunks:
-            read_id = chunk["read_id"]
             for i in range(k_fold):
-                assignments = fold_read_assignments[i]
-                if read_id in assignments["test"]:
-                    fold_chunks[i]["test"].append(chunk)
-                elif read_id in assignments["val"]:
-                    fold_chunks[i]["val"].append(chunk)
-                elif read_id in assignments["train"]:
-                    fold_chunks[i]["train"].append(chunk)
+                t, v, te = _distribute_chunks_to_split([chunk], fold_read_assignments[i])
+                fold_chunks[i]["train"].extend(t)
+                fold_chunks[i]["val"].extend(v)
+                fold_chunks[i]["test"].extend(te)
 
         logger.info(f"    Assigned {len(chunks)} chunks")
         del chunks
@@ -548,37 +536,26 @@ def merge_and_kfold_split_chunks(
         fold_dir = output_dir / f"fold_{i}"
         fold_dir.mkdir(parents=True, exist_ok=True)
 
-        train_file = fold_dir / "train.npz"
-        val_file = fold_dir / "val.npz"
-        test_file = fold_dir / "test.npz"
+        output_files = _save_splits(
+            fold_chunks[i]["train"], fold_chunks[i]["val"], fold_chunks[i]["test"], fold_dir
+        )
 
-        train_chunks = fold_chunks[i]["train"]
-        val_chunks = fold_chunks[i]["val"]
-        test_chunks = fold_chunks[i]["test"]
-
-        save_chunks(train_chunks, train_file)
-        save_chunks(val_chunks, val_file)
-        save_chunks(test_chunks, test_file)
-
-        fold_total = len(train_chunks) + len(val_chunks) + len(test_chunks)
+        fold_total = sum(len(fold_chunks[i][s]) for s in ("train", "val", "test"))
         if i == 0:
             n_total = fold_total
 
         logger.info(
-            f"Fold {i}: train={len(train_chunks)}, val={len(val_chunks)}, "
-            f"test={len(test_chunks)} chunks -> {fold_dir}"
+            f"Fold {i}: train={len(fold_chunks[i]['train'])}, "
+            f"val={len(fold_chunks[i]['val'])}, "
+            f"test={len(fold_chunks[i]['test'])} chunks -> {fold_dir}"
         )
 
         folds_stats.append(
             {
-                "n_train": len(train_chunks),
-                "n_val": len(val_chunks),
-                "n_test": len(test_chunks),
-                "output_files": {
-                    "train": train_file,
-                    "val": val_file,
-                    "test": test_file,
-                },
+                "n_train": len(fold_chunks[i]["train"]),
+                "n_val": len(fold_chunks[i]["val"]),
+                "n_test": len(fold_chunks[i]["test"]),
+                "output_files": output_files,
             }
         )
 
@@ -630,37 +607,18 @@ def merge_and_split_multiclass(
     label_to_int = {label: i for i, label in enumerate(unique_labels)}
     logger.info(f"Multi-class label map ({len(unique_labels)} classes): {label_to_int}")
 
-    # Save label map for downstream use
     label_map_path = output_dir / "label_map.json"
     with open(label_map_path, "w") as f:
         json.dump(label_to_int, f, indent=2)
 
-    # First pass: collect read IDs
+    # Pass 1: collect read IDs
     logger.info("Pass 1: Collecting read IDs")
-    all_read_ids: set[str] = set()
-    for chunk_path in input_paths:
-        with np.load(chunk_path, allow_pickle=True) as data:
-            read_ids = data["read_ids"]
-            all_read_ids.update(str(rid) for rid in read_ids)
-
-    logger.info(f"Total unique reads: {len(all_read_ids)}")
+    all_read_ids = _collect_read_ids(input_paths)
 
     # Split reads
-    if seed is not None:
-        random.seed(seed)
+    assignments = _assign_holdout_splits(all_read_ids, train_frac, val_frac, seed)
 
-    read_ids_list = list(all_read_ids)
-    random.shuffle(read_ids_list)
-
-    n_reads = len(read_ids_list)
-    n_train = int(n_reads * train_frac)
-    n_val = int(n_reads * val_frac)
-
-    train_read_ids = set(read_ids_list[:n_train])
-    val_read_ids = set(read_ids_list[n_train : n_train + n_val])
-    test_read_ids = set(read_ids_list[n_train + n_val :])
-
-    # Second pass: load, relabel, and assign
+    # Pass 2: load, relabel, and assign
     logger.info("Pass 2: Loading and assigning chunks")
     train_chunks: list[dict] = []
     val_chunks: list[dict] = []
@@ -676,21 +634,15 @@ def merge_and_split_multiclass(
             chunk["label"] = label
             chunk["source_group"] = source_group
 
-            read_id = chunk["read_id"]
-            if read_id in train_read_ids:
-                train_chunks.append(chunk)
-            elif read_id in val_read_ids:
-                val_chunks.append(chunk)
-            elif read_id in test_read_ids:
-                test_chunks.append(chunk)
-
+        t, v, te = _distribute_chunks_to_split(chunks, assignments)
+        train_chunks.extend(t)
+        val_chunks.extend(v)
+        test_chunks.extend(te)
         logger.info(f"  {chunk_path.name}: {len(chunks)} chunks -> label_int={label_int} ({label})")
         del chunks
 
     # Save splits
-    save_chunks(train_chunks, output_dir / "train.npz")
-    save_chunks(val_chunks, output_dir / "val.npz")
-    save_chunks(test_chunks, output_dir / "test.npz")
+    output_files = _save_splits(train_chunks, val_chunks, test_chunks, output_dir)
 
     n_total = len(train_chunks) + len(val_chunks) + len(test_chunks)
     logger.info(
@@ -704,11 +656,7 @@ def merge_and_split_multiclass(
         "n_val": len(val_chunks),
         "n_test": len(test_chunks),
         "label_map": label_to_int,
-        "output_files": {
-            "train": output_dir / "train.npz",
-            "val": output_dir / "val.npz",
-            "test": output_dir / "test.npz",
-        },
+        "output_files": output_files,
     }
 
 
@@ -752,31 +700,9 @@ def merge_and_kfold_split_multiclass(
     with open(label_map_path, "w") as f:
         json.dump(label_to_int, f, indent=2)
 
-    # Collect read IDs
-    all_read_ids: set[str] = set()
-    for chunk_path in input_paths:
-        with np.load(chunk_path, allow_pickle=True) as data:
-            all_read_ids.update(str(rid) for rid in data["read_ids"])
-
-    # Partition reads into folds
-    if seed is not None:
-        random.seed(seed)
-    read_ids_list = list(all_read_ids)
-    random.shuffle(read_ids_list)
-
-    partitions = np.array_split(read_ids_list, k_fold)
-    partition_sets = [set(p.tolist()) for p in partitions]
-
-    # Build fold assignments
-    fold_read_assignments = []
-    for i in range(k_fold):
-        test_ids = partition_sets[i]
-        val_ids = partition_sets[(i + 1) % k_fold]
-        train_ids: set[str] = set()
-        for j in range(k_fold):
-            if j != i and j != (i + 1) % k_fold:
-                train_ids.update(partition_sets[j])
-        fold_read_assignments.append({"train": train_ids, "val": val_ids, "test": test_ids})
+    # Collect read IDs and build fold assignments
+    all_read_ids = _collect_read_ids(input_paths)
+    fold_read_assignments = _assign_kfold_splits(all_read_ids, k_fold, seed)
 
     # Initialize fold accumulators
     fold_chunks: list[dict[str, list[dict]]] = [
@@ -794,15 +720,12 @@ def merge_and_kfold_split_multiclass(
             chunk["label"] = label
             chunk["source_group"] = source_group
 
-            read_id = chunk["read_id"]
+        for chunk in chunks:
             for i in range(k_fold):
-                assignments = fold_read_assignments[i]
-                if read_id in assignments["test"]:
-                    fold_chunks[i]["test"].append(chunk)
-                elif read_id in assignments["val"]:
-                    fold_chunks[i]["val"].append(chunk)
-                elif read_id in assignments["train"]:
-                    fold_chunks[i]["train"].append(chunk)
+                t, v, te = _distribute_chunks_to_split([chunk], fold_read_assignments[i])
+                fold_chunks[i]["train"].extend(t)
+                fold_chunks[i]["val"].extend(v)
+                fold_chunks[i]["test"].extend(te)
         del chunks
 
     # Save folds
@@ -812,9 +735,9 @@ def merge_and_kfold_split_multiclass(
         fold_dir = output_dir / f"fold_{i}"
         fold_dir.mkdir(parents=True, exist_ok=True)
 
-        save_chunks(fold_chunks[i]["train"], fold_dir / "train.npz")
-        save_chunks(fold_chunks[i]["val"], fold_dir / "val.npz")
-        save_chunks(fold_chunks[i]["test"], fold_dir / "test.npz")
+        output_files = _save_splits(
+            fold_chunks[i]["train"], fold_chunks[i]["val"], fold_chunks[i]["test"], fold_dir
+        )
 
         fold_total = sum(len(fold_chunks[i][s]) for s in ("train", "val", "test"))
         if i == 0:
@@ -825,11 +748,7 @@ def merge_and_kfold_split_multiclass(
                 "n_train": len(fold_chunks[i]["train"]),
                 "n_val": len(fold_chunks[i]["val"]),
                 "n_test": len(fold_chunks[i]["test"]),
-                "output_files": {
-                    "train": fold_dir / "train.npz",
-                    "val": fold_dir / "val.npz",
-                    "test": fold_dir / "test.npz",
-                },
+                "output_files": output_files,
             }
         )
 

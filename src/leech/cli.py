@@ -11,8 +11,14 @@ from pathlib import Path
 import rich_click as click
 
 from leech.cli_config import configure_rich_click, console
-from leech.cli_options import MODEL_CHOICES, training_hyperparams
-from leech.constants import DEFAULT_DEVICE, DEFAULT_SEED
+from leech.cli_options import (
+    MODEL_CHOICES,
+    base_justify_option,
+    device_option,
+    motif_options,
+    training_hyperparams,
+)
+from leech.constants import DEFAULT_SEED
 from leech.logging_config import setup_logging
 
 # Apply rich-click styling
@@ -65,18 +71,7 @@ def data():
     type=click.Path(path_type=Path),
     help="Output directory for training chunks",
 )
-@click.option(
-    "--motif",
-    type=str,
-    default=None,
-    help='Sequence motif to extract (e.g., "CCAGGC" for tRNA 3\' end)',
-)
-@click.option(
-    "--motif-offset",
-    type=int,
-    default=0,
-    help="Offset within motif for focus base (0-indexed)",
-)
+@motif_options
 @click.option(
     "--motif-reference",
     type=click.Choice(["fasta", "bam"]),
@@ -149,12 +144,7 @@ def data():
     default=100,
     help="Number of reads to process per worker batch (for parallel processing)",
 )
-@click.option(
-    "--base-justify",
-    type=click.Choice(["start", "center", "end"]),
-    default="center",
-    help='Where to center signal chunk within the focus base: "start" (first sample), "center" (midpoint, default), or "end" (last sample, useful for 3\' modifications)',
-)
+@base_justify_option
 @click.option(
     "--dwell-margin",
     type=int,
@@ -446,24 +436,8 @@ def merge(input_chunks, output_dir, train_split, val_split, seed, k_fold, compar
     default=None,
     help="Resume training from a checkpoint file (e.g., model_last.pt). Ignored if file doesn't exist.",
 )
-@click.option(
-    "--motif",
-    type=str,
-    default=None,
-    help="Motif used for chunk extraction (recorded in config for provenance/inference)",
-)
-@click.option(
-    "--motif-offset",
-    type=int,
-    default=0,
-    help="Offset within motif for focus base (0-indexed, recorded in config)",
-)
-@click.option(
-    "--base-justify",
-    type=click.Choice(["start", "center", "end"]),
-    default="center",
-    help="Signal justification within focus base (recorded in config)",
-)
+@motif_options
+@base_justify_option
 @click.option(
     "--seq-encoding",
     type=click.Choice(["base_onehot", "signal_kmer"]),
@@ -753,12 +727,7 @@ def export(model_dir, output):
     help="K-mer context for sequence encoding",
 )
 @training_hyperparams
-@click.option(
-    "--base-justify",
-    type=click.Choice(["start", "center", "end"]),
-    default="center",
-    help='Where to center signal chunk within the focus base: "start" (first sample), "center" (midpoint, default), or "end" (last sample, useful for 3\' modifications)',
-)
+@base_justify_option
 @click.option(
     "--dwell-offsets",
     type=str,
@@ -884,12 +853,7 @@ def eval():
     type=click.Path(path_type=Path),
     help="Output metrics file (JSON)",
 )
-@click.option(
-    "--device",
-    type=click.Choice(["cuda", "cpu"]),
-    default=DEFAULT_DEVICE,
-    help="Device for inference",
-)
+@device_option
 def test(model, test_data, output, device):
     """Test a trained model on a holdout test set."""
     from leech.commands.eval import handle_test
@@ -920,12 +884,7 @@ def test(model, test_data, output, device):
     type=click.Path(path_type=Path),
     help="Output directory for comparison results",
 )
-@click.option(
-    "--device",
-    type=click.Choice(["cuda", "cpu"]),
-    default=DEFAULT_DEVICE,
-    help="Device for evaluation",
-)
+@device_option
 @click.option(
     "--no-plot",
     is_flag=True,
@@ -968,12 +927,7 @@ def compare(model_dirs, test_data, output_dir, device, no_plot):
     type=click.Path(path_type=Path),
     help="Output directory for results",
 )
-@click.option(
-    "--device",
-    type=click.Choice(["cuda", "cpu"]),
-    default=DEFAULT_DEVICE,
-    help="Device for computation",
-)
+@device_option
 @click.option(
     "--method",
     type=click.Choice(["gradient", "integrated_gradients"]),
@@ -1023,12 +977,7 @@ def importance(model, test_data, output_dir, device, method, no_plot):
     type=click.Path(path_type=Path),
     help="Output directory for results",
 )
-@click.option(
-    "--device",
-    type=click.Choice(["cuda", "cpu"]),
-    default=DEFAULT_DEVICE,
-    help="Device for computation",
-)
+@device_option
 @click.option(
     "--no-plot",
     is_flag=True,
@@ -1106,18 +1055,8 @@ def ablation(model, test_data, output_dir, device, no_plot):
     type=click.Path(path_type=Path),
     help="Output BAM with predictions",
 )
-@click.option(
-    "--device",
-    type=click.Choice(["cuda", "cpu"]),
-    default=DEFAULT_DEVICE,
-    help="Device for inference",
-)
-@click.option(
-    "--base-justify",
-    type=click.Choice(["start", "center", "end"]),
-    default="center",
-    help='Where to center signal chunk within the focus base: "start" (first sample), "center" (midpoint, default), or "end" (last sample, useful for 3\' modifications)',
-)
+@device_option
+@base_justify_option
 @click.option(
     "--no-reverse-signal",
     is_flag=True,
@@ -1136,18 +1075,7 @@ def ablation(model, test_data, output_dir, device, no_plot):
     default=None,
     help="Reference FASTA file for --reference-anchored mode (required if BAM header lacks embedded sequences).",
 )
-@click.option(
-    "--motif",
-    type=str,
-    default=None,
-    help="Motif to search for in reads (auto-read from model config if not provided; required for Remora models)",
-)
-@click.option(
-    "--motif-offset",
-    type=int,
-    default=0,
-    help="Offset within motif for the prediction position (0-indexed)",
-)
+@motif_options
 @click.option(
     "--batch-size",
     type=int,
