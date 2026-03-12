@@ -15,6 +15,7 @@ use pyo3::prelude::*;
 /// Returns:
 ///     Tuple of (mean, median, std, range) arrays, each of length num_bases
 #[pyfunction]
+#[allow(clippy::type_complexity)]
 pub fn compute_signal_stats<'py>(
     py: Python<'py>,
     signal: PyReadonlyArray1<'py, f32>,
@@ -31,7 +32,7 @@ pub fn compute_signal_stats<'py>(
     let sig_slice = signal.as_slice().expect("signal must be contiguous");
     let map_slice = sig_map.as_slice().expect("sig_map must be contiguous");
     let sig_len = sig_slice.len();
-    let num_bases = if map_slice.len() > 0 {
+    let num_bases = if !map_slice.is_empty() {
         map_slice.len() - 1
     } else {
         0
@@ -87,7 +88,7 @@ pub fn compute_signal_stats<'py>(
         sort_buf.extend_from_slice(segment);
         sort_buf.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         let mid = sort_buf.len() / 2;
-        medians[i] = if sort_buf.len() % 2 == 0 {
+        medians[i] = if sort_buf.len().is_multiple_of(2) {
             (sort_buf[mid - 1] + sort_buf[mid]) / 2.0
         } else {
             sort_buf[mid]
