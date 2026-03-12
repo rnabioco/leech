@@ -10,6 +10,7 @@ import logging
 logger = logging.getLogger("leech._rust_accel")
 
 try:
+    from leech_core import compute_signal_stats as _rs_compute_signal_stats
     from leech_core import encode_signal_kmer as _rs_encode_signal_kmer
     from leech_core import extract_levels as _rs_extract_levels
     from leech_core import rough_rescale as _rs_rough_rescale
@@ -19,6 +20,7 @@ try:
     logger.debug("Rust acceleration available (leech_core)")
 except ImportError:
     HAS_RUST = False
+    _rs_compute_signal_stats = None
     _rs_encode_signal_kmer = None
     _rs_extract_levels = None
     _rs_rough_rescale = None
@@ -34,7 +36,13 @@ def check_rust() -> None:
         version = getattr(leech_core, "__version__", None)
         label = f"leech_core {version}" if version else "leech_core"
         print(f"Rust acceleration: enabled ({label})")
-        funcs = ["encode_signal_kmer", "extract_levels", "rough_rescale", "seq_banded_dp"]
+        funcs = [
+            "compute_signal_stats",
+            "encode_signal_kmer",
+            "extract_levels",
+            "rough_rescale",
+            "seq_banded_dp",
+        ]
         for f in funcs:
             status = "ok" if getattr(leech_core, f, None) is not None else "missing"
             print(f"  {f}: {status}")

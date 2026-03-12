@@ -228,7 +228,7 @@ class TestDatasetDwellOffset:
         assert item0["sequence"].equal(item5["sequence"])
 
     def test_offset_exceeds_margin_raises(self, read_with_known_dwells, tmp_path):
-        """dwell_offset > margin raises ValueError."""
+        """dwell_offset > margin raises ValueError during initialization."""
         kmer_context = 5
         kmer_len = 2 * kmer_context + 1
         dwell_margin = 5
@@ -237,15 +237,14 @@ class TestDatasetDwellOffset:
             tmp_path, read_with_known_dwells, kmer_context=kmer_context, dwell_margin=dwell_margin
         )
 
-        dataset = LeechDataset(
-            chunks_file,
-            signal_len=400,
-            kmer_len=kmer_len,
-            model_type="ConvLSTMDwell",
-            dwell_offset=6,
-        )
         with pytest.raises(ValueError, match="dwell_offset.*exceeds.*dwell_margin"):
-            dataset[0]
+            LeechDataset(
+                chunks_file,
+                signal_len=400,
+                kmer_len=kmer_len,
+                model_type="ConvLSTMDwell",
+                dwell_offset=6,
+            )
 
     def test_backward_compat_no_margin(self, temp_chunks_file):
         """Existing chunks (no margin) work fine with dwell_offset=0."""

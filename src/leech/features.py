@@ -59,9 +59,10 @@ from numpy.lib.stride_tricks import sliding_window_view
 
 # Try to import Rust-accelerated implementations
 try:
-    from leech._rust_accel import HAS_RUST, _rs_encode_signal_kmer
+    from leech._rust_accel import HAS_RUST, _rs_compute_signal_stats, _rs_encode_signal_kmer
 except ImportError:
     HAS_RUST = False
+    _rs_compute_signal_stats = None
     _rs_encode_signal_kmer = None
 
 
@@ -190,6 +191,15 @@ def compute_signal_levels(
     Returns:
         Array of shape (num_bases,) with signal level statistic for each base
     """
+    # Rust fast path: compute all 4 stats at once, return requested one
+    stat_to_idx = {"mean": 0, "median": 1, "std": 2}
+    if HAS_RUST and stat in stat_to_idx:
+        assert _rs_compute_signal_stats is not None
+        sig = signal.astype(np.float32, copy=False)
+        s2s = seq_to_sig_map.astype(np.int64, copy=False)
+        means, medians, stds, ranges = _rs_compute_signal_stats(sig, s2s)
+        return [np.asarray(means), np.asarray(medians), np.asarray(stds)][stat_to_idx[stat]]
+
     num_bases = len(seq_to_sig_map) - 1
     levels = np.zeros(num_bases, dtype=np.float32)
 
@@ -534,6 +544,20 @@ def compute_signal_features(
             - 'level_std': signal standard deviation
             - 'level_range': max - min signal
     """
+    # Rust fast path: compute all 4 stats in one call (avoids Python dispatch overhead)
+    if HAS_RUST:
+        assert _rs_compute_signal_stats is not None
+        sig = signal.astype(np.float32, copy=False)
+        s2s = seq_to_sig_map.astype(np.int64, copy=False)
+        means, medians, stds, ranges = _rs_compute_signal_stats(sig, s2s)
+        return {
+            "level_mean": np.asarray(means),
+            "level_median": np.asarray(medians),
+            "level_std": np.asarray(stds),
+            "level_range": np.asarray(ranges),
+        }
+
+    # Python fallback
     num_bases = len(seq_to_sig_map) - 1
 
     features = {

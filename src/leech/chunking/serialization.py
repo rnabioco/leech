@@ -76,40 +76,57 @@ def save_chunks(chunks: list[dict], output_path: Path) -> None:
         seq_to_sig_maps.append(s2s if s2s is not None else np.array([], dtype=np.int64))
         sequences_with_kmer_context.append(seq_ctx if seq_ctx is not None else "")
 
-    # Convert to arrays
-    # Signals may have variable length, so we'll save them as object array
-    signals_arr = np.array(signals, dtype=object)
+    # Convert to arrays — use flat (non-object) arrays when shapes are uniform
+    # for faster serialization (avoids pickle overhead on object arrays)
     sequences_arr = np.array(sequences, dtype=str)
-    dwells_arr = np.array(dwells, dtype=object)
-    features_arr = np.array(features, dtype=object)
     labels_arr = np.array(labels, dtype=str)  # String labels
     labels_int_arr = np.array(labels_int, dtype=np.int64)  # Numeric labels
     read_ids_arr = np.array(read_ids, dtype=str)
     base_indices_arr = np.array(base_indices, dtype=np.int64)
     dwell_margin_lefts_arr = np.array(dwell_margin_lefts, dtype=np.int64)
     source_groups_arr = np.array(source_groups, dtype=str)
-    seq_to_sig_maps_arr = np.array(seq_to_sig_maps, dtype=object)
     sequences_with_kmer_context_arr = np.array(sequences_with_kmer_context, dtype=str)
+    # seq_to_sig_maps are variable length (depend on read dwell times), keep as object
+    seq_to_sig_maps_arr = np.array(seq_to_sig_maps, dtype=object)
 
     # Create parent directories if they don't exist
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
+    save_kwargs: dict[str, np.ndarray] = {
+        "sequences": sequences_arr,
+        "labels": labels_arr,
+        "labels_int": labels_int_arr,
+        "read_ids": read_ids_arr,
+        "base_indices": base_indices_arr,
+        "dwell_margin_lefts": dwell_margin_lefts_arr,
+        "source_groups": source_groups_arr,
+        "seq_to_sig_maps": seq_to_sig_maps_arr,
+        "sequences_with_kmer_context": sequences_with_kmer_context_arr,
+    }
+
+    # Signals: try stacking into 2D float32 (all chunks should be same length)
+    sig_shapes = {s.shape for s in signals}
+    if len(sig_shapes) == 1:
+        save_kwargs["signals_flat"] = np.stack(signals).astype(np.float32)
+    else:
+        save_kwargs["signals"] = np.array(signals, dtype=object)
+
+    # Dwells: try stacking into 2D
+    dwell_shapes = {d.shape for d in dwells}
+    if len(dwell_shapes) == 1:
+        save_kwargs["dwells_flat"] = np.stack(dwells).astype(np.float32)
+    else:
+        save_kwargs["dwells"] = np.array(dwells, dtype=object)
+
+    # Features: try stacking into 3D
+    feat_shapes = {f.shape for f in features}
+    if len(feat_shapes) == 1 and features[0].size > 0:
+        save_kwargs["features_flat"] = np.stack(features).astype(np.float32)
+    else:
+        save_kwargs["features"] = np.array(features, dtype=object)
+
     # Save
-    np.savez_compressed(
-        output_path,
-        signals=signals_arr,
-        sequences=sequences_arr,
-        dwells=dwells_arr,
-        features=features_arr,
-        labels=labels_arr,
-        labels_int=labels_int_arr,
-        read_ids=read_ids_arr,
-        base_indices=base_indices_arr,
-        dwell_margin_lefts=dwell_margin_lefts_arr,
-        source_groups=source_groups_arr,
-        seq_to_sig_maps=seq_to_sig_maps_arr,
-        sequences_with_kmer_context=sequences_with_kmer_context_arr,
-    )
+    np.savez_compressed(output_path, **save_kwargs)
 
     logger.info(f"Saved {len(chunks)} chunks to {output_path}")
 
@@ -138,11 +155,15 @@ def load_chunks(input_path: Path) -> list[dict]:
     """
     # Load all arrays at once (keeps data memory-mapped when possible)
     with np.load(input_path, allow_pickle=True) as data:
-        # Extract all arrays first (this creates copies but only once)
-        signals = data["signals"]
+        # Detect format: flat arrays (new, fast) vs object arrays (old, backward compat)
+        has_flat_signals = "signals_flat" in data
+        has_flat_dwells = "dwells_flat" in data
+        has_flat_features = "features_flat" in data
+
+        signals = data["signals_flat"] if has_flat_signals else data["signals"]
         sequences = data["sequences"]
-        dwells = data["dwells"]
-        features = data["features"]
+        dwells = data["dwells_flat"] if has_flat_dwells else data["dwells"]
+        features = data["features_flat"] if has_flat_features else data["features"]
         labels_arr = data["labels"]  # String labels
         labels_int_arr = data["labels_int"]  # Numeric labels
         read_ids = data["read_ids"]
@@ -167,7 +188,6 @@ def load_chunks(input_path: Path) -> list[dict]:
         chunks = []
 
         # Create dictionaries with references to array elements
-        # This is more memory efficient than accessing data[key][i] each time
         for i in range(n_chunks):
             chunk = {
                 "signal": signals[i],

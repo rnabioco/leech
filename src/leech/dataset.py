@@ -132,9 +132,12 @@ class LeechDataset(Dataset):
         if len(self.chunks) == 0:
             raise ValueError(f"No valid chunks found{f' in {chunk_path}' if chunk_path else ''}")
 
-        # Pre-tensorize: encode sequences, labels, and convert dtypes once
+        # Pre-tensorize: encode sequences, labels, signals, and features once
         self._encoded_seqs: list[torch.Tensor] = []
         self._labels: list[torch.Tensor] = []
+        self._signals: list[torch.Tensor] = []
+        self._features: list[torch.Tensor] = []
+        self._needs_features = model_type in FEATURE_MODELS
 
         # Determine effective encoding: fall back to base_onehot if chunks lack signal_kmer data
         self._effective_seq_encoding = seq_encoding
@@ -168,16 +171,73 @@ class LeechDataset(Dataset):
             else:
                 self._labels.append(torch.tensor([chunk["label_int"]], dtype=torch.float32))
 
-            # Convert signal and features to float32 in-place (avoid per-epoch astype)
-            if chunk["signal"].dtype != np.float32:
-                chunk["signal"] = chunk["signal"].astype(np.float32)
-            if chunk["features"].dtype != np.float32:
-                chunk["features"] = chunk["features"].astype(np.float32)
+            # Pre-tensorize signal: pad/crop once instead of every __getitem__ call
+            signal = chunk["signal"]
+            if signal.dtype != np.float32:
+                signal = signal.astype(np.float32)
+            self._signals.append(self._prepare_signal(signal))
+
+            # Pre-tensorize features: apply dwell_offset slicing once
+            if self._needs_features:
+                self._features.append(self._prepare_features(chunk))
+            else:
+                self._features.append(torch.empty(0))
+
+        # Stack into contiguous tensors for cache-friendly access
+        try:
+            self._signals_tensor = torch.stack(self._signals)
+            self._signals = []  # free the list
+        except RuntimeError:
+            # Shapes differ (shouldn't happen, but defensive)
+            self._signals_tensor = None
 
         logger.debug(
             f"Pre-tensorized {len(self.chunks)} chunks "
             f"({len(self._encoded_seqs)} sequences encoded, encoding={self._effective_seq_encoding})"
         )
+
+    def _prepare_signal(self, signal: np.ndarray) -> torch.Tensor:
+        """Pad/crop signal to target length. Called once during __init__."""
+        if self.left_context is not None and self.right_context is not None:
+            focus_pos = len(signal) // 2
+            start = focus_pos - self.left_context
+            end = focus_pos + self.right_context
+            if start < 0 or end > len(signal):
+                cropped = np.zeros(self.signal_len, dtype=np.float32)
+                src_start, src_end = max(0, start), min(len(signal), end)
+                dst_start = max(0, -start)
+                cropped[dst_start : dst_start + (src_end - src_start)] = signal[src_start:src_end]
+                signal = cropped
+            else:
+                signal = signal[start:end]
+        elif len(signal) < self.signal_len:
+            signal = np.pad(signal, (0, self.signal_len - len(signal)), mode="constant")
+        elif len(signal) > self.signal_len:
+            start = (len(signal) - self.signal_len) // 2
+            signal = signal[start : start + self.signal_len]
+        return torch.from_numpy(np.ascontiguousarray(signal))
+
+    def _prepare_features(self, chunk: dict) -> torch.Tensor:
+        """Apply dwell_offset slicing and tensorize features. Called once during __init__."""
+        dwell = chunk["dwell"]
+        features = chunk["features"]
+        if features.dtype != np.float32:
+            features = features.astype(np.float32)
+
+        if self.model_type in WIDE_FEATURE_MODELS:
+            pass  # full-width features
+        elif len(dwell) > self.kmer_len:
+            margin_left = chunk.get("dwell_margin_left", (len(dwell) - self.kmer_len) // 2)
+            if self.dwell_offset + margin_left > len(dwell) - self.kmer_len:
+                raise ValueError(f"dwell_offset ({self.dwell_offset}) exceeds dwell_margin")
+            start = margin_left + self.dwell_offset
+            if features.size > 0:
+                features = features[:, start : start + self.kmer_len]
+
+        if features.size > 0:
+            return torch.from_numpy(np.ascontiguousarray(features))
+        else:
+            return torch.zeros(1, self.kmer_len, dtype=torch.float32)
 
     def _apply_augmentation(self, signal: torch.Tensor) -> torch.Tensor:
         """Apply signal augmentation (jitter and/or scaling)."""
@@ -245,77 +305,35 @@ class LeechDataset(Dataset):
             - features: (num_features, kmer_len) tensor (if model requires features)
             - label: (1,) tensor
         """
-        chunk = self.chunks[idx]
+        # Pre-computed signal lookup (padded/cropped once in __init__)
+        if self._signals_tensor is not None:
+            signal_tensor = self._signals_tensor[idx]
+        else:
+            signal_tensor = self._signals[idx]
 
-        # Process signal - pad or truncate to signal_len (already float32)
-        signal = chunk["signal"]
-        if self.left_context is not None and self.right_context is not None:
-            # Asymmetric crop around focus base (at center of symmetrically-prepared chunk)
-            focus_pos = len(signal) // 2
-            start = focus_pos - self.left_context
-            end = focus_pos + self.right_context
-            if start < 0 or end > len(signal):
-                cropped = np.zeros(self.signal_len, dtype=np.float32)
-                src_start, src_end = max(0, start), min(len(signal), end)
-                dst_start = max(0, -start)
-                cropped[dst_start : dst_start + (src_end - src_start)] = signal[src_start:src_end]
-                signal = cropped
-            else:
-                signal = signal[start:end]
-        elif len(signal) < self.signal_len:
-            signal = np.pad(signal, (0, self.signal_len - len(signal)), mode="constant")
-        elif len(signal) > self.signal_len:
-            start = (len(signal) - self.signal_len) // 2
-            signal = signal[start : start + self.signal_len]
-
-        signal_tensor = torch.from_numpy(signal)
-
-        # Apply augmentation if configured
+        # Apply augmentation if configured (creates new tensor, doesn't modify stored data)
         if self.augmentation is not None:
-            signal_tensor = self._apply_augmentation(signal_tensor)
+            signal_tensor = self._apply_augmentation(signal_tensor.clone())
 
         # Pre-encoded sequence lookup
         sequence_tensor = self._encoded_seqs[idx]
         if self._effective_seq_encoding == "base_onehot":
-            sequence = chunk["sequence"]
+            sequence = self.chunks[idx]["sequence"]
             if len(sequence) != self.kmer_len:
                 raise ValueError(f"Expected k-mer length {self.kmer_len}, got {len(sequence)}")
-
-        # Process dwell/features — apply dwell_offset slicing if margin exists
-        # Wide feature models (e.g., ConvLSTMDwellAttn) receive the full margin
-        # so cross-attention can learn the offset
-        dwell = chunk["dwell"]
-        features = chunk["features"]
-        if self.model_type in WIDE_FEATURE_MODELS:
-            # Pass full-width features (kmer_len + margin_left + margin_right)
-            pass
-        elif len(dwell) > self.kmer_len:
-            # Use stored dwell_margin_left for correct slicing with asymmetric margins
-            margin_left = chunk.get("dwell_margin_left", (len(dwell) - self.kmer_len) // 2)
-            if self.dwell_offset + margin_left > len(dwell) - self.kmer_len:
-                raise ValueError(f"dwell_offset ({self.dwell_offset}) exceeds dwell_margin")
-            start = margin_left + self.dwell_offset
-            dwell = dwell[start : start + self.kmer_len]
-            if features.size > 0:
-                features = features[:, start : start + self.kmer_len]
-
-        if features.size > 0:
-            features_tensor = torch.from_numpy(features)
-        else:
-            features_tensor = torch.zeros(1, self.kmer_len, dtype=torch.float32)
 
         # Pre-computed label lookup
         label = self._labels[idx]
 
-        result = {
+        result: dict[str, torch.Tensor] = {
             "signal": signal_tensor,
             "sequence": sequence_tensor,
             "label": label,
         }
 
-        # Include features for models that require them
-        if self.model_type in FEATURE_MODELS:
-            result["features"] = features_tensor
+        # Include pre-computed features for models that require them
+        if self._needs_features:
+            result["features"] = self._features[idx]
 
         return result
 
