@@ -222,7 +222,13 @@ def trace_model(model: nn.Module, config: dict) -> torch.jit.ScriptModule:
 
     if requires_features:
         num_features = config.get("num_features", 5)
-        features = torch.randn(1, num_features, kmer_len)
+        wide_features = model_name in ModelInferenceWrapper.WIDE_FEATURE_MODELS
+        if wide_features:
+            dwell_margin = getattr(model, "dwell_margin", 0)
+            feat_len = kmer_len + 2 * dwell_margin
+        else:
+            feat_len = kmer_len
+        features = torch.randn(1, num_features, feat_len)
         example_inputs = (signal, sequence, features)
     else:
         example_inputs = (signal, sequence)

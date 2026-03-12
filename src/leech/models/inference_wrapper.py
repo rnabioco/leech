@@ -41,9 +41,15 @@ class ModelInferenceWrapper:
     }
 
     # Models that receive the full dwell margin (no dwell_offset slicing)
+    # Cross-attention lets each signal position attend to all dwell positions,
+    # learning the physical motor-sensor offset
     WIDE_FEATURE_MODELS = {
         "ConvLSTMDwellAttn",
         "ConvLSTMDwellBNAttn",
+        "TransformerDwell",
+        "TCNDwell",
+        "ResNetDwell",
+        "ConvOnly",
     }
 
     def __init__(self, model: nn.Module, model_type: str):

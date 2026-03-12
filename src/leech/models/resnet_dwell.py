@@ -4,27 +4,28 @@ ResNetDwell: Residual Network with dwell time features.
 Architecture:
 - Signal branch: ResNet-18 style (8 residual blocks)
 - Sequence branch: Smaller ResNet (4 blocks)
-- Feature branch: Lightweight ResNet (3 blocks)
-- Global pooling → concatenate → FC classifier
+- Feature branch: Conv1d (full-width) for cross-attention K/V
+- Cross-attention: ResNet output (Q) attends to wide dwell features (K/V)
+- Attention pooling → MLP classifier
 
-Rationale:
-- Deep feature extraction with skip connections
-- Proven in signal processing applications
-- Can go deeper without vanishing gradients
-- Good generalization through residual learning
+The dwell feature branch receives the full-width feature array
+(kmer_len + margin_left + margin_right positions) so cross-attention
+can learn the physical motor-sensor offset.
 """
 
 import torch
 import torch.nn as nn
 
 from leech.constants import (
+    DEFAULT_CONV_CHANNELS,
     DEFAULT_DROPOUT,
+    DEFAULT_DWELL_MARGIN,
     DEFAULT_KMER_LEN,
     DEFAULT_NUM_FEATURES,
     DEFAULT_SIGNAL_KMER_CONTEXT,
     DEFAULT_SIGNAL_LEN,
 )
-from leech.models.components import BaseModel
+from leech.models.components import BaseModel, FeatureBranch
 
 
 class ResidualBlock1D(nn.Module):
@@ -162,19 +163,20 @@ class ResNet1D(nn.Module):
 
 class ResNetDwell(BaseModel):
     """
-    ResNet model with signal, sequence, and dwell feature branches.
+    ResNet model with cross-attention for learning motor-sensor offset.
 
-    Architecture:
-    - Signal branch: 8 residual blocks (ResNet-18 style)
-    - Sequence branch: 4 residual blocks
-    - Feature branch: 3 residual blocks
-    - Global pooling → concatenate → FC classifier
+    Signal and sequence branches use ResNet1D. Their outputs are pooled
+    to kmer_len positions and serve as Q for cross-attention against
+    full-width dwell features (K/V), allowing each position to attend
+    to dwell features at any offset.
 
     Args:
         signal_len: Length of input signal
         kmer_len: Length of k-mer sequence (e.g., 2*context+1)
         num_features: Number of feature channels (dwell + signal levels)
+        dwell_margin: Extra bases on each side of dwell window (default: 15)
         base_channels: Base number of channels (default: 64)
+        num_attn_heads: Number of attention heads for cross-attention (default: 4)
         dropout: Dropout probability (default: 0.1)
     """
 
@@ -183,7 +185,9 @@ class ResNetDwell(BaseModel):
         signal_len: int = DEFAULT_SIGNAL_LEN,
         kmer_len: int = DEFAULT_KMER_LEN,
         num_features: int = DEFAULT_NUM_FEATURES,
+        dwell_margin: int = DEFAULT_DWELL_MARGIN,
         base_channels: int = 64,
+        num_attn_heads: int = 4,
         dropout: float = DEFAULT_DROPOUT,
         seq_encoding: str = "base_onehot",
         signal_kmer_context: tuple[int, int] = DEFAULT_SIGNAL_KMER_CONTEXT,
@@ -193,7 +197,10 @@ class ResNetDwell(BaseModel):
         self.signal_len = signal_len
         self.kmer_len = kmer_len
         self.num_features = num_features
+        self.dwell_margin = dwell_margin
         self.seq_encoding = seq_encoding
+
+        conv_channels = DEFAULT_CONV_CHANNELS
 
         # Compute sequence input channels
         if seq_encoding == "signal_kmer":
@@ -202,7 +209,6 @@ class ResNetDwell(BaseModel):
             seq_in_channels = 4
 
         # Signal branch: Deep ResNet (8 blocks, ResNet-18 style)
-        # Input: (batch, 1, signal_len)
         self.signal_resnet = ResNet1D(
             in_channels=1,
             base_channels=base_channels,
@@ -213,37 +219,43 @@ class ResNetDwell(BaseModel):
         # Sequence branch: Medium ResNet (4 blocks)
         self.seq_resnet = ResNet1D(
             in_channels=seq_in_channels,
-            base_channels=base_channels // 2,  # Smaller for sequence
+            base_channels=base_channels // 2,
             num_blocks=4,
             dropout=dropout,
         )
 
-        # Feature branch: Lightweight ResNet (3 blocks)
-        # Input: (batch, num_features, kmer_len)
-        self.feature_resnet = ResNet1D(
-            in_channels=num_features,
-            base_channels=base_channels // 4,  # Smallest for features
-            num_blocks=3,
-            dropout=dropout,
-        )
-
-        # Global pooling (mean and max)
-        self.global_avg_pool = nn.AdaptiveAvgPool1d(1)
-        self.global_max_pool = nn.AdaptiveMaxPool1d(1)
-
-        # Get final channel sizes from each ResNet branch
-        # Each ResNet1D tracks its final_channels attribute
+        # Pool ResNet outputs to kmer_len positions for cross-attention Q
         signal_final_ch = self.signal_resnet.final_channels
         seq_final_ch = self.seq_resnet.final_channels
-        feat_final_ch = self.feature_resnet.final_channels
+        self.signal_pool = nn.AdaptiveAvgPool1d(kmer_len)
+        self.seq_pool = nn.AdaptiveAvgPool1d(kmer_len)
 
-        # Total features: (avg + max) * 3 branches
-        total_features = (signal_final_ch + seq_final_ch + feat_final_ch) * 2
+        # Feature branch: Conv1d on full-width features for cross-attention K/V
+        self.feature_branch = FeatureBranch(
+            num_features=num_features, conv_channels=conv_channels, use_batchnorm=True
+        )
+
+        # Merged signal+seq dimension
+        merged_dim = signal_final_ch + seq_final_ch
+
+        # Cross-attention: merged signal+seq (Q) attends to wide dwell features (K/V)
+        self.cross_attn = nn.MultiheadAttention(
+            embed_dim=merged_dim,
+            num_heads=num_attn_heads,
+            kdim=conv_channels[-1],  # 256 from FeatureBranch
+            vdim=conv_channels[-1],
+            dropout=dropout,
+            batch_first=True,
+        )
+        self.attn_norm = nn.LayerNorm(merged_dim)
+
+        # Attention pooling over positions
+        self.pool_linear = nn.Linear(merged_dim, 1)
 
         # Classifier
         self.classifier = nn.Sequential(
             nn.Dropout(dropout),
-            nn.Linear(total_features, 512),
+            nn.Linear(merged_dim, 512),
             nn.ReLU(),
             nn.BatchNorm1d(512),
             nn.Dropout(dropout),
@@ -251,7 +263,7 @@ class ResNetDwell(BaseModel):
             nn.ReLU(),
             nn.BatchNorm1d(128),
             nn.Dropout(dropout),
-            nn.Linear(128, 1),  # Binary classification
+            nn.Linear(128, 1),
         )
 
     def forward(
@@ -262,39 +274,48 @@ class ResNetDwell(BaseModel):
 
         Args:
             signal: Raw signal (batch, signal_len)
-            sequence: One-hot encoded sequence (batch, 4, kmer_len)
-            features: Dwell + signal level features (batch, num_features, kmer_len)
+            sequence: Encoded sequence (batch, 4, kmer_len) or (batch, 36, signal_len)
+            features: Dwell + signal level features with full margin
+                (batch, num_features, kmer_len + margin_left + margin_right)
 
         Returns:
             Logits for binary classification (batch, 1)
         """
         # Signal branch
-        # (batch, signal_len) -> (batch, 1, signal_len)
-        signal_feat = signal.unsqueeze(1)
+        signal_feat = signal.unsqueeze(1)  # (batch, 1, signal_len)
         signal_feat = self.signal_resnet(signal_feat)  # (batch, final_ch, reduced_len)
+        signal_feat = self.signal_pool(signal_feat)  # (batch, final_ch, kmer_len)
 
-        # Sequence branch — for signal_kmer, ResNet downsampling handles it
+        # Sequence branch
         seq_feat = self.seq_resnet(sequence)  # (batch, final_ch, reduced_len)
+        seq_feat = self.seq_pool(seq_feat)  # (batch, final_ch, kmer_len)
 
-        # Feature branch
-        feat_feat = self.feature_resnet(features)  # (batch, final_ch, reduced_len)
+        # Feature branch on full-width features
+        feat_out = self.feature_branch(features)  # (batch, 256, feat_len)
+        feat_out = feat_out.transpose(1, 2)  # (batch, feat_len, 256)
 
-        # Global pooling for each branch
-        # Average pooling
-        signal_avg = self.global_avg_pool(signal_feat).squeeze(-1)  # (batch, channels)
-        seq_avg = self.global_avg_pool(seq_feat).squeeze(-1)
-        feat_avg = self.global_avg_pool(feat_feat).squeeze(-1)
+        # Merge signal + sequence → (batch, kmer_len, merged_dim)
+        merged = torch.cat([signal_feat, seq_feat], dim=1)  # (batch, merged_dim, kmer_len)
+        merged = merged.transpose(1, 2)  # (batch, kmer_len, merged_dim)
 
-        # Max pooling
-        signal_max = self.global_max_pool(signal_feat).squeeze(-1)
-        seq_max = self.global_max_pool(seq_feat).squeeze(-1)
-        feat_max = self.global_max_pool(feat_feat).squeeze(-1)
+        # Cross-attention: merged (kmer_len positions) queries
+        # dwell features (kmer_len + margin positions)
+        attn_out, _ = self.cross_attn(
+            query=merged,    # (batch, kmer_len, merged_dim)
+            key=feat_out,    # (batch, feat_len, 256)
+            value=feat_out,  # (batch, feat_len, 256)
+        )  # attn_out: (batch, kmer_len, merged_dim)
 
-        # Concatenate all features
-        merged = torch.cat([signal_avg, signal_max, seq_avg, seq_max, feat_avg, feat_max], dim=1)
+        # Residual connection + layer norm
+        combined = self.attn_norm(merged + attn_out)  # (batch, kmer_len, merged_dim)
+
+        # Attention pooling over all positions
+        pool_scores = self.pool_linear(combined)  # (batch, kmer_len, 1)
+        pool_weights = torch.softmax(pool_scores, dim=1)  # (batch, kmer_len, 1)
+        context_vector = (pool_weights * combined).sum(dim=1)  # (batch, merged_dim)
 
         # Classifier
-        logits: torch.Tensor = self.classifier(merged)  # (batch, 1)
+        logits: torch.Tensor = self.classifier(context_vector)  # (batch, 1)
 
         return logits
 

@@ -203,11 +203,13 @@ class TestTransformerDwell:
         assert model.d_model == 64
 
     def test_forward_pass(self, model_config):
-        """Test forward pass with valid inputs."""
+        """Test forward pass with wide features (cross-attention over dwell margin)."""
+        dwell_margin = 5
         model = TransformerDwell(
             signal_len=model_config["signal_len"],
             kmer_len=model_config["kmer_len"],
             num_features=model_config["num_features"],
+            dwell_margin=dwell_margin,
             d_model=64,
             nhead=4,
             num_layers=2,
@@ -215,9 +217,10 @@ class TestTransformerDwell:
         model.eval()
 
         batch_size = 4
+        feat_len = model_config["kmer_len"] + 2 * dwell_margin
         signal = torch.randn(batch_size, model_config["signal_len"])
         sequence = torch.randn(batch_size, 4, model_config["kmer_len"])
-        features = torch.randn(batch_size, model_config["num_features"], model_config["kmer_len"])
+        features = torch.randn(batch_size, model_config["num_features"], feat_len)
 
         with torch.no_grad():
             output = model(signal, sequence, features)
@@ -254,20 +257,23 @@ class TestConvOnly:
         assert model.signal_len == model_config["signal_len"]
 
     def test_forward_pass(self, model_config):
-        """Test forward pass with valid inputs."""
+        """Test forward pass with wide features (cross-attention over dwell margin)."""
+        dwell_margin = 5
         model = ConvOnly(
             signal_len=model_config["signal_len"],
             kmer_len=model_config["kmer_len"],
             num_features=model_config["num_features"],
+            dwell_margin=dwell_margin,
             base_channels=8,
             num_blocks=2,
         )
         model.eval()
 
         batch_size = 4
+        feat_len = model_config["kmer_len"] + 2 * dwell_margin
         signal = torch.randn(batch_size, model_config["signal_len"])
         sequence = torch.randn(batch_size, 4, model_config["kmer_len"])
-        features = torch.randn(batch_size, model_config["num_features"], model_config["kmer_len"])
+        features = torch.randn(batch_size, model_config["num_features"], feat_len)
 
         with torch.no_grad():
             output = model(signal, sequence, features)
@@ -286,7 +292,7 @@ class TestConvOnly:
         )
         assert len(model.signal_conv) == 2  # num_blocks
         assert len(model.seq_conv) == 2
-        assert len(model.feature_conv) == 2
+        assert hasattr(model, "feature_branch")
 
 
 class TestTCNDwell:
@@ -306,11 +312,13 @@ class TestTCNDwell:
         assert model.signal_len == model_config["signal_len"]
 
     def test_forward_pass(self, model_config):
-        """Test forward pass with valid inputs."""
+        """Test forward pass with wide features (cross-attention over dwell margin)."""
+        dwell_margin = 5
         model = TCNDwell(
             signal_len=model_config["signal_len"],
             kmer_len=model_config["kmer_len"],
             num_features=model_config["num_features"],
+            dwell_margin=dwell_margin,
             hidden_channels=16,
             num_layers=4,
             kernel_size=3,
@@ -318,9 +326,10 @@ class TestTCNDwell:
         model.eval()
 
         batch_size = 4
+        feat_len = model_config["kmer_len"] + 2 * dwell_margin
         signal = torch.randn(batch_size, model_config["signal_len"])
         sequence = torch.randn(batch_size, 4, model_config["kmer_len"])
-        features = torch.randn(batch_size, model_config["num_features"], model_config["kmer_len"])
+        features = torch.randn(batch_size, model_config["num_features"], feat_len)
 
         with torch.no_grad():
             output = model(signal, sequence, features)
@@ -344,19 +353,22 @@ class TestResNetDwell:
         assert model.signal_len == model_config["signal_len"]
 
     def test_forward_pass(self, model_config):
-        """Test forward pass with valid inputs."""
+        """Test forward pass with wide features (cross-attention over dwell margin)."""
+        dwell_margin = 5
         model = ResNetDwell(
             signal_len=model_config["signal_len"],
             kmer_len=model_config["kmer_len"],
             num_features=model_config["num_features"],
+            dwell_margin=dwell_margin,
             base_channels=8,
         )
         model.eval()
 
         batch_size = 4
+        feat_len = model_config["kmer_len"] + 2 * dwell_margin
         signal = torch.randn(batch_size, model_config["signal_len"])
         sequence = torch.randn(batch_size, 4, model_config["kmer_len"])
-        features = torch.randn(batch_size, model_config["num_features"], model_config["kmer_len"])
+        features = torch.randn(batch_size, model_config["num_features"], feat_len)
 
         with torch.no_grad():
             output = model(signal, sequence, features)
@@ -375,7 +387,7 @@ class TestResNetDwell:
         # Check that branches exist
         assert hasattr(model, "signal_resnet")
         assert hasattr(model, "seq_resnet")
-        assert hasattr(model, "feature_resnet")
+        assert hasattr(model, "feature_branch")
 
 
 class TestModelComparisons:
@@ -394,7 +406,10 @@ class TestModelComparisons:
     )
     def test_all_models_forward(self, model_name, requires_features):
         """Test that all models can do forward pass."""
+        from leech.models.inference_wrapper import ModelInferenceWrapper
+
         # Base config for all models
+        dwell_margin = 5
         config = {
             "signal_len": 100,
             "kmer_len": 11,
@@ -406,14 +421,14 @@ class TestModelComparisons:
         elif model_name == "ConvLSTMDwell":
             config.update({"num_features": 5, "conv_channels": [4, 16, 32], "lstm_hidden": 16})
         elif model_name == "TransformerDwell":
-            config.update({"num_features": 5, "d_model": 32, "nhead": 4, "num_layers": 1})
+            config.update({"num_features": 5, "dwell_margin": dwell_margin, "d_model": 32, "nhead": 4, "num_layers": 1})
         elif model_name == "ConvOnly":
-            config.update({"num_features": 5, "base_channels": 4})
+            config.update({"num_features": 5, "dwell_margin": dwell_margin, "base_channels": 4})
         elif model_name == "ResNetDwell":
-            config.update({"num_features": 5, "base_channels": 4})
+            config.update({"num_features": 5, "dwell_margin": dwell_margin, "base_channels": 4})
         elif model_name == "TCNDwell":
             config.update(
-                {"num_features": 5, "hidden_channels": 16, "num_layers": 2, "kernel_size": 3}
+                {"num_features": 5, "dwell_margin": dwell_margin, "hidden_channels": 16, "num_layers": 2, "kernel_size": 3}
             )
 
         model = get_model(model_name, **config)
@@ -423,7 +438,9 @@ class TestModelComparisons:
         signal = torch.randn(batch_size, config["signal_len"])
         sequence = torch.randn(batch_size, 4, config["kmer_len"])
         if requires_features:
-            features = torch.randn(batch_size, config["num_features"], config["kmer_len"])
+            wide = model_name in ModelInferenceWrapper.WIDE_FEATURE_MODELS
+            feat_len = config["kmer_len"] + 2 * dwell_margin if wide else config["kmer_len"]
+            features = torch.randn(batch_size, config["num_features"], feat_len)
         else:
             features = None
 
@@ -452,8 +469,10 @@ class TestModelComparisons:
     )
     def test_all_models_traceable(self, model_name, requires_features):
         """Test that all 8 model architectures can be traced with torch.jit.trace."""
+        from leech.models.inference_wrapper import ModelInferenceWrapper
         from leech.util import trace_model
 
+        dwell_margin = 5
         config = {"signal_len": 100, "kmer_len": 11}
 
         if model_name == "ConvLSTMBase":
@@ -465,14 +484,14 @@ class TestModelComparisons:
         elif model_name == "ConvLSTMRemora":
             config.update({"num_features": 5, "size": 32, "seq_encoding": "signal_kmer"})
         elif model_name == "TransformerDwell":
-            config.update({"num_features": 5, "d_model": 32, "nhead": 4, "num_layers": 1})
+            config.update({"num_features": 5, "dwell_margin": dwell_margin, "d_model": 32, "nhead": 4, "num_layers": 1})
         elif model_name == "ConvOnly":
-            config.update({"num_features": 5, "base_channels": 4})
+            config.update({"num_features": 5, "dwell_margin": dwell_margin, "base_channels": 4})
         elif model_name == "ResNetDwell":
-            config.update({"num_features": 5, "base_channels": 4})
+            config.update({"num_features": 5, "dwell_margin": dwell_margin, "base_channels": 4})
         elif model_name == "TCNDwell":
             config.update(
-                {"num_features": 5, "hidden_channels": 16, "num_layers": 2, "kernel_size": 3}
+                {"num_features": 5, "dwell_margin": dwell_margin, "hidden_channels": 16, "num_layers": 2, "kernel_size": 3}
             )
 
         model = get_model(model_name, **config)
@@ -495,7 +514,9 @@ class TestModelComparisons:
 
         with torch.no_grad():
             if requires_features:
-                features = torch.randn(batch_size, config["num_features"], config["kmer_len"])
+                wide = model_name in ModelInferenceWrapper.WIDE_FEATURE_MODELS
+                feat_len = config["kmer_len"] + 2 * dwell_margin if wide else config["kmer_len"]
+                features = torch.randn(batch_size, config["num_features"], feat_len)
                 output = traced(signal, sequence, features)
             else:
                 output = traced(signal, sequence)

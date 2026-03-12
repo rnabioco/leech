@@ -4,28 +4,28 @@ TCNDwell: Temporal Convolutional Network with dwell time features.
 Architecture:
 - Signal branch: Stack of dilated causal convolutions with residual connections
 - Sequence branch: Stack of dilated causal convolutions
-- Feature branch: Stack of dilated causal convolutions
-- Concatenate → dense layers → classifier
+- Feature branch: Conv1d (full-width) for cross-attention K/V
+- Cross-attention: TCN output (Q) attends to wide dwell features (K/V)
+- Attention pooling → MLP classifier
 
-Rationale:
-- Dilated convolutions provide large receptive fields with fewer parameters
-- Faster than RNNs/LSTMs and Transformers
-- Causal convolutions preserve temporal ordering
-- Good for variable-length sequences
-- 2^k dilation rates capture multi-scale temporal patterns
+The dwell feature branch receives the full-width feature array
+(kmer_len + margin_left + margin_right positions) so cross-attention
+can learn the physical motor-sensor offset.
 """
 
 import torch
 import torch.nn as nn
 
 from leech.constants import (
+    DEFAULT_CONV_CHANNELS,
     DEFAULT_DROPOUT,
+    DEFAULT_DWELL_MARGIN,
     DEFAULT_KMER_LEN,
     DEFAULT_NUM_FEATURES,
     DEFAULT_SIGNAL_KMER_CONTEXT,
     DEFAULT_SIGNAL_LEN,
 )
-from leech.models.components import BaseModel
+from leech.models.components import BaseModel, FeatureBranch
 
 
 class TemporalBlock(nn.Module):
@@ -168,15 +168,22 @@ class TCN(nn.Module):
 
 class TCNDwell(BaseModel):
     """
-    TCN model with signal, sequence, and dwell feature branches.
+    TCN model with cross-attention for learning motor-sensor offset.
+
+    Signal and sequence branches use TCN (dilated causal convolutions).
+    Their outputs are merged and serve as Q for cross-attention against
+    full-width dwell features (K/V), allowing each position to attend
+    to dwell features at any offset.
 
     Args:
         signal_len: Length of input signal
         kmer_len: Length of k-mer sequence (e.g., 2*context+1)
         num_features: Number of feature channels (dwell + signal levels)
+        dwell_margin: Extra bases on each side of dwell window (default: 15)
         hidden_channels: Number of channels in TCN layers (default: 64)
         num_layers: Number of temporal blocks per branch (default: 6)
         kernel_size: Convolution kernel size (default: 3)
+        num_attn_heads: Number of attention heads for cross-attention (default: 4)
         dropout: Dropout probability (default: 0.1)
     """
 
@@ -185,9 +192,11 @@ class TCNDwell(BaseModel):
         signal_len: int = DEFAULT_SIGNAL_LEN,
         kmer_len: int = DEFAULT_KMER_LEN,
         num_features: int = DEFAULT_NUM_FEATURES,
+        dwell_margin: int = DEFAULT_DWELL_MARGIN,
         hidden_channels: int = 64,
         num_layers: int = 6,
         kernel_size: int = 3,
+        num_attn_heads: int = 4,
         dropout: float = DEFAULT_DROPOUT,
         seq_encoding: str = "base_onehot",
         signal_kmer_context: tuple[int, int] = DEFAULT_SIGNAL_KMER_CONTEXT,
@@ -197,7 +206,10 @@ class TCNDwell(BaseModel):
         self.signal_len = signal_len
         self.kmer_len = kmer_len
         self.num_features = num_features
+        self.dwell_margin = dwell_margin
         self.seq_encoding = seq_encoding
+
+        conv_channels = DEFAULT_CONV_CHANNELS
 
         # Compute sequence input channels
         if seq_encoding == "signal_kmer":
@@ -206,7 +218,6 @@ class TCNDwell(BaseModel):
             seq_in_channels = 4
 
         # Signal branch: TCN
-        # Input: (batch, 1, signal_len)
         self.signal_tcn = TCN(
             in_channels=1,
             hidden_channels=hidden_channels,
@@ -214,7 +225,6 @@ class TCNDwell(BaseModel):
             kernel_size=kernel_size,
             dropout=dropout,
         )
-        # Pool to match kmer length
         self.signal_pool = nn.AdaptiveAvgPool1d(kmer_len)
 
         # Sequence branch: TCN
@@ -228,27 +238,33 @@ class TCNDwell(BaseModel):
         if seq_encoding == "signal_kmer":
             self.seq_pool = nn.AdaptiveAvgPool1d(kmer_len)
 
-        # Feature branch: TCN
-        # Input: (batch, num_features, kmer_len)
-        self.feature_tcn = TCN(
-            in_channels=num_features,
-            hidden_channels=hidden_channels,
-            num_layers=num_layers,
-            kernel_size=kernel_size,
-            dropout=dropout,
+        # Feature branch: Conv1d on full-width features for cross-attention K/V
+        # Processes kmer_len + margin_left + margin_right positions
+        self.feature_branch = FeatureBranch(
+            num_features=num_features, conv_channels=conv_channels, use_batchnorm=True
         )
 
-        # Global pooling (mean and max)
-        self.global_avg_pool = nn.AdaptiveAvgPool1d(1)
-        self.global_max_pool = nn.AdaptiveMaxPool1d(1)
+        # Merged signal+seq dimension
+        merged_dim = hidden_channels * 2
 
-        # Total features: (avg + max) * 3 branches * hidden_channels
-        total_features = hidden_channels * 3 * 2
+        # Cross-attention: merged signal+seq (Q) attends to wide dwell features (K/V)
+        self.cross_attn = nn.MultiheadAttention(
+            embed_dim=merged_dim,
+            num_heads=num_attn_heads,
+            kdim=conv_channels[-1],  # 256 from FeatureBranch
+            vdim=conv_channels[-1],
+            dropout=dropout,
+            batch_first=True,
+        )
+        self.attn_norm = nn.LayerNorm(merged_dim)
+
+        # Attention pooling over positions
+        self.pool_linear = nn.Linear(merged_dim, 1)
 
         # Dense layers for classification
         self.classifier = nn.Sequential(
             nn.Dropout(dropout),
-            nn.Linear(total_features, 256),
+            nn.Linear(merged_dim, 256),
             nn.ReLU(),
             nn.BatchNorm1d(256),
             nn.Dropout(dropout),
@@ -256,7 +272,7 @@ class TCNDwell(BaseModel):
             nn.ReLU(),
             nn.BatchNorm1d(64),
             nn.Dropout(dropout),
-            nn.Linear(64, 1),  # Binary classification
+            nn.Linear(64, 1),
         )
 
     def forward(
@@ -267,15 +283,15 @@ class TCNDwell(BaseModel):
 
         Args:
             signal: Raw signal (batch, signal_len)
-            sequence: One-hot encoded sequence (batch, 4, kmer_len)
-            features: Dwell + signal level features (batch, num_features, kmer_len)
+            sequence: Encoded sequence (batch, 4, kmer_len) or (batch, 36, signal_len)
+            features: Dwell + signal level features with full margin
+                (batch, num_features, kmer_len + margin_left + margin_right)
 
         Returns:
             Logits for binary classification (batch, 1)
         """
         # Signal branch
-        # (batch, signal_len) -> (batch, 1, signal_len)
-        signal_feat = signal.unsqueeze(1)
+        signal_feat = signal.unsqueeze(1)  # (batch, 1, signal_len)
         signal_feat = self.signal_tcn(signal_feat)  # (batch, hidden_channels, signal_len)
         signal_feat = self.signal_pool(signal_feat)  # (batch, hidden_channels, kmer_len)
 
@@ -284,25 +300,32 @@ class TCNDwell(BaseModel):
         if self.seq_encoding == "signal_kmer":
             seq_feat = self.seq_pool(seq_feat)  # (batch, hidden_channels, kmer_len)
 
-        # Feature branch
-        feat_feat = self.feature_tcn(features)  # (batch, hidden_channels, kmer_len)
+        # Feature branch on full-width features
+        feat_out = self.feature_branch(features)  # (batch, 256, feat_len)
+        feat_out = feat_out.transpose(1, 2)  # (batch, feat_len, 256)
 
-        # Global pooling for each branch
-        # Average pooling
-        signal_avg = self.global_avg_pool(signal_feat).squeeze(-1)  # (batch, hidden_channels)
-        seq_avg = self.global_avg_pool(seq_feat).squeeze(-1)
-        feat_avg = self.global_avg_pool(feat_feat).squeeze(-1)
+        # Merge signal + sequence → (batch, kmer_len, hidden_channels*2)
+        merged = torch.cat([signal_feat, seq_feat], dim=1)  # (batch, hidden_channels*2, kmer_len)
+        merged = merged.transpose(1, 2)  # (batch, kmer_len, hidden_channels*2)
 
-        # Max pooling
-        signal_max = self.global_max_pool(signal_feat).squeeze(-1)
-        seq_max = self.global_max_pool(seq_feat).squeeze(-1)
-        feat_max = self.global_max_pool(feat_feat).squeeze(-1)
+        # Cross-attention: merged (kmer_len positions) queries
+        # dwell features (kmer_len + margin positions)
+        attn_out, _ = self.cross_attn(
+            query=merged,    # (batch, kmer_len, hidden_channels*2)
+            key=feat_out,    # (batch, feat_len, 256)
+            value=feat_out,  # (batch, feat_len, 256)
+        )  # attn_out: (batch, kmer_len, hidden_channels*2)
 
-        # Concatenate all features
-        merged = torch.cat([signal_avg, signal_max, seq_avg, seq_max, feat_avg, feat_max], dim=1)
+        # Residual connection + layer norm
+        combined = self.attn_norm(merged + attn_out)  # (batch, kmer_len, hidden_channels*2)
+
+        # Attention pooling over all positions
+        pool_scores = self.pool_linear(combined)  # (batch, kmer_len, 1)
+        pool_weights = torch.softmax(pool_scores, dim=1)  # (batch, kmer_len, 1)
+        context_vector = (pool_weights * combined).sum(dim=1)  # (batch, hidden_channels*2)
 
         # Classifier
-        logits: torch.Tensor = self.classifier(merged)  # (batch, 1)
+        logits: torch.Tensor = self.classifier(context_vector)  # (batch, 1)
 
         return logits
 
