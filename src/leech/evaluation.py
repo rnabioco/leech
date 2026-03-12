@@ -93,7 +93,7 @@ def evaluate_model(
     )
 
     test_loader = DataLoader(
-        test_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn, num_workers=2
+        test_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn, num_workers=0
     )
 
     logger.info(f"Test samples: {len(test_dataset)}")
