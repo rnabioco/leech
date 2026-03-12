@@ -133,6 +133,7 @@ def handle_train(
         "motif",
         "motif_offset",
         "base_justify",
+        "num_out",
     }
     for key in _explicit_keys:
         extra_kwargs.pop(key, None)

@@ -607,6 +607,7 @@ def train_model(
     right_context: int | None = None,
     balance_groups: bool = False,
     label_map: dict[str, int] | None = None,
+    num_out: int = 1,
     **model_kwargs: Any,
 ) -> dict[str, Any]:
     """
@@ -835,6 +836,17 @@ def train_model(
     if model_name not in no_feature_models:
         model_init_kwargs["num_features"] = num_features
 
+    # Only pass num_out to models whose __init__ accepts it
+    num_out_models = {
+        "ConvLSTMDwell",
+        "ConvLSTMDwellBN",
+        "ConvLSTMDwellBNAttn",
+        "ConvLSTMRemora",
+        "ConvLSTMRemoraBase",
+    }
+    if model_name in num_out_models:
+        model_init_kwargs["num_out"] = num_out
+
     model = get_model(model_name, **model_init_kwargs)
 
     # Enable cuDNN autotuner for fixed-size inputs (finds fastest conv algorithms)
@@ -851,7 +863,6 @@ def train_model(
             logger.warning(f"torch.compile failed, falling back to eager mode: {e}")
 
     # Auto-detect cross-entropy models (num_out > 1)
-    num_out: int = getattr(model, "num_out", 1)
     if num_out > 1 and loss_type != "cross_entropy":
         loss_type = "cross_entropy"
         logger.info(f"Model {model_name} has num_out={num_out}, switching to cross_entropy loss")
@@ -899,7 +910,7 @@ def train_model(
         "scheduler_factor": scheduler_factor,
         "warmup_epochs": warmup_epochs,
         "loss_type": loss_type,
-        "num_out": getattr(model, "num_out", 1),
+        "num_out": num_out,
         "focal_gamma": focal_gamma,
         "mixed_precision": mixed_precision,
         "augment_jitter": augment_jitter,
