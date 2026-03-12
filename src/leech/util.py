@@ -162,9 +162,7 @@ def _instantiate_model(config: dict) -> nn.Module:
 
     model_class = MODEL_REGISTRY[model_name]
     sig = inspect.signature(model_class)
-    has_var_keyword = any(
-        p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
-    )
+    has_var_keyword = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
     if has_var_keyword:
         # Class accepts **kwargs — pass everything through (it will forward to parent)
         filtered_kwargs = model_kwargs

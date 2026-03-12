@@ -97,9 +97,7 @@ class ConvLSTMCore(BaseModel):
             seq_in_channels = 4
 
         # Signal branch
-        self.signal_branch = SignalBranch(
-            conv_channels=conv_channels, use_batchnorm=use_batchnorm
-        )
+        self.signal_branch = SignalBranch(conv_channels=conv_channels, use_batchnorm=use_batchnorm)
 
         # Sequence branch
         self.sequence_branch = SequenceBranch(
@@ -209,9 +207,7 @@ class ConvLSTMCore(BaseModel):
             merged = merged.transpose(1, 2)
             lstm_out, _ = self.lstm(merged)
 
-            attn_out, _ = self.cross_attn(
-                query=lstm_out, key=feat_out, value=feat_out
-            )
+            attn_out, _ = self.cross_attn(query=lstm_out, key=feat_out, value=feat_out)
             combined = self.attn_norm(lstm_out + attn_out)
 
             pool_scores = self.pool_linear(combined)

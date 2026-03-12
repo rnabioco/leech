@@ -8,7 +8,9 @@ import torch
 import torch.nn as nn
 
 
-def _forward_batch(model: nn.Module, requires_features: bool, batch: dict, device: str) -> torch.Tensor:
+def _forward_batch(
+    model: nn.Module, requires_features: bool, batch: dict, device: str
+) -> torch.Tensor:
     """Shared forward-pass logic for batch dictionaries.
 
     Moves tensors to device and calls the model with the correct arguments

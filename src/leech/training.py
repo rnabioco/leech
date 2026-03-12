@@ -262,7 +262,9 @@ class Trainer:
             all_preds_binary = (np.array(all_preds) > 0.5).astype(int)
             accuracy = accuracy_score(all_labels, all_preds_binary)
             if is_validation:
-                auc = roc_auc_score(all_labels, all_preds) if len(np.unique(all_labels)) > 1 else 0.0
+                auc = (
+                    roc_auc_score(all_labels, all_preds) if len(np.unique(all_labels)) > 1 else 0.0
+                )
                 f1 = f1_score(all_labels, all_preds_binary, zero_division=0.0)
                 return accuracy, auc, f1
             return (accuracy,)
