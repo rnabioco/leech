@@ -232,10 +232,14 @@ def _accumulate_votes(
     Returns:
         Dict mapping amino acid -> total vote strength
     """
-    votes: dict[str, float] = {} if candidate_filter is None else dict.fromkeys(candidate_filter, 0.0)
+    votes: dict[str, float] = (
+        {} if candidate_filter is None else dict.fromkeys(candidate_filter, 0.0)
+    )
     for pair, prob in zip(pairs, probs, strict=True):
         aa_a, aa_b = pair.split("_", 1)
-        if candidate_filter is not None and (aa_a not in candidate_filter or aa_b not in candidate_filter):
+        if candidate_filter is not None and (
+            aa_a not in candidate_filter or aa_b not in candidate_filter
+        ):
             continue
         if weight_fn is not None:
             vote_a, vote_b = weight_fn(prob)
@@ -1255,8 +1259,7 @@ def run_bundle_inference(
                 positions = list(range(kmer_context, leech_read.num_bases - kmer_context))
             else:
                 positions = [
-                    pos + motif_offset
-                    for pos in find_motif_in_sequence(leech_read.sequence, motif)
+                    pos + motif_offset for pos in find_motif_in_sequence(leech_read.sequence, motif)
                 ]
 
             # Extract chunk once (use first valid position)
