@@ -1,7 +1,7 @@
 """
 Model architectures for leech.
 
-Available models (18 total):
+Available models (20 total):
 - ConvLSTMBase: Baseline model (signal + sequence only)
 - ConvLSTMBaseAttn: ConvLSTMBase with attention pooling
 - ConvLSTMBaseBN: ConvLSTMBase with batch normalization
@@ -15,10 +15,12 @@ Available models (18 total):
 - ConvLSTMRemora: Remora-compatible architecture with dwell features
 - ConvLSTMRemoraBase: Remora-compatible architecture without dwell features
 - TransformerDwell: Transformer-based model with self-attention
+- TransformerDwellResidual: TransformerDwell with 2-channel signal (raw + kmer residual)
 - ConvOnly: Pure CNN baseline with multi-scale convolutions
 - TCNDwell: Temporal Convolutional Network with dilated convolutions
 - TCNDwellGN: TCNDwell with group normalization
 - TCNDwellLN: TCNDwell with layer normalization
+- TCNDwellResidual: TCNDwell with 2-channel signal (raw + kmer residual)
 - ResNetDwell: Residual Network with skip connections
 """
 
@@ -46,6 +48,7 @@ from leech.models.tcn_dwell_gn import TCNDwellGN
 from leech.models.tcn_dwell_ln import TCNDwellLN
 from leech.models.tcn_dwell_residual import TCNDwellResidual
 from leech.models.transformer_dwell import TransformerDwell
+from leech.models.transformer_dwell_residual import TransformerDwellResidual
 
 __all__ = [
     "ConvLSTMBase",
@@ -61,6 +64,7 @@ __all__ = [
     "ConvLSTMRemora",
     "ConvLSTMRemoraBase",
     "TransformerDwell",
+    "TransformerDwellResidual",
     "ConvOnly",
     "TCNDwell",
     "TCNDwellGN",
@@ -88,6 +92,7 @@ MODEL_REGISTRY = {
     "ConvLSTMRemora": ConvLSTMRemora,
     "ConvLSTMRemoraBase": ConvLSTMRemoraBase,
     "TransformerDwell": TransformerDwell,
+    "TransformerDwellResidual": TransformerDwellResidual,
     "ConvOnly": ConvOnly,
     "TCNDwell": TCNDwell,
     "TCNDwellGN": TCNDwellGN,
