@@ -83,17 +83,19 @@ def handle_prepare(
     logger.info(f"Preparing data from {pod5} and {bam}")
     logger.info(f"Motif reference mode: {motif_reference}")
     logger.info(f"Anchor mode: {anchor}, Signal norm: {signal_norm}")
+    # Setup signal refiner if requested
+    signal_refiner = None
     if refine_signal_map:
+        from leech.signal_refine import SigMapRefiner
+
+        if kmer_table is None:
+            from leech.data import get_kmer_table
+
+            kmer_table = get_kmer_table()
+        signal_refiner = SigMapRefiner.from_table(kmer_table, scale_iters=scale_iters)
         logger.info(f"Signal map refinement enabled with kmer table: {kmer_table}")
     if workers > 1:
         logger.info(f"Parallel mode: {workers} workers, {chunk_size} reads per batch")
-
-    # Setup signal refiner if requested
-    signal_refiner = None
-    if refine_signal_map and kmer_table is not None:
-        from leech.signal_refine import SigMapRefiner
-
-        signal_refiner = SigMapRefiner.from_table(kmer_table, scale_iters=scale_iters)
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
