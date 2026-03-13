@@ -78,6 +78,7 @@ class TestSignalRefineIntegration:
         assert kmer_len == 9
         assert len(kmer_to_level) == 4**9  # 262144
 
+    @pytest.mark.slow
     def test_refine_real_data(self):
         from pod5 import DatasetReader
 

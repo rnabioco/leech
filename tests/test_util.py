@@ -791,6 +791,7 @@ class TestMetricsEdgeCases:
         assert "accuracy" in metrics
 
 
+@pytest.mark.slow
 class TestModelExport:
     """Test torch.export, TorchScript tracing, export, and bundle functions."""
 

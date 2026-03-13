@@ -12,6 +12,18 @@ from leech.chunking import LeechRead, save_chunks
 from leech.features import MoveTable
 
 
+def pytest_addoption(parser):
+    parser.addoption("--slow", action="store_true", default=False, help="Run slow tests")
+
+
+def pytest_collection_modifyitems(config, items):
+    if not config.getoption("--slow"):
+        skip_slow = pytest.mark.skip(reason="Slow test (use --slow to run)")
+        for item in items:
+            if "slow" in item.keywords:
+                item.add_marker(skip_slow)
+
+
 @pytest.fixture
 def sample_signal():
     """Generate a sample normalized signal."""

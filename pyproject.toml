@@ -41,6 +41,7 @@ rust = ["leech-core"]
 dev = [
   "pytest>=8.0.0",
   "pytest-cov>=4.1.0",
+  "pytest-xdist>=3.5.0",
   "ruff>=0.3.0",  # Modern linter/formatter (replaces black + flake8)
   "ty>=0.0.1a10",
   "nbqa>=1.7.0",  # Quality assurance for Jupyter notebooks
@@ -84,10 +85,11 @@ artifacts = ["src/leech/data/*.txt", "src/leech/data/*.txt.gz"]
 ruff = ["--ignore=E402"]
 
 [tool.pytest.ini_options]
-addopts = "-v --cov=leech --cov-report=term-missing"
+addopts = "-v"
 python_files = "test_*.py"
 python_functions = "test_*"
 testpaths = ["tests"]
+markers = ["slow: slow tests (torch.export, bundles) — run with --slow"]
 
 [tool.uv.workspace]
 members = ["rust"]
