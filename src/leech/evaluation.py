@@ -74,7 +74,7 @@ def evaluate_model(
     if device != "cpu":
         torch.backends.cudnn.benchmark = True
 
-    if device != "cpu" and hasattr(torch, "compile"):
+    if hasattr(torch, "compile"):
         try:
             model = torch.compile(model)
         except Exception:
@@ -123,7 +123,7 @@ def evaluate_model(
         all_logits_list: list[np.ndarray] = []
 
         model.eval()
-        with torch.no_grad():
+        with torch.inference_mode():
             with Progress() as progress:
                 task = progress.add_task("[cyan]Evaluating...", total=len(test_loader))
                 for batch in test_loader:
@@ -190,7 +190,7 @@ def evaluate_model(
     all_preds: list[int] = []
 
     model.eval()
-    with torch.no_grad():
+    with torch.inference_mode():
         with Progress() as progress:
             task = progress.add_task("[cyan]Evaluating...", total=len(test_loader))
 
