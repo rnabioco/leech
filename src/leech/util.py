@@ -113,6 +113,7 @@ def load_model_from_checkpoint(
     # Strip _orig_mod. prefix added by torch.compile()
     state_dict = checkpoint["model_state_dict"]
     state_dict = {k.removeprefix("_orig_mod."): v for k, v in state_dict.items()}
+    state_dict = _migrate_state_dict_keys(state_dict)
     model.load_state_dict(state_dict)
     model = model.to(device)
     model.eval()
@@ -153,6 +154,23 @@ _TRAINING_PARAMS = {
 }
 
 
+def _migrate_state_dict_keys(state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    """Remap legacy state_dict keys from old naming conventions."""
+    migrated = {}
+    did_migrate = False
+    for key, value in state_dict.items():
+        new_key = key.replace(".bn1.", ".norm1.").replace(".bn2.", ".norm2.")
+        if new_key != key:
+            did_migrate = True
+        migrated[new_key] = value
+    if did_migrate:
+        logger.warning(
+            "Migrated legacy state_dict keys: bn1/bn2 -> norm1/norm2. "
+            "Re-save the checkpoint to silence this warning."
+        )
+    return migrated
+
+
 def _architecture_config(config: dict) -> dict:
     """Extract architecture-only parameters from a full training config."""
     return {k: v for k, v in config.items() if k not in _TRAINING_PARAMS}
@@ -175,8 +193,27 @@ def _instantiate_model(config: dict) -> nn.Module:
     }
 
     model_class = MODEL_REGISTRY[model_name]
-    valid_params = set(inspect.signature(model_class).parameters.keys()) - {"self"}
-    filtered_kwargs = {k: v for k, v in model_kwargs.items() if k in valid_params}
+    sig = inspect.signature(model_class)
+    has_var_keyword = any(
+        p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+    )
+    if has_var_keyword:
+        # Constructor accepts **kwargs (e.g. TCNDwellGN) — resolve params from
+        # the parent class that actually defines the signature
+        for base in model_class.__mro__[1:]:
+            base_sig = inspect.signature(base)
+            if not any(
+                p.kind == inspect.Parameter.VAR_KEYWORD
+                for p in base_sig.parameters.values()
+            ):
+                valid_params = set(base_sig.parameters.keys()) - {"self"}
+                break
+        else:
+            valid_params = set(sig.parameters.keys()) - {"self"}
+        filtered_kwargs = {k: v for k, v in model_kwargs.items() if k in valid_params}
+    else:
+        valid_params = set(sig.parameters.keys()) - {"self"}
+        filtered_kwargs = {k: v for k, v in model_kwargs.items() if k in valid_params}
 
     return get_model(model_name, signal_len=signal_len, kmer_len=kmer_len, **filtered_kwargs)
 
@@ -527,6 +564,7 @@ def create_torchscript_bundle(
         # Strip _orig_mod. prefix added by torch.compile()
         state_dict = checkpoint["model_state_dict"]
         state_dict = {k.removeprefix("_orig_mod."): v for k, v in state_dict.items()}
+        state_dict = _migrate_state_dict_keys(state_dict)
 
         model = _instantiate_model(ref_arch_config)
         model.load_state_dict(state_dict)
@@ -618,7 +656,8 @@ def load_model_from_bundle(
     else:
         # Legacy state_dict bundle (format_version 1)
         model = _instantiate_model(config)
-        model.load_state_dict(models[pair]["state_dict"])
+        state_dict = _migrate_state_dict_keys(models[pair]["state_dict"])
+        model.load_state_dict(state_dict)
         model = model.to(device)
         model.eval()
 
