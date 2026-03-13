@@ -47,6 +47,7 @@ def handle_prepare(
     pa_stdev: float | None = None,
     refine_signal_map: bool = False,
     kmer_table: Path | None = None,
+    scale_iters: int = 0,
 ) -> dict[str, Any]:
     """
     Handle the prepare command logic.
@@ -92,7 +93,7 @@ def handle_prepare(
     if refine_signal_map and kmer_table is not None:
         from leech.signal_refine import SigMapRefiner
 
-        signal_refiner = SigMapRefiner.from_table(kmer_table)
+        signal_refiner = SigMapRefiner.from_table(kmer_table, scale_iters=scale_iters)
 
     output_dir.mkdir(parents=True, exist_ok=True)
 

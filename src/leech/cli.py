@@ -215,6 +215,12 @@ def data():
     default=None,
     help="Path to kmer level table for signal map refinement (e.g., rna004_9mer_levels.txt)",
 )
+@click.option(
+    "--scale-iters",
+    type=int,
+    default=0,
+    help="Signal map refinement iterations: -1=rescale only (no DP), 0=one round of banded DP, >0=N rounds with rescaling",
+)
 def prepare(
     pod5,
     bam,
@@ -244,6 +250,7 @@ def prepare(
     pa_stdev,
     refine_signal_map,
     kmer_table,
+    scale_iters,
 ):
     """Prepare training data from POD5 and BAM files."""
     from leech.commands import handle_prepare
@@ -291,6 +298,7 @@ def prepare(
         pa_stdev=pa_stdev,
         refine_signal_map=refine_signal_map,
         kmer_table=kmer_table,
+        scale_iters=scale_iters,
     )
 
 

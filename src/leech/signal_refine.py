@@ -1,8 +1,8 @@
 """
 Signal map refinement using expected kmer signal levels.
 
-Pure numpy port of Remora's signal map refinement (refine_signal_map.py
-and refine_signal_map_core.pyx). Uses banded Viterbi dynamic programming
+Port of Remora's signal map refinement (refine_signal_map.py and
+refine_signal_map_core.pyx). Uses banded Viterbi dynamic programming
 to refine base boundaries from the initial move-table estimate.
 
 The refinement uses expected signal levels for each kmer context (from
@@ -12,12 +12,13 @@ observed signal.
 Key functions:
     load_kmer_table(): Load kmer -> expected level mapping
     extract_levels(): Get expected levels for a sequence
-    refine_signal_mapping(): Main refinement function
+    refine_signal_mapping(): Refine base boundaries via banded DP
+    SigMapRefiner: High-level class for signal refinement
 """
 
 import gzip
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -28,17 +29,31 @@ logger = logging.getLogger("leech.signal_refine")
 try:
     from leech._rust_accel import (
         HAS_RUST,
-        _rs_rough_rescale,
         _rs_seq_banded_dp,
     )
 except ImportError:
     HAS_RUST = False
-    _rs_rough_rescale = None
     _rs_seq_banded_dp = None
 
-# CIGAR operations
-_CIGAR_OPS_CONSUME_REF = {0, 2, 3, 7, 8}  # M, D, N, =, X
-_CIGAR_OPS_CONSUME_QUERY = {0, 1, 4, 7, 8}  # M, I, S, =, X
+
+# ============================================================================
+# Constants (matching Remora defaults)
+# ============================================================================
+
+LARGE_SCORE = 100.0  # Large penalty for invalid positions
+
+ALGO_VITERBI = "Viterbi"
+ALGO_DWELL_PENALTY = "dwell_penalty"
+DEFAULT_ALGO = ALGO_DWELL_PENALTY
+
+DEFAULT_HALF_BANDWIDTH = 5
+DEFAULT_SHORT_DWELL_PARAMS = (4, 3, 0.5)  # (target, limit, weight)
+MAX_POINTS_FOR_THEIL_SEN = 1000
+
+
+# ============================================================================
+# Kmer level table loading
+# ============================================================================
 
 
 def load_kmer_table(table_path: Path) -> tuple[dict[str, float], int]:
@@ -83,6 +98,11 @@ def load_kmer_table(table_path: Path) -> tuple[dict[str, float], int]:
     return kmer_to_level, kmer_len
 
 
+# ============================================================================
+# Level extraction
+# ============================================================================
+
+
 def extract_levels(
     sequence: str,
     kmer_to_level: dict[str, float],
@@ -110,17 +130,12 @@ def extract_levels(
     if center_idx is None:
         center_idx = kmer_len // 2
 
-    # Note: Rust extract_levels is NOT used here because the PyO3 HashMap
-    # conversion copies all 262k entries per call, making it ~230x slower
-    # than the optimized Python loop below.
-
     seq_len = len(sequence)
-    levels = np.zeros(seq_len, dtype=np.float64)
+    levels = np.zeros(seq_len, dtype=np.float32)
 
     # Pre-process sequence once: uppercase and U->T replacement
     seq_upper = sequence.upper().replace("U", "T")
 
-    # Iterate over all valid kmer positions (matching remora's Cython)
     for pos in range(seq_len - kmer_len + 1):
         kmer = seq_upper[pos : pos + kmer_len]
         level = kmer_to_level.get(kmer)
@@ -130,57 +145,9 @@ def extract_levels(
     return levels
 
 
-def rough_rescale(
-    signal: np.ndarray,
-    expected_levels: np.ndarray,
-    seq_to_sig_map: np.ndarray,
-) -> np.ndarray:
-    """
-    Rough rescaling of signal to match expected kmer levels.
-
-    Computes per-base mean signal and fits a linear transform to match
-    expected levels. This makes the Viterbi scoring more accurate.
-
-    Args:
-        signal: Normalized signal array
-        expected_levels: Expected levels per base from kmer table
-        seq_to_sig_map: Base-to-signal mapping
-
-    Returns:
-        Rescaled signal
-    """
-    if HAS_RUST:
-        assert _rs_rough_rescale is not None
-        result = np.asarray(
-            _rs_rough_rescale(
-                signal.astype(np.float64),
-                expected_levels.astype(np.float64),
-                seq_to_sig_map.astype(np.int64),
-            )
-        )
-        return result.astype(signal.dtype)
-
-    num_bases = len(seq_to_sig_map) - 1
-    observed = np.zeros(num_bases, dtype=np.float64)
-
-    for i in range(num_bases):
-        start = seq_to_sig_map[i]
-        end = seq_to_sig_map[i + 1]
-        if end > start:
-            observed[i] = np.mean(signal[start:end])
-        elif i > 0:
-            observed[i] = observed[i - 1]
-
-    # Fit linear transform: observed = a * expected + b
-    if len(observed) > 1:
-        A = np.vstack([expected_levels, np.ones(len(expected_levels))]).T
-        result = np.linalg.lstsq(A, observed, rcond=None)
-        a, b = result[0]
-        # Apply inverse: rescaled = (signal - b) / a
-        if abs(a) > 1e-10:
-            return ((signal - b) / a).astype(signal.dtype)
-
-    return signal
+# ============================================================================
+# Rough rescaling (initial, quantile-based)
+# ============================================================================
 
 
 def rough_rescale_quantile(
@@ -193,11 +160,7 @@ def rough_rescale_quantile(
     Rough rescaling using quantile-based fitting (remora convention).
 
     Uses center-of-base signal values and quantile fitting to match
-    expected kmer levels. This exactly replicates remora's rough_rescale_lstsq.
-
-    The transform is: new_signal = scale_est * signal + shift_est
-    where shift_est and scale_est are fitted to map quantiles of the
-    center-of-base signal to quantiles of expected levels.
+    expected kmer levels. Replicates remora's rough_rescale_lstsq.
 
     Args:
         signal: Normalized signal array
@@ -208,22 +171,18 @@ def rough_rescale_quantile(
     Returns:
         Rescaled signal
     """
-    # Use center-of-base signal values (remora convention)
     centers = (seq_to_sig_map[:-1] + seq_to_sig_map[1:]) // 2
     center_signal = signal[centers].astype(np.float64)
     levels = expected_levels.copy()
 
-    # Clip bases from each end
     if clip_bases > 0 and len(center_signal) > clip_bases * 2:
         center_signal = center_signal[clip_bases:-clip_bases]
         levels = levels[clip_bases:-clip_bases]
 
-    # Quantile-based fitting (remora convention)
     quants = np.arange(0.05, 1, 0.05)
     sig_qs = np.quantile(center_signal, quants)
     level_qs = np.quantile(levels, quants)
 
-    # Fit: level = shift_est + scale_est * norm_signal
     coeffs = np.linalg.lstsq(
         np.column_stack([np.ones_like(sig_qs), sig_qs]),
         level_qs,
@@ -234,148 +193,693 @@ def rough_rescale_quantile(
     if abs(scale_est) < 1e-10:
         return signal
 
-    # Apply: new_signal = scale_est * signal + shift_est
     return (scale_est * signal + shift_est).astype(signal.dtype)
 
 
-def compute_sig_band(
-    seq_to_sig_map: np.ndarray,
-    half_bandwidth: int = 300,
-) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Compute signal band around the initial mapping for banded DP.
+# ============================================================================
+# Inter-iteration rescaling (Theil-Sen)
+# ============================================================================
 
-    For each base position, defines a range of valid signal positions
-    centered on the initial mapping estimate.
+
+def _compute_slopes(x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """Compute all pairwise slopes for Theil-Sen regression."""
+    delta_x = x[:, np.newaxis] - x
+    delta_y = y[:, np.newaxis] - y
+    mask = delta_x > 0
+    return delta_y[mask] / delta_x[mask]
+
+
+def _theil_sen_rescale(
+    signal: np.ndarray,
+    levels: np.ndarray,
+    seq_to_sig_map: np.ndarray,
+    dwell_filter_pctls: tuple[float, float] = (10, 90),
+    min_abs_level: float = 0.2,
+    edge_filter_bases: int = 10,
+    min_levels: int = 10,
+) -> np.ndarray:
+    """
+    Rescale signal using Theil-Sen regression on per-base means vs expected levels.
+
+    Matches remora's SigMapRefiner.rescale() approach: filters extreme dwells
+    and edge bases, then fits a robust linear transform.
 
     Args:
-        seq_to_sig_map: Initial base-to-signal mapping
-        half_bandwidth: Half-width of the band in signal samples
+        signal: Current signal array
+        levels: Expected levels per base
+        seq_to_sig_map: Current base-to-signal mapping
+        dwell_filter_pctls: Percentile bounds for dwell filtering
+        min_abs_level: Minimum absolute level to include
+        edge_filter_bases: Number of edge bases to exclude
+        min_levels: Minimum valid bases required
 
     Returns:
-        Tuple of (band_starts, band_ends) arrays, each of length num_bases+1
+        Rescaled signal, or original if rescaling fails
     """
-    band_starts = np.maximum(0, seq_to_sig_map - half_bandwidth)
-    band_ends = seq_to_sig_map + half_bandwidth
-    return band_starts, band_ends
+    # Compute per-base mean signal
+    sig_cumsum = np.empty(signal.size + 1, dtype=np.float64)
+    sig_cumsum[0] = 0
+    sig_cumsum[1:] = np.cumsum(signal.astype(np.float64))
+    dwells = np.diff(seq_to_sig_map)
+    with np.errstate(invalid="ignore"):
+        sig_means = np.diff(sig_cumsum[seq_to_sig_map]) / dwells
+
+    # Filter bases
+    dwell_min, dwell_max = np.percentile(dwells, dwell_filter_pctls)
+    edge_filter = np.full(dwells.size, True, dtype=np.bool_)
+    if edge_filter_bases > 0:
+        edge_filter[:edge_filter_bases] = False
+        edge_filter[-edge_filter_bases:] = False
+    valid = np.logical_and.reduce((
+        dwells > dwell_min,
+        dwells < dwell_max,
+        np.abs(levels - np.mean(levels)) > min_abs_level,
+        np.logical_not(np.isnan(sig_means)),
+        edge_filter,
+    ))
+
+    filt_means = sig_means[valid].astype(np.float64)
+    filt_levels = levels[valid].astype(np.float64)
+    if filt_levels.size < min_levels:
+        logger.debug(f"Too few valid bases for rescaling ({filt_levels.size} < {min_levels})")
+        return signal
+
+    # Subsample for Theil-Sen if too many points
+    if filt_levels.size > MAX_POINTS_FOR_THEIL_SEN:
+        idx = np.random.choice(filt_levels.size, MAX_POINTS_FOR_THEIL_SEN, replace=False)
+        filt_means = filt_means[idx]
+        filt_levels = filt_levels[idx]
+
+    # Theil-Sen: fit level = slope * signal_mean + intercept
+    slopes = _compute_slopes(filt_means, filt_levels)
+    if slopes.size == 0:
+        return signal
+    slope = np.median(slopes)
+    intercept = np.median(filt_levels - slope * filt_means)
+
+    if abs(slope) < 1e-10:
+        logger.debug("Theil-Sen slope near zero, skipping rescale")
+        return signal
+
+    # Apply: new_signal = slope * signal + intercept
+    return (slope * signal + intercept).astype(signal.dtype)
+
+
+# ============================================================================
+# Dwell penalty computation
+# ============================================================================
+
+
+def compute_dwell_pen_array(
+    target: int = 4, limit: int = 3, weight: float = 0.5
+) -> np.ndarray:
+    """
+    Compute short dwell penalty array.
+
+    penalty[d] = weight * (d - target)^2 for d in range(limit).
+    Penalizes bases with fewer than `limit` signal samples.
+
+    Args:
+        target: Target dwell (signal samples per base)
+        limit: Maximum dwell that receives a penalty
+        weight: Penalty weight
+
+    Returns:
+        Float32 array of length limit
+    """
+    if limit > target:
+        logger.warning(
+            f"Short dwell limit ({limit}) > target ({target}). Setting limit to target."
+        )
+        limit = target
+    return weight * np.square(np.arange(limit, dtype=np.float32) - target)
+
+
+DEFAULT_SHORT_DWELL_PEN = compute_dwell_pen_array(*DEFAULT_SHORT_DWELL_PARAMS)
+
+
+# ============================================================================
+# Band computation (matching Remora)
+# ============================================================================
+
+
+def compute_sig_band(
+    bps: np.ndarray,
+    levels: np.ndarray,
+    bhw: int = DEFAULT_HALF_BANDWIDTH,
+) -> np.ndarray:
+    """
+    Compute band in sequence coordinates for each signal position.
+
+    For each signal position, defines a range of valid sequence/base
+    indices centered on the initial mapping estimate.
+
+    Args:
+        bps: Breakpoints (seq_to_sig_map), int array of length seq_len+1
+        levels: Expected levels per base, float array of length seq_len.
+            May contain NaN values; band will route through NaN regions.
+        bhw: Band half width
+
+    Returns:
+        int32 array of shape (2, sig_len). Row 0 = lower bounds,
+        row 1 = upper bounds, both in sequence coordinates.
+    """
+    seq_len = levels.size
+    assert bps.size - 1 == seq_len, f"bps ({bps.size}) must be one longer than levels ({seq_len})"
+    sig_len = int(bps[-1] - bps[0])
+    seq_indices = np.repeat(np.arange(seq_len), np.diff(bps))
+
+    band = np.empty((2, sig_len), dtype=np.int32)
+    band[0, :] = np.maximum(seq_indices - bhw, 0)
+    band[1, :] = np.minimum(seq_indices + bhw + 1, seq_len)
+
+    # Handle NaN levels
+    nan_mask = np.isin(seq_indices, np.nonzero(np.isnan(levels))[0])
+    nan_sig_indices = np.where(nan_mask)[0]
+    nan_seq_indices = seq_indices[nan_mask]
+    band[0, nan_sig_indices] = nan_seq_indices
+    band[1, nan_sig_indices] = nan_seq_indices + 1
+    band[0, :] = np.maximum.accumulate(band[0, :])
+    band[1, :] = np.minimum.accumulate(band[1, ::-1])[::-1]
+
+    return band
+
+
+def convert_to_seq_band(sig_band: np.ndarray) -> np.ndarray:
+    """
+    Convert sig_band (sequence coords at each signal pos) to seq_band
+    (signal coords at each sequence pos).
+
+    Args:
+        sig_band: int32 array of shape (2, sig_len)
+
+    Returns:
+        int32 array of shape (2, seq_len) where seq_len = sig_band[1, -1]
+    """
+    sig_len = sig_band.shape[1]
+    seq_len = int(sig_band[1, -1])
+    seq_band = np.zeros((2, seq_len), dtype=np.int32)
+    seq_band[1, :] = sig_len
+
+    # Upper signal coords define lower sequence boundaries
+    lower_sig_pos = np.nonzero(np.ediff1d(sig_band[1, :], to_begin=0))[0]
+    lower_base_pos = sig_band[1, lower_sig_pos - 1]
+    seq_band[0, lower_base_pos] = lower_sig_pos
+    seq_band[0, :] = np.maximum.accumulate(seq_band[0, :])
+
+    upper_sig_pos = np.nonzero(np.ediff1d(sig_band[0, :], to_begin=0))[0]
+    upper_base_pos = sig_band[0, upper_sig_pos]
+    seq_band[1, upper_base_pos - 1] = upper_sig_pos
+    seq_band[1, :] = np.minimum.accumulate(seq_band[1, ::-1])[::-1]
+
+    return seq_band
+
+
+def adjust_seq_band(seq_band: np.ndarray, min_step: int = 2) -> None:
+    """
+    Adjust seq_band in-place to ensure each band boundary advances by at
+    least min_step. Disallows invalid paths through the band.
+
+    Args:
+        seq_band: int32 array of shape (2, seq_len), modified in place
+        min_step: Minimum step between consecutive band boundaries
+    """
+    n = seq_band.shape[1]
+
+    # Fix starts: sweep right-to-left ensuring each start is >= next - min_step
+    band_min = int(seq_band[0, 0])
+    for i in range(n - 2, -1, -1):
+        if seq_band[0, i] > seq_band[0, i + 1] - min_step:
+            seq_band[0, i] = seq_band[0, i + 1] - min_step
+
+    # Restore original start and fix forward
+    seq_band[0, 0] = band_min
+    i = 1
+    while i < n and seq_band[0, i] <= seq_band[0, i - 1]:
+        seq_band[0, i] = seq_band[0, i - 1] + 1
+        i += 1
+
+    # Fix ends: sweep left-to-right ensuring each end is >= prev + min_step
+    band_max = int(seq_band[1, n - 1])
+    for i in range(1, n):
+        if seq_band[1, i] < seq_band[1, i - 1] + min_step:
+            seq_band[1, i] = seq_band[1, i - 1] + min_step
+
+    # Restore original end and fix backward
+    seq_band[1, n - 1] = band_max
+    i = n - 2
+    while i >= 0 and seq_band[1, i] >= seq_band[1, i + 1]:
+        seq_band[1, i] = seq_band[1, i + 1] - 1
+        i -= 1
+
+
+def validate_band(
+    band: np.ndarray,
+    sig_len: int | None = None,
+    seq_len: int | None = None,
+) -> None:
+    """
+    Validate a seq_band array.
+
+    Args:
+        band: int32 array of shape (2, seq_len)
+        sig_len: Expected signal length (band[1, -1] should equal this)
+        seq_len: Expected sequence length (band.shape[1] should equal this)
+
+    Raises:
+        ValueError if band is invalid
+    """
+    if band[0, 0] != 0:
+        raise ValueError(f"Band does not start with 0 (starts at {band[0, 0]})")
+    if np.diff(band, axis=0)[0].min() <= 0:
+        raise ValueError("Band contains zero-length region")
+    if np.diff(band[0]).min() < 0:
+        raise ValueError("Band starts not monotonically increasing")
+    if np.diff(band[1]).min() < 0:
+        raise ValueError("Band ends not monotonically increasing")
+    if sig_len is not None and band[1, -1] != sig_len:
+        raise ValueError(f"Band end ({band[1, -1]}) != sig_len ({sig_len})")
+    if seq_len is not None and band.shape[1] != seq_len:
+        raise ValueError(f"Band width ({band.shape[1]}) != seq_len ({seq_len})")
+
+
+# ============================================================================
+# Core Viterbi functions (pure Python fallback)
+# ============================================================================
+
+
+def _score(s: float, l: float) -> float:
+    """Squared error between signal sample and expected level."""
+    tmp = s - l
+    return tmp * tmp
+
+
+def _banded_forward_vit_step(
+    curr_scores: np.ndarray,
+    curr_tb: np.ndarray,
+    prev_scores: np.ndarray,
+    curr_level: float,
+    curr_signal: np.ndarray,
+    band_start_diff: int,
+) -> None:
+    """
+    Standard Viterbi forward step for one base (minimizes squared error).
+
+    For each signal position in the band, decides whether to "move" (start
+    a new base assignment from the previous base) or "stay" (continue the
+    current base assignment). Traceback stores the number of stays since
+    the last move.
+
+    Args:
+        curr_scores: Output scores array (populated in place)
+        curr_tb: Output traceback array (populated in place)
+        prev_scores: Scores from previous base
+        curr_level: Expected signal level for this base
+        curr_signal: Signal values within this base's band
+        band_start_diff: Offset between current and previous band starts
+    """
+    n_curr = len(curr_scores)
+    n_prev = len(prev_scores)
+
+    # Handle band start
+    if band_start_diff == 0:
+        # Same start position — move here would be 0-length assignment
+        curr_scores[0] = LARGE_SCORE + prev_scores[n_prev - 1]
+        curr_tb[0] = -1
+    else:
+        base_score = _score(curr_level, curr_signal[0])
+        curr_scores[0] = prev_scores[band_start_diff - 1] + base_score
+        curr_tb[0] = 0
+        # Clip prev_scores to align with curr
+        prev_scores = prev_scores[band_start_diff:]
+        n_prev = len(prev_scores)
+
+    # If bands are the same size, trim prev by one to prevent overlap
+    if n_prev == n_curr:
+        prev_scores = prev_scores[: n_prev - 1]
+        n_prev -= 1
+
+    # Overlap region: both move and stay are possible
+    for bp in range(1, n_prev + 1):
+        base_score = _score(curr_level, curr_signal[bp])
+        move_score = prev_scores[bp - 1] + base_score
+        stay_score = curr_scores[bp - 1] + base_score
+        if move_score < stay_score:
+            curr_scores[bp] = move_score
+            curr_tb[bp] = 0
+        else:
+            curr_scores[bp] = stay_score
+            curr_tb[bp] = curr_tb[bp - 1] + 1
+
+    # Past overlap: forced stays
+    for bp in range(n_prev + 1, n_curr):
+        base_score = _score(curr_level, curr_signal[bp])
+        curr_scores[bp] = curr_scores[bp - 1] + base_score
+        curr_tb[bp] = curr_tb[bp - 1] + 1
+
+
+def _banded_forward_dwell_penalty_step(
+    curr_scores: np.ndarray,
+    curr_tb: np.ndarray,
+    prev_scores: np.ndarray,
+    curr_level: float,
+    curr_signal: np.ndarray,
+    band_start_diff: int,
+    dwell_penalty: np.ndarray,
+) -> None:
+    """
+    Viterbi forward step with short-dwell penalty for one base.
+
+    Like standard Viterbi but penalizes bases with few signal samples.
+    For dwells shorter than len(dwell_penalty), adds a quadratic penalty.
+    For longer dwells, uses unpenalized standard Viterbi scores.
+
+    Args:
+        curr_scores: Output scores array (populated in place)
+        curr_tb: Output traceback array (populated in place)
+        prev_scores: Scores from previous base
+        curr_level: Expected signal level for this base
+        curr_signal: Signal values within this base's band
+        band_start_diff: Offset between current and previous band starts
+        dwell_penalty: Penalty array for short dwells
+    """
+    n_curr = len(curr_scores)
+    n_prev = len(prev_scores)
+    n_pen = len(dwell_penalty)
+
+    # Compute unpenalized (standard Viterbi) scores for dwells >= penalty length
+    unpen_scores = np.empty(n_curr, dtype=np.float32)
+    unpen_tb = np.empty(n_curr, dtype=np.int32)
+    _banded_forward_vit_step(
+        unpen_scores, unpen_tb, prev_scores,
+        curr_level, curr_signal, band_start_diff,
+    )
+
+    for bp in range(n_curr):
+        # Past end of prev band by more than penalty range: forced stay
+        if bp + band_start_diff - n_prev >= n_pen:
+            curr_scores[bp] = curr_scores[bp - 1] + _score(curr_level, curr_signal[bp])
+            curr_tb[bp] = curr_tb[bp - 1] + 1
+            continue
+
+        # Default: invalid
+        curr_scores[bp] = LARGE_SCORE + prev_scores[n_prev - 1]
+        curr_tb[bp] = -1
+
+        if bp == 0 and band_start_diff == 0:
+            continue
+
+        running_pos_score = 0.0
+        for dwell_idx in range(n_pen):
+            # Beginning of curr or prev band reached
+            if dwell_idx > bp or (band_start_diff == 0 and bp == dwell_idx):
+                break
+
+            running_pos_score += _score(curr_level, curr_signal[bp - dwell_idx])
+
+            # Check prev position is in range
+            prev_idx = bp - dwell_idx - 1 + band_start_diff
+            if prev_idx >= n_prev:
+                continue
+
+            # Penalized score
+            pos_score = prev_scores[prev_idx] + running_pos_score + dwell_penalty[dwell_idx]
+            if pos_score < curr_scores[bp]:
+                curr_scores[bp] = pos_score
+                curr_tb[bp] = dwell_idx
+
+        # Check unpenalized score for dwell >= penalty length
+        if bp >= n_pen:
+            pos_score = unpen_scores[bp - n_pen] + running_pos_score
+            if pos_score < curr_scores[bp]:
+                curr_scores[bp] = pos_score
+                curr_tb[bp] = unpen_tb[bp - n_pen] + n_pen
+
+
+def _banded_forward_dp(
+    all_scores: np.ndarray,
+    traceback: np.ndarray,
+    signal: np.ndarray,
+    levels: np.ndarray,
+    seq_band: np.ndarray,
+    base_offsets: np.ndarray,
+    short_dwell_penalty: np.ndarray,
+    algo: str,
+) -> None:
+    """
+    Perform banded forward dynamic programming over all bases.
+
+    Args:
+        all_scores: Ragged output scores array (populated in place)
+        traceback: Ragged output traceback array (populated in place)
+        signal: Normalized signal values
+        levels: Expected levels per base
+        seq_band: Band boundaries (2, seq_len)
+        base_offsets: Start offset in ragged array for each base
+        short_dwell_penalty: Penalty array for short dwells
+        algo: "Viterbi" or "dwell_penalty"
+    """
+    if algo == ALGO_VITERBI:
+        core_func = _banded_forward_vit_step
+    elif algo == ALGO_DWELL_PENALTY:
+        core_func = _banded_forward_dwell_penalty_step
+    else:
+        raise ValueError(f"Invalid refinement algorithm: {algo}")
+    use_dwell_pen = algo == ALGO_DWELL_PENALTY
+
+    # First base: spoof prev_scores to force stays (score[0]=0, rest=inf)
+    curr_bw = int(seq_band[1, 0])
+    prev_scores = np.full(curr_bw, np.finfo(np.float32).max, dtype=np.float32)
+    prev_scores[0] = 0.0
+
+    if use_dwell_pen:
+        core_func(
+            all_scores[:curr_bw],
+            traceback[:curr_bw],
+            prev_scores,
+            levels[0],
+            signal[:curr_bw],
+            1,  # band_start_diff=1 to force a "move" at position 0
+            short_dwell_penalty,
+        )
+    else:
+        core_func(
+            all_scores[:curr_bw],
+            traceback[:curr_bw],
+            prev_scores,
+            levels[0],
+            signal[:curr_bw],
+            1,
+        )
+
+    prev_bw = curr_bw
+    prev_band_st = 0
+    prev_offset = 0
+
+    # Process remaining bases
+    for base_idx in range(1, levels.shape[0]):
+        curr_band_st = int(seq_band[0, base_idx])
+        curr_band_en = int(seq_band[1, base_idx])
+        curr_bw = curr_band_en - curr_band_st
+        curr_offset = int(base_offsets[base_idx])
+
+        if use_dwell_pen:
+            core_func(
+                all_scores[curr_offset : curr_offset + curr_bw],
+                traceback[curr_offset : curr_offset + curr_bw],
+                all_scores[prev_offset : prev_offset + prev_bw],
+                levels[base_idx],
+                signal[curr_band_st:curr_band_en],
+                curr_band_st - prev_band_st,
+                short_dwell_penalty,
+            )
+        else:
+            core_func(
+                all_scores[curr_offset : curr_offset + curr_bw],
+                traceback[curr_offset : curr_offset + curr_bw],
+                all_scores[prev_offset : prev_offset + prev_bw],
+                levels[base_idx],
+                signal[curr_band_st:curr_band_en],
+                curr_band_st - prev_band_st,
+            )
+
+        prev_band_st = curr_band_st
+        prev_bw = curr_bw
+        prev_offset = curr_offset
+
+
+def _banded_traceback(
+    path: np.ndarray,
+    seq_band: np.ndarray,
+    base_offsets: np.ndarray,
+    traceback: np.ndarray,
+) -> None:
+    """
+    Reconstruct path from forward pass traceback.
+
+    Args:
+        path: Output array of length seq_len+1 (populated in place).
+            path[i] = signal position where base i starts.
+        seq_band: Band boundaries (2, seq_len)
+        base_offsets: Start offset in ragged array for each base
+        traceback: Ragged traceback from forward pass. Each entry stores
+            the number of signal points backwards to the start of that base.
+    """
+    n_bases = path.shape[0] - 1
+    path[0] = 0
+    path[n_bases] = seq_band[1, n_bases - 1]  # sig_len
+
+    for base_idx in range(n_bases - 1, 0, -1):
+        # Signal position just before base_idx+1 starts
+        sig_lookup_pos = path[base_idx + 1] - 1
+        # Look up traceback for this base at this signal position
+        band_idx = sig_lookup_pos - seq_band[0, base_idx]
+        offset = int(base_offsets[base_idx]) + band_idx
+        next_sig_offset = traceback[offset]
+        path[base_idx] = sig_lookup_pos - next_sig_offset
+
+
+# ============================================================================
+# Banded DP entry point
+# ============================================================================
 
 
 def seq_banded_dp(
     signal: np.ndarray,
-    expected_levels: np.ndarray,
-    band_starts: np.ndarray,
-    band_ends: np.ndarray,
-    sig_len: int,
+    levels: np.ndarray,
+    seq_band: np.ndarray,
+    short_dwell_penalty: np.ndarray,
+    algo: str = DEFAULT_ALGO,
 ) -> np.ndarray:
     """
-    Banded Viterbi dynamic programming for signal map refinement.
+    Decode the optimal path between signal and levels using banded DP.
 
-    Finds the optimal base boundaries within the banded region that
-    maximizes the likelihood of the observed signal given expected levels.
-
-    The scoring function is -0.5 * (signal[t] - expected_level[b])^2
-    for each signal position t assigned to base b.
+    Implements Remora's seq_banded_dp: banded forward Viterbi pass followed
+    by traceback. Minimizes squared error between signal and expected levels,
+    optionally with short-dwell penalties.
 
     Args:
-        signal: Signal array (rescaled to match expected levels)
-        expected_levels: Expected signal level per base
-        band_starts: Start of valid signal range per base
-        band_ends: End of valid signal range per base
-        sig_len: Total signal length
+        signal: Float32 normalized signal values
+        levels: Float32 expected levels per base
+        seq_band: int32 array of shape (2, seq_len). Row 0 = lower band
+            boundaries in signal coords, row 1 = upper boundaries.
+            seq_band[0, 0] should be 0, seq_band[1, -1] should be sig_len.
+        short_dwell_penalty: Float32 penalty array for short dwells
+        algo: "Viterbi" or "dwell_penalty"
 
     Returns:
-        Refined seq_to_sig_map of length num_bases+1
+        Int32 array of length seq_len+1 containing the signal position
+        where each base starts. First element is 0, last is sig_len.
     """
     if HAS_RUST:
         assert _rs_seq_banded_dp is not None
         return np.asarray(
             _rs_seq_banded_dp(
-                signal.astype(np.float64),
-                expected_levels.astype(np.float64),
-                band_starts.astype(np.int64),
-                band_ends.astype(np.int64),
-                sig_len,
+                signal.astype(np.float32),
+                levels.astype(np.float32),
+                seq_band.astype(np.int32),
+                short_dwell_penalty.astype(np.float32),
+                algo,
             )
         )
 
-    num_bases = len(expected_levels)
-    num_positions = num_bases + 1
+    # Compute base offsets for ragged array indexing
+    band_widths = np.diff(seq_band, axis=0)[0]  # seq_band[1] - seq_band[0]
+    base_offsets_raw = np.cumsum(band_widths)
+    band_len = int(base_offsets_raw[-1])
 
-    # Allocate DP tables
-    # For each base boundary position (0..num_bases), store best score
-    # at each signal position within the band
-    max_band = int(np.max(band_ends - band_starts)) + 1
+    base_offsets = np.empty(seq_band.shape[1] + 1, dtype=np.uint32)
+    base_offsets[0] = 0
+    base_offsets[1:] = base_offsets_raw
 
-    scores = np.full((num_positions, max_band), -np.inf, dtype=np.float64)
-    traceback = np.zeros((num_positions, max_band), dtype=np.int32)
-
-    # Initialize: first boundary
-    start = band_starts[0]
-    end = min(band_ends[0], sig_len)
-    for t in range(start, end):
-        scores[0, t - start] = 0.0  # No cost for starting position
+    # Allocate ragged arrays
+    all_scores = np.empty(band_len, dtype=np.float32)
+    tb = np.empty(band_len, dtype=np.int32)
 
     # Forward pass
-    for b in range(1, num_positions):
-        b_start = band_starts[b]
-        b_end = min(band_ends[b], sig_len)
-        prev_start = band_starts[b - 1]
-        prev_end = min(band_ends[b - 1], sig_len)
-        level = expected_levels[b - 1]  # Level for base b-1
+    _banded_forward_dp(
+        all_scores, tb,
+        signal.astype(np.float32),
+        levels.astype(np.float32),
+        seq_band,
+        base_offsets,
+        short_dwell_penalty.astype(np.float32),
+        algo,
+    )
 
-        for t in range(b_start, b_end):
-            best_score = -np.inf
-            best_prev = -1
+    # Traceback
+    seq_len = levels.shape[0]
+    path = np.empty(seq_len + 1, dtype=np.int32)
+    _banded_traceback(path, seq_band, base_offsets, tb)
 
-            # Previous boundary must be before current
-            for prev_t in range(prev_start, min(t, prev_end)):
-                prev_idx = prev_t - prev_start
-                if prev_idx < 0 or prev_idx >= max_band:
-                    continue
-                if scores[b - 1, prev_idx] == -np.inf:
-                    continue
+    return path
 
-                # Score for assigning signal[prev_t:t] to base b-1
-                seg = signal[prev_t:t]
-                if len(seg) == 0:
-                    continue
-                seg_score = -0.5 * np.sum((seg - level) ** 2)
-                total = scores[b - 1, prev_idx] + seg_score
 
-                if total > best_score:
-                    best_score = total
-                    best_prev = prev_t
+# ============================================================================
+# Full signal mapping refinement pipeline
+# ============================================================================
 
-            idx = t - b_start
-            if idx >= 0 and idx < max_band:
-                scores[b, idx] = best_score
-                traceback[b, idx] = best_prev
 
-    # Traceback: find best final position
-    last_start = band_starts[num_positions - 1]
-    last_end = min(band_ends[num_positions - 1], sig_len)
-    best_final_score = -np.inf
-    best_final_t = sig_len  # Default to end
+def refine_signal_mapping(
+    signal: np.ndarray,
+    seq_to_sig_map: np.ndarray,
+    levels: np.ndarray,
+    band_half_width: int = DEFAULT_HALF_BANDWIDTH,
+    algo: str = DEFAULT_ALGO,
+    short_dwell_pen: np.ndarray | None = None,
+    adjust_band_min_step: int = 2,
+) -> np.ndarray:
+    """
+    Refine signal mapping to minimize difference between signal and levels.
 
-    for t in range(last_start, last_end):
-        idx = t - last_start
-        if idx >= 0 and idx < max_band and scores[num_positions - 1, idx] > best_final_score:
-            best_final_score = scores[num_positions - 1, idx]
-            best_final_t = t
+    Computes band from initial mapping, runs banded DP, returns refined path.
+    Matches Remora's refine_signal_mapping().
 
-    # Reconstruct path
-    refined_map = np.zeros(num_positions, dtype=np.int64)
-    refined_map[num_positions - 1] = best_final_t
+    Args:
+        signal: Float32 normalized signal values
+        seq_to_sig_map: Initial base-to-signal mapping (seq_len+1)
+        levels: Expected levels per base (seq_len)
+        band_half_width: Half bandwidth for banding
+        algo: "Viterbi" or "dwell_penalty"
+        short_dwell_pen: Penalty array (uses default if None)
+        adjust_band_min_step: Minimum step for band adjustment
 
-    for b in range(num_positions - 1, 0, -1):
-        t = refined_map[b]
-        idx = t - band_starts[b]
-        if idx >= 0 and idx < max_band:
-            refined_map[b - 1] = traceback[b, idx]
-        else:
-            refined_map[b - 1] = band_starts[b - 1]
+    Returns:
+        Refined seq_to_sig_map (int32 array of length seq_len+1)
+    """
+    if short_dwell_pen is None:
+        short_dwell_pen = DEFAULT_SHORT_DWELL_PEN
 
-    return refined_map
+    # Trim signal to mapped region
+    sig_start = int(seq_to_sig_map[0])
+    signal = signal[sig_start : int(seq_to_sig_map[-1])]
+    if sig_start != 0:
+        seq_to_sig_map = seq_to_sig_map.copy() - sig_start
+
+    # Compute band: sig_band -> seq_band -> adjust
+    sig_band = compute_sig_band(seq_to_sig_map, levels, bhw=band_half_width)
+    seq_band = convert_to_seq_band(sig_band)
+    adjust_seq_band(seq_band, min_step=adjust_band_min_step)
+    validate_band(seq_band, sig_len=signal.shape[0], seq_len=levels.shape[0])
+
+    # Replace NaN levels with 0
+    temp_levels = levels.copy()
+    temp_levels[np.isnan(levels)] = 0
+
+    path = seq_banded_dp(
+        signal.astype(np.float32),
+        temp_levels.astype(np.float32),
+        seq_band,
+        short_dwell_pen,
+        algo,
+    )
+
+    return path + sig_start
+
+
+# ============================================================================
+# SigMapRefiner class
+# ============================================================================
 
 
 @dataclass
@@ -384,41 +888,50 @@ class SigMapRefiner:
     Signal map refiner using expected kmer signal levels.
 
     Matches remora's SigMapRefiner architecture:
-    - rough_rescale updates normalization (shift/scale) to match kmer levels
-    - refine_sig_map (banded DP) refines base boundaries (only if scale_iters >= 0)
+    - rough_rescale updates normalization to match kmer levels
+    - refine_sig_map (banded DP) refines base boundaries
+    - multi-iteration refinement with Theil-Sen rescaling
 
     Attributes:
         kmer_to_level: Mapping from kmer string to expected signal level
         kmer_len: Length of kmers in the table
-        half_bandwidth: Half-width of the DP band in signal samples
+        half_bandwidth: Half-width of the DP band (in signal samples).
+            Remora default is 5; larger values explore more.
         do_rough_rescale: Whether to rough-rescale signal before refinement
         scale_iters: Number of rescaling iterations during refinement.
             -1 = no banded DP (rough rescale only).
             0 = one round of banded DP without rescaling.
             >0 = N rounds of banded DP with rescaling between rounds.
+        algo: Refinement algorithm ("Viterbi" or "dwell_penalty")
+        sd_params: Short dwell penalty parameters (target, limit, weight)
         center_idx: Position within kmer that is the "center" base.
-            From model metadata (remora's refine_kmer_center_idx).
-            Defaults to kmer_len // 2.
     """
 
     kmer_to_level: dict[str, float]
     kmer_len: int
-    half_bandwidth: int = 300
+    half_bandwidth: int = DEFAULT_HALF_BANDWIDTH
     do_rough_rescale: bool = True
-    scale_iters: int = -1
+    scale_iters: int = 0
+    algo: str = DEFAULT_ALGO
+    sd_params: tuple[int, int, float] | None = None
     center_idx: int = -1
+    sd_arr: np.ndarray = field(default_factory=lambda: DEFAULT_SHORT_DWELL_PEN)
 
     def __post_init__(self):
         if self.center_idx < 0:
             self.center_idx = self.kmer_len // 2
+        if self.sd_params is not None:
+            self.sd_arr = compute_dwell_pen_array(*self.sd_params)
 
     @classmethod
     def from_table(
         cls,
         table_path: Path,
-        half_bandwidth: int = 300,
+        half_bandwidth: int = DEFAULT_HALF_BANDWIDTH,
         do_rough_rescale: bool = True,
-        scale_iters: int = -1,
+        scale_iters: int = 0,
+        algo: str = DEFAULT_ALGO,
+        sd_params: tuple[int, int, float] | None = None,
         center_idx: int = -1,
     ) -> "SigMapRefiner":
         """Create refiner from a kmer level table file."""
@@ -429,6 +942,8 @@ class SigMapRefiner:
             half_bandwidth=half_bandwidth,
             do_rough_rescale=do_rough_rescale,
             scale_iters=scale_iters,
+            algo=algo,
+            sd_params=sd_params,
             center_idx=center_idx if center_idx >= 0 else kmer_len // 2,
         )
 
@@ -441,9 +956,9 @@ class SigMapRefiner:
         """
         Refine signal normalization and mapping using expected kmer levels.
 
-        Matches remora's two-step refinement:
-        1. Rough rescale: update signal normalization to match kmer levels
-        2. Banded DP: refine base boundaries (only if scale_iters >= 0)
+        Matches remora's two-phase refinement:
+        1. Rough rescale: quantile-based normalization correction
+        2. Iterative DP: banded Viterbi with inter-iteration Theil-Sen rescaling
 
         Args:
             signal: Normalized signal array
@@ -454,27 +969,54 @@ class SigMapRefiner:
             Tuple of (rescaled_signal, refined_seq_to_sig_map).
             If scale_iters == -1, mapping is unchanged (only normalization updated).
         """
-        expected = extract_levels(sequence, self.kmer_to_level, self.kmer_len, self.center_idx)
+        expected = extract_levels(
+            sequence, self.kmer_to_level, self.kmer_len, self.center_idx
+        )
 
-        # Step 1: Rough rescale normalization (remora convention)
+        # Step 1: Rough rescale normalization (quantile-based)
         if self.do_rough_rescale:
             signal = rough_rescale_quantile(signal, expected, seq_to_sig_map)
 
-        # Step 2: Banded DP refinement (only if scale_iters >= 0)
+        # Step 2: Iterative banded DP refinement (only if scale_iters >= 0)
         if self.scale_iters >= 0:
-            sig_len = len(signal)
-            work_signal = signal.astype(np.float64)
-            band_starts, band_ends = compute_sig_band(seq_to_sig_map, self.half_bandwidth)
-            refined = seq_banded_dp(work_signal, expected, band_starts, band_ends, sig_len)
+            work_signal = signal.copy()
 
-            # Validate: boundaries must be monotonically increasing
-            for i in range(1, len(refined)):
-                if refined[i] <= refined[i - 1]:
+            # 0 = one round of DP without rescaling
+            # >0 = N rounds with Theil-Sen rescaling between rounds
+            for iteration in range(max(1, self.scale_iters)):
+                try:
+                    refined_map = refine_signal_mapping(
+                        work_signal,
+                        seq_to_sig_map,
+                        expected,
+                        band_half_width=self.half_bandwidth,
+                        algo=self.algo,
+                        short_dwell_pen=self.sd_arr,
+                    )
+                except (ValueError, IndexError) as e:
+                    logger.debug(f"Refinement failed at iteration {iteration}: {e}")
+                    return signal, seq_to_sig_map
+
+                # Validate monotonicity
+                if np.any(np.diff(refined_map) <= 0):
                     logger.debug(
-                        f"Non-monotonic refinement at position {i}, falling back to original mapping"
+                        f"Non-monotonic refinement at iteration {iteration}, "
+                        "falling back to original mapping"
                     )
                     return signal, seq_to_sig_map
 
-            return signal, refined
+                seq_to_sig_map = refined_map
+
+                # Inter-iteration rescaling (only if scale_iters > 0)
+                if self.scale_iters > 0:
+                    try:
+                        work_signal = _theil_sen_rescale(
+                            work_signal, expected, seq_to_sig_map
+                        )
+                    except Exception as e:
+                        logger.debug(f"Rescaling failed at iteration {iteration}: {e}")
+                        break
+
+            return work_signal, seq_to_sig_map
 
         return signal, seq_to_sig_map
