@@ -25,7 +25,7 @@ from leech.constants import (
     DEFAULT_SIGNAL_KMER_CONTEXT,
     DEFAULT_SIGNAL_LEN,
 )
-from leech.models.components import BaseModel, FeatureBranch
+from leech.models.components import BaseModel, FeatureBranch, make_norm
 
 
 class TemporalBlock(nn.Module):
@@ -38,6 +38,7 @@ class TemporalBlock(nn.Module):
         kernel_size: Convolution kernel size
         dilation: Dilation rate
         dropout: Dropout probability
+        norm_type: Normalization type ("batchnorm", "groupnorm", "layernorm")
     """
 
     def __init__(
@@ -47,6 +48,7 @@ class TemporalBlock(nn.Module):
         kernel_size: int = 3,
         dilation: int = 1,
         dropout: float = DEFAULT_DROPOUT,
+        norm_type: str = "batchnorm",
     ):
         super().__init__()
 
@@ -54,7 +56,7 @@ class TemporalBlock(nn.Module):
         # For causal convolutions: padding = (kernel_size - 1) * dilation
         self.padding = (kernel_size - 1) * dilation
 
-        # Two convolutional layers with batch norm and dropout
+        # Two convolutional layers with normalization and dropout
         self.conv1 = nn.Conv1d(
             in_channels,
             out_channels,
@@ -62,7 +64,7 @@ class TemporalBlock(nn.Module):
             dilation=dilation,
             padding=0,  # We'll manually pad
         )
-        self.bn1 = nn.BatchNorm1d(out_channels)
+        self.norm1 = make_norm(norm_type, out_channels)
         self.dropout1 = nn.Dropout(dropout)
 
         self.conv2 = nn.Conv1d(
@@ -72,7 +74,7 @@ class TemporalBlock(nn.Module):
             dilation=dilation,
             padding=0,
         )
-        self.bn2 = nn.BatchNorm1d(out_channels)
+        self.norm2 = make_norm(norm_type, out_channels)
         self.dropout2 = nn.Dropout(dropout)
 
         # Residual connection
@@ -97,7 +99,7 @@ class TemporalBlock(nn.Module):
 
         # First conv block
         out = self.conv1(x_padded)
-        out = self.bn1(out)
+        out = self.norm1(out)
         out = self.relu(out)
         out = self.dropout1(out)
 
@@ -106,7 +108,7 @@ class TemporalBlock(nn.Module):
 
         # Second conv block
         out = self.conv2(out)
-        out = self.bn2(out)
+        out = self.norm2(out)
         out = self.relu(out)
         out = self.dropout2(out)
 
@@ -126,6 +128,7 @@ class TCN(nn.Module):
         num_layers: Number of temporal blocks
         kernel_size: Convolution kernel size
         dropout: Dropout probability
+        norm_type: Normalization type ("batchnorm", "groupnorm", "layernorm")
     """
 
     def __init__(
@@ -135,6 +138,7 @@ class TCN(nn.Module):
         num_layers: int = 6,
         kernel_size: int = 3,
         dropout: float = DEFAULT_DROPOUT,
+        norm_type: str = "batchnorm",
     ):
         super().__init__()
 
@@ -149,6 +153,7 @@ class TCN(nn.Module):
                     kernel_size=kernel_size,
                     dilation=dilation,
                     dropout=dropout,
+                    norm_type=norm_type,
                 )
             )
 
@@ -200,6 +205,7 @@ class TCNDwell(BaseModel):
         dropout: float = DEFAULT_DROPOUT,
         seq_encoding: str = "base_onehot",
         signal_kmer_context: tuple[int, int] = DEFAULT_SIGNAL_KMER_CONTEXT,
+        norm_type: str = "batchnorm",
     ):
         super().__init__()
 
@@ -224,6 +230,7 @@ class TCNDwell(BaseModel):
             num_layers=num_layers,
             kernel_size=kernel_size,
             dropout=dropout,
+            norm_type=norm_type,
         )
         self.signal_pool = nn.AdaptiveAvgPool1d(kmer_len)
 
@@ -234,6 +241,7 @@ class TCNDwell(BaseModel):
             num_layers=num_layers,
             kernel_size=kernel_size,
             dropout=dropout,
+            norm_type=norm_type,
         )
         if seq_encoding == "signal_kmer":
             self.seq_pool = nn.AdaptiveAvgPool1d(kmer_len)
@@ -241,7 +249,7 @@ class TCNDwell(BaseModel):
         # Feature branch: Conv1d on full-width features for cross-attention K/V
         # Processes kmer_len + margin_left + margin_right positions
         self.feature_branch = FeatureBranch(
-            num_features=num_features, conv_channels=conv_channels, use_batchnorm=True
+            num_features=num_features, conv_channels=conv_channels, norm_type=norm_type
         )
 
         # Merged signal+seq dimension
@@ -266,11 +274,11 @@ class TCNDwell(BaseModel):
             nn.Dropout(dropout),
             nn.Linear(merged_dim, 256),
             nn.ReLU(),
-            nn.BatchNorm1d(256),
+            make_norm(norm_type, 256),
             nn.Dropout(dropout),
             nn.Linear(256, 64),
             nn.ReLU(),
-            nn.BatchNorm1d(64),
+            make_norm(norm_type, 64),
             nn.Dropout(dropout),
             nn.Linear(64, 1),
         )
@@ -290,8 +298,11 @@ class TCNDwell(BaseModel):
         Returns:
             Logits for binary classification (batch, 1)
         """
-        # Signal branch
-        signal_feat = signal.unsqueeze(1)  # (batch, 1, signal_len)
+        # Signal branch: use only raw channel (idx 0) if multi-channel data is provided
+        if signal.dim() == 3:
+            signal_feat = signal[:, 0:1, :]  # (batch, 1, signal_len) — raw only
+        else:
+            signal_feat = signal.unsqueeze(1)  # (batch, 1, signal_len)
         signal_feat = self.signal_tcn(signal_feat)  # (batch, hidden_channels, signal_len)
         signal_feat = self.signal_pool(signal_feat)  # (batch, hidden_channels, kmer_len)
 

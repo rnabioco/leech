@@ -1,7 +1,7 @@
 """
 ConvLSTMBaseBN: Baseline model with BatchNorm after each Conv1d.
 
-Identical to ConvLSTMBase but passes use_batchnorm=True to branches.
+Identical to ConvLSTMBase but passes norm_type="batchnorm" to branches.
 """
 
 import torch
@@ -64,11 +64,11 @@ class ConvLSTMBaseBN(BaseModel):
             seq_in_channels = 4
 
         # Signal branch with BatchNorm
-        self.signal_branch = SignalBranch(conv_channels=conv_channels, use_batchnorm=True)
+        self.signal_branch = SignalBranch(conv_channels=conv_channels, norm_type="batchnorm")
 
         # Sequence branch with BatchNorm
         self.sequence_branch = SequenceBranch(
-            in_channels=seq_in_channels, conv_channels=conv_channels, use_batchnorm=True
+            in_channels=seq_in_channels, conv_channels=conv_channels, norm_type="batchnorm"
         )
 
         # Adaptive pooling to match dimensions

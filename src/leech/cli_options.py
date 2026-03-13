@@ -26,23 +26,10 @@ from leech.constants import (
     DEFAULT_WEIGHT_DECAY,
 )
 
-# Model choices for CLI
-MODEL_CHOICES = [
-    "ConvLSTMDwell",
-    "ConvLSTMBase",
-    "ConvLSTMDwellBN",
-    "ConvLSTMBaseBN",
-    "ConvLSTMDwellAttn",
-    "ConvLSTMBaseAttn",
-    "ConvLSTMDwellBNAttn",
-    "ConvLSTMBaseBNAttn",
-    "ConvLSTMRemora",
-    "ConvLSTMRemoraBase",
-    "TransformerDwell",
-    "ConvOnly",
-    "TCNDwell",
-    "ResNetDwell",
-]
+# Model choices for CLI — derived from MODEL_REGISTRY to stay in sync
+from leech.models import MODEL_REGISTRY
+
+MODEL_CHOICES = sorted(MODEL_REGISTRY.keys())
 
 
 def training_hyperparams(f):

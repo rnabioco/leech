@@ -1,9 +1,10 @@
 """
-ConvLSTMDwellBNAttn: Dwell model with BatchNorm + cross-attention.
+ConvLSTMDwellGNAttn: Dwell model with GroupNorm + cross-attention.
 
-Combines BatchNorm (from ConvLSTMDwellBN) with cross-attention for learned
-offset (from ConvLSTMDwellAttn). BN provides universal F1 gains while
-attention helps on hard classification tasks.
+Same architecture as ConvLSTMDwellBNAttn but uses GroupNorm (batch-independent)
+instead of BatchNorm. GroupNorm provides normalization benefits without
+sensitivity to batch composition, which may reduce task-level variance
+in imbalanced OVA classification.
 """
 
 import torch
@@ -24,15 +25,11 @@ from leech.constants import (
 from leech.models.components import BaseModel, FeatureBranch, SequenceBranch, SignalBranch
 
 
-class ConvLSTMDwellBNAttn(BaseModel):
+class ConvLSTMDwellGNAttn(BaseModel):
     """
-    Dwell model with BatchNorm and cross-attention for learning motor-sensor offset.
+    Dwell model with GroupNorm and cross-attention for learning motor-sensor offset.
 
-    Signal and sequence branches merge into a BiLSTM over kmer_len positions.
-    The dwell feature branch processes the full-width feature array
-    (kmer_len + 2*dwell_margin positions). Cross-attention lets each signal
-    position attend to all dwell positions, learning the physical offset.
-    All conv branches use BatchNorm for stable training.
+    Same architecture as ConvLSTMDwellBNAttn but with GroupNorm instead of BatchNorm.
 
     Args:
         signal_len: Length of input signal
@@ -80,18 +77,17 @@ class ConvLSTMDwellBNAttn(BaseModel):
         else:
             seq_in_channels = 4
 
-        # Signal branch (with BatchNorm)
-        self.signal_branch = SignalBranch(conv_channels=conv_channels, norm_type="batchnorm")
+        # Signal branch (with GroupNorm)
+        self.signal_branch = SignalBranch(conv_channels=conv_channels, norm_type="groupnorm")
 
-        # Sequence branch (with BatchNorm)
+        # Sequence branch (with GroupNorm)
         self.sequence_branch = SequenceBranch(
-            in_channels=seq_in_channels, conv_channels=conv_channels, norm_type="batchnorm"
+            in_channels=seq_in_channels, conv_channels=conv_channels, norm_type="groupnorm"
         )
 
-        # Feature branch (dwell + signal level features, with BatchNorm)
-        # Processes full-width features: kmer_len + 2*dwell_margin positions
+        # Feature branch (dwell + signal level features, with GroupNorm)
         self.feature_branch = FeatureBranch(
-            num_features=num_features, conv_channels=conv_channels, norm_type="batchnorm"
+            num_features=num_features, conv_channels=conv_channels, norm_type="groupnorm"
         )
 
         # Adaptive pooling to match dimensions
@@ -110,14 +106,11 @@ class ConvLSTMDwellBNAttn(BaseModel):
         )
 
         # Cross-attention: LSTM output (Q) attends to dwell features (K, V)
-        # Q has kmer_len positions, K/V has kmer_len + 2*dwell_margin positions
-        # This lets each signal position attend to all dwell positions,
-        # effectively learning the motor-sensor offset
         self.cross_attn = nn.MultiheadAttention(
-            embed_dim=lstm_hidden * 2,  # query dim (192)
+            embed_dim=lstm_hidden * 2,
             num_heads=num_attn_heads,
-            kdim=conv_channels[2],  # key dim from feature branch (256)
-            vdim=conv_channels[2],  # value dim from feature branch (256)
+            kdim=conv_channels[2],
+            vdim=conv_channels[2],
             dropout=dropout,
             batch_first=True,
         )
@@ -152,41 +145,38 @@ class ConvLSTMDwellBNAttn(BaseModel):
             Logits (batch, num_out)
         """
         # Signal branch
-        signal_feat = self.signal_branch(signal)  # (batch, 256, signal_len)
-        signal_feat = self.signal_pool(signal_feat)  # (batch, 256, kmer_len)
+        signal_feat = self.signal_branch(signal)
+        signal_feat = self.signal_pool(signal_feat)
 
         # Sequence branch
-        seq_feat = self.sequence_branch(sequence)  # (batch, 256, seq_len)
+        seq_feat = self.sequence_branch(sequence)
         if self.seq_encoding == "signal_kmer":
-            seq_feat = self.seq_pool(seq_feat)  # (batch, 256, kmer_len)
+            seq_feat = self.seq_pool(seq_feat)
 
         # Feature branch on full-width features
-        # Input: (batch, num_features, kmer_len + 2*dwell_margin)
-        feat_out = self.feature_branch(features)  # (batch, 256, feat_len)
-        feat_out = feat_out.transpose(1, 2)  # (batch, feat_len, 256)
+        feat_out = self.feature_branch(features)
+        feat_out = feat_out.transpose(1, 2)
 
         # Merge signal + sequence → BiLSTM
-        merged = torch.cat([signal_feat, seq_feat], dim=1)  # (batch, 512, kmer_len)
-        merged = merged.transpose(1, 2)  # (batch, kmer_len, 512)
-        lstm_out, _ = self.lstm(merged)  # (batch, kmer_len, 192)
+        merged = torch.cat([signal_feat, seq_feat], dim=1)
+        merged = merged.transpose(1, 2)
+        lstm_out, _ = self.lstm(merged)
 
-        # Cross-attention: LSTM output (kmer_len positions) queries
-        # dwell features (kmer_len + 2*dwell_margin positions)
-        # Each signal position can attend to dwell features at any offset
+        # Cross-attention
         attn_out, _ = self.cross_attn(
-            query=lstm_out,  # (batch, kmer_len, 192)
-            key=feat_out,  # (batch, feat_len, 256)
-            value=feat_out,  # (batch, feat_len, 256)
-        )  # attn_out: (batch, kmer_len, 192)
+            query=lstm_out,
+            key=feat_out,
+            value=feat_out,
+        )
 
         # Residual connection + layer norm
-        combined = self.attn_norm(lstm_out + attn_out)  # (batch, kmer_len, 192)
+        combined = self.attn_norm(lstm_out + attn_out)
 
         # Attention pooling over all positions
-        pool_scores = self.pool_linear(combined)  # (batch, kmer_len, 1)
-        pool_weights = torch.softmax(pool_scores, dim=1)  # (batch, kmer_len, 1)
-        context_vector = (pool_weights * combined).sum(dim=1)  # (batch, 192)
+        pool_scores = self.pool_linear(combined)
+        pool_weights = torch.softmax(pool_scores, dim=1)
+        context_vector = (pool_weights * combined).sum(dim=1)
 
         # FC layers
-        logits: torch.Tensor = self.fc(context_vector)  # (batch, 1)
+        logits: torch.Tensor = self.fc(context_vector)
         return logits

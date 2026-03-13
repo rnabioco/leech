@@ -1204,6 +1204,9 @@ def run_bundle_inference(
             state_dict = bundle["models"][pair]["state_dict"]
             # Strip _orig_mod. prefix from torch.compile'd state dicts
             state_dict = {k.removeprefix("_orig_mod."): v for k, v in state_dict.items()}
+            from leech.util import _migrate_state_dict_keys
+
+            state_dict = _migrate_state_dict_keys(state_dict)
             m.load_state_dict(state_dict)
             m = m.to(device)
             m.eval()
