@@ -163,11 +163,15 @@ def calibrate_model(
 
     model = get_model(model_name, **model_kwargs)
 
-    # Load weights
+    # Load weights (always load to CPU first, then move to device)
     checkpoint_path = model_dir / "model_best.pt"
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
     state_dict = checkpoint["model_state_dict"]
     state_dict = {k.removeprefix("_orig_mod."): v for k, v in state_dict.items()}
+
+    from leech.util import _migrate_state_dict_keys
+
+    state_dict = _migrate_state_dict_keys(state_dict)
     model.load_state_dict(state_dict)
     model = model.to(device)
     model.eval()
