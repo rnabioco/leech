@@ -56,6 +56,7 @@ class ConvLSTMDwellLNAttn(BaseModel):
         seq_encoding: str = "base_onehot",
         signal_kmer_context: tuple[int, int] = DEFAULT_SIGNAL_KMER_CONTEXT,
         num_out: int = 1,
+        signal_in_channels: int = 1,
     ):
         super().__init__()
 
@@ -77,7 +78,7 @@ class ConvLSTMDwellLNAttn(BaseModel):
             seq_in_channels = 4
 
         # Signal branch (with LayerNorm)
-        self.signal_branch = SignalBranch(conv_channels=conv_channels, norm_type="layernorm")
+        self.signal_branch = SignalBranch(conv_channels=conv_channels, norm_type="layernorm", in_channels=signal_in_channels)
 
         # Sequence branch (with LayerNorm)
         self.sequence_branch = SequenceBranch(

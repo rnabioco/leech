@@ -254,7 +254,11 @@ def _build_example_inputs(
         seq_channels = 4
         seq_len = kmer_len
 
-    signal = torch.randn(batch_size, signal_len)
+    signal_in_channels = config.get("signal_in_channels", 1)
+    if signal_in_channels > 1:
+        signal = torch.randn(batch_size, signal_in_channels, signal_len)
+    else:
+        signal = torch.randn(batch_size, signal_len)
     sequence = torch.randn(batch_size, seq_channels, seq_len)
 
     model_name = config.get("model_name", "")
@@ -292,7 +296,7 @@ def export_model(model: nn.Module, config: dict) -> "torch.export.ExportedProgra
     example_inputs = _build_example_inputs(model, config, batch_size=2)
 
     # Mark batch dimension (dim 0) as dynamic for all inputs
-    batch_dim = torch.export.Dim("batch", min=1)
+    batch_dim = torch.export.Dim("batch", min=1, max=2**15)
     dynamic_shapes = tuple({0: batch_dim} for _ in example_inputs)
 
     with torch.no_grad():

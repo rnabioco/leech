@@ -48,6 +48,7 @@ class ConvLSTMBaseBNAttn(BaseModel):
         dropout: float = DEFAULT_DROPOUT,
         seq_encoding: str = "base_onehot",
         signal_kmer_context: tuple[int, int] = DEFAULT_SIGNAL_KMER_CONTEXT,
+        signal_in_channels: int = 1,
     ):
         super().__init__()
 
@@ -66,7 +67,7 @@ class ConvLSTMBaseBNAttn(BaseModel):
             seq_in_channels = 4
 
         # Signal branch (with BatchNorm)
-        self.signal_branch = SignalBranch(conv_channels=conv_channels, norm_type="batchnorm")
+        self.signal_branch = SignalBranch(conv_channels=conv_channels, norm_type="batchnorm", in_channels=signal_in_channels)
 
         # Sequence branch (with BatchNorm)
         self.sequence_branch = SequenceBranch(

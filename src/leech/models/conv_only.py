@@ -112,6 +112,7 @@ class ConvOnly(BaseModel):
         dropout: float = DEFAULT_DROPOUT,
         seq_encoding: str = "base_onehot",
         signal_kmer_context: tuple[int, int] = DEFAULT_SIGNAL_KMER_CONTEXT,
+        signal_in_channels: int = 1,
     ):
         super().__init__()
 
@@ -131,7 +132,7 @@ class ConvOnly(BaseModel):
 
         # Signal branch: Stack of inception blocks
         self.signal_conv = nn.ModuleList()
-        in_ch = 1
+        in_ch = signal_in_channels
         for i in range(num_blocks):
             out_ch = base_channels * (2**i)
             self.signal_conv.append(InceptionBlock(in_ch, out_ch))
@@ -206,7 +207,10 @@ class ConvOnly(BaseModel):
             Logits for binary classification (batch, 1)
         """
         # Signal branch
-        signal_feat = signal.unsqueeze(1)  # (batch, 1, signal_len)
+        if signal.dim() == 2:
+            signal_feat = signal.unsqueeze(1)  # (batch, 1, signal_len)
+        else:
+            signal_feat = signal  # (batch, signal_in_channels, signal_len)
         for conv_block in self.signal_conv:
             signal_feat = conv_block(signal_feat)
         signal_feat = self.signal_pool(signal_feat)  # (batch, channels, kmer_len)

@@ -191,6 +191,7 @@ class ResNetDwell(BaseModel):
         dropout: float = DEFAULT_DROPOUT,
         seq_encoding: str = "base_onehot",
         signal_kmer_context: tuple[int, int] = DEFAULT_SIGNAL_KMER_CONTEXT,
+        signal_in_channels: int = 1,
     ):
         super().__init__()
 
@@ -210,7 +211,7 @@ class ResNetDwell(BaseModel):
 
         # Signal branch: Deep ResNet (8 blocks, ResNet-18 style)
         self.signal_resnet = ResNet1D(
-            in_channels=1,
+            in_channels=signal_in_channels,
             base_channels=base_channels,
             num_blocks=8,
             dropout=dropout,
@@ -282,7 +283,10 @@ class ResNetDwell(BaseModel):
             Logits for binary classification (batch, 1)
         """
         # Signal branch
-        signal_feat = signal.unsqueeze(1)  # (batch, 1, signal_len)
+        if signal.dim() == 2:
+            signal_feat = signal.unsqueeze(1)  # (batch, 1, signal_len)
+        else:
+            signal_feat = signal  # (batch, signal_in_channels, signal_len)
         signal_feat = self.signal_resnet(signal_feat)  # (batch, final_ch, reduced_len)
         signal_feat = self.signal_pool(signal_feat)  # (batch, final_ch, kmer_len)
 

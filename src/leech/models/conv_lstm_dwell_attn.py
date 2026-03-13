@@ -63,6 +63,7 @@ class ConvLSTMDwellAttn(BaseModel):
         dropout: float = DEFAULT_DROPOUT,
         seq_encoding: str = "base_onehot",
         signal_kmer_context: tuple[int, int] = DEFAULT_SIGNAL_KMER_CONTEXT,
+        signal_in_channels: int = 1,
     ):
         super().__init__()
 
@@ -83,7 +84,7 @@ class ConvLSTMDwellAttn(BaseModel):
             seq_in_channels = 4
 
         # Signal branch
-        self.signal_branch = SignalBranch(conv_channels=conv_channels)
+        self.signal_branch = SignalBranch(conv_channels=conv_channels, in_channels=signal_in_channels)
 
         # Sequence branch
         self.sequence_branch = SequenceBranch(

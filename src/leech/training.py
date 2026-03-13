@@ -877,10 +877,8 @@ def train_model(
     if model_name not in no_feature_models:
         model_init_kwargs["num_features"] = num_features
 
-    # Models that accept signal_in_channels for multi-channel signal input
-    signal_channels_models = {"TCNDwellResidual"}
-    if model_name in signal_channels_models:
-        model_init_kwargs["signal_in_channels"] = signal_in_channels
+    # All models accept signal_in_channels for multi-channel signal input
+    model_init_kwargs["signal_in_channels"] = signal_in_channels
 
     # Only pass num_out to models whose __init__ accepts it
     num_out_models = {

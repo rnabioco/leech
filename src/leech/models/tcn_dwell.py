@@ -206,6 +206,7 @@ class TCNDwell(BaseModel):
         seq_encoding: str = "base_onehot",
         signal_kmer_context: tuple[int, int] = DEFAULT_SIGNAL_KMER_CONTEXT,
         norm_type: str = "batchnorm",
+        signal_in_channels: int = 1,
     ):
         super().__init__()
 
@@ -225,7 +226,7 @@ class TCNDwell(BaseModel):
 
         # Signal branch: TCN
         self.signal_tcn = TCN(
-            in_channels=1,
+            in_channels=signal_in_channels,
             hidden_channels=hidden_channels,
             num_layers=num_layers,
             kernel_size=kernel_size,
@@ -298,11 +299,11 @@ class TCNDwell(BaseModel):
         Returns:
             Logits for binary classification (batch, 1)
         """
-        # Signal branch: use only raw channel (idx 0) if multi-channel data is provided
-        if signal.dim() == 3:
-            signal_feat = signal[:, 0:1, :]  # (batch, 1, signal_len) — raw only
-        else:
+        # Signal branch: handle both 1-channel and multi-channel input
+        if signal.dim() == 2:
             signal_feat = signal.unsqueeze(1)  # (batch, 1, signal_len)
+        else:
+            signal_feat = signal  # (batch, signal_in_channels, signal_len)
         signal_feat = self.signal_tcn(signal_feat)  # (batch, hidden_channels, signal_len)
         signal_feat = self.signal_pool(signal_feat)  # (batch, hidden_channels, kmer_len)
 

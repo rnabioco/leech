@@ -101,6 +101,7 @@ class TransformerDwell(BaseModel):
         dropout: float = DEFAULT_DROPOUT,
         seq_encoding: str = "base_onehot",
         signal_kmer_context: tuple[int, int] = DEFAULT_SIGNAL_KMER_CONTEXT,
+        signal_in_channels: int = 1,
     ):
         super().__init__()
 
@@ -119,7 +120,7 @@ class TransformerDwell(BaseModel):
 
         # Signal branch: Conv1d to project signal to d_model dimensions
         self.signal_conv = nn.Sequential(
-            nn.Conv1d(1, 64, kernel_size=DEFAULT_SIGNAL_KERNEL, padding=DEFAULT_SIGNAL_KERNEL // 2),
+            nn.Conv1d(signal_in_channels, 64, kernel_size=DEFAULT_SIGNAL_KERNEL, padding=DEFAULT_SIGNAL_KERNEL // 2),
             nn.ReLU(),
             nn.Conv1d(
                 64, d_model, kernel_size=DEFAULT_SIGNAL_KERNEL, padding=DEFAULT_SIGNAL_KERNEL // 2
@@ -207,7 +208,10 @@ class TransformerDwell(BaseModel):
             Logits for binary classification (batch, 1)
         """
         # Signal branch
-        signal_in = signal.unsqueeze(1)  # (batch, 1, signal_len)
+        if signal.dim() == 2:
+            signal_in = signal.unsqueeze(1)  # (batch, 1, signal_len)
+        else:
+            signal_in = signal  # (batch, signal_in_channels, signal_len)
         signal_feat = self.signal_conv(signal_in)  # (batch, d_model, signal_len)
         signal_feat = self.signal_pool(signal_feat)  # (batch, d_model, kmer_len)
         signal_feat = signal_feat.transpose(1, 2)  # (batch, kmer_len, d_model)
