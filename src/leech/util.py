@@ -173,7 +173,10 @@ def _migrate_state_dict_keys(state_dict: dict[str, torch.Tensor]) -> dict[str, t
 
 def _architecture_config(config: dict) -> dict:
     """Extract architecture-only parameters from a full training config."""
-    return {k: v for k, v in config.items() if k not in _TRAINING_PARAMS}
+    arch = {k: v for k, v in config.items() if k not in _TRAINING_PARAMS}
+    # Normalize optional keys added after initial training runs
+    arch.setdefault("signal_in_channels", 1)
+    return arch
 
 
 def _instantiate_model(config: dict) -> nn.Module:
