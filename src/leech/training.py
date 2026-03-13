@@ -2,6 +2,7 @@
 Training loop and utilities for leech models.
 """
 
+import copy
 import json
 import logging
 from pathlib import Path
@@ -166,6 +167,7 @@ class Trainer:
         self.best_val_f1 = 0.0
         self.best_epoch = 0
         self.start_epoch = 1
+        self._best_model_state: dict[str, Any] | None = None
 
         # History
         self.history: dict[str, list[float]] = {
@@ -198,6 +200,9 @@ class Trainer:
         self.best_val_f1 = checkpoint.get("best_val_f1", 0.0)
         self.best_epoch = checkpoint.get("best_epoch", 0)
         self.start_epoch = checkpoint.get("epoch", 0) + 1
+
+        # Restore best model state dict (for ensuring model_best.pt can be saved)
+        self._best_model_state = checkpoint.get("best_model_state_dict")
 
         # Restore scheduler state if available
         if self.scheduler is not None and checkpoint.get("scheduler_state_dict") is not None:
@@ -408,7 +413,7 @@ class Trainer:
                 f"requested {epochs}). Saving checkpoints and exiting."
             )
             if self.output_dir:
-                self.save_checkpoint("model_best.pt", epoch=self.best_epoch)
+                self._ensure_best_checkpoint()
                 self.save_checkpoint("model_last.pt", epoch=self.start_epoch - 1)
                 self.save_history()
             return self.history
@@ -483,6 +488,7 @@ class Trainer:
                         self.best_val_acc = val_acc
                         self.best_val_f1 = val_f1
                         self.best_epoch = epoch
+                        self._best_model_state = copy.deepcopy(self.model.state_dict())
                         patience_counter = 0
 
                         if self.output_dir:
@@ -509,9 +515,41 @@ class Trainer:
         # Save final model
         if self.output_dir:
             self.save_checkpoint("model_last.pt", epoch=last_epoch)
+            self._ensure_best_checkpoint()
             self.save_history()
 
         return self.history
+
+    def _ensure_best_checkpoint(self) -> None:
+        """Ensure model_best.pt exists, creating it from stored best weights if needed."""
+        if self.output_dir is None:
+            return
+
+        best_path = self.output_dir / "model_best.pt"
+        if best_path.exists():
+            return
+
+        if self._best_model_state is not None:
+            # Save best model from stored state dict
+            best_checkpoint = {
+                "model_state_dict": self._best_model_state,
+                "optimizer_state_dict": self.optimizer.state_dict(),
+                "best_val_acc": self.best_val_acc,
+                "best_val_f1": self.best_val_f1,
+                "best_epoch": self.best_epoch,
+                "epoch": self.best_epoch,
+                "scheduler_state_dict": self.scheduler.state_dict() if self.scheduler else None,
+                "scaler_state_dict": self.scaler.state_dict() if self.scaler else None,
+                "best_model_state_dict": self._best_model_state,
+            }
+            torch.save(best_checkpoint, best_path)
+            logger.info(
+                f"Restored model_best.pt from stored best weights (epoch {self.best_epoch})"
+            )
+        else:
+            # Fallback: save current model (best available)
+            self.save_checkpoint("model_best.pt", epoch=self.best_epoch)
+            logger.info("Saved model_best.pt from current model weights (no stored best)")
 
     def save_checkpoint(self, filename: str, epoch: int = 0) -> None:
         """Save model checkpoint."""
@@ -528,6 +566,7 @@ class Trainer:
             "epoch": epoch,
             "scheduler_state_dict": self.scheduler.state_dict() if self.scheduler else None,
             "scaler_state_dict": self.scaler.state_dict() if self.scaler else None,
+            "best_model_state_dict": self._best_model_state,
         }
         torch.save(checkpoint, checkpoint_path)
 

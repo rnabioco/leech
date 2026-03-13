@@ -581,5 +581,136 @@ class TestTrainingEdgeCases:
             pass
 
 
+class TestBestModelResumeGuarantee:
+    """Test that model_best.pt always exists after training, even on resume."""
+
+    def test_resume_no_improvement_still_creates_best(self, temp_chunks_file, tmp_path):
+        """Train, delete model_best.pt, resume with no improvement — model_best.pt must exist."""
+        output_dir = tmp_path / "training"
+
+        # Phase 1: train for 3 epochs so model_best.pt is created
+        train_model(
+            train_data_path=temp_chunks_file,
+            val_data_path=temp_chunks_file,
+            model_name="ConvLSTMDwell",
+            output_dir=output_dir,
+            epochs=3,
+            batch_size=2,
+            device="cpu",
+            seed=42,
+        )
+
+        best_path = output_dir / "model_best.pt"
+        last_path = output_dir / "model_last.pt"
+        assert best_path.exists()
+        assert last_path.exists()
+
+        # Record the best weights from phase 1
+        best_ckpt = torch.load(best_path, map_location="cpu")
+        original_best_state = best_ckpt["model_state_dict"]
+        original_best_acc = best_ckpt["best_val_acc"]
+
+        # Delete model_best.pt (simulates Snakemake cleanup on failure)
+        best_path.unlink()
+        assert not best_path.exists()
+
+        # Phase 2: resume training for same number of epochs (no new epochs run)
+        # start_epoch will be 4 > epochs=3, triggering the "already complete" path
+        train_model(
+            train_data_path=temp_chunks_file,
+            val_data_path=temp_chunks_file,
+            model_name="ConvLSTMDwell",
+            output_dir=output_dir,
+            epochs=3,
+            batch_size=2,
+            device="cpu",
+            seed=42,
+            resume_from=last_path,
+        )
+
+        # model_best.pt must exist after resume
+        assert best_path.exists(), "model_best.pt was not recreated after resume"
+
+        # Verify the restored best checkpoint has correct metadata
+        restored_ckpt = torch.load(best_path, map_location="cpu")
+        assert restored_ckpt["best_val_acc"] == original_best_acc
+
+        # Verify the model weights match the original best (not the last)
+        for key in original_best_state:
+            assert torch.equal(
+                original_best_state[key], restored_ckpt["model_state_dict"][key]
+            ), f"Weight mismatch in {key}: best model was not correctly restored"
+
+    def test_checkpoint_contains_best_model_state(self, temp_chunks_file, tmp_path):
+        """Verify that model_last.pt checkpoint contains best_model_state_dict."""
+        output_dir = tmp_path / "training"
+
+        train_model(
+            train_data_path=temp_chunks_file,
+            val_data_path=temp_chunks_file,
+            model_name="ConvLSTMDwell",
+            output_dir=output_dir,
+            epochs=3,
+            batch_size=2,
+            device="cpu",
+            seed=42,
+        )
+
+        last_path = output_dir / "model_last.pt"
+        checkpoint = torch.load(last_path, map_location="cpu")
+        assert "best_model_state_dict" in checkpoint
+        assert checkpoint["best_model_state_dict"] is not None
+
+    def test_resume_with_more_epochs_no_improvement(self, temp_chunks_file, tmp_path):
+        """Resume with extra epochs where no improvement occurs — model_best.pt must exist."""
+        output_dir = tmp_path / "training"
+
+        # Phase 1: train for 2 epochs
+        train_model(
+            train_data_path=temp_chunks_file,
+            val_data_path=temp_chunks_file,
+            model_name="ConvLSTMDwell",
+            output_dir=output_dir,
+            epochs=2,
+            batch_size=2,
+            device="cpu",
+            seed=42,
+        )
+
+        best_path = output_dir / "model_best.pt"
+        last_path = output_dir / "model_last.pt"
+
+        # Record original best weights
+        best_ckpt = torch.load(best_path, map_location="cpu")
+        original_best_state = best_ckpt["model_state_dict"]
+
+        # Delete model_best.pt
+        best_path.unlink()
+
+        # Phase 2: resume and add 1 more epoch (epochs=3, resume from epoch 2)
+        # Even if epoch 3 doesn't beat the best, model_best.pt must be created
+        train_model(
+            train_data_path=temp_chunks_file,
+            val_data_path=temp_chunks_file,
+            model_name="ConvLSTMDwell",
+            output_dir=output_dir,
+            epochs=3,
+            batch_size=2,
+            device="cpu",
+            seed=42,
+            resume_from=last_path,
+        )
+
+        assert best_path.exists(), "model_best.pt missing after resume with extra epochs"
+
+        # If the new epoch didn't beat the old best, the restored weights should
+        # match the original best (from the stored state dict in model_last.pt)
+        restored_ckpt = torch.load(best_path, map_location="cpu")
+        for key in original_best_state:
+            assert torch.equal(
+                original_best_state[key], restored_ckpt["model_state_dict"][key]
+            ), f"Weight mismatch in {key}"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
