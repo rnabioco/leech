@@ -890,11 +890,17 @@ def eval():
     default=DEFAULT_DEVICE,
     help="Device for inference",
 )
-def test(model, test_data, output, device):
+@click.option(
+    "--batch-size",
+    type=int,
+    default=512,
+    help="Batch size for evaluation (default: 512)",
+)
+def test(model, test_data, output, device, batch_size):
     """Test a trained model on a holdout test set."""
     from leech.commands.eval import handle_test
 
-    handle_test(model=model, test_data=test_data, output=output, device=device)
+    handle_test(model=model, test_data=test_data, output=output, device=device, batch_size=batch_size)
 
 
 @eval.command()

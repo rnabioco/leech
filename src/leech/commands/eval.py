@@ -18,6 +18,7 @@ def handle_test(
     test_data: Path,
     output: Path,
     device: str = "cuda",
+    batch_size: int = 512,
 ) -> None:
     """
     Handle the test command logic.
@@ -27,6 +28,7 @@ def handle_test(
         test_data: Test dataset config (JSON)
         output: Output metrics file (JSON)
         device: Device for inference
+        batch_size: Batch size for evaluation
     """
     from leech.evaluation import evaluate_model
 
@@ -39,6 +41,7 @@ def handle_test(
         test_data_path=test_data,
         output_path=output,
         device=device,
+        batch_size=batch_size,
     )
 
     console.print("[bold green]Testing complete![/bold green]")

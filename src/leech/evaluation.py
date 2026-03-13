@@ -33,7 +33,7 @@ def evaluate_model(
     output_path: Path,
     signal_len: int | None = None,
     kmer_len: int | None = None,
-    batch_size: int = 128,
+    batch_size: int = 512,
     device: str = "cuda",
 ) -> dict:
     """
@@ -70,6 +70,16 @@ def evaluate_model(
     dwell_offset = config.get("dwell_offset", 0)
     signal_kmer_context = tuple(config.get("signal_kmer_context", (4, 4)))
 
+    # GPU optimizations (forward-pass only, no training stability concerns)
+    if device != "cpu":
+        torch.backends.cudnn.benchmark = True
+
+    if device != "cpu" and hasattr(torch, "compile"):
+        try:
+            model = torch.compile(model)
+        except Exception:
+            pass
+
     # Wrap model for unified forward pass
     model_wrapper = ModelInferenceWrapper(model, model_type)
 
@@ -92,8 +102,11 @@ def evaluate_model(
         signal_kmer_context=signal_kmer_context,
     )
 
+    loader_kwargs: dict = {"num_workers": 0}
+    if device != "cpu":
+        loader_kwargs["pin_memory"] = True
     test_loader = DataLoader(
-        test_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn, num_workers=0
+        test_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn, **loader_kwargs
     )
 
     logger.info(f"Test samples: {len(test_dataset)}")
@@ -102,6 +115,7 @@ def evaluate_model(
     logger.info("\nRunning evaluation...")
 
     is_multiclass = num_out > 2
+    use_autocast = device != "cpu"
 
     if is_multiclass:
         all_labels_int: list[int] = []
@@ -114,7 +128,8 @@ def evaluate_model(
                 task = progress.add_task("[cyan]Evaluating...", total=len(test_loader))
                 for batch in test_loader:
                     labels = batch["label"].to(device)
-                    logits = model_wrapper.forward_batch(batch, device)
+                    with torch.amp.autocast("cuda", enabled=use_autocast):
+                        logits = model_wrapper.forward_batch(batch, device)
 
                     preds = torch.argmax(logits, dim=-1).cpu().numpy()
                     all_preds_int.extend(preds.flatten().tolist())
@@ -184,7 +199,8 @@ def evaluate_model(
                 labels = batch["label"].to(device)
 
                 # Forward pass (wrapper handles moving tensors and calling model correctly)
-                logits = model_wrapper.forward_batch(batch, device)
+                with torch.amp.autocast("cuda", enabled=use_autocast):
+                    logits = model_wrapper.forward_batch(batch, device)
 
                 # Get predictions
                 if num_out > 1:
@@ -224,5 +240,5 @@ def _topk_accuracy(logits: np.ndarray, labels: np.ndarray, k: int) -> float:
     if logits.shape[1] < k:
         k = logits.shape[1]
     top_k_preds = np.argsort(logits, axis=1)[:, -k:]
-    correct = np.array([labels[i] in top_k_preds[i] for i in range(len(labels))])
+    correct = (top_k_preds == labels[:, None]).any(axis=1)
     return float(correct.mean())
