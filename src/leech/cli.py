@@ -218,7 +218,7 @@ def data():
 @click.option(
     "--scale-iters",
     type=int,
-    default=0,
+    default=2,
     help="Signal map refinement iterations: -1=rescale only (no DP), 0=one round of banded DP, >0=N rounds with rescaling",
 )
 def prepare(

@@ -911,7 +911,7 @@ class SigMapRefiner:
     kmer_len: int
     half_bandwidth: int = DEFAULT_HALF_BANDWIDTH
     do_rough_rescale: bool = True
-    scale_iters: int = 0
+    scale_iters: int = 2
     algo: str = DEFAULT_ALGO
     sd_params: tuple[int, int, float] | None = None
     center_idx: int = -1
@@ -929,7 +929,7 @@ class SigMapRefiner:
         table_path: Path,
         half_bandwidth: int = DEFAULT_HALF_BANDWIDTH,
         do_rough_rescale: bool = True,
-        scale_iters: int = 0,
+        scale_iters: int = 2,
         algo: str = DEFAULT_ALGO,
         sd_params: tuple[int, int, float] | None = None,
         center_idx: int = -1,
