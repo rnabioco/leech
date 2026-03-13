@@ -46,6 +46,7 @@ class LeechRead:
         signal_features: dict[str, np.ndarray],
         labels: np.ndarray | None = None,
         metadata: dict | None = None,
+        signal_residual: np.ndarray | None = None,
     ):
         """Initialize LeechRead."""
         self.read_id = read_id
@@ -57,6 +58,7 @@ class LeechRead:
         self.signal_features = signal_features
         self.labels = labels
         self.metadata = metadata if metadata is not None else {}
+        self.signal_residual = signal_residual
 
     @property
     def num_bases(self) -> int:
@@ -134,9 +136,19 @@ class LeechRead:
         seq_to_sig_offset = 0
         if sig_start >= 0 and sig_end <= self.num_samples:
             signal_chunk = self.signal[sig_start:sig_end].copy()
+            signal_residual_chunk = (
+                self.signal_residual[sig_start:sig_end].copy()
+                if self.signal_residual is not None
+                else None
+            )
         else:
             # Pad with zeros when signal extends beyond read (remora convention)
             signal_chunk = np.zeros(chunk_len, dtype=np.float32)
+            signal_residual_chunk = (
+                np.zeros(chunk_len, dtype=np.float32)
+                if self.signal_residual is not None
+                else None
+            )
             fill_st = 0
             fill_en = chunk_len
             if sig_start < 0:
@@ -148,6 +160,10 @@ class LeechRead:
                 sig_end = self.num_samples
             if fill_en > fill_st:
                 signal_chunk[fill_st:fill_en] = self.signal[sig_start:sig_end]
+                if self.signal_residual is not None and signal_residual_chunk is not None:
+                    signal_residual_chunk[fill_st:fill_en] = self.signal_residual[
+                        sig_start:sig_end
+                    ]
         chunk_sig_len = chunk_len
 
         # Extract k-mer sequence context with safe boundary handling
@@ -233,7 +249,7 @@ class LeechRead:
                     parts.append("N")
             sequence_with_kmer_context = "".join(parts)
 
-        return {
+        chunk_dict: dict[str, np.ndarray | str | int | None] = {
             "signal": signal_chunk,
             "sequence": kmer_seq,
             "dwell": dwell_chunk,
@@ -244,6 +260,9 @@ class LeechRead:
             "seq_to_sig_map": chunk_seq_to_sig,
             "sequence_with_kmer_context": sequence_with_kmer_context,
         }
+        if signal_residual_chunk is not None:
+            chunk_dict["signal_residual"] = signal_residual_chunk
+        return chunk_dict
 
 
 def extract_training_chunks(

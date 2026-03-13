@@ -17,8 +17,10 @@ from leech.constants import REQUIRED_BAM_TAGS
 from leech.features import (
     MoveTable,
     compute_dwell_features,
+    compute_kmer_residual_features,
     compute_ref_to_signal,
     compute_signal_features,
+    compute_signal_residual,
     extract_move_table,
     normalize_signal,
 )
@@ -136,6 +138,26 @@ def build_leech_read(
         dwell_feats = {}
         signal_feats = {}
 
+    # Kmer residual features and signal-level residual (gated on kmer table availability)
+    sig_residual = None
+    if compute_features and signal_refiner is not None and hasattr(signal_refiner, "kmer_to_level"):
+        kmer_residual_feats = compute_kmer_residual_features(
+            norm_signal,
+            seq_to_sig_map,
+            use_sequence,
+            signal_refiner.kmer_to_level,
+            signal_refiner.kmer_len,
+        )
+        signal_feats.update(kmer_residual_feats)
+
+        # Per-signal-sample residual for signal branch
+        from leech.signal_refine import extract_levels
+
+        expected_levels = extract_levels(
+            use_sequence, signal_refiner.kmer_to_level, signal_refiner.kmer_len
+        )
+        sig_residual = compute_signal_residual(norm_signal, seq_to_sig_map, expected_levels)
+
     meta = {"normalization": norm_params}
     if metadata:
         meta.update(metadata)
@@ -148,6 +170,7 @@ def build_leech_read(
         dwells=dwells,
         dwell_features=dwell_feats,
         signal_features=signal_feats,
+        signal_residual=sig_residual,
         metadata=meta,
     )
 

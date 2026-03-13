@@ -56,6 +56,8 @@ def save_chunks(chunks: list[dict], output_path: Path) -> None:
 
     dwell_margin_lefts = []
     source_groups = []
+    signal_residuals = []
+    has_signal_residual = "signal_residual" in chunks[0]
 
     for chunk in chunks:
         signals.append(chunk["signal"])
@@ -70,6 +72,8 @@ def save_chunks(chunks: list[dict], output_path: Path) -> None:
         base_indices.append(chunk["base_idx"])
         dwell_margin_lefts.append(chunk.get("dwell_margin_left", 0))
         source_groups.append(chunk.get("source_group", ""))
+        if has_signal_residual:
+            signal_residuals.append(chunk["signal_residual"])
         # Signal-level kmer encoding fields (may be None for old chunks)
         s2s = chunk.get("seq_to_sig_map")
         seq_ctx = chunk.get("sequence_with_kmer_context")
@@ -110,6 +114,14 @@ def save_chunks(chunks: list[dict], output_path: Path) -> None:
         save_kwargs["signals_flat"] = np.stack(signals).astype(np.float32)
     else:
         save_kwargs["signals"] = np.array(signals, dtype=object)
+
+    # Signal residuals (optional, same shape as signals)
+    if has_signal_residual and signal_residuals:
+        sr_shapes = {s.shape for s in signal_residuals}
+        if len(sr_shapes) == 1:
+            save_kwargs["signal_residuals_flat"] = np.stack(signal_residuals).astype(np.float32)
+        else:
+            save_kwargs["signal_residuals"] = np.array(signal_residuals, dtype=object)
 
     # Dwells: try stacking into 2D
     dwell_shapes = {d.shape for d in dwells}
@@ -174,6 +186,15 @@ def load_chunks(input_path: Path) -> list[dict]:
             seq_to_sig_maps = data["seq_to_sig_maps"]
             sequences_with_kmer_context = data["sequences_with_kmer_context"]
 
+        # Signal residual channel (backward compatible)
+        has_signal_residual_data = "signal_residuals_flat" in data or "signal_residuals" in data
+        if has_signal_residual_data:
+            signal_residuals_loaded = (
+                data["signal_residuals_flat"]
+                if "signal_residuals_flat" in data
+                else data["signal_residuals"]
+            )
+
         # Asymmetric dwell margin (backward compatible)
         has_dwell_margin = "dwell_margin_lefts" in data
         if has_dwell_margin:
@@ -204,6 +225,8 @@ def load_chunks(input_path: Path) -> list[dict]:
                 seq_ctx = str(sequences_with_kmer_context[i])
                 chunk["seq_to_sig_map"] = s2s if len(s2s) > 0 else None
                 chunk["sequence_with_kmer_context"] = seq_ctx if seq_ctx else None
+            if has_signal_residual_data:
+                chunk["signal_residual"] = signal_residuals_loaded[i]
             if has_dwell_margin:
                 chunk["dwell_margin_left"] = int(dwell_margin_lefts[i])
             if has_source_groups:

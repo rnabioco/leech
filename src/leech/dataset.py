@@ -152,6 +152,10 @@ class LeechDataset(Dataset):
                 )
                 self._effective_seq_encoding = "base_onehot"
 
+        # Detect signal_residual channel
+        self._has_signal_residual = self.chunks[0].get("signal_residual") is not None
+        self.signal_channels = 2 if self._has_signal_residual else 1
+
         # Detect multi-class: if any label_int > 1, use long dtype for CrossEntropyLoss
         max_label = max(c["label_int"] for c in self.chunks)
         self._multiclass = max_label > 1
@@ -175,7 +179,10 @@ class LeechDataset(Dataset):
             signal = chunk["signal"]
             if signal.dtype != np.float32:
                 signal = signal.astype(np.float32)
-            self._signals.append(self._prepare_signal(signal))
+            signal_residual = chunk.get("signal_residual")
+            if signal_residual is not None and signal_residual.dtype != np.float32:
+                signal_residual = signal_residual.astype(np.float32)
+            self._signals.append(self._prepare_signal(signal, signal_residual))
 
             # Pre-tensorize features: apply dwell_offset slicing once
             if self._needs_features:
@@ -196,8 +203,10 @@ class LeechDataset(Dataset):
             f"({len(self._encoded_seqs)} sequences encoded, encoding={self._effective_seq_encoding})"
         )
 
-    def _prepare_signal(self, signal: np.ndarray) -> torch.Tensor:
-        """Pad/crop signal to target length. Called once during __init__."""
+    def _prepare_signal(
+        self, signal: np.ndarray, signal_residual: np.ndarray | None = None
+    ) -> torch.Tensor:
+        """Pad/crop signal (and optional residual) to target length. Called once during __init__."""
         if self.left_context is not None and self.right_context is not None:
             focus_pos = len(signal) // 2
             start = focus_pos - self.left_context
@@ -208,13 +217,32 @@ class LeechDataset(Dataset):
                 dst_start = max(0, -start)
                 cropped[dst_start : dst_start + (src_end - src_start)] = signal[src_start:src_end]
                 signal = cropped
+                if signal_residual is not None:
+                    cropped_r = np.zeros(self.signal_len, dtype=np.float32)
+                    cropped_r[dst_start : dst_start + (src_end - src_start)] = signal_residual[
+                        src_start:src_end
+                    ]
+                    signal_residual = cropped_r
             else:
                 signal = signal[start:end]
+                if signal_residual is not None:
+                    signal_residual = signal_residual[start:end]
         elif len(signal) < self.signal_len:
             signal = np.pad(signal, (0, self.signal_len - len(signal)), mode="constant")
+            if signal_residual is not None:
+                signal_residual = np.pad(
+                    signal_residual, (0, self.signal_len - len(signal_residual)), mode="constant"
+                )
         elif len(signal) > self.signal_len:
             start = (len(signal) - self.signal_len) // 2
             signal = signal[start : start + self.signal_len]
+            if signal_residual is not None:
+                signal_residual = signal_residual[start : start + self.signal_len]
+
+        if signal_residual is not None:
+            # Stack into (2, signal_len) for 2-channel signal input
+            stacked = np.stack([signal, signal_residual], axis=0)
+            return torch.from_numpy(np.ascontiguousarray(stacked))
         return torch.from_numpy(np.ascontiguousarray(signal))
 
     def _prepare_features(self, chunk: dict) -> torch.Tensor:

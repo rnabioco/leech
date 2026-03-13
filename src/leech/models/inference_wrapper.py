@@ -33,10 +33,15 @@ class ModelInferenceWrapper:
         "ConvLSTMDwellAttn",
         "ConvLSTMDwellBN",
         "ConvLSTMDwellBNAttn",
+        "ConvLSTMDwellGNAttn",
+        "ConvLSTMDwellLNAttn",
         "ConvLSTMRemora",
         "TransformerDwell",
         "ConvOnly",
         "TCNDwell",
+        "TCNDwellGN",
+        "TCNDwellLN",
+        "TCNDwellResidual",
         "ResNetDwell",
     }
 
@@ -46,8 +51,13 @@ class ModelInferenceWrapper:
     WIDE_FEATURE_MODELS = {
         "ConvLSTMDwellAttn",
         "ConvLSTMDwellBNAttn",
+        "ConvLSTMDwellGNAttn",
+        "ConvLSTMDwellLNAttn",
         "TransformerDwell",
         "TCNDwell",
+        "TCNDwellGN",
+        "TCNDwellLN",
+        "TCNDwellResidual",
         "ResNetDwell",
         "ConvOnly",
     }

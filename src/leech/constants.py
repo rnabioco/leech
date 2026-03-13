@@ -44,6 +44,13 @@ SIGNAL_FEATURES = [
     "level_range",  # Range (max - min) of signal level per base
 ]
 
+# Feature names - kmer residual features (requires kmer level table)
+KMER_RESIDUAL_FEATURES = [
+    "kmer_expected",  # Expected signal level per base from kmer table lookup
+    "kmer_residual",  # level_mean - kmer_expected (signed deviation)
+    "kmer_residual_abs",  # |kmer_residual| (unsigned magnitude)
+]
+
 # Training defaults
 DEFAULT_BATCH_SIZE = 128
 DEFAULT_LEARNING_RATE = 0.001

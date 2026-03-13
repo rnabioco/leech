@@ -527,6 +527,106 @@ def compute_dwell_features(dwells: np.ndarray, window: int = 5) -> dict[str, np.
     }
 
 
+def compute_kmer_residual_features(
+    signal: np.ndarray,
+    seq_to_sig_map: np.ndarray,
+    sequence: str,
+    kmer_to_level: dict[str, float],
+    kmer_len: int,
+) -> dict[str, np.ndarray]:
+    """
+    Compute per-base kmer residual features by comparing observed signal to expected kmer levels.
+
+    For uncharged reads, residual ≈ 0 at the terminal A. For charged reads,
+    residual > 0 (amino acid perturbation raises current).
+
+    Args:
+        signal: Normalized signal array
+        seq_to_sig_map: Base-to-signal mapping (length num_bases + 1)
+        sequence: Base sequence
+        kmer_to_level: Mapping from kmer string to expected signal level
+        kmer_len: Length of kmers in the table
+
+    Returns:
+        Dictionary with per-base features:
+            - 'kmer_expected': expected signal level from kmer table
+            - 'kmer_residual': level_mean - kmer_expected (signed)
+            - 'kmer_residual_abs': |kmer_residual| (unsigned)
+    """
+    from leech.signal_refine import extract_levels
+
+    num_bases = len(seq_to_sig_map) - 1
+    expected = extract_levels(sequence, kmer_to_level, kmer_len)
+
+    # Compute per-base observed mean (reuse vectorized reduceat logic)
+    observed_mean = np.zeros(num_bases, dtype=np.float32)
+    boundaries = seq_to_sig_map[:-1]
+    lengths = np.diff(seq_to_sig_map)
+    sig_len = len(signal)
+    valid = (lengths > 0) & (boundaries < sig_len)
+    if np.any(valid):
+        sums = np.add.reduceat(signal, boundaries[valid])
+        observed_mean[valid] = (sums / lengths[valid]).astype(np.float32)
+
+    kmer_expected = expected.astype(np.float32)
+    kmer_residual = observed_mean - kmer_expected
+    kmer_residual_abs = np.abs(kmer_residual)
+
+    return {
+        "kmer_expected": kmer_expected,
+        "kmer_residual": kmer_residual,
+        "kmer_residual_abs": kmer_residual_abs,
+    }
+
+
+def compute_signal_residual(
+    signal: np.ndarray,
+    seq_to_sig_map: np.ndarray,
+    expected_levels: np.ndarray,
+) -> np.ndarray:
+    """
+    Compute per-signal-sample residual: signal[t] - expected_level[base_at_t].
+
+    For each base, fills the corresponding signal range with
+    signal[start:end] - expected_levels[base_idx]. Where expected level
+    is 0 (edge positions without valid kmer), residual is 0.
+
+    Args:
+        signal: Normalized signal array (signal_len,)
+        seq_to_sig_map: Base-to-signal mapping (num_bases + 1,)
+        expected_levels: Expected kmer level per base (num_bases,)
+
+    Returns:
+        Float32 array of shape (signal_len,) — same shape as signal
+    """
+    sig_len = len(signal)
+    num_bases = len(seq_to_sig_map) - 1
+    lengths = np.diff(seq_to_sig_map).astype(np.intp)
+
+    # Build per-sample expected level for all bases, then subtract
+    # np.repeat expands each base's level to fill its signal span
+    total = int(np.sum(lengths[lengths > 0]))
+    if total == 0:
+        return np.zeros(sig_len, dtype=np.float32)
+
+    # Clamp lengths to non-negative for repeat
+    safe_lengths = np.maximum(lengths, 0)
+    expanded = np.repeat(expected_levels.astype(np.float32), safe_lengths)
+
+    # Place into signal-length array (seq_to_sig_map may not cover full signal)
+    start = int(seq_to_sig_map[0])
+    end = start + len(expanded)
+    end = min(end, sig_len)
+    n = end - start
+
+    # residual = signal - expected; zero where expected is 0
+    residual = np.zeros(sig_len, dtype=np.float32)
+    expected_slice = expanded[:n]
+    mask = expected_slice != 0.0
+    residual[start:end] = np.where(mask, signal[start:end] - expected_slice, 0.0)
+    return residual
+
+
 def compute_signal_features(
     signal: np.ndarray, seq_to_sig_map: np.ndarray
 ) -> dict[str, np.ndarray]:

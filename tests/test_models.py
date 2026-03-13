@@ -34,11 +34,16 @@ class TestModelRegistry:
             "ConvLSTMDwellAttn",
             "ConvLSTMDwellBN",
             "ConvLSTMDwellBNAttn",
+            "ConvLSTMDwellGNAttn",
+            "ConvLSTMDwellLNAttn",
             "ConvLSTMRemora",
             "ConvLSTMRemoraBase",
             "TransformerDwell",
             "ConvOnly",
             "TCNDwell",
+            "TCNDwellGN",
+            "TCNDwellLN",
+            "TCNDwellResidual",
             "ResNetDwell",
         }
         assert set(MODEL_REGISTRY.keys()) == expected_models
@@ -398,9 +403,13 @@ class TestModelComparisons:
         [
             ("ConvLSTMBase", False),
             ("ConvLSTMDwell", True),
+            ("ConvLSTMDwellGNAttn", True),
+            ("ConvLSTMDwellLNAttn", True),
             ("TransformerDwell", True),
             ("ConvOnly", True),
             ("TCNDwell", True),
+            ("TCNDwellGN", True),
+            ("TCNDwellLN", True),
             ("ResNetDwell", True),
         ],
     )
@@ -420,13 +429,15 @@ class TestModelComparisons:
             config.update({"conv_channels": [4, 16, 32], "lstm_hidden": 16})
         elif model_name == "ConvLSTMDwell":
             config.update({"num_features": 5, "conv_channels": [4, 16, 32], "lstm_hidden": 16})
+        elif model_name in ("ConvLSTMDwellGNAttn", "ConvLSTMDwellLNAttn"):
+            config.update({"num_features": 5, "dwell_margin": dwell_margin, "conv_channels": [4, 16, 32], "lstm_hidden": 16})
         elif model_name == "TransformerDwell":
             config.update({"num_features": 5, "dwell_margin": dwell_margin, "d_model": 32, "nhead": 4, "num_layers": 1})
         elif model_name == "ConvOnly":
             config.update({"num_features": 5, "dwell_margin": dwell_margin, "base_channels": 4})
         elif model_name == "ResNetDwell":
             config.update({"num_features": 5, "dwell_margin": dwell_margin, "base_channels": 4})
-        elif model_name == "TCNDwell":
+        elif model_name in ("TCNDwell", "TCNDwellGN", "TCNDwellLN"):
             config.update(
                 {"num_features": 5, "dwell_margin": dwell_margin, "hidden_channels": 16, "num_layers": 2, "kernel_size": 3}
             )
@@ -461,9 +472,13 @@ class TestModelComparisons:
             ("ConvLSTMRemoraBase", False),
             ("ConvLSTMDwell", True),
             ("ConvLSTMRemora", True),
+            ("ConvLSTMDwellGNAttn", True),
+            ("ConvLSTMDwellLNAttn", True),
             ("TransformerDwell", True),
             ("ConvOnly", True),
             ("TCNDwell", True),
+            ("TCNDwellGN", True),
+            ("TCNDwellLN", True),
             ("ResNetDwell", True),
         ],
     )
@@ -481,6 +496,8 @@ class TestModelComparisons:
             config.update({"size": 32, "seq_encoding": "signal_kmer"})
         elif model_name == "ConvLSTMDwell":
             config.update({"num_features": 5, "conv_channels": [4, 16, 32], "lstm_hidden": 16})
+        elif model_name in ("ConvLSTMDwellGNAttn", "ConvLSTMDwellLNAttn"):
+            config.update({"num_features": 5, "dwell_margin": dwell_margin, "conv_channels": [4, 16, 32], "lstm_hidden": 16})
         elif model_name == "ConvLSTMRemora":
             config.update({"num_features": 5, "size": 32, "seq_encoding": "signal_kmer"})
         elif model_name == "TransformerDwell":
@@ -489,7 +506,7 @@ class TestModelComparisons:
             config.update({"num_features": 5, "dwell_margin": dwell_margin, "base_channels": 4})
         elif model_name == "ResNetDwell":
             config.update({"num_features": 5, "dwell_margin": dwell_margin, "base_channels": 4})
-        elif model_name == "TCNDwell":
+        elif model_name in ("TCNDwell", "TCNDwellGN", "TCNDwellLN"):
             config.update(
                 {"num_features": 5, "dwell_margin": dwell_margin, "hidden_channels": 16, "num_layers": 2, "kernel_size": 3}
             )
@@ -562,13 +579,20 @@ class TestModelComparisons:
                 model_config = {**base_config, "num_features": 5, "base_channels": 8}
             elif model_name == "ResNetDwell":
                 model_config = {**base_config, "num_features": 5, "base_channels": 8}
-            elif model_name == "TCNDwell":
+            elif model_name in ("TCNDwell", "TCNDwellGN", "TCNDwellLN"):
                 model_config = {
                     **base_config,
                     "num_features": 5,
                     "hidden_channels": 32,
                     "num_layers": 3,
                     "kernel_size": 3,
+                }
+            elif model_name in ("ConvLSTMDwellGNAttn", "ConvLSTMDwellLNAttn"):
+                model_config = {
+                    **base_config,
+                    "num_features": 5,
+                    "conv_channels": [4, 16, 64],
+                    "lstm_hidden": 32,
                 }
 
             model = get_model(model_name, **model_config)

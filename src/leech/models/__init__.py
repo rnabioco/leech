@@ -1,7 +1,7 @@
 """
 Model architectures for leech.
 
-Available models (14 total):
+Available models (18 total):
 - ConvLSTMBase: Baseline model (signal + sequence only)
 - ConvLSTMBaseAttn: ConvLSTMBase with attention pooling
 - ConvLSTMBaseBN: ConvLSTMBase with batch normalization
@@ -10,11 +10,15 @@ Available models (14 total):
 - ConvLSTMDwellAttn: ConvLSTMDwell with attention pooling
 - ConvLSTMDwellBN: ConvLSTMDwell with batch normalization
 - ConvLSTMDwellBNAttn: ConvLSTMDwell with batch normalization and attention
+- ConvLSTMDwellGNAttn: ConvLSTMDwell with group normalization and attention
+- ConvLSTMDwellLNAttn: ConvLSTMDwell with layer normalization and attention
 - ConvLSTMRemora: Remora-compatible architecture with dwell features
 - ConvLSTMRemoraBase: Remora-compatible architecture without dwell features
 - TransformerDwell: Transformer-based model with self-attention
 - ConvOnly: Pure CNN baseline with multi-scale convolutions
 - TCNDwell: Temporal Convolutional Network with dilated convolutions
+- TCNDwellGN: TCNDwell with group normalization
+- TCNDwellLN: TCNDwell with layer normalization
 - ResNetDwell: Residual Network with skip connections
 """
 
@@ -30,12 +34,17 @@ from leech.models.conv_lstm_dwell import ConvLSTMDwell
 from leech.models.conv_lstm_dwell_attn import ConvLSTMDwellAttn
 from leech.models.conv_lstm_dwell_bn import ConvLSTMDwellBN
 from leech.models.conv_lstm_dwell_bn_attn import ConvLSTMDwellBNAttn
+from leech.models.conv_lstm_dwell_gn_attn import ConvLSTMDwellGNAttn
+from leech.models.conv_lstm_dwell_ln_attn import ConvLSTMDwellLNAttn
 from leech.models.conv_lstm_remora import ConvLSTMRemora, ConvLSTMRemoraBase
 from leech.models.conv_only import ConvOnly
 from leech.models.inference_wrapper import ModelInferenceWrapper, TracedModelWrapper
 from leech.models.remora_compat import RemoraModelWrapper
 from leech.models.resnet_dwell import ResNetDwell
 from leech.models.tcn_dwell import TCNDwell
+from leech.models.tcn_dwell_gn import TCNDwellGN
+from leech.models.tcn_dwell_ln import TCNDwellLN
+from leech.models.tcn_dwell_residual import TCNDwellResidual
 from leech.models.transformer_dwell import TransformerDwell
 
 __all__ = [
@@ -47,11 +56,16 @@ __all__ = [
     "ConvLSTMDwellAttn",
     "ConvLSTMDwellBN",
     "ConvLSTMDwellBNAttn",
+    "ConvLSTMDwellGNAttn",
+    "ConvLSTMDwellLNAttn",
     "ConvLSTMRemora",
     "ConvLSTMRemoraBase",
     "TransformerDwell",
     "ConvOnly",
     "TCNDwell",
+    "TCNDwellGN",
+    "TCNDwellLN",
+    "TCNDwellResidual",
     "ResNetDwell",
     "ModelInferenceWrapper",
     "TracedModelWrapper",
@@ -69,11 +83,16 @@ MODEL_REGISTRY = {
     "ConvLSTMDwellAttn": ConvLSTMDwellAttn,
     "ConvLSTMDwellBN": ConvLSTMDwellBN,
     "ConvLSTMDwellBNAttn": ConvLSTMDwellBNAttn,
+    "ConvLSTMDwellGNAttn": ConvLSTMDwellGNAttn,
+    "ConvLSTMDwellLNAttn": ConvLSTMDwellLNAttn,
     "ConvLSTMRemora": ConvLSTMRemora,
     "ConvLSTMRemoraBase": ConvLSTMRemoraBase,
     "TransformerDwell": TransformerDwell,
     "ConvOnly": ConvOnly,
     "TCNDwell": TCNDwell,
+    "TCNDwellGN": TCNDwellGN,
+    "TCNDwellLN": TCNDwellLN,
+    "TCNDwellResidual": TCNDwellResidual,
     "ResNetDwell": ResNetDwell,
 }
 

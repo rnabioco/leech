@@ -802,9 +802,11 @@ def train_model(
             **loader_kwargs,
         )
 
-    # Determine num_features from first batch
+    # Determine num_features and signal_channels from first batch
     first_batch = next(iter(train_loader))
     num_features = first_batch.get("features", torch.zeros(1, 1, kmer_len)).shape[1]
+    signal_shape = first_batch["signal"].shape
+    signal_in_channels = signal_shape[1] if len(signal_shape) == 3 else 1
 
     # Compute class weights if requested
     pos_weight_tensor = None
@@ -835,6 +837,11 @@ def train_model(
     }
     if model_name not in no_feature_models:
         model_init_kwargs["num_features"] = num_features
+
+    # Models that accept signal_in_channels for multi-channel signal input
+    signal_channels_models = {"TCNDwellResidual"}
+    if model_name in signal_channels_models:
+        model_init_kwargs["signal_in_channels"] = signal_in_channels
 
     # Only pass num_out to models whose __init__ accepts it
     num_out_models = {
@@ -884,6 +891,7 @@ def train_model(
         "signal_len": signal_len,
         "kmer_len": kmer_len,
         "num_features": num_features,
+        "signal_in_channels": signal_in_channels,
         "dwell_offset": dwell_offset,
         "dwell_margin_left": _dwell_margin_left,
         "dwell_margin_right": _dwell_margin_right,
