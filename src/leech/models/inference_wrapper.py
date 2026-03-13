@@ -133,14 +133,14 @@ class ModelInferenceWrapper:
 
 
 class TracedModelWrapper:
-    """Wrapper for TorchScript traced models.
+    """Wrapper for exported/traced models (torch.export or TorchScript).
 
     Provides the same ``forward_batch`` interface as
     :class:`ModelInferenceWrapper` and :class:`RemoraModelWrapper` so that
-    traced models can be used interchangeably in the inference engine.
+    exported models can be used interchangeably in the inference engine.
     """
 
-    def __init__(self, traced_model: torch.jit.ScriptModule, requires_features: bool):
+    def __init__(self, traced_model: torch.nn.Module, requires_features: bool):
         self.model = traced_model
         self.requires_features = requires_features
         self.is_traced = True
@@ -163,7 +163,11 @@ class TracedModelWrapper:
         return output
 
     def eval(self) -> None:
-        self.model.eval()
+        if hasattr(self.model, "eval"):
+            try:
+                self.model.eval()
+            except NotImplementedError:
+                pass  # torch.export GraphModule doesn't support eval()
 
     def to(self, device: str) -> "TracedModelWrapper":
         self.model.to(device)

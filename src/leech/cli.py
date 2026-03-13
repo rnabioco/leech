@@ -691,9 +691,9 @@ def calibrate(model_dir, val_data, device, batch_size, num_workers):
     help="Output TorchScript .pt file path",
 )
 def export(model_dir, output):
-    """Export a trained model as a standalone TorchScript file.
+    """Export a trained model as a standalone .pt file.
 
-    The exported file is loadable with just torch.jit.load() — no leech
+    The exported file is loadable with just torch.export.load() — no leech
     codebase required. Model config is embedded in the file.
     """
     from leech.commands.bundle import handle_export

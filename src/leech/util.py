@@ -182,40 +182,40 @@ def _instantiate_model(config: dict) -> nn.Module:
 
 
 # ============================================================================
-# TorchScript export helpers
+# Model export helpers (torch.export for PyTorch 2+, torch.jit legacy)
 # ============================================================================
 
 
-def trace_model(model: nn.Module, config: dict) -> torch.jit.ScriptModule:
-    """Trace a leech model into a TorchScript ScriptModule.
+def _build_example_inputs(
+    model: nn.Module, config: dict, batch_size: int = 1
+) -> tuple[torch.Tensor, ...]:
+    """Build example input tensors for model export/tracing.
 
     Args:
-        model: PyTorch model (must be in eval mode or will be set to eval)
+        model: The model (used to read dwell_margin for wide-feature models)
         config: Model config dict with signal_len, kmer_len, etc.
+        batch_size: Batch size for example inputs (use 2 for torch.export with
+            dynamic batch dims to avoid specialization to batch=1)
 
     Returns:
-        Traced ScriptModule
+        Tuple of example input tensors
     """
     from leech.models.inference_wrapper import ModelInferenceWrapper
-
-    model.eval()
 
     signal_len = config["signal_len"]
     kmer_len = config["kmer_len"]
     seq_encoding = config.get("seq_encoding", "base_onehot")
     signal_kmer_context = config.get("signal_kmer_context", [4, 4])
 
-    # Determine sequence tensor shape based on encoding
     if seq_encoding == "signal_kmer":
-        seq_channels = sum(signal_kmer_context) * 4 + 4  # 36 for default (4,4)
+        seq_channels = sum(signal_kmer_context) * 4 + 4
         seq_len = signal_len
     else:
         seq_channels = 4
         seq_len = kmer_len
 
-    # Build example inputs
-    signal = torch.randn(1, signal_len)
-    sequence = torch.randn(1, seq_channels, seq_len)
+    signal = torch.randn(batch_size, signal_len)
+    sequence = torch.randn(batch_size, seq_channels, seq_len)
 
     model_name = config.get("model_name", "")
     requires_features = model_name in ModelInferenceWrapper.FEATURE_MODELS
@@ -228,10 +228,72 @@ def trace_model(model: nn.Module, config: dict) -> torch.jit.ScriptModule:
             feat_len = kmer_len + 2 * dwell_margin
         else:
             feat_len = kmer_len
-        features = torch.randn(1, num_features, feat_len)
-        example_inputs = (signal, sequence, features)
-    else:
-        example_inputs = (signal, sequence)
+        features = torch.randn(batch_size, num_features, feat_len)
+        return (signal, sequence, features)
+
+    return (signal, sequence)
+
+
+def export_model(model: nn.Module, config: dict) -> "torch.export.ExportedProgram":
+    """Export a leech model using torch.export (PyTorch 2+ export API).
+
+    The batch dimension is marked dynamic so the exported model accepts
+    any batch size at inference time.
+
+    Args:
+        model: PyTorch model (will be set to eval mode)
+        config: Model config dict with signal_len, kmer_len, etc.
+
+    Returns:
+        ExportedProgram
+    """
+    model.eval()
+    # Use batch_size=2 to avoid torch.export specializing batch dim to 1
+    example_inputs = _build_example_inputs(model, config, batch_size=2)
+
+    # Mark batch dimension (dim 0) as dynamic for all inputs
+    batch_dim = torch.export.Dim("batch", min=1)
+    dynamic_shapes = tuple({0: batch_dim} for _ in example_inputs)
+
+    with torch.no_grad():
+        ep = torch.export.export(model, example_inputs, dynamic_shapes=dynamic_shapes)
+
+    return ep
+
+
+def serialize_exported_model(ep: "torch.export.ExportedProgram") -> bytes:
+    """Serialize an exported model to bytes."""
+    buf = io.BytesIO()
+    torch.export.save(ep, buf)
+    return buf.getvalue()
+
+
+def deserialize_exported_model(data: bytes, device: str = "cpu") -> nn.Module:
+    """Deserialize an exported model from bytes.
+
+    Returns the underlying nn.Module (moved to device), not the ExportedProgram.
+    """
+    buf = io.BytesIO(data)
+    ep = torch.export.load(buf)
+    return ep.module().to(device)
+
+
+def trace_model(model: nn.Module, config: dict) -> torch.jit.ScriptModule:
+    """Trace a leech model into a TorchScript ScriptModule.
+
+    .. deprecated::
+        Use :func:`export_model` instead (torch.export API).
+        Retained for loading legacy TorchScript bundles/exports.
+
+    Args:
+        model: PyTorch model (must be in eval mode or will be set to eval)
+        config: Model config dict with signal_len, kmer_len, etc.
+
+    Returns:
+        Traced ScriptModule
+    """
+    model.eval()
+    example_inputs = _build_example_inputs(model, config)
 
     with torch.no_grad():
         traced = torch.jit.trace(model, example_inputs)
@@ -240,40 +302,49 @@ def trace_model(model: nn.Module, config: dict) -> torch.jit.ScriptModule:
 
 
 def serialize_traced_model(traced: torch.jit.ScriptModule) -> bytes:
-    """Serialize a traced model to bytes."""
+    """Serialize a traced TorchScript model to bytes.
+
+    .. deprecated::
+        Use :func:`serialize_exported_model` instead.
+    """
     buf = io.BytesIO()
     torch.jit.save(traced, buf)
     return buf.getvalue()
 
 
 def deserialize_traced_model(data: bytes, device: str = "cpu") -> torch.jit.ScriptModule:
-    """Deserialize a traced model from bytes."""
+    """Deserialize a traced TorchScript model from bytes.
+
+    .. deprecated::
+        Use :func:`deserialize_exported_model` instead.
+    """
     buf = io.BytesIO(data)
     return torch.jit.load(buf, map_location=device)
 
 
 def export_single_model(model_dir: Path, output_path: Path) -> Path:
-    """Export a single trained model as a standalone TorchScript .pt file.
+    """Export a single trained model as a standalone .pt file.
 
-    The exported file is loadable with just ``torch.jit.load()`` — no leech
-    required.  Model config is embedded via ``_extra_files``.
+    Uses ``torch.export`` (PyTorch 2+ API).  The exported file is loadable
+    with ``torch.export.load()`` — no leech required.  Model config is
+    embedded via ``extra_files``.
 
     Args:
         model_dir: Directory with config.json and model_best.pt
-        output_path: Where to write the TorchScript .pt file
+        output_path: Where to write the exported .pt file
 
     Returns:
         Path to the saved file
     """
     model, config = load_model_from_checkpoint(model_dir, device="cpu")
-    traced = trace_model(model, config)
+    ep = export_model(model, config)
 
     meta = json.dumps(config)
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    torch.jit.save(traced, str(output_path), _extra_files={"leech_meta.txt": meta})
+    torch.export.save(ep, str(output_path), extra_files={"leech_meta.txt": meta})
 
-    logger.info(f"Exported TorchScript model to {output_path}")
+    logger.info(f"Exported model to {output_path}")
     return output_path
 
 
@@ -447,7 +518,7 @@ def create_torchscript_bundle(
                 f"Expected {ref_arch_config}, got {pair_arch_config}"
             )
 
-        # Load checkpoint, instantiate, trace
+        # Load checkpoint, instantiate, export
         checkpoint_path = model_dir / "model_best.pt"
         if not checkpoint_path.exists():
             raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
@@ -459,18 +530,18 @@ def create_torchscript_bundle(
 
         model = _instantiate_model(ref_arch_config)
         model.load_state_dict(state_dict)
-        traced = trace_model(model, ref_arch_config)
-        traced_bytes = serialize_traced_model(traced)
+        ep = export_model(model, ref_arch_config)
+        exported_bytes = serialize_exported_model(ep)
 
         models_dict[pair] = {
-            "traced_bytes": traced_bytes,
+            "exported_bytes": exported_bytes,
             "best_val_acc": checkpoint.get("best_val_acc"),
             "best_epoch": checkpoint.get("best_epoch"),
         }
 
     bundle = {
         "metadata": {
-            "format_version": 2,
+            "format_version": 3,
             "bundle_version": version,
             "architecture": architecture,
             "comparison_type": comparison_type,
@@ -535,8 +606,13 @@ def load_model_from_bundle(
     config = bundle["config"]
     metadata = bundle.get("metadata", {})
 
-    if metadata.get("torchscript", False):
-        # TorchScript bundle (format_version 2)
+    format_version = metadata.get("format_version", 1)
+    if format_version >= 3:
+        # torch.export bundle (format_version 3+)
+        # Model was exported in eval mode; GraphModule doesn't need .eval()
+        model = deserialize_exported_model(models[pair]["exported_bytes"], device=device)
+    elif metadata.get("torchscript", False):
+        # Legacy TorchScript bundle (format_version 2)
         model = deserialize_traced_model(models[pair]["traced_bytes"], device=device)
         model.eval()
     else:

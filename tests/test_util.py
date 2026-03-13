@@ -15,13 +15,16 @@ from leech.util import (
     compute_metrics,
     create_bundle,
     create_torchscript_bundle,
+    deserialize_exported_model,
     deserialize_traced_model,
+    export_model,
     export_single_model,
     list_bundle_models,
     load_model_from_bundle,
     load_model_from_checkpoint,
     print_metrics,
     save_metrics,
+    serialize_exported_model,
     serialize_traced_model,
     trace_model,
 )
@@ -788,18 +791,74 @@ class TestMetricsEdgeCases:
         assert "accuracy" in metrics
 
 
-class TestTorchScriptExport:
-    """Test TorchScript tracing, export, and bundle functions."""
+class TestModelExport:
+    """Test torch.export, TorchScript tracing, export, and bundle functions."""
 
-    def test_trace_round_trip(self, model_config):
-        """Trace a model, serialize, deserialize, and compare outputs."""
+    def test_export_round_trip(self, model_config):
+        """Export a model, serialize, deserialize, and compare outputs."""
         model = get_model("ConvLSTMDwell", **model_config)
         model.eval()
 
         config = {"model_name": "ConvLSTMDwell", **model_config}
+        ep = export_model(model, config)
+
+        # Verify exported model produces same output
+        signal = torch.randn(2, model_config["signal_len"])
+        sequence = torch.randn(2, 4, model_config["kmer_len"])
+        features = torch.randn(2, model_config["num_features"], model_config["kmer_len"])
+
+        with torch.no_grad():
+            original_out = model(signal, sequence, features)
+            exported_out = ep.module()(signal, sequence, features)
+
+        assert torch.allclose(original_out, exported_out, atol=1e-5)
+
+    def test_serialize_deserialize_exported(self, model_config):
+        """Test serialize/deserialize round-trip with torch.export."""
+        model = get_model("ConvLSTMDwell", **model_config)
+        config = {"model_name": "ConvLSTMDwell", **model_config}
+        ep = export_model(model, config)
+
+        data = serialize_exported_model(ep)
+        assert isinstance(data, bytes)
+        assert len(data) > 0
+
+        restored = deserialize_exported_model(data, device="cpu")
+        signal = torch.randn(1, model_config["signal_len"])
+        sequence = torch.randn(1, 4, model_config["kmer_len"])
+        features = torch.randn(1, model_config["num_features"], model_config["kmer_len"])
+
+        with torch.no_grad():
+            out1 = ep.module()(signal, sequence, features)
+            out2 = restored(signal, sequence, features)
+
+        assert torch.allclose(out1, out2, atol=1e-5)
+
+    def test_export_base_model(self):
+        """Export a 2-arg model (no features)."""
+        config = {
+            "signal_len": 100,
+            "kmer_len": 11,
+            "conv_channels": [4, 16, 32],
+            "lstm_hidden": 16,
+        }
+        model = get_model("ConvLSTMBase", **config)
+        full_config = {"model_name": "ConvLSTMBase", **config}
+        ep = export_model(model, full_config)
+
+        signal = torch.randn(2, 100)
+        sequence = torch.randn(2, 4, 11)
+        with torch.no_grad():
+            out = ep.module()(signal, sequence)
+        assert out.shape == (2, 1)
+
+    def test_legacy_trace_round_trip(self, model_config):
+        """Legacy TorchScript trace still works."""
+        model = get_model("ConvLSTMDwell", **model_config)
+        model.eval()
+        config = {"model_name": "ConvLSTMDwell", **model_config}
         traced = trace_model(model, config)
 
-        # Verify traced model produces same output
         signal = torch.randn(2, model_config["signal_len"])
         sequence = torch.randn(2, 4, model_config["kmer_len"])
         features = torch.randn(2, model_config["num_features"], model_config["kmer_len"])
@@ -810,17 +869,16 @@ class TestTorchScriptExport:
 
         assert torch.allclose(original_out, traced_out, atol=1e-5)
 
-    def test_serialize_deserialize(self, model_config):
-        """Test serialize/deserialize round-trip."""
+    def test_legacy_serialize_deserialize(self, model_config):
+        """Legacy TorchScript serialize/deserialize still works."""
         model = get_model("ConvLSTMDwell", **model_config)
         config = {"model_name": "ConvLSTMDwell", **model_config}
         traced = trace_model(model, config)
 
         data = serialize_traced_model(traced)
         assert isinstance(data, bytes)
-        assert len(data) > 0
-
         restored = deserialize_traced_model(data, device="cpu")
+
         signal = torch.randn(1, model_config["signal_len"])
         sequence = torch.randn(1, 4, model_config["kmer_len"])
         features = torch.randn(1, model_config["num_features"], model_config["kmer_len"])
@@ -831,26 +889,8 @@ class TestTorchScriptExport:
 
         assert torch.allclose(out1, out2, atol=1e-5)
 
-    def test_trace_base_model(self):
-        """Trace a 2-arg model (no features)."""
-        config = {
-            "signal_len": 100,
-            "kmer_len": 11,
-            "conv_channels": [4, 16, 32],
-            "lstm_hidden": 16,
-        }
-        model = get_model("ConvLSTMBase", **config)
-        full_config = {"model_name": "ConvLSTMBase", **config}
-        traced = trace_model(model, full_config)
-
-        signal = torch.randn(2, 100)
-        sequence = torch.randn(2, 4, 11)
-        with torch.no_grad():
-            out = traced(signal, sequence)
-        assert out.shape == (2, 1)
-
     def test_export_single_model(self, tmp_path, model_config):
-        """Test export_single_model creates a loadable TorchScript file."""
+        """Test export_single_model creates a loadable file."""
         # Create a model directory
         model_dir = tmp_path / "model"
         model_dir.mkdir()
@@ -871,9 +911,9 @@ class TestTorchScriptExport:
         result = export_single_model(model_dir, output_path)
         assert result.exists()
 
-        # Load with bare torch.jit.load — no leech needed
+        # Load with bare torch.export.load — no leech needed
         extra = {"leech_meta.txt": ""}
-        loaded = torch.jit.load(str(output_path), map_location="cpu", _extra_files=extra)
+        ep = torch.export.load(str(output_path), extra_files=extra)
         assert extra["leech_meta.txt"] != ""
 
         meta = json.loads(extra["leech_meta.txt"])
@@ -885,7 +925,7 @@ class TestTorchScriptExport:
         sequence = torch.randn(1, 4, model_config["kmer_len"])
         features = torch.randn(1, model_config["num_features"], model_config["kmer_len"])
         with torch.no_grad():
-            out = loaded(signal, sequence, features)
+            out = ep.module()(signal, sequence, features)
         assert out.shape == (1, 1)
 
     def _create_fake_model_dirs(self, tmp_path, model_config, pair_names):
@@ -920,7 +960,7 @@ class TestTorchScriptExport:
         return model_dirs
 
     def test_torchscript_bundle_create_and_load(self, tmp_path, model_config):
-        """Create a TorchScript bundle, load a model from it, verify forward pass."""
+        """Create an exported bundle, load a model from it, verify forward pass."""
         pairs = ["Ala_Gly", "Ala_Ser", "Gly_Ser"]
         model_dirs = self._create_fake_model_dirs(tmp_path / "models", model_config, pairs)
 
@@ -930,7 +970,7 @@ class TestTorchScriptExport:
 
         # Verify metadata
         metadata = list_bundle_models(bundle_path)
-        assert metadata["format_version"] == 2
+        assert metadata["format_version"] == 3
         assert metadata["torchscript"] is True
         assert metadata["requires_features"] is True
         assert set(metadata["pairs"]) == set(pairs)

@@ -29,7 +29,12 @@ from leech.io.motif_search import find_motif_in_sequence
 from leech.models.inference_wrapper import ModelInferenceWrapper, TracedModelWrapper
 from leech.models.remora_compat import RemoraModelWrapper
 from leech.preparation import encode_kmer, iter_bam_with_pod5
-from leech.util import _instantiate_model, deserialize_traced_model, load_model_from_checkpoint
+from leech.util import (
+    _instantiate_model,
+    deserialize_exported_model,
+    deserialize_traced_model,
+    load_model_from_checkpoint,
+)
 
 if TYPE_CHECKING:
     from leech.signal_refine import SigMapRefiner
@@ -86,8 +91,17 @@ def _extract_remora_metadata(model_path: Path) -> dict:
     return raw
 
 
-def _is_leech_torchscript(path: Path) -> bool:
-    """Check if a .pt file is a leech TorchScript export (has leech_meta.txt)."""
+def _is_leech_export(path: Path) -> bool:
+    """Check if a .pt file is a leech export (torch.export or TorchScript with leech_meta.txt)."""
+    # Try torch.export format first (format_version 3+)
+    try:
+        extra = {"leech_meta.txt": ""}
+        torch.export.load(str(path), extra_files=extra)
+        if extra.get("leech_meta.txt", ""):
+            return True
+    except Exception:
+        pass
+    # Fall back to legacy TorchScript format
     try:
         extra = {"leech_meta.txt": ""}
         torch.jit.load(str(path), map_location="cpu", _extra_files=extra)
@@ -104,7 +118,7 @@ def load_model_auto(
 
     Auto-detects format:
     - Directory with config.json → leech checkpoint
-    - .pt file with leech_meta.txt → leech TorchScript export
+    - .pt file with leech_meta.txt → leech torch.export or TorchScript export
     - .pt file with meta.txt → Remora TorchScript model
 
     Args:
@@ -120,7 +134,25 @@ def load_model_auto(
         model_type = config["model_name"]
         return ModelInferenceWrapper(model, model_type), config
     elif path.suffix == ".pt" and not (path.parent / "config.json").exists():
-        # Try leech TorchScript first
+        # Try torch.export format first (PyTorch 2+)
+        extra = {"leech_meta.txt": ""}
+        try:
+            ep = torch.export.load(str(path), extra_files=extra)
+            if extra.get("leech_meta.txt", ""):
+                config = json.loads(extra["leech_meta.txt"])
+                model_name = config.get("model_name", "")
+                requires_features = model_name in ModelInferenceWrapper.FEATURE_MODELS
+                loaded_model = ep.module().to(device)
+                wrapper = TracedModelWrapper(loaded_model, requires_features=requires_features)
+                logger.info(
+                    f"Leech exported model: {model_name}, "
+                    f"signal_len={config.get('signal_len')}, kmer_len={config.get('kmer_len')}"
+                )
+                return wrapper, config
+        except Exception:
+            pass
+
+        # Try legacy TorchScript format
         extra = {"leech_meta.txt": ""}
         try:
             traced = torch.jit.load(str(path), map_location=device, _extra_files=extra)
@@ -1151,7 +1183,17 @@ def run_bundle_inference(
 
     # Load all models
     wrappers: dict[str, ModelInferenceWrapper | TracedModelWrapper] = {}
-    if is_torchscript:
+    format_version = metadata.get("format_version", 1)
+    if is_torchscript and format_version >= 3:
+        # torch.export format (format_version 3+)
+        requires_features = metadata.get("requires_features", False)
+        for pair in pairs:
+            model = deserialize_exported_model(
+                bundle["models"][pair]["exported_bytes"], device=device
+            )
+            wrappers[pair] = TracedModelWrapper(model, requires_features=requires_features)
+    elif is_torchscript:
+        # Legacy TorchScript format (format_version 2)
         requires_features = metadata.get("requires_features", False)
         for pair in pairs:
             traced = deserialize_traced_model(bundle["models"][pair]["traced_bytes"], device=device)
