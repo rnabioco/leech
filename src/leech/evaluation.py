@@ -73,10 +73,12 @@ def evaluate_model(
     # GPU optimizations (forward-pass only, no training stability concerns)
     if device != "cpu":
         torch.backends.cudnn.benchmark = True
+        torch.set_float32_matmul_precision("high")
 
     if hasattr(torch, "compile"):
         try:
-            model = torch.compile(model)
+            compile_mode = "reduce-overhead" if device != "cpu" else None
+            model = torch.compile(model, mode=compile_mode)
         except Exception:
             pass
 

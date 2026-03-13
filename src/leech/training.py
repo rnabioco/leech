@@ -328,7 +328,7 @@ class Trainer:
         all_preds: list[float] = []
         all_labels: list[float] = []
 
-        with torch.no_grad():
+        with torch.inference_mode():
             for batch in self.val_loader:
                 # Move labels to device
                 labels = batch["label"].to(self.device)
