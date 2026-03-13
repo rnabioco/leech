@@ -102,6 +102,8 @@ def handle_predict(
             aggregation=aggregation,
             anchor=anchor,
             reference_fasta=reference_fasta,
+            batch_size=batch_size,
+            num_workers=workers,
         )
     else:
         # Single-model inference (auto-detects leech vs Remora)

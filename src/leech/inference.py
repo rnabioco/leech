@@ -1074,6 +1074,8 @@ def run_bundle_inference(
     aggregation: str = "naive",
     anchor: str = "basecall",
     reference_fasta: Path | None = None,
+    batch_size: int = 512,
+    num_workers: int = 0,
 ) -> None:
     """
     Run all models from a bundle on each read, aggregate to a single AA prediction.
@@ -1243,10 +1245,18 @@ def run_bundle_inference(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     bam_out = pysam.AlignmentFile(str(output_path), "wb", template=bam_in)
 
-    total_reads = 0
+    first_wrapper = next(iter(wrappers.values()))
+    needs_features = first_wrapper.requires_features
+
+    # ── Phase 1: Extract all chunks into memory ──
+    chunk_signals: list[torch.Tensor] = []
+    chunk_sequences: list[torch.Tensor] = []
+    chunk_features: list[torch.Tensor] = []
+    chunk_read_ids: list[str] = []
 
     with Progress() as progress:
-        task = progress.add_task("[cyan]Running bundle inference...", total=None)
+        task = progress.add_task("[cyan]Extracting chunks...", total=None)
+        n_reads = 0
 
         for leech_read in iter_bam_with_pod5(
             bam_path,
@@ -1256,17 +1266,10 @@ def run_bundle_inference(
             anchor=anchor,
             reference_sequences=reference_sequences,
         ):
-            total_reads += 1
-            progress.update(task, advance=1, description=f"[cyan]Processed {total_reads} reads...")
-
-            # Find alignment
-            aln = alignment_by_read_id.get(leech_read.read_id)
-            if aln is None:
-                continue
+            n_reads += 1
+            progress.update(task, advance=1, description=f"[cyan]Extracted {len(chunk_signals)} chunks from {n_reads} reads...")
 
             # Find prediction position(s)
-            # When anchor="reference", leech_read.sequence IS the reference,
-            # so find_motif_in_sequence searches in reference coordinates directly.
             if motif is None:
                 positions = list(range(kmer_context, leech_read.num_bases - kmer_context))
             else:
@@ -1275,9 +1278,7 @@ def run_bundle_inference(
                     for pos in find_motif_in_sequence(leech_read.sequence, motif)
                 ]
 
-            # Extract chunk once (use first valid position)
             if not positions:
-                bam_out.write(aln)
                 continue
 
             base_idx = positions[0]
@@ -1290,60 +1291,107 @@ def run_bundle_inference(
                 dwell_margin_right=dwell_margin_right if dwell_margin_right else None,
             )
             if chunk is None:
-                bam_out.write(aln)
                 continue
 
-            # Prepare input tensors (once for all models)
+            # Prepare tensors
             signal_array = chunk["signal"]
             assert isinstance(signal_array, np.ndarray)
-            signal = torch.from_numpy(signal_array.astype(np.float32)).to(device).unsqueeze(0)
+            signal_t = torch.from_numpy(signal_array.astype(np.float32))
 
-            sequence = (
-                _encode_sequence_for_inference(chunk, seq_encoding, signal_len, signal_kmer_context)
-                .to(device)
-                .unsqueeze(0)
+            seq_t = _encode_sequence_for_inference(
+                chunk, seq_encoding, signal_len, signal_kmer_context
             )
+            if seq_t is None:
+                continue
 
-            batch = {"signal": signal, "sequence": sequence}
+            chunk_signals.append(signal_t)
+            chunk_sequences.append(seq_t)
+            chunk_read_ids.append(leech_read.read_id)
 
-            # Add features if needed (check first wrapper)
-            first_wrapper = next(iter(wrappers.values()))
-            if first_wrapper.requires_features:
+            if needs_features:
                 features_array = chunk["features"]
                 assert isinstance(features_array, np.ndarray)
                 if wide_features:
-                    # Wide feature models (attention variants) get full margin
                     pass
                 elif features_array.size > 0 and features_array.shape[1] > kmer_len:
                     margin = (features_array.shape[1] - kmer_len) // 2
-                    start = margin + dwell_offset
-                    features_array = features_array[:, start : start + kmer_len]
-                features = torch.from_numpy(features_array.astype(np.float32)).to(device)
-                batch["features"] = features.unsqueeze(0)
+                    feat_start = margin + dwell_offset
+                    features_array = features_array[:, feat_start : feat_start + kmer_len]
+                chunk_features.append(torch.from_numpy(features_array.astype(np.float32)))
 
-            # Run all models
-            probs = []
-            with torch.no_grad():
-                for pair in pairs:
-                    logits = wrappers[pair].forward_batch(batch, device)
-                    pp = platt_params.get(pair)
-                    if pp is not None:
-                        a, b = pp
-                        logits = a * logits + b
-                    prob = torch.sigmoid(logits).item()
-                    probs.append(prob)
+    n_chunks = len(chunk_signals)
+    logger.info(f"Extracted {n_chunks} chunks from {n_reads} reads")
 
-            # Aggregate to single AA prediction
-            predicted_aa, confidence, _ = aggregate_fn(pairs, probs)
-
-            # Write tags
-            aln.set_tag("aa", predicted_aa)  # Z type (string)
-            aln.set_tag("ac", confidence)  # f type (float)
-            if raw:
-                aln.set_tag("pn", pair_names_str)  # Z type (string)
-                aln.set_tag("pp", probs)  # B:f type (float array)
+    if n_chunks == 0:
+        # No valid chunks — write all reads without tags
+        for aln in alignment_by_read_id.values():
             bam_out.write(aln)
+        bam_in.close()
+        bam_out.close()
+        return
 
+    # Stack into tensors and move to device once
+    all_signals = torch.stack(chunk_signals).to(device)
+    all_sequences = torch.stack(chunk_sequences).to(device)
+    all_features = torch.stack(chunk_features).to(device) if needs_features else None
+    del chunk_signals, chunk_sequences, chunk_features
+
+    # ── Phase 2: Batched model inference ──
+    all_probs: dict[str, np.ndarray] = {}
+
+    with Progress() as progress:
+        task = progress.add_task(
+            f"[cyan]Running {len(pairs)} models (batch_size={batch_size})...",
+            total=len(pairs),
+        )
+
+        with torch.inference_mode():
+            for pair in pairs:
+                pair_logits: list[torch.Tensor] = []
+
+                for start in range(0, n_chunks, batch_size):
+                    end = min(start + batch_size, n_chunks)
+                    batch: dict[str, torch.Tensor] = {
+                        "signal": all_signals[start:end],
+                        "sequence": all_sequences[start:end],
+                    }
+                    if all_features is not None:
+                        batch["features"] = all_features[start:end]
+
+                    logits = wrappers[pair].forward_batch(batch, device)
+                    pair_logits.append(logits.cpu())
+
+                logits_cat = torch.cat(pair_logits)
+                pp = platt_params.get(pair)
+                if pp is not None:
+                    a, b = pp
+                    logits_cat = a * logits_cat + b
+                all_probs[pair] = torch.sigmoid(logits_cat).numpy().flatten()
+
+                progress.advance(task)
+
+    # ── Phase 3: Aggregate per-read and write BAM ──
+    read_id_to_idx: dict[str, int] = {rid: idx for idx, rid in enumerate(chunk_read_ids)}
+
+    n_predicted = 0
+    for read_id, aln in alignment_by_read_id.items():
+        idx = read_id_to_idx.get(read_id)
+        if idx is None:
+            bam_out.write(aln)
+            continue
+
+        probs = [float(all_probs[pair][idx]) for pair in pairs]
+        predicted_aa, confidence, _ = aggregate_fn(pairs, probs)
+
+        aln.set_tag("aa", predicted_aa)
+        aln.set_tag("ac", confidence)
+        if raw:
+            aln.set_tag("pn", pair_names_str)
+            aln.set_tag("pp", probs)
+        bam_out.write(aln)
+        n_predicted += 1
+
+    logger.info(f"Predicted {n_predicted}/{len(alignment_by_read_id)} reads")
     bam_in.close()
     bam_out.close()
 
