@@ -27,10 +27,11 @@ DEFAULT_REMORA_DROPOUT = 0.3
 class _RemoraSignalBranch(nn.Module):
     """Remora-style signal branch: Conv+BN+SiLU with stride=3 on last layer."""
 
-    def __init__(self, size: int = DEFAULT_REMORA_SIZE):
+    def __init__(self, size: int = DEFAULT_REMORA_SIZE, in_channels: int = 1):
         super().__init__()
+        self.in_channels = in_channels
         self.layers = nn.Sequential(
-            nn.Conv1d(1, 4, kernel_size=5, padding=2),
+            nn.Conv1d(in_channels, 4, kernel_size=5, padding=2),
             nn.BatchNorm1d(4),
             nn.SiLU(),
             nn.Conv1d(4, 16, kernel_size=5, padding=2),
@@ -42,7 +43,9 @@ class _RemoraSignalBranch(nn.Module):
         )
 
     def forward(self, signal: torch.Tensor) -> torch.Tensor:
-        return self.layers(signal.unsqueeze(1))
+        if signal.dim() == 2:
+            signal = signal.unsqueeze(1)
+        return self.layers(signal)
 
 
 class _RemoraSequenceBranch(nn.Module):
@@ -133,6 +136,7 @@ class ConvLSTMRemoraBase(BaseModel):
         dropout: float = DEFAULT_REMORA_DROPOUT,
         seq_encoding: str = "signal_kmer",
         signal_kmer_context: tuple[int, int] = (4, 4),
+        signal_in_channels: int = 1,
     ):
         super().__init__()
         self.signal_len = signal_len
@@ -146,7 +150,7 @@ class ConvLSTMRemoraBase(BaseModel):
         else:
             seq_in_channels = 4
 
-        self.signal_branch = _RemoraSignalBranch(size)
+        self.signal_branch = _RemoraSignalBranch(size, in_channels=signal_in_channels)
         self.seq_branch = _RemoraSequenceBranch(seq_in_channels, size)
 
         # Merge conv: fuse signal + sequence
@@ -229,6 +233,7 @@ class ConvLSTMRemora(BaseModel):
         dropout: float = DEFAULT_REMORA_DROPOUT,
         seq_encoding: str = "signal_kmer",
         signal_kmer_context: tuple[int, int] = (4, 4),
+        signal_in_channels: int = 1,
     ):
         super().__init__()
         self.signal_len = signal_len
@@ -243,7 +248,7 @@ class ConvLSTMRemora(BaseModel):
         else:
             seq_in_channels = 4
 
-        self.signal_branch = _RemoraSignalBranch(size)
+        self.signal_branch = _RemoraSignalBranch(size, in_channels=signal_in_channels)
         self.seq_branch = _RemoraSequenceBranch(seq_in_channels, size)
         self.feature_branch = _RemoraFeatureBranch(num_features, size)
 
