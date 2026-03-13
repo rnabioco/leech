@@ -1100,7 +1100,7 @@ def run_bundle_inference(
         anchor: "basecall" or "reference" for reference-anchored mode
         reference_fasta: Path to reference FASTA (for reference-anchored mode)
     """
-    bundle = torch.load(bundle_path, map_location=device)
+    bundle = torch.load(bundle_path, map_location="cpu")
     metadata = bundle["metadata"]
     config = bundle["config"]
     pairs = metadata["pairs"]

@@ -108,7 +108,7 @@ def load_model_from_checkpoint(
     if not checkpoint_file.exists():
         raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_file}")
 
-    checkpoint = torch.load(checkpoint_file, map_location=device)
+    checkpoint = torch.load(checkpoint_file, map_location="cpu")
 
     # Strip _orig_mod. prefix added by torch.compile()
     state_dict = checkpoint["model_state_dict"]
@@ -634,7 +634,7 @@ def load_model_from_bundle(
     Raises:
         KeyError: If pair not found in bundle
     """
-    bundle = torch.load(bundle_path, map_location=device)
+    bundle = torch.load(bundle_path, map_location="cpu")
     models = bundle["models"]
 
     if pair not in models:
