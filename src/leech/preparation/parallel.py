@@ -78,6 +78,7 @@ def _process_read_chunk_worker(
             mode=config.motif_reference,
             reference_sequences=config.reference_sequences,
             skip_indels=config.skip_motif_indels,
+            anchor=config.anchor,
         )
     else:
         motif_searcher = None

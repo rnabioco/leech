@@ -248,6 +248,7 @@ class ReferenceMotifSearcher(MotifSearcher):
         skip_indels: bool = True,
         allow_edge_indels: bool = False,
         debug: bool = False,
+        anchor: str = "reference",
     ):
         """
         Initialize reference-based motif searcher.
@@ -257,11 +258,13 @@ class ReferenceMotifSearcher(MotifSearcher):
             skip_indels: If True, skip motif positions with indels in region
             allow_edge_indels: If True, only reject indels in core motif (not ±1bp edges)
             debug: If True, collect and log detailed statistics
+            anchor: "reference" (return ref-relative coords, default) or "basecall" (query coords)
         """
         self.reference_sequences = reference_sequences
         self.skip_indels = skip_indels
         self.allow_edge_indels = allow_edge_indels
         self.debug = debug
+        self.anchor = anchor
 
         # Debug statistics
         self.stats = {
@@ -363,7 +366,14 @@ class ReferenceMotifSearcher(MotifSearcher):
                 length_ok = abs(mapped_len - motif_len) <= 3
 
             if length_ok:
-                query_positions.append(query_start)
+                if self.anchor == "reference":
+                    # Return reference coordinate relative to aligned portion.
+                    # When anchor="reference", LeechRead uses ref coords for
+                    # sequence and seq_to_sig_map, so motif positions must also
+                    # be in reference coords (relative to ref_start).
+                    query_positions.append(ref_motif_start - alignment.reference_start)
+                else:
+                    query_positions.append(query_start)
                 if self.debug:
                     self.stats["successful"] += 1
             else:
@@ -383,6 +393,7 @@ def get_motif_searcher(
     skip_indels: bool = True,
     allow_edge_indels: bool = False,
     debug: bool = False,
+    anchor: str = "reference",
 ) -> MotifSearcher:
     """
     Factory function for creating motif searchers.
@@ -393,6 +404,7 @@ def get_motif_searcher(
         skip_indels: Whether to skip motif positions with indels (for "fasta" mode)
         allow_edge_indels: If True, only reject indels in core motif (for "fasta" mode)
         debug: If True, enable detailed statistics collection
+        anchor: "reference" (default) or "basecall" — controls coordinate system of returned positions
 
     Returns:
         MotifSearcher instance
@@ -413,6 +425,8 @@ def get_motif_searcher(
     elif mode == "fasta":
         if reference_sequences is None:
             raise ValueError("reference_sequences required for reference-based motif search")
-        return ReferenceMotifSearcher(reference_sequences, skip_indels, allow_edge_indels, debug)
+        return ReferenceMotifSearcher(
+            reference_sequences, skip_indels, allow_edge_indels, debug, anchor=anchor
+        )
     else:
         raise ValueError(f"Invalid motif search mode: {mode}. Must be 'bam' or 'fasta'")

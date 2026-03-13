@@ -228,6 +228,7 @@ def prepare_training_data_with_split(
             mode=motif_reference,
             reference_sequences=reference_sequences,
             skip_indels=skip_motif_indels,
+            anchor=anchor,
         )
 
     # Extract chunks
@@ -244,6 +245,7 @@ def prepare_training_data_with_split(
         pa_stdev=pa_stdev,
         refine_signal_map=refine_signal_map,
         signal_refiner=signal_refiner,
+        reference_sequences=reference_sequences,
     ):
         read_chunks = extract_training_chunks(
             read,
