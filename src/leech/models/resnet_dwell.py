@@ -56,14 +56,14 @@ class ResidualBlock1D(nn.Module):
         self.conv1 = nn.Conv1d(
             in_channels, out_channels, kernel_size=kernel_size, stride=stride, padding=padding
         )
-        self.bn1 = nn.BatchNorm1d(out_channels)
+        self.norm1 = nn.BatchNorm1d(out_channels)
         self.relu = nn.ReLU()
         self.dropout = nn.Dropout(dropout)
 
         self.conv2 = nn.Conv1d(
             out_channels, out_channels, kernel_size=kernel_size, stride=1, padding=padding
         )
-        self.bn2 = nn.BatchNorm1d(out_channels)
+        self.norm2 = nn.BatchNorm1d(out_channels)
 
         # Skip connection
         self.skip: nn.Sequential | nn.Identity
@@ -87,12 +87,12 @@ class ResidualBlock1D(nn.Module):
 
         # Main path
         out = self.conv1(x)
-        out = self.bn1(out)
+        out = self.norm1(out)
         out = self.relu(out)
         out = self.dropout(out)
 
         out = self.conv2(out)
-        out = self.bn2(out)
+        out = self.norm2(out)
 
         # Add skip connection
         out += self.skip(identity)
