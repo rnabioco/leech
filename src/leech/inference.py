@@ -15,15 +15,14 @@ import array
 import json
 import logging
 import multiprocessing as mp
-from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import numpy as np
 import pysam
 import torch
 from rich.progress import Progress
 
+from leech.configs import ChunkConfig, InferenceConfig, MotifConfig, SignalConfig
 from leech.features import encode_signal_kmer, sequence_to_int
 from leech.io.motif_search import find_motif_in_sequence
 from leech.models.inference_wrapper import ModelInferenceWrapper, TracedModelWrapper
@@ -35,9 +34,6 @@ from leech.util import (
     deserialize_traced_model,
     load_model_from_checkpoint,
 )
-
-if TYPE_CHECKING:
-    from leech.signal_refine import SigMapRefiner
 
 logger = logging.getLogger("leech.inference")
 
@@ -352,38 +348,8 @@ def aggregate_one_vs_all(
     return predicted_aa, confidence, scores
 
 
-@dataclass
-class InferenceWorkerConfig:
-    """Configuration shared by all parallel inference workers."""
-
-    pod5_path: Path
-    motif: str | None
-    motif_offset: int
-    signal_context: tuple[int, int]
-    kmer_context: int
-    base_justify: str
-    seq_encoding: str
-    signal_kmer_context: tuple[int, int]
-    signal_len: int
-    kmer_len: int
-    dwell_offset: int
-    feature_start: int | None
-    feature_end: int | None
-    wide_features: bool
-    requires_features: bool
-    signal_in_channels: int
-    reverse_signal: bool
-    # Reference-anchored mode + normalization + refinement
-    anchor: str
-    norm_method: str
-    pa_mean: float | None
-    pa_stdev: float | None
-    refine_signal_map: bool
-    signal_refiner: "SigMapRefiner | None"
-
-
 def _inference_worker(
-    args: tuple[list, InferenceWorkerConfig],
+    args: tuple[list, InferenceConfig],
 ) -> list[tuple[str, int, np.ndarray, np.ndarray, np.ndarray | None]]:
     """
     Worker for parallel chunk extraction during inference.
@@ -418,46 +384,44 @@ def _inference_worker(
                     continue
                 raw_signal, pod5_metadata = cached
 
-                # Build LeechRead via shared helper (with full params)
+                # Build SignalConfig with compute_features override
+                sig_cfg = SignalConfig(
+                    reverse_signal=config.signal.reverse_signal,
+                    anchor=config.signal.anchor,
+                    norm_method=config.signal.norm_method,
+                    pa_mean=config.signal.pa_mean,
+                    pa_stdev=config.signal.pa_stdev,
+                    refine_signal_map=config.signal.refine_signal_map,
+                    signal_refiner=config.signal.signal_refiner,
+                    compute_features=config.requires_features or config.signal_in_channels > 1,
+                )
+
                 leech_read = build_leech_read(
                     read_id=read_info.read_id,
                     sequence=read_info.sequence,
                     raw_signal=raw_signal,
                     move_table=read_info.to_move_table(),
-                    reverse_signal=config.reverse_signal,
-                    compute_features=config.requires_features or config.signal_in_channels > 1,
-                    anchor=config.anchor,
+                    signal_config=sig_cfg,
                     reference_sequence=read_info.reference_sequence,
                     cigar_tuples=read_info.cigar_tuples,
-                    norm_method=config.norm_method,
-                    pa_mean=config.pa_mean,
-                    pa_stdev=config.pa_stdev,
                     cal_offset=pod5_metadata.get("calibration_offset"),
                     cal_scale=pod5_metadata.get("calibration_scale"),
-                    refine_signal_map=config.refine_signal_map,
-                    signal_refiner=config.signal_refiner,
                 )
 
                 # Find motif positions
-                if config.motif is not None:
+                if config.motif.motif is not None:
                     positions = [
-                        pos + config.motif_offset
-                        for pos in find_motif_in_sequence(leech_read.sequence, config.motif)
+                        pos + config.motif.motif_offset
+                        for pos in find_motif_in_sequence(leech_read.sequence, config.motif.motif)
                     ]
                 else:
+                    kmer_context = config.chunk.kmer_context
                     positions = list(
-                        range(config.kmer_context, leech_read.num_bases - config.kmer_context)
+                        range(kmer_context, leech_read.num_bases - kmer_context)
                     )
 
                 for base_idx in positions:
-                    chunk = leech_read.get_chunk(
-                        base_idx,
-                        signal_context=config.signal_context,
-                        kmer_context=config.kmer_context,
-                        base_justify=config.base_justify,
-                        feature_start=config.feature_start,
-                        feature_end=config.feature_end,
-                    )
+                    chunk = leech_read.get_chunk(base_idx, config=config.chunk)
                     if chunk is None:
                         continue
 
@@ -514,7 +478,7 @@ def _inference_worker(
                                 pass
                             elif feat_arr.shape[1] > config.kmer_len:
                                 kmer_ctx = config.kmer_len // 2
-                                fs = chunk.get("feature_start", -kmer_ctx)
+                                fs = int(chunk.get("feature_start", -kmer_ctx))
                                 s = (-kmer_ctx - fs) + config.dwell_offset
                                 feat_arr = feat_arr[:, s : s + config.kmer_len]
                             feat = feat_arr
@@ -791,33 +755,36 @@ def run_inference(
             read_infos[i : i + chunk_size] for i in range(0, len(read_infos), chunk_size)
         ]
 
-        config = InferenceWorkerConfig(
+        inf_config = InferenceConfig(
             pod5_path=pod5_path,
-            motif=motif,
-            motif_offset=motif_offset,
-            signal_context=signal_context,
-            kmer_context=kmer_context,
-            base_justify=base_justify,
+            signal=SignalConfig(
+                reverse_signal=reverse_signal,
+                anchor=anchor,
+                norm_method=norm_method,
+                pa_mean=pa_mean,
+                pa_stdev=pa_stdev,
+                refine_signal_map=refine_signal_map,
+                signal_refiner=signal_refiner,
+            ),
+            motif=MotifConfig(motif=motif, motif_offset=motif_offset),
+            chunk=ChunkConfig(
+                base_justify=base_justify,
+                feature_start=_feature_start,
+                feature_end=_feature_end,
+                signal_context=signal_context,
+                kmer_context=kmer_context,
+            ),
             seq_encoding=seq_encoding,
             signal_kmer_context=signal_kmer_context,
             signal_len=signal_len,
             kmer_len=kmer_len,
             dwell_offset=dwell_offset,
-            feature_start=_feature_start,
-            feature_end=_feature_end,
             wide_features=wide_features,
             requires_features=requires_features,
             signal_in_channels=signal_in_channels,
-            reverse_signal=reverse_signal,
-            anchor=anchor,
-            norm_method=norm_method,
-            pa_mean=pa_mean,
-            pa_stdev=pa_stdev,
-            refine_signal_map=refine_signal_map,
-            signal_refiner=signal_refiner,
         )
 
-        worker_args = [(batch_reads, config) for batch_reads in read_batches]
+        worker_args = [(batch_reads, inf_config) for batch_reads in read_batches]
 
         # Collect all results, then batch and run model
         pending: dict[str, list[tuple[int, float]]] = {}
@@ -910,10 +877,7 @@ def run_inference(
         with Progress() as progress:
             task = progress.add_task("[cyan]Running inference...", total=None)
 
-            for leech_read in iter_bam_with_pod5(
-                bam_path,
-                pod5_path,
-                min_mapq=min_mapq,
+            seq_signal_config = SignalConfig(
                 reverse_signal=reverse_signal,
                 anchor=anchor,
                 norm_method=norm_method,
@@ -922,6 +886,20 @@ def run_inference(
                 refine_signal_map=refine_signal_map,
                 signal_refiner=signal_refiner,
                 compute_features=compute_features,
+            )
+            seq_chunk_config = ChunkConfig(
+                base_justify=base_justify,
+                feature_start=_feature_start,
+                feature_end=_feature_end,
+                signal_context=signal_context,
+                kmer_context=kmer_context,
+            )
+
+            for leech_read in iter_bam_with_pod5(
+                bam_path,
+                pod5_path,
+                signal_config=seq_signal_config,
+                min_mapq=min_mapq,
             ):
                 total_reads += 1
                 progress.update(
@@ -944,14 +922,7 @@ def run_inference(
                     ]
 
                 for base_idx in positions:
-                    chunk = leech_read.get_chunk(
-                        base_idx,
-                        signal_context=signal_context,
-                        kmer_context=kmer_context,
-                        base_justify=base_justify,
-                        feature_start=_feature_start,
-                        feature_end=_feature_end,
-                    )
+                    chunk = leech_read.get_chunk(base_idx, config=seq_chunk_config)
                     if chunk is None:
                         continue
 
@@ -1164,7 +1135,7 @@ def run_bundle_inference(
         anchor: "basecall" or "reference" for reference-anchored mode
         reference_fasta: Path to reference FASTA (for reference-anchored mode)
     """
-    bundle = torch.load(bundle_path, map_location="cpu")
+    bundle = torch.load(bundle_path, map_location="cpu", weights_only=False)
     metadata = bundle["metadata"]
     config = bundle["config"]
     pairs = metadata["pairs"]
@@ -1353,16 +1324,27 @@ def run_bundle_inference(
         task = progress.add_task("[cyan]Extracting chunks...", total=None)
         n_reads = 0
 
-        for leech_read in iter_bam_with_pod5(
-            bam_path,
-            pod5_path,
-            min_mapq=min_mapq,
+        bundle_signal_config = SignalConfig(
             reverse_signal=reverse_signal,
             anchor=anchor,
-            reference_sequences=reference_sequences,
             compute_features=bundle_compute_features,
             refine_signal_map=bundle_refine,
             signal_refiner=bundle_refiner,
+        )
+        bundle_chunk_config = ChunkConfig(
+            base_justify=base_justify,
+            feature_start=_feature_start,
+            feature_end=_feature_end,
+            signal_context=signal_context,
+            kmer_context=kmer_context,
+        )
+
+        for leech_read in iter_bam_with_pod5(
+            bam_path,
+            pod5_path,
+            signal_config=bundle_signal_config,
+            min_mapq=min_mapq,
+            reference_sequences=reference_sequences,
         ):
             n_reads += 1
             progress.update(task, advance=1, description=f"[cyan]Extracted {len(chunk_signals)} chunks from {n_reads} reads...")
@@ -1380,14 +1362,7 @@ def run_bundle_inference(
                 continue
 
             base_idx = positions[0]
-            chunk = leech_read.get_chunk(
-                base_idx,
-                signal_context=signal_context,
-                kmer_context=kmer_context,
-                base_justify=base_justify,
-                feature_left=_feature_left,
-                feature_right=_feature_right,
-            )
+            chunk = leech_read.get_chunk(base_idx, config=bundle_chunk_config)
             if chunk is None:
                 continue
 
@@ -1504,7 +1479,7 @@ def run_bundle_inference(
     bam_in.close()
     bam_out.close()
 
-    logger.info(f"Bundle inference complete: {total_reads} reads, {len(pairs)} models")
+    logger.info(f"Bundle inference complete: {n_reads} reads, {len(pairs)} models")
     logger.info(f"Output written to: {output_path}")
 
 

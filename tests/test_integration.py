@@ -54,12 +54,14 @@ class TestBuildLeechRead:
                 raw_signal = read.signal
                 break
 
+        from leech.configs import SignalConfig
+
         lr = build_leech_read(
             read_id=info.read_id,
             sequence=info.sequence,
             raw_signal=raw_signal,
             move_table=info.to_move_table(),
-            reverse_signal=False,  # DNA data
+            signal_config=SignalConfig(reverse_signal=False),  # DNA data
         )
 
         assert lr.read_id == info.read_id
@@ -98,14 +100,18 @@ class TestSignalRefineIntegration:
                 raw_signal = read.signal
                 break
 
+        from leech.configs import SignalConfig
+
         lr = build_leech_read(
             read_id=info.read_id,
             sequence=info.sequence,
             raw_signal=raw_signal,
             move_table=info.to_move_table(),
-            reverse_signal=False,
-            refine_signal_map=True,
-            signal_refiner=refiner,
+            signal_config=SignalConfig(
+                reverse_signal=False,
+                refine_signal_map=True,
+                signal_refiner=refiner,
+            ),
         )
 
         # Refined mapping should still be valid

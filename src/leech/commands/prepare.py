@@ -74,6 +74,7 @@ def handle_prepare(
         Dictionary with extraction statistics
     """
     from leech.chunking import save_chunks
+    from leech.configs import ChunkConfig, LabelConfig, MotifConfig, PrepareConfig, SignalConfig
     from leech.io import get_reference_sequences
     from leech.preparation import prepare_training_data_parallel, prepare_training_data_with_split
     from leech.splitting import split_chunks_by_read
@@ -82,6 +83,7 @@ def handle_prepare(
     logger.info(f"Preparing data from {pod5} and {bam}")
     logger.info(f"Motif reference mode: {motif_reference}")
     logger.info(f"Anchor mode: {anchor}, Signal norm: {signal_norm}")
+
     # Setup signal refiner if requested
     signal_refiner = None
     if refine_signal_map:
@@ -104,26 +106,10 @@ def handle_prepare(
         logger.info("Loading reference sequences for reference-based motif search")
         reference_sequences = get_reference_sequences(bam, reference_fasta)
 
-    # Extract chunks (parallel or sequential)
-    if workers > 1:
-        # Parallel processing - extract chunks, then handle splitting/saving separately
-        logger.info("Extracting chunks in parallel...")
-        chunks, stats = prepare_training_data_parallel(
-            bam_path=bam,
-            pod5_path=pod5,
-            motif=motif,
-            motif_offset=motif_offset,
-            label=label,
-            label_int=None,  # Will be assigned during merge-and-split
-            min_mapq=min_mapq,
-            motif_reference=motif_reference,
-            reference_sequences=reference_sequences,
-            skip_motif_indels=skip_motif_indels,
-            num_workers=workers,
-            chunk_size=chunk_size,
-            base_justify=base_justify,
-            feature_start=feature_start,
-            feature_end=feature_end,
+    # Construct PrepareConfig from CLI kwargs
+    config = PrepareConfig(
+        pod5_path=pod5,
+        signal=SignalConfig(
             reverse_signal=reverse_signal,
             anchor=anchor,
             norm_method=signal_norm,
@@ -131,6 +117,35 @@ def handle_prepare(
             pa_stdev=pa_stdev,
             refine_signal_map=refine_signal_map,
             signal_refiner=signal_refiner,
+        ),
+        motif=MotifConfig(
+            motif=motif,
+            motif_offset=motif_offset,
+            motif_reference=motif_reference,
+            reference_sequences=reference_sequences,
+            skip_motif_indels=skip_motif_indels,
+        ),
+        chunk=ChunkConfig(
+            base_justify=base_justify,
+            feature_start=feature_start,
+            feature_end=feature_end,
+        ),
+        labeling=LabelConfig(
+            label=label,
+            label_int=None,  # Will be assigned during merge-and-split
+        ),
+    )
+
+    # Extract chunks (parallel or sequential)
+    if workers > 1:
+        # Parallel processing
+        logger.info("Extracting chunks in parallel...")
+        chunks, stats = prepare_training_data_parallel(
+            bam_path=bam,
+            config=config,
+            num_workers=workers,
+            chunk_size=chunk_size,
+            min_mapq=min_mapq,
         )
 
         if len(chunks) == 0:
@@ -155,7 +170,6 @@ def handle_prepare(
         setup_random_seed(seed, output_dir)
 
         if no_split:
-            # Save all chunks without splitting
             all_file = output_dir / "all.npz"
             save_chunks(chunks, all_file)
             logger.info(f"Saved all chunks to {all_file}")
@@ -166,12 +180,10 @@ def handle_prepare(
                 "n_test": 0,
             }
         else:
-            # Split at read level
             train_chunks, val_chunks, test_chunks = split_chunks_by_read(
                 chunks, train_frac=train_split, val_frac=val_split, seed=seed
             )
 
-            # Save splits
             if train_chunks:
                 train_file = output_dir / "train.npz"
                 save_chunks(train_chunks, train_file)
@@ -225,16 +237,10 @@ def handle_prepare(
                 actual_seed = generate_random_seed()
 
             result = prepare_training_data_with_split(
-                pod5_path=pod5,
                 bam_path=bam,
+                config=config,
                 output_dir=output_dir,
-                motif=motif,
-                motif_offset=motif_offset,
-                motif_reference=motif_reference,
                 reference_fasta=reference_fasta,
-                skip_motif_indels=skip_motif_indels,
-                label=label,
-                label_int=None,  # Will be assigned during merge-and-split
                 min_mapq=min_mapq,
                 feature_set=feature_set,
                 train_split=train_split,
@@ -242,16 +248,6 @@ def handle_prepare(
                 seed=actual_seed,
                 no_split=no_split,
                 progress_callback=update_progress,
-                base_justify=base_justify,
-                feature_left=feature_left,
-                feature_right=feature_right,
-                reverse_signal=reverse_signal,
-                anchor=anchor,
-                norm_method=signal_norm,
-                pa_mean=pa_mean,
-                pa_stdev=pa_stdev,
-                refine_signal_map=refine_signal_map,
-                signal_refiner=signal_refiner,
             )
 
             task_id = progress_container["task"]
@@ -273,7 +269,6 @@ def _display_prepare_results(result: dict[str, Any], no_split: bool) -> None:
             "[yellow]Skipped splitting (--no-split). All chunks saved to all.npz[/yellow]"
         )
     else:
-        # Display split statistics in a table
         table = Table(
             title="Data Split (Read-Level)", show_header=True, header_style="bold magenta"
         )

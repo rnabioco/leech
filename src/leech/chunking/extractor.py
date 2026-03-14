@@ -5,7 +5,10 @@ Provides functionality for extracting training chunks from processed reads,
 with support for motif-based filtering.
 """
 
+from __future__ import annotations
+
 import logging
+from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -15,6 +18,9 @@ from leech.constants import (
     DEFAULT_SIGNAL_KMER_CONTEXT,
 )
 from leech.io.motif_search import MotifSearcher
+
+if TYPE_CHECKING:
+    from leech.configs import ChunkConfig, LabelConfig, MotifConfig
 
 logger = logging.getLogger("leech.chunking.extractor")
 
@@ -73,6 +79,7 @@ class LeechRead:
     def get_chunk(
         self,
         base_idx: int,
+        config: ChunkConfig | None = None,
         signal_context: tuple[int, int] = DEFAULT_SIGNAL_CONTEXT,
         kmer_context: int = DEFAULT_KMER_CONTEXT,
         base_justify: str = "center",
@@ -84,34 +91,26 @@ class LeechRead:
 
         Args:
             base_idx: Index of the focus base
+            config: Optional ChunkConfig that overrides individual params.
             signal_context: (left, right) signal padding around focus base
             kmer_context: Number of bases on each side for k-mer encoding
-            base_justify: Where to center the chunk within the focus base's
-                signal span. One of:
-                - "center" (default): midpoint of signal span (Remora default)
-                - "start": first signal sample of the base
-                - "end": last signal sample of the base (first sample of next
-                  base). Useful for tRNA aa-charging where the amino acid is
-                  attached to the 3' hydroxyl of the terminal A.
+            base_justify: "center", "start", or "end"
             feature_start: Signed offset from focus for feature window start.
-                Negative = left of focus, 0 = at focus, positive = right.
-                Default None = -kmer_context (-5).
-                Sequence encoding is unaffected.
-            feature_end: Signed offset from focus for feature window end
-                (inclusive). Default None = kmer_context (5).
+            feature_end: Signed offset from focus for feature window end (inclusive).
 
         Returns:
             Dictionary with 'signal', 'kmer', 'dwell', 'features' arrays,
             or None if chunk cannot be extracted
-
-        Example:
-            >>> chunk = read.get_chunk(base_idx=100)
-            >>> if chunk:
-            ...     print(f"Signal length: {len(chunk['signal'])}")
-            ...     print(f"Sequence: {chunk['sequence']}")
         """
+        # Override individual params from config if provided
+        if config is not None:
+            signal_context = config.signal_context
+            kmer_context = config.kmer_context
+            base_justify = config.base_justify
+            feature_start = config.feature_start
+            feature_end = config.feature_end
+
         # Check boundaries: base_idx must be valid for seq_to_sig_map access
-        # (need base_idx and base_idx+1 for signal position lookup)
         if base_idx < 0 or base_idx >= self.num_bases:
             return None
 
@@ -121,7 +120,6 @@ class LeechRead:
         elif base_justify == "end":
             focus_sig_pos = int(self.seq_to_sig_map[base_idx + 1])
         else:
-            # Center on midpoint of focus base's signal span (Remora default)
             focus_sig_pos = int(
                 (self.seq_to_sig_map[base_idx] + self.seq_to_sig_map[base_idx + 1]) // 2
             )
@@ -129,8 +127,6 @@ class LeechRead:
         sig_start = focus_sig_pos - signal_context[0]
         sig_end = focus_sig_pos + signal_context[1]
 
-        # seq_to_sig_offset: shift applied to seq_to_sig_map to account for
-        # zero-padding when the chunk extends beyond signal boundaries
         seq_to_sig_offset = 0
         if sig_start >= 0 and sig_end <= self.num_samples:
             signal_chunk = self.signal[sig_start:sig_end].copy()
@@ -140,7 +136,6 @@ class LeechRead:
                 else None
             )
         else:
-            # Pad with zeros when signal extends beyond read (remora convention)
             signal_chunk = np.zeros(chunk_len, dtype=np.float32)
             signal_residual_chunk = (
                 np.zeros(chunk_len, dtype=np.float32)
@@ -170,7 +165,6 @@ class LeechRead:
         if kmer_start >= 0 and kmer_end <= self.num_bases:
             kmer_seq = self.sequence[kmer_start:kmer_end]
         else:
-            # Pad with N for out-of-bounds positions
             parts = []
             for i in range(kmer_start, kmer_end):
                 if 0 <= i < self.num_bases:
@@ -214,18 +208,13 @@ class LeechRead:
                 features.append(raw_feat)
 
         # Build chunk-relative seq_to_sig_map for signal_kmer encoding.
-        # Use searchsorted (like remora) to find ALL bases overlapping the
-        # signal chunk, not just the fixed kmer_context bases. This ensures
-        # the kmer encoding covers the entire signal window.
         seq_start = int(np.searchsorted(self.seq_to_sig_map, sig_start, side="right") - 1)
         seq_end = int(np.searchsorted(self.seq_to_sig_map, sig_end, side="left"))
         seq_start = max(0, seq_start)
         seq_end = min(self.num_bases, seq_end)
 
         chunk_seq_to_sig = self.seq_to_sig_map[seq_start : seq_end + 1].copy()
-        # Shift mapping relative to the chunk (account for zero-padding offset)
         chunk_seq_to_sig -= sig_start - seq_to_sig_offset
-        # Clamp ends to chunk boundaries (remora convention)
         chunk_seq_to_sig[0] = 0
         chunk_seq_to_sig[-1] = chunk_sig_len
         chunk_seq_to_sig = chunk_seq_to_sig.astype(np.int64)
@@ -237,7 +226,6 @@ class LeechRead:
         if ext_start >= 0 and ext_end <= self.num_bases:
             sequence_with_kmer_context = self.sequence[ext_start:ext_end]
         else:
-            # Pad with N for out-of-bounds positions
             parts = []
             for i in range(ext_start, ext_end):
                 if 0 <= i < self.num_bases:
@@ -265,53 +253,32 @@ class LeechRead:
 
 def extract_training_chunks(
     leech_read: LeechRead,
-    motif: str | None = None,
-    motif_offset: int = 0,
-    label: str | None = None,
-    label_int: int | None = None,
+    motif_config: MotifConfig,
+    chunk_config: ChunkConfig,
+    labeling: LabelConfig,
     motif_searcher: MotifSearcher | None = None,
-    base_justify: str = "center",
-    feature_start: int | None = None,
-    feature_end: int | None = None,
 ) -> list[dict[str, np.ndarray | str | int | None]]:
     """
     Extract all training chunks from a read, optionally filtered by motif.
 
     Args:
         leech_read: LeechRead object
-        motif: Optional sequence motif to filter (e.g., "CCAGGC")
-        motif_offset: Offset within motif for focus base
-        label: String label identifier (e.g., "Ala", "Gly", "charged", "uncharged")
-        label_int: Optional numeric label (0, 1) - assigned during merge for pairwise comparisons
+        motif_config: Motif configuration (motif, motif_offset)
+        chunk_config: Chunk configuration (base_justify, feature_start/end, etc.)
+        labeling: Label configuration (label, label_int)
         motif_searcher: MotifSearcher instance (required if motif is provided)
-        feature_start: Signed offset from focus for feature window start.
-            Default None = -kmer_context (-5).
-        feature_end: Signed offset from focus for feature window end.
-            Default None = kmer_context (5).
 
     Returns:
         List of chunk dictionaries
-
-    Example:
-        >>> from leech.io.motif_search import get_motif_searcher
-        >>> searcher = get_motif_searcher("bam")
-        >>> chunks = extract_training_chunks(
-        ...     read,
-        ...     motif="CCAGGC",
-        ...     motif_offset=0,
-        ...     label="charged",
-        ...     motif_searcher=searcher
-        ... )
-        >>> print(f"Extracted {len(chunks)} chunks")
     """
     chunks: list[dict] = []
 
     # Set numeric labels for all bases if provided
-    if label_int is not None:
-        leech_read.labels = np.full(leech_read.num_bases, label_int, dtype=np.int64)
+    if labeling.label_int is not None:
+        leech_read.labels = np.full(leech_read.num_bases, labeling.label_int, dtype=np.int64)
 
     # Find focus bases (either all or motif matches)
-    if motif is None:
+    if motif_config.motif is None:
         # No motif - use all bases (avoiding edges)
         focus_bases = list(range(5, leech_read.num_bases - 5))
     else:
@@ -327,26 +294,21 @@ def extract_training_chunks(
             read_id=leech_read.read_id,
             sequence=leech_read.sequence,
             alignment=alignment,
-            motif=motif,
+            motif=motif_config.motif,
         )
 
         # Apply offset to get focus bases
-        focus_bases = [pos + motif_offset for pos in motif_positions]
+        focus_bases = [pos + motif_config.motif_offset for pos in motif_positions]
 
     # Extract chunks
     for base_idx in focus_bases:
-        chunk = leech_read.get_chunk(
-            base_idx,
-            base_justify=base_justify,
-            feature_start=feature_start,
-            feature_end=feature_end,
-        )
+        chunk = leech_read.get_chunk(base_idx, config=chunk_config)
         if chunk is not None:
             chunk["read_id"] = leech_read.read_id
             # Rename numeric "label" from get_chunk() to "label_int"
             chunk["label_int"] = chunk.pop("label", None)
             # Add string label
-            chunk["label"] = label
+            chunk["label"] = labeling.label
             chunks.append(chunk)
 
     return chunks

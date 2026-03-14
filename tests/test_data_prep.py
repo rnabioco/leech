@@ -9,6 +9,7 @@ import pytest
 import torch
 
 from leech.chunking import LeechRead, extract_training_chunks, load_chunks, save_chunks
+from leech.configs import ChunkConfig, LabelConfig, MotifConfig
 from leech.io.motif_search import find_motif_in_sequence, map_reference_to_query_coords
 from leech.preparation import encode_kmer, int_to_seq, one_hot_encode_sequence, seq_to_int
 from leech.splitting import split_chunks_by_read
@@ -116,7 +117,10 @@ class TestExtractTrainingChunks:
     def test_extract_without_motif(self, sample_leech_read):
         """Test extracting chunks without motif filtering."""
         chunks = extract_training_chunks(
-            sample_leech_read, motif=None, label="charged", label_int=1
+            sample_leech_read,
+            motif_config=MotifConfig(),
+            chunk_config=ChunkConfig(),
+            labeling=LabelConfig(label="charged", label_int=1),
         )
 
         assert len(chunks) > 0
@@ -136,10 +140,9 @@ class TestExtractTrainingChunks:
 
         chunks = extract_training_chunks(
             sample_leech_read,
-            motif=motif,
-            motif_offset=1,
-            label="uncharged",
-            label_int=0,
+            motif_config=MotifConfig(motif=motif, motif_offset=1),
+            chunk_config=ChunkConfig(),
+            labeling=LabelConfig(label="uncharged", label_int=0),
             motif_searcher=motif_searcher,
         )
 
@@ -159,9 +162,9 @@ class TestExtractTrainingChunks:
 
         chunks = extract_training_chunks(
             sample_leech_read,
-            motif=motif,
-            label="uncharged",
-            label_int=0,
+            motif_config=MotifConfig(motif=motif),
+            chunk_config=ChunkConfig(),
+            labeling=LabelConfig(label="uncharged", label_int=0),
             motif_searcher=motif_searcher,
         )
 
@@ -171,7 +174,10 @@ class TestExtractTrainingChunks:
     def test_chunk_structure(self, sample_leech_read):
         """Test that extracted chunks have correct structure."""
         chunks = extract_training_chunks(
-            sample_leech_read, motif=None, label="charged", label_int=1
+            sample_leech_read,
+            motif_config=MotifConfig(),
+            chunk_config=ChunkConfig(),
+            labeling=LabelConfig(label="charged", label_int=1),
         )
 
         for chunk in chunks:

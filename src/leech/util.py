@@ -108,7 +108,7 @@ def load_model_from_checkpoint(
     if not checkpoint_file.exists():
         raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_file}")
 
-    checkpoint = torch.load(checkpoint_file, map_location="cpu")
+    checkpoint = torch.load(checkpoint_file, map_location="cpu", weights_only=False)
 
     # Strip _orig_mod. prefix added by torch.compile()
     state_dict = checkpoint["model_state_dict"]
@@ -459,7 +459,7 @@ def create_bundle(
         checkpoint_path = model_dir / "model_best.pt"
         if not checkpoint_path.exists():
             raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
-        checkpoint = torch.load(checkpoint_path, map_location="cpu")
+        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
 
         model_entry = {
             "state_dict": checkpoint["model_state_dict"],
@@ -573,7 +573,7 @@ def create_torchscript_bundle(
         checkpoint_path = model_dir / "model_best.pt"
         if not checkpoint_path.exists():
             raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
-        checkpoint = torch.load(checkpoint_path, map_location="cpu")
+        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
 
         # Strip _orig_mod. prefix added by torch.compile()
         state_dict = checkpoint["model_state_dict"]
@@ -648,7 +648,7 @@ def load_model_from_bundle(
     Raises:
         KeyError: If pair not found in bundle
     """
-    bundle = torch.load(bundle_path, map_location="cpu")
+    bundle = torch.load(bundle_path, map_location="cpu", weights_only=False)
     models = bundle["models"]
 
     if pair not in models:
@@ -689,7 +689,7 @@ def list_bundle_models(bundle_path: Path) -> dict:
         Metadata dict with keys: format_version, bundle_version, architecture,
         comparison_type, num_models, pairs, created_at
     """
-    bundle = torch.load(bundle_path, map_location="cpu")
+    bundle = torch.load(bundle_path, map_location="cpu", weights_only=False)
     return bundle["metadata"]
 
 

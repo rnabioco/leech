@@ -19,6 +19,7 @@ from rich.console import Console
 from rich.table import Table
 
 from leech.chunking import extract_training_chunks, load_chunks, save_chunks
+from leech.configs import ChunkConfig, LabelConfig, MotifConfig, SignalConfig
 from leech.models.inference_wrapper import ModelInferenceWrapper
 from leech.preparation import iter_bam_with_pod5
 from leech.training import train_model
@@ -212,33 +213,25 @@ def prepare_chunks_with_context(
         min_mapq: Minimum mapping quality
         reverse_signal: Reverse raw signal for RNA (POD5 3'→5' vs basecaller 5'→3')
     """
+    signal_config = SignalConfig(reverse_signal=reverse_signal)
+    motif_config = MotifConfig(motif=motif, motif_offset=motif_offset)
+    chunk_config = ChunkConfig(
+        signal_context=(left_context, right_context),
+        kmer_context=kmer_context,
+        base_justify=base_justify,
+    )
+    labeling = LabelConfig(label=label, label_int=label_int)
+
     chunks = []
 
     for read in iter_bam_with_pod5(
-        bam_path, pod5_path, min_mapq=min_mapq, reverse_signal=reverse_signal
+        bam_path, pod5_path, signal_config=signal_config, min_mapq=min_mapq
     ):
-        # Temporarily modify get_chunk to use custom context
-        original_get_chunk = read.get_chunk
-
-        def custom_get_chunk(
-            base_idx: int,
-            signal_context: tuple[int, int] = (left_context, right_context),
-            kmer_context: int = kmer_context,
-            base_justify: str = base_justify,
-            _original_get_chunk=original_get_chunk,
-        ):
-            return _original_get_chunk(
-                base_idx,
-                signal_context=signal_context,
-                kmer_context=kmer_context,
-                base_justify=base_justify,
-            )
-
-        read.get_chunk = custom_get_chunk  # type: ignore[method-assign]
-
-        # Extract chunks
         read_chunks = extract_training_chunks(
-            read, motif=motif, motif_offset=motif_offset, label=label, label_int=label_int
+            read,
+            motif_config=motif_config,
+            chunk_config=chunk_config,
+            labeling=labeling,
         )
         chunks.extend(read_chunks)
 

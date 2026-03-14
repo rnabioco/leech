@@ -165,7 +165,7 @@ def calibrate_model(
 
     # Load weights (always load to CPU first, then move to device)
     checkpoint_path = model_dir / "model_best.pt"
-    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     state_dict = checkpoint["model_state_dict"]
     state_dict = {k.removeprefix("_orig_mod."): v for k, v in state_dict.items()}
 

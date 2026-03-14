@@ -584,7 +584,7 @@ class TestModelBundle:
         bundle_path = tmp_path / "test_bundle.pt"
         create_bundle(model_dirs, bundle_path, "pairwise", "0.1.0")
 
-        bundle = torch.load(bundle_path, map_location="cpu")
+        bundle = torch.load(bundle_path, map_location="cpu", weights_only=False)
         model_entry = bundle["models"]["Ala_Gly"]
         assert "state_dict" in model_entry
         assert "optimizer_state_dict" not in model_entry

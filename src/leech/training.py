@@ -192,7 +192,7 @@ class Trainer:
     def _resume_from_checkpoint(self, checkpoint_path: Path) -> None:
         """Restore training state from a checkpoint."""
         logger.info(f"Resuming from checkpoint: {checkpoint_path}")
-        checkpoint = torch.load(checkpoint_path, map_location="cpu")
+        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
 
         self.model.load_state_dict(checkpoint["model_state_dict"])
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])

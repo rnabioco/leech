@@ -99,6 +99,8 @@ class TestIterBamWithPod5ReverseSignal:
 
     def _run_iter(self, reverse_signal, raw_signal, num_bases=20, stride=5):
         """Helper: patch I/O and run iter_bam_with_pod5, return first LeechRead."""
+        from leech.configs import SignalConfig
+
         aln, num_samples = _make_mock_alignment(num_bases=num_bases, stride=stride)
 
         # Trim raw_signal to match num_samples
@@ -119,7 +121,7 @@ class TestIterBamWithPod5ReverseSignal:
                 iter_bam_with_pod5(
                     Path("fake.bam"),
                     Path("fake.pod5"),
-                    reverse_signal=reverse_signal,
+                    signal_config=SignalConfig(reverse_signal=reverse_signal),
                 )
             )
 
@@ -165,13 +167,10 @@ class TestIterBamWithPod5ReverseSignal:
         )
 
     def test_default_is_reverse_true(self):
-        """Default reverse_signal should be True (RNA mode)."""
-        import inspect
+        """Default SignalConfig.reverse_signal should be True (RNA mode)."""
+        from leech.configs import SignalConfig
 
-        from leech.preparation.reader import iter_bam_with_pod5
-
-        sig = inspect.signature(iter_bam_with_pod5)
-        assert sig.parameters["reverse_signal"].default is True
+        assert SignalConfig().reverse_signal is True
 
 
 # ---------------------------------------------------------------------------
@@ -278,9 +277,15 @@ class TestParallelWorkerReverseSignal:
 
     def test_worker_reverses_signal(self):
         """The parallel worker should reverse signal when reverse_signal=True."""
+        from leech.configs import (
+            ChunkConfig,
+            LabelConfig,
+            MotifConfig,
+            PrepareConfig,
+            SignalConfig,
+        )
         from leech.features import MoveTable
         from leech.io.bam_reader import ReadInfo
-        from leech.preparation.parallel import WorkerConfig
 
         stride = 5
         num_bases = 100  # Need enough bases for default signal context (200+200)
@@ -332,26 +337,13 @@ class TestParallelWorkerReverseSignal:
         with patch("leech.preparation.parallel.DatasetReader", return_value=mock_dataset_reader):
             from leech.preparation.parallel import _process_read_chunk_worker
 
-            # Build WorkerConfig with reverse_signal=True
-            config_rev = WorkerConfig(
+            # Build PrepareConfig with reverse_signal=True
+            config_rev = PrepareConfig(
                 pod5_path=Path("fake.pod5"),
-                motif=None,
-                motif_offset=0,
-                label="test",
-                label_int=0,
-                motif_reference="bam",
-                reference_sequences=None,
-                skip_motif_indels=True,
-                base_justify="center",
-                feature_start=None,
-                feature_end=None,
-                reverse_signal=True,
-                anchor="basecall",
-                norm_method="median_mad",
-                pa_mean=None,
-                pa_stdev=None,
-                refine_signal_map=False,
-                signal_refiner=None,
+                signal=SignalConfig(reverse_signal=True),
+                motif=MotifConfig(motif=None, motif_reference="bam"),
+                chunk=ChunkConfig(),
+                labeling=LabelConfig(label="test", label_int=0),
             )
             chunks_reversed = _process_read_chunk_worker(([read_info], config_rev))
 
@@ -359,26 +351,13 @@ class TestParallelWorkerReverseSignal:
             mock_pod5_read.signal = raw_signal.copy()
             mock_dataset_reader.reads.return_value = iter([mock_pod5_read])
 
-            # Build WorkerConfig with reverse_signal=False
-            config_no_rev = WorkerConfig(
+            # Build PrepareConfig with reverse_signal=False
+            config_no_rev = PrepareConfig(
                 pod5_path=Path("fake.pod5"),
-                motif=None,
-                motif_offset=0,
-                label="test",
-                label_int=0,
-                motif_reference="bam",
-                reference_sequences=None,
-                skip_motif_indels=True,
-                base_justify="center",
-                feature_start=None,
-                feature_end=None,
-                reverse_signal=False,
-                anchor="basecall",
-                norm_method="median_mad",
-                pa_mean=None,
-                pa_stdev=None,
-                refine_signal_map=False,
-                signal_refiner=None,
+                signal=SignalConfig(reverse_signal=False),
+                motif=MotifConfig(motif=None, motif_reference="bam"),
+                chunk=ChunkConfig(),
+                labeling=LabelConfig(label="test", label_int=0),
             )
             chunks_not_reversed = _process_read_chunk_worker(([read_info], config_no_rev))
 
@@ -400,37 +379,34 @@ class TestParallelWorkerReverseSignal:
 
 
 class TestOrchestratorThreading:
-    """Verify reverse_signal parameter is accepted by orchestrator functions."""
+    """Verify config-based functions accept the right parameters."""
 
-    def test_prepare_training_data_accepts_reverse_signal(self):
-        """prepare_training_data should accept reverse_signal kwarg."""
+    def test_prepare_training_data_accepts_config(self):
+        """prepare_training_data should accept config: PrepareConfig."""
         import inspect
 
         from leech.preparation.orchestrator import prepare_training_data
 
         sig = inspect.signature(prepare_training_data)
-        assert "reverse_signal" in sig.parameters
-        assert sig.parameters["reverse_signal"].default is True
+        assert "config" in sig.parameters
 
-    def test_prepare_training_data_with_split_accepts_reverse_signal(self):
-        """prepare_training_data_with_split should accept reverse_signal kwarg."""
+    def test_prepare_training_data_with_split_accepts_config(self):
+        """prepare_training_data_with_split should accept config: PrepareConfig."""
         import inspect
 
         from leech.preparation.orchestrator import prepare_training_data_with_split
 
         sig = inspect.signature(prepare_training_data_with_split)
-        assert "reverse_signal" in sig.parameters
-        assert sig.parameters["reverse_signal"].default is True
+        assert "config" in sig.parameters
 
-    def test_prepare_training_data_parallel_accepts_reverse_signal(self):
-        """prepare_training_data_parallel should accept reverse_signal kwarg."""
+    def test_prepare_training_data_parallel_accepts_config(self):
+        """prepare_training_data_parallel should accept config: PrepareConfig."""
         import inspect
 
         from leech.preparation.parallel import prepare_training_data_parallel
 
         sig = inspect.signature(prepare_training_data_parallel)
-        assert "reverse_signal" in sig.parameters
-        assert sig.parameters["reverse_signal"].default is True
+        assert "config" in sig.parameters
 
     def test_run_inference_accepts_reverse_signal(self):
         """run_inference should accept reverse_signal kwarg."""
