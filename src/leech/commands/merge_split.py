@@ -5,6 +5,7 @@ This module contains the business logic for merging multiple chunk files
 and splitting at read level to prevent data leakage.
 """
 
+import json
 import logging
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,51 @@ from leech.constants import DEFAULT_SEED
 
 logger = logging.getLogger("leech.commands.merge_split")
 console = Console()
+
+
+def _extract_file_paths(parsed: Any) -> list[Path]:
+    """Extract file paths from _parse_and_validate_inputs result."""
+    if isinstance(parsed, tuple) and len(parsed) == 2:
+        # Multi-class: (files, labels)
+        return parsed[0]
+    elif isinstance(parsed, tuple) and len(parsed) == 3:
+        # Pairwise: (files, relabel, meta_labels)
+        return parsed[0]
+    return []
+
+
+def _propagate_prepare_config(input_paths: list[Path], output_dir: Path) -> None:
+    """Collect prepare_config.json from input directories, validate consistency, and write to output.
+
+    If no sidecar is found (old data), silently skips.
+    If multiple sidecars disagree on critical fields, logs a warning but writes the first one found.
+    """
+    configs: list[dict] = []
+    for p in input_paths:
+        sidecar = p.parent / "prepare_config.json"
+        if sidecar.exists():
+            with open(sidecar) as f:
+                configs.append(json.load(f))
+
+    if not configs:
+        return
+
+    # Validate consistency on critical fields
+    critical_keys = ["anchor", "refine_signal_map", "signal_norm", "reverse_signal", "motif_reference"]
+    first = configs[0]
+    for i, cfg in enumerate(configs[1:], start=1):
+        for key in critical_keys:
+            if cfg.get(key) != first.get(key):
+                logger.warning(
+                    f"prepare_config.json mismatch on '{key}': "
+                    f"input 0 has {first.get(key)!r}, input {i} has {cfg.get(key)!r}. "
+                    f"Using values from first input."
+                )
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    with open(output_dir / "prepare_config.json", "w") as f:
+        json.dump(first, f, indent=2)
+    logger.info(f"Propagated prepare_config.json to {output_dir}")
 
 
 def handle_merge_and_split(
@@ -68,6 +114,10 @@ def handle_merge_and_split(
 
     # Parse and validate inputs
     parsed = _parse_and_validate_inputs(input_chunks)
+
+    # Propagate prepare_config.json sidecar (extract file paths for propagation)
+    _all_input_files = _extract_file_paths(parsed)
+    _propagate_prepare_config(_all_input_files, output_dir)
 
     # Multi-class mode (N > 2 unique labels)
     if (
@@ -234,6 +284,10 @@ def handle_merge_and_split_kfold(
 
     # Parse and validate inputs
     parsed = _parse_and_validate_inputs(input_chunks)
+
+    # Propagate prepare_config.json sidecar
+    _all_input_files = _extract_file_paths(parsed)
+    _propagate_prepare_config(_all_input_files, output_dir)
 
     # Multi-class mode (N > 2 unique labels)
     if (

@@ -40,11 +40,11 @@ def handle_prepare(
     feature_start: int | None = None,
     feature_end: int | None = None,
     reverse_signal: bool = True,
-    anchor: str = "basecall",
+    anchor: str = "reference",
     signal_norm: str = "median_mad",
     pa_mean: float | None = None,
     pa_stdev: float | None = None,
-    refine_signal_map: bool = False,
+    refine_signal_map: bool = True,
     kmer_table: Path | None = None,
     scale_iters: int = 0,
 ) -> dict[str, Any]:
@@ -135,6 +135,14 @@ def handle_prepare(
             label_int=None,  # Will be assigned during merge-and-split
         ),
     )
+
+    # Write preparation config sidecar for downstream provenance
+    import json as _json
+
+    prepare_config_path = output_dir / "prepare_config.json"
+    with open(prepare_config_path, "w") as f:
+        _json.dump(config.to_dict(), f, indent=2)
+    logger.info(f"Saved preparation config to {prepare_config_path}")
 
     # Extract chunks (parallel or sequential)
     if workers > 1:

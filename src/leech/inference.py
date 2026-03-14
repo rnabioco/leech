@@ -506,7 +506,7 @@ def run_inference(
     reverse_signal: bool = True,
     num_workers: int = 0,
     chunk_size: int = 100,
-    anchor: str = "basecall",
+    anchor: str = "reference",
 ) -> None:
     """
     Run inference on POD5 and BAM files.
@@ -569,7 +569,7 @@ def run_inference(
             raise ValueError("--motif is required for Remora models (no config.json)")
 
         # Set up signal map refinement if model specifies it
-        if config.get("refine_signal_map", False):
+        if config.get("refine_signal_map", True):
             from leech.data import get_kmer_table
             from leech.signal_refine import SigMapRefiner
 
@@ -611,7 +611,7 @@ def run_inference(
             logger.info(f"Auto-read motif from config: {motif} (offset={motif_offset})")
 
         # Signal map refinement for leech models (needed for kmer residual signal channel)
-        if config.get("refine_signal_map", False) or config.get("signal_in_channels", 1) > 1:
+        if config.get("refine_signal_map", True) or config.get("signal_in_channels", 1) > 1:
             from leech.data import get_kmer_table
             from leech.signal_refine import SigMapRefiner
 
@@ -1100,7 +1100,7 @@ def run_bundle_inference(
     reverse_signal: bool = True,
     raw: bool = False,
     aggregation: str = "naive",
-    anchor: str = "basecall",
+    anchor: str = "reference",
     reference_fasta: Path | None = None,
     batch_size: int = 512,
     num_workers: int = 0,
@@ -1286,7 +1286,7 @@ def run_bundle_inference(
     # Signal map refinement for bundle models (needed for kmer residual signal channel)
     bundle_refine = False
     bundle_refiner = None
-    if config.get("refine_signal_map", False) or bundle_signal_in_channels > 1:
+    if config.get("refine_signal_map", True) or bundle_signal_in_channels > 1:
         from leech.data import get_kmer_table
         from leech.signal_refine import SigMapRefiner
 

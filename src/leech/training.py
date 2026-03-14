@@ -936,6 +936,24 @@ def train_model(
     else:
         _feature_end = _kmer_context
 
+    # Read preparation config sidecar if available (for provenance in config.json)
+    prepare_metadata: dict[str, Any] = {}
+    _sidecar_path = train_data_path.parent / "prepare_config.json"
+    if _sidecar_path.exists():
+        with open(_sidecar_path) as f:
+            prepare_metadata = json.load(f)
+        logger.info(f"Read preparation metadata from {_sidecar_path}")
+    else:
+        # Use correct defaults for old data without sidecar
+        prepare_metadata = {
+            "anchor": "reference",
+            "signal_norm": "median_mad",
+            "reverse_signal": True,
+            "refine_signal_map": True,
+            "motif_reference": "fasta",
+        }
+        logger.info("No prepare_config.json found, using correct defaults for preparation metadata")
+
     # Save config
     output_dir.mkdir(parents=True, exist_ok=True)
     config = {
@@ -978,6 +996,12 @@ def train_model(
         "augment_scale_max": augment_scale_max,
         "balance_groups": balance_groups,
         "label_map": label_map,
+        # Preparation metadata (from prepare_config.json sidecar)
+        "anchor": prepare_metadata.get("anchor", "reference"),
+        "signal_norm": prepare_metadata.get("signal_norm", "median_mad"),
+        "reverse_signal": prepare_metadata.get("reverse_signal", True),
+        "refine_signal_map": prepare_metadata.get("refine_signal_map", True),
+        "motif_reference": prepare_metadata.get("motif_reference", "fasta"),
         **model_kwargs,
     }
 

@@ -121,7 +121,11 @@ class TestIterBamWithPod5ReverseSignal:
                 iter_bam_with_pod5(
                     Path("fake.bam"),
                     Path("fake.pod5"),
-                    signal_config=SignalConfig(reverse_signal=reverse_signal),
+                    signal_config=SignalConfig(
+                        reverse_signal=reverse_signal,
+                        anchor="basecall",
+                        refine_signal_map=False,
+                    ),
                 )
             )
 
@@ -340,7 +344,11 @@ class TestParallelWorkerReverseSignal:
             # Build PrepareConfig with reverse_signal=True
             config_rev = PrepareConfig(
                 pod5_path=Path("fake.pod5"),
-                signal=SignalConfig(reverse_signal=True),
+                signal=SignalConfig(
+                    reverse_signal=True,
+                    anchor="basecall",
+                    refine_signal_map=False,
+                ),
                 motif=MotifConfig(motif=None, motif_reference="bam"),
                 chunk=ChunkConfig(),
                 labeling=LabelConfig(label="test", label_int=0),
@@ -354,7 +362,11 @@ class TestParallelWorkerReverseSignal:
             # Build PrepareConfig with reverse_signal=False
             config_no_rev = PrepareConfig(
                 pod5_path=Path("fake.pod5"),
-                signal=SignalConfig(reverse_signal=False),
+                signal=SignalConfig(
+                    reverse_signal=False,
+                    anchor="basecall",
+                    refine_signal_map=False,
+                ),
                 motif=MotifConfig(motif=None, motif_reference="bam"),
                 chunk=ChunkConfig(),
                 labeling=LabelConfig(label="test", label_int=0),

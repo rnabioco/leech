@@ -25,11 +25,11 @@ class SignalConfig:
     """How raw signal is processed into a LeechRead."""
 
     reverse_signal: bool = True
-    anchor: str = "basecall"
+    anchor: str = "reference"
     norm_method: str = "median_mad"
     pa_mean: float | None = None
     pa_stdev: float | None = None
-    refine_signal_map: bool = False
+    refine_signal_map: bool = True
     signal_refiner: SigMapRefiner | None = None
     compute_features: bool = True
 
@@ -73,6 +73,25 @@ class PrepareConfig:
     motif: MotifConfig = field(default_factory=MotifConfig)
     chunk: ChunkConfig = field(default_factory=ChunkConfig)
     labeling: LabelConfig = field(default_factory=LabelConfig)
+
+    def to_dict(self) -> dict:
+        """Serialize to a JSON-safe dict (excludes non-serializable fields)."""
+        return {
+            "anchor": self.signal.anchor,
+            "reverse_signal": self.signal.reverse_signal,
+            "signal_norm": self.signal.norm_method,
+            "refine_signal_map": self.signal.refine_signal_map,
+            "motif": self.motif.motif,
+            "motif_offset": self.motif.motif_offset,
+            "motif_reference": self.motif.motif_reference,
+            "skip_motif_indels": self.motif.skip_motif_indels,
+            "base_justify": self.chunk.base_justify,
+            "feature_start": self.chunk.feature_start,
+            "feature_end": self.chunk.feature_end,
+            "signal_context": list(self.chunk.signal_context),
+            "kmer_context": self.chunk.kmer_context,
+            "label": self.labeling.label,
+        }
 
 
 @dataclass

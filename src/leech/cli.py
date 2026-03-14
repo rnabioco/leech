@@ -176,8 +176,8 @@ def data():
 @click.option(
     "--anchor",
     type=click.Choice(["basecall", "reference"]),
-    default="basecall",
-    help='Anchor mode: "basecall" uses basecalled sequence, "reference" uses ref sequence + ref->signal mapping via CIGAR and trims signal to aligned region',
+    default="reference",
+    help='Anchor mode: "reference" (default) uses ref sequence + ref->signal mapping via CIGAR, "basecall" uses basecalled sequence',
 )
 @click.option(
     "--signal-norm",
@@ -198,10 +198,9 @@ def data():
     help="Global scale for pa_scaling normalization (from basecaller model)",
 )
 @click.option(
-    "--refine-signal-map",
-    is_flag=True,
-    default=False,
-    help="Apply signal map refinement using kmer level tables (improves base boundary accuracy)",
+    "--refine-signal-map/--no-refine-signal-map",
+    default=True,
+    help="Apply signal map refinement using kmer level tables (default: enabled). Use --no-refine-signal-map for DNA data.",
 )
 @click.option(
     "--kmer-table",
@@ -1135,8 +1134,8 @@ def ablation(model, test_data, output_dir, device, no_plot):
 @click.option(
     "--anchor",
     type=click.Choice(["basecall", "reference"]),
-    default="basecall",
-    help='Anchor mode: "basecall" uses basecalled sequence, "reference" uses ref sequence + ref->signal mapping via CIGAR',
+    default="reference",
+    help='Anchor mode: "reference" (default) uses ref sequence + ref->signal mapping via CIGAR, "basecall" uses basecalled sequence',
 )
 @click.option(
     "--reference-anchored",
