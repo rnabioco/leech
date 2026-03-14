@@ -600,7 +600,6 @@ def compute_signal_residual(
         Float32 array of shape (signal_len,) — same shape as signal
     """
     sig_len = len(signal)
-    num_bases = len(seq_to_sig_map) - 1
     lengths = np.diff(seq_to_sig_map).astype(np.intp)
 
     # Build per-sample expected level for all bases, then subtract

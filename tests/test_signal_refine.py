@@ -248,12 +248,12 @@ class TestSigMapRefiner:
             for b in "ACGT":
                 for c in "ACGT":
                     kmer_to_level[a + b + c] = hash(a + b + c) % 100 / 50.0 - 1.0
-        defaults = dict(
-            kmer_to_level=kmer_to_level,
-            kmer_len=3,
-            do_rough_rescale=False,
-            scale_iters=0,
-        )
+        defaults = {
+            "kmer_to_level": kmer_to_level,
+            "kmer_len": 3,
+            "do_rough_rescale": False,
+            "scale_iters": 0,
+        }
         defaults.update(kwargs)
         return SigMapRefiner(**defaults)
 

@@ -466,9 +466,9 @@ def validate_band(
 # ============================================================================
 
 
-def _score(s: float, l: float) -> float:
+def _score(s: float, level: float) -> float:
     """Squared error between signal sample and expected level."""
-    tmp = s - l
+    tmp = s - level
     return tmp * tmp
 
 

@@ -9,8 +9,6 @@ This model is designed for comparison against TransformerDwell to measure the
 impact of the per-signal-sample kmer residual channel.
 """
 
-import math
-
 import torch
 import torch.nn as nn
 

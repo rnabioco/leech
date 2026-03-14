@@ -1,7 +1,6 @@
 """Tests for kmer residual features and signal residual channel."""
 
 import numpy as np
-import pytest
 import torch
 
 from leech.features import compute_kmer_residual_features, compute_signal_residual
