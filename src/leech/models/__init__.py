@@ -47,6 +47,8 @@ from leech.models.tcn_dwell import TCNDwell
 from leech.models.tcn_dwell_gn import TCNDwellGN
 from leech.models.tcn_dwell_ln import TCNDwellLN
 from leech.models.tcn_dwell_residual import TCNDwellResidual
+from leech.models.tcn_dwell_residual_gn import TCNDwellResidualGN
+from leech.models.tcn_dwell_residual_ln import TCNDwellResidualLN
 from leech.models.transformer_dwell import TransformerDwell
 from leech.models.transformer_dwell_residual import TransformerDwellResidual
 
@@ -70,6 +72,8 @@ __all__ = [
     "TCNDwellGN",
     "TCNDwellLN",
     "TCNDwellResidual",
+    "TCNDwellResidualGN",
+    "TCNDwellResidualLN",
     "ResNetDwell",
     "ModelInferenceWrapper",
     "TracedModelWrapper",
@@ -98,6 +102,8 @@ MODEL_REGISTRY = {
     "TCNDwellGN": TCNDwellGN,
     "TCNDwellLN": TCNDwellLN,
     "TCNDwellResidual": TCNDwellResidual,
+    "TCNDwellResidualGN": TCNDwellResidualGN,
+    "TCNDwellResidualLN": TCNDwellResidualLN,
     "ResNetDwell": ResNetDwell,
 }
 

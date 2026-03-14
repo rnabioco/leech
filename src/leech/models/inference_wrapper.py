@@ -43,6 +43,8 @@ class ModelInferenceWrapper:
         "TCNDwellGN",
         "TCNDwellLN",
         "TCNDwellResidual",
+        "TCNDwellResidualGN",
+        "TCNDwellResidualLN",
         "ResNetDwell",
     }
 
@@ -60,6 +62,8 @@ class ModelInferenceWrapper:
         "TCNDwellGN",
         "TCNDwellLN",
         "TCNDwellResidual",
+        "TCNDwellResidualGN",
+        "TCNDwellResidualLN",
         "ResNetDwell",
         "ConvOnly",
     }
