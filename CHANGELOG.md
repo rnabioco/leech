@@ -7,6 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-03-14
+
+### Added
+
+- 12 new model architectures (20 total): BatchNorm (BN), Attention, GroupNorm (GN), LayerNorm (LN) variants for ConvLSTM; TCNDwellGN, TCNDwellLN, TCNDwellResidual; TransformerDwellResidual
+- Multi-channel signal input (`signal_in_channels`) across all architectures for 2-channel (raw + kmer residual) models
+- Kmer residual features: `kmer_expected`, `kmer_residual`, `kmer_residual_abs` from kmer level table lookup
+- Signal map refinement rewritten to match Remora's banded Viterbi algorithm with iterative Theil-Sen rescaling
+- Signal-level kmer encoding (`signal_kmer`) as default sequence encoding
+- Reference-anchored mode (`--anchor reference`) and `pa_scaling` normalization
+- Composable config dataclasses (`configs.py`) replacing 6-layer parameter threading
+- `feature_start`/`feature_end` parameters replacing confusing `dwell_margin` params
+- Dwell cross-attention in TransformerDwell, TCNDwell, ResNetDwell, ConvOnly
+- Multi-class classification with confidence-weighted and tournament pairwise aggregation
+- K-fold cross-validation with stratified read-level splits (`--k-fold`)
+- Balance-groups sampling for equal source group contribution per epoch
+- Platt scaling calibration (`leech model calibrate`) with guardrails and best-fold selection
+- TorchScript export (`leech model export`) for standalone model deployment
+- Rust-accelerated signal statistics via PyO3 (`leech-core` crate)
+- `check-rust` CLI command to verify Rust extension availability
+- Auto-load bundled kmer table when `--refine-signal-map` has no `--kmer-table`
+- `--reference-fasta` support in `leech predict` for reference-anchored bundle inference
+- Remora-compatible model variants (ConvLSTMRemora, ConvLSTMRemoraBase)
+- Parallel inference with batch POD5 reads in workers
+- GitHub Actions release workflow with platform wheel builds (linux x86_64/aarch64, macOS x86_64/arm64)
+
+### Changed
+
+- Default sequence encoding from `base_onehot` to `signal_kmer`
+- Default `scale_iters` from 0 to 2 for signal map refinement
+- Migrate model export from `torch.jit` to `torch.export` (PyTorch 2+)
+- Unify `--anchor` flag across `prepare` and `predict` commands
+- Lazy-load `MODEL_REGISTRY` to speed up CLI help (5.3s to 0.6s)
+- Lazy imports in `__init__.py` to cut CLI startup from ~9s to ~0.5s
+- Rust signal stats 217x faster than NumPy; pre-tensorize dataset; flatten serialization
+- Enable `torch.compile` on CPU/GPU, TF32 matmul precision, `inference_mode` in eval
+- Optimize test suite runtime from 287s to ~20s
+- Speed up `leech eval test` with GPU optimizations and larger batch size
+- Refactor CLI handlers into `commands/` subpackage
+- Upgrade PyO3 and rust-numpy from 0.23 to 0.28
+
+### Fixed
+
+- Ensure `model_best.pt` always exists after training resume
+- Load all checkpoints/bundles to CPU first to avoid device mismatch
+- Batch bundle inference for GPU utilization
+- Normalize `signal_in_channels` in architecture config comparison
+- Return reference-relative coords from ReferenceMotifSearcher when `anchor=reference`
+- Prevent `num_out` from leaking into model constructors that don't accept it
+- Resolve constructor params for `**kwargs` subclasses in `_instantiate_model`
+- Set `num_workers=0` in evaluation DataLoader to reduce memory usage
+- Fix `torch.compile` `_orig_mod` prefix in checkpoint loading
+- Fix missing `model_best.pt` when resuming completed training
+- Fix bundle discovery for k-fold CV and batch size for small datasets
+- Fix evaluation to use softmax for cross-entropy (multi-output) models
+- Fix stale FASTA index by regenerating .fai before opening
+- Fix DataLoader workers in parallel grid search
+- Rename ResNetDwell `bn1/bn2` to `norm1/norm2` to match checkpoint migration
+- Strip explicit kwargs from model config to prevent duplicates
+
 ## [0.2.0] - 2026-03-06
 
 ### Added

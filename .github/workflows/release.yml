@@ -3,20 +3,103 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'  # Trigger on version tags like v0.1.0, v0.1.0-alpha, etc.
+      - 'v*'
 
 permissions:
   contents: write
 
 jobs:
+  # ── Build leech-core (Rust extension) platform wheels ──────────────
+  build-rust-wheels:
+    name: Build leech-core (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+          - os: macos-13
+            target: x86_64-apple-darwin
+          - os: macos-14
+            target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist
+          manylinux: auto
+          working-directory: rust
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-rust-${{ matrix.target }}
+          path: rust/dist/*.whl
+
+  # ── Build leech-core sdist ─────────────────────────────────────────
+  build-rust-sdist:
+    name: Build leech-core sdist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build sdist
+        uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+          working-directory: rust
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-rust-sdist
+          path: rust/dist/*.tar.gz
+
+  # ── Build leech (pure Python) sdist + wheel ────────────────────────
+  build-python:
+    name: Build leech Python package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Build sdist and wheel
+        run: uv build --out-dir dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-python
+          path: dist/*
+
+  # ── Create GitHub Release with all artifacts ───────────────────────
   release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
+    needs: [build-rust-wheels, build-rust-sdist, build-python]
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          path: dist
+          merge-multiple: true
+
+      - name: List release artifacts
+        run: ls -lh dist/
 
       - name: Extract version from tag
         id: get_version
@@ -31,19 +114,14 @@ jobs:
           VERSION="${{ steps.get_version.outputs.version }}"
           if [[ "$VERSION" == *"-alpha"* ]] || [[ "$VERSION" == *"-beta"* ]] || [[ "$VERSION" == *"-rc"* ]]; then
             echo "prerelease=true" >> $GITHUB_OUTPUT
-            echo "This is a pre-release: $VERSION"
           else
             echo "prerelease=false" >> $GITHUB_OUTPUT
-            echo "This is a stable release: $VERSION"
           fi
 
       - name: Extract changelog for this version
         id: changelog
         run: |
           VERSION="${{ steps.get_version.outputs.version }}"
-
-          # Extract the section for this version from CHANGELOG.md
-          # This looks for the version heading and captures everything until the next version heading
           CHANGELOG_CONTENT=$(awk -v ver="$VERSION" '
             /^## \[/ {
               if (found) exit
@@ -52,8 +130,6 @@ jobs:
             }
             found { print }
           ' CHANGELOG.md)
-
-          # If empty, try without brackets (e.g., ## [0.1.0] vs ## 0.1.0)
           if [ -z "$CHANGELOG_CONTENT" ]; then
             CHANGELOG_CONTENT=$(awk -v ver="$VERSION" '
               /^## / {
@@ -64,13 +140,10 @@ jobs:
               found { print }
             ' CHANGELOG.md)
           fi
-
-          # Save to file to preserve formatting
           if [ -n "$CHANGELOG_CONTENT" ]; then
             echo "$CHANGELOG_CONTENT" > changelog_extract.md
             echo "found=true" >> $GITHUB_OUTPUT
           else
-            echo "No changelog entry found for version $VERSION"
             echo "found=false" >> $GITHUB_OUTPUT
             touch changelog_extract.md
           fi
@@ -82,7 +155,8 @@ jobs:
           body_path: ${{ steps.changelog.outputs.found == 'true' && 'changelog_extract.md' || '' }}
           prerelease: ${{ steps.check_prerelease.outputs.prerelease }}
           draft: false
-          generate_release_notes: true  # Auto-generate from commits/PRs using .github/release.yml config
+          generate_release_notes: true
+          files: dist/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -94,11 +168,7 @@ jobs:
           echo "- **Tag:** ${{ steps.get_version.outputs.tag }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Pre-release:** ${{ steps.check_prerelease.outputs.prerelease }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "View the release at: https://github.com/${{ github.repository }}/releases/tag/${{ steps.get_version.outputs.tag }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          if [ "${{ steps.changelog.outputs.found }}" == "true" ]; then
-            echo "✅ Changelog section found and included" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "⚠️ No changelog section found for this version" >> $GITHUB_STEP_SUMMARY
-          fi
-          echo "✅ Auto-generated release notes from commits/PRs" >> $GITHUB_STEP_SUMMARY
+          echo "### Artifacts" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          ls -1 dist/ >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY

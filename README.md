@@ -101,33 +101,34 @@ uv run leech predict \
 
 ## Model architectures
 
-| Model | Description |
-|-------|-------------|
-| **ConvLSTMDwell** | Conv-LSTM with dwell features (recommended) |
-| ConvLSTMBase | Baseline without dwell features (for comparison) |
-| ConvLSTMRemora | Remora-compatible architecture with dwell features |
-| ConvLSTMRemoraBase | Remora-compatible baseline (no dwell features) |
-| TransformerDwell | Transformer with multi-head self-attention |
-| ConvOnly | Pure CNN with multi-scale convolutions |
-| TCNDwell | Temporal Convolutional Network |
-| ResNetDwell | Residual network |
+20 architectures across 5 families, all supporting multi-channel signal input (`signal_in_channels`):
 
-Batch normalization (BN) and attention pooling variants are available for ConvLSTMBase and ConvLSTMDwell models (e.g., ConvLSTMDwellBN, ConvLSTMDwellAttn, ConvLSTMDwellBNAttn).
+| Family | Models | Description |
+|--------|--------|-------------|
+| **ConvLSTM** | ConvLSTMDwell (recommended), ConvLSTMBase | Conv-LSTM with 3 branches (signal, sequence, dwell/level features) |
+| **ConvLSTM variants** | +BN, +Attn, +BNAttn, +GNAttn, +LNAttn | Batch/group/layer normalization and attention pooling |
+| **Remora-compat** | ConvLSTMRemora, ConvLSTMRemoraBase | Remora-compatible architecture for direct comparison |
+| **Transformer** | TransformerDwell, TransformerDwellResidual | Multi-head self-attention; Residual variant uses 2-channel signal (raw + kmer residual) |
+| **TCN** | TCNDwell, +GN, +LN, +Residual | Temporal Convolutional Network with dilated convolutions |
+| **Other** | ResNetDwell, ConvOnly | Residual network; pure CNN with multi-scale convolutions |
 
 ## Training features
 
 - **Loss functions**: BCE, focal loss (for class imbalance), and cross-entropy
 - **Regularization**: weight decay, gradient clipping, dropout
 - **LR scheduling**: reduce-on-plateau, cosine annealing with warmup
-- **LR warmup**: linear warmup over configurable epochs
 - **Data augmentation**: mixup (signal jitter + random scaling)
-- **Mixed precision**: FP16 training on CUDA
+- **Mixed precision**: FP16 training on CUDA; TF32 matmul on Ampere+
+- **Performance**: `torch.compile` support, Rust-accelerated signal statistics (217x)
 - **Class balancing**: automatic class weight computation
-- **Checkpoint resume**: continue training from any checkpoint
-- **Sequence encoding**: base one-hot or signal-level kmer encoding
 - **Balance-groups sampling**: equal contribution per source group per epoch
 - **K-fold cross-validation**: stratified read-level k-fold splits
 - **Platt calibration**: post-hoc Platt scaling for probability calibration
+- **Signal map refinement**: Viterbi-based kmer level table refinement (matches Remora)
+- **Kmer residual features**: expected level, signed/unsigned deviation from kmer table
+- **Multi-channel signal**: 2-channel input (raw + kmer residual) for Residual model variants
+- **Aggregation**: naive, confidence-weighted, and tournament pairwise aggregation
+- **Composable config**: dataclass-based configuration shared between prep and inference
 - **TorchScript export**: standalone model export for deployment without leech
 
 ## Snakemake pipeline

@@ -45,7 +45,8 @@ leech data prepare --pod5 FILE --bam FILE --output-dir DIR [OPTIONS]
 | `--feature-set STR` | `signal+dwell+levels` | Features to extract (combine with `+`) |
 | `--signal-context INT` | `200` | Signal samples on each side of motif |
 | `--kmer-context INT` | `5` | K-mer bases on each side of motif |
-| `--dwell-margin INT` | `0` | Extra bases for dwell/feature arrays (use `15` for dwell_offset tuning) |
+| `--feature-start INT` | `-5` | Feature window start offset from focus base (negative = toward tRNA body) |
+| `--feature-end INT` | `5` | Feature window end offset from focus base (positive = toward adaptor) |
 
 **Motif search:**
 
@@ -156,16 +157,15 @@ leech model train --train-data FILES --val-data FILES --model MODEL --output-dir
 | `--model MODEL` | Architecture name (see below) |
 | `--output-dir DIR` | Directory for model checkpoints |
 
-**Available architectures:**
+**Available architectures (20 total):**
 
-| Model | Description |
-|-------|-------------|
-| `ConvLSTMDwell` | Conv-LSTM with dwell features (recommended) |
-| `ConvLSTMBase` | Baseline without dwell features (for comparison) |
-| `TransformerDwell` | Transformer with multi-head self-attention |
-| `ConvOnly` | Pure CNN with multi-scale convolutions |
-| `TCNDwell` | Temporal Convolutional Network |
-| `ResNetDwell` | Residual network |
+| Family | Models |
+|--------|--------|
+| ConvLSTM | `ConvLSTMDwell` (recommended), `ConvLSTMBase`, +BN, +Attn, +BNAttn, +GNAttn, +LNAttn variants |
+| Remora-compat | `ConvLSTMRemora`, `ConvLSTMRemoraBase` |
+| Transformer | `TransformerDwell`, `TransformerDwellResidual` (2-channel signal) |
+| TCN | `TCNDwell`, `TCNDwellGN`, `TCNDwellLN`, `TCNDwellResidual` (2-channel signal) |
+| Other | `ResNetDwell`, `ConvOnly` |
 
 **Core training options:**
 
