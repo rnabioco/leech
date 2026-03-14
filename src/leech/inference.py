@@ -371,6 +371,7 @@ class InferenceWorkerConfig:
     dwell_margin_right: int
     wide_features: bool
     requires_features: bool
+    signal_in_channels: int
     reverse_signal: bool
     # Reference-anchored mode + normalization + refinement
     anchor: str
@@ -424,7 +425,7 @@ def _inference_worker(
                     raw_signal=raw_signal,
                     move_table=read_info.to_move_table(),
                     reverse_signal=config.reverse_signal,
-                    compute_features=config.requires_features,
+                    compute_features=config.requires_features or config.signal_in_channels > 1,
                     anchor=config.anchor,
                     reference_sequence=read_info.reference_sequence,
                     cigar_tuples=read_info.cigar_tuples,
@@ -759,7 +760,9 @@ def run_inference(
         model_wrapper.eval()
 
     # Skip feature computation when model doesn't need them (big speedup)
-    compute_features = requires_features
+    # But always compute when signal_in_channels > 1 (needed for kmer residual)
+    signal_in_channels = config.get("signal_in_channels", 1)
+    compute_features = requires_features or signal_in_channels > 1
 
     if num_workers > 0:
         # ---- Parallel path ----
@@ -796,6 +799,7 @@ def run_inference(
             dwell_margin_right=dwell_margin_right,
             wide_features=wide_features,
             requires_features=requires_features,
+            signal_in_channels=signal_in_channels,
             reverse_signal=reverse_signal,
             anchor=anchor,
             norm_method=norm_method,
@@ -1298,6 +1302,29 @@ def run_bundle_inference(
 
     first_wrapper = next(iter(wrappers.values()))
     needs_features = first_wrapper.requires_features
+    bundle_signal_in_channels = config.get("signal_in_channels", 1)
+    bundle_compute_features = needs_features or bundle_signal_in_channels > 1
+
+    # Signal map refinement for bundle models (needed for kmer residual signal channel)
+    bundle_refine = False
+    bundle_refiner = None
+    if config.get("refine_signal_map", False) or bundle_signal_in_channels > 1:
+        from leech.data import get_kmer_table
+        from leech.signal_refine import SigMapRefiner
+
+        kmer_table_path = get_kmer_table()
+        bundle_refiner = SigMapRefiner.from_table(
+            kmer_table_path,
+            half_bandwidth=config.get("refine_half_bandwidth", 5),
+            do_rough_rescale=config.get("refine_do_rough_rescale", True),
+            scale_iters=config.get("refine_scale_iters", -1),
+            center_idx=config.get("refine_kmer_center_idx", -1),
+        )
+        bundle_refine = True
+        logger.info(
+            f"Signal map refinement enabled for bundle "
+            f"(signal_in_channels={bundle_signal_in_channels})"
+        )
 
     # ── Phase 1: Extract all chunks into memory ──
     chunk_signals: list[torch.Tensor] = []
@@ -1316,6 +1343,9 @@ def run_bundle_inference(
             reverse_signal=reverse_signal,
             anchor=anchor,
             reference_sequences=reference_sequences,
+            compute_features=bundle_compute_features,
+            refine_signal_map=bundle_refine,
+            signal_refiner=bundle_refiner,
         ):
             n_reads += 1
             progress.update(task, advance=1, description=f"[cyan]Extracted {len(chunk_signals)} chunks from {n_reads} reads...")

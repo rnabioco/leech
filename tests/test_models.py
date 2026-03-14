@@ -39,6 +39,7 @@ class TestModelRegistry:
             "ConvLSTMRemora",
             "ConvLSTMRemoraBase",
             "TransformerDwell",
+            "TransformerDwellResidual",
             "ConvOnly",
             "TCNDwell",
             "TCNDwellGN",
