@@ -26,10 +26,37 @@ from leech.constants import (
     DEFAULT_WEIGHT_DECAY,
 )
 
-# Model choices for CLI — derived from MODEL_REGISTRY to stay in sync
-from leech.models import MODEL_REGISTRY
+# Model choices for CLI — lazy to avoid importing torch at CLI load time
+def get_model_choices() -> list[str]:
+    """Return sorted model names, importing MODEL_REGISTRY on first call."""
+    from leech.models import MODEL_REGISTRY
 
-MODEL_CHOICES = sorted(MODEL_REGISTRY.keys())
+    return sorted(MODEL_REGISTRY.keys())
+
+
+class LazyChoice(click.Choice):
+    """A click.Choice that defers resolving its choices until first access.
+
+    This avoids importing heavy dependencies (e.g., torch via MODEL_REGISTRY)
+    at CLI decoration time, keeping ``leech --help`` fast.
+    """
+
+    def __init__(self, choices_fn, case_sensitive=True):
+        self._choices_fn = choices_fn
+        self._resolved = False
+        self.case_sensitive = case_sensitive
+        self.name = "CHOICE"
+
+    @property
+    def choices(self):
+        if not self._resolved:
+            self._choices = self._choices_fn()
+            self._resolved = True
+        return self._choices
+
+    @choices.setter
+    def choices(self, value):
+        self._choices = value
 
 
 def training_hyperparams(f):

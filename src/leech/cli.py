@@ -11,7 +11,7 @@ from pathlib import Path
 import rich_click as click
 
 from leech.cli_config import configure_rich_click, console
-from leech.cli_options import MODEL_CHOICES, training_hyperparams
+from leech.cli_options import LazyChoice, get_model_choices, training_hyperparams
 from leech.constants import DEFAULT_DEVICE, DEFAULT_SEED
 from leech.logging_config import setup_logging
 
@@ -411,7 +411,7 @@ def merge(input_chunks, output_dir, train_split, val_split, seed, k_fold, compar
 )
 @click.option(
     "--model",
-    type=click.Choice(MODEL_CHOICES),
+    type=LazyChoice(get_model_choices),
     default="ConvLSTMDwell",
     help="Model architecture",
 )
@@ -716,7 +716,7 @@ def export(model_dir, output):
 )
 @click.option(
     "--model",
-    type=click.Choice(MODEL_CHOICES),
+    type=LazyChoice(get_model_choices),
     default="ConvLSTMDwell",
     help="Model architecture",
 )
