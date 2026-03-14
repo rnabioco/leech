@@ -464,13 +464,27 @@ def _inference_worker(
                     if chunk is None:
                         continue
 
-                    # Signal
+                    # Signal (with optional kmer residual channel)
                     sig = chunk["signal"].astype(np.float32)
+                    sig_residual = chunk.get("signal_residual")
                     if len(sig) < config.signal_len:
                         sig = np.pad(sig, (0, config.signal_len - len(sig)), mode="constant")
+                        if sig_residual is not None:
+                            sig_residual = np.pad(
+                                sig_residual.astype(np.float32),
+                                (0, config.signal_len - len(sig_residual)),
+                                mode="constant",
+                            )
                     elif len(sig) > config.signal_len:
                         start = (len(sig) - config.signal_len) // 2
                         sig = sig[start : start + config.signal_len]
+                        if sig_residual is not None:
+                            sig_residual = sig_residual.astype(np.float32)[
+                                start : start + config.signal_len
+                            ]
+                    if sig_residual is not None:
+                        sig_residual = sig_residual.astype(np.float32)
+                        sig = np.stack([sig, sig_residual], axis=0)  # (2, signal_len)
 
                     # Sequence encoding
                     if config.seq_encoding == "signal_kmer":
@@ -636,6 +650,29 @@ def run_inference(
             motif = config["motif"]
             motif_offset = config.get("motif_offset", motif_offset)
             logger.info(f"Auto-read motif from config: {motif} (offset={motif_offset})")
+
+        # Signal map refinement for leech models (needed for kmer residual signal channel)
+        if config.get("refine_signal_map", False) or config.get("signal_in_channels", 1) > 1:
+            from leech.data import get_kmer_table
+            from leech.signal_refine import SigMapRefiner
+
+            kmer_table_path = get_kmer_table()
+            half_bw = config.get("refine_half_bandwidth", 5)
+            do_rescale = config.get("refine_do_rough_rescale", True)
+            scale_iters = config.get("refine_scale_iters", -1)
+            center_idx = config.get("refine_kmer_center_idx", -1)
+            signal_refiner = SigMapRefiner.from_table(
+                kmer_table_path,
+                half_bandwidth=half_bw,
+                do_rough_rescale=do_rescale,
+                scale_iters=scale_iters,
+                center_idx=center_idx,
+            )
+            refine_signal_map = True
+            logger.info(
+                f"Signal map refinement enabled for leech model "
+                f"(signal_in_channels={config.get('signal_in_channels', 1)})"
+            )
 
     # Use asymmetric context if available, otherwise fall back to symmetric
     left_ctx = config.get("left_context")
@@ -906,15 +943,29 @@ def run_inference(
                     if chunk is None:
                         continue
 
-                    # Signal
+                    # Signal (with optional kmer residual channel)
                     signal_array = chunk["signal"]
                     assert isinstance(signal_array, np.ndarray)
                     sig = signal_array.astype(np.float32)
+                    sig_residual = chunk.get("signal_residual")
                     if len(sig) < signal_len:
                         sig = np.pad(sig, (0, signal_len - len(sig)), mode="constant")
+                        if sig_residual is not None:
+                            sig_residual = np.pad(
+                                sig_residual.astype(np.float32),
+                                (0, signal_len - len(sig_residual)),
+                                mode="constant",
+                            )
                     elif len(sig) > signal_len:
                         start = (len(sig) - signal_len) // 2
                         sig = sig[start : start + signal_len]
+                        if sig_residual is not None:
+                            sig_residual = sig_residual.astype(np.float32)[
+                                start : start + signal_len
+                            ]
+                    if sig_residual is not None:
+                        sig_residual = sig_residual.astype(np.float32)
+                        sig = np.stack([sig, sig_residual], axis=0)  # (2, signal_len)
 
                     # Sequence
                     seq_enc = _encode_sequence_for_inference(
@@ -1293,10 +1344,21 @@ def run_bundle_inference(
             if chunk is None:
                 continue
 
-            # Prepare tensors
+            # Prepare tensors (with optional kmer residual channel)
             signal_array = chunk["signal"]
             assert isinstance(signal_array, np.ndarray)
-            signal_t = torch.from_numpy(signal_array.astype(np.float32))
+            sig = signal_array.astype(np.float32)
+            sig_residual = chunk.get("signal_residual")
+            if sig_residual is not None:
+                sig_residual = sig_residual.astype(np.float32)
+                if len(sig_residual) < len(sig):
+                    sig_residual = np.pad(
+                        sig_residual, (0, len(sig) - len(sig_residual)), mode="constant"
+                    )
+                elif len(sig_residual) > len(sig):
+                    sig_residual = sig_residual[: len(sig)]
+                sig = np.stack([sig, sig_residual], axis=0)  # (2, signal_len)
+            signal_t = torch.from_numpy(sig)
 
             seq_t = _encode_sequence_for_inference(
                 chunk, seq_encoding, signal_len, signal_kmer_context
