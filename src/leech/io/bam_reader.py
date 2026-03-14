@@ -112,8 +112,8 @@ class ReadInfo:
         mv_tag = aln.get_tag("mv")
         # Type narrowing: we know mv_tag is array-like
         assert hasattr(mv_tag, "__getitem__"), "mv tag must be indexable"
-        self.stride = int(mv_tag[0])  # type: ignore[index]
-        self.moves = mv_tag[1:]  # type: ignore[index]
+        self.stride = int(mv_tag[0])
+        self.moves = mv_tag[1:]
         self.num_samples = int(aln.get_tag("ns"))
         self.trim_offset = int(aln.get_tag("ts")) if aln.has_tag("ts") else 0
 

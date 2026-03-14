@@ -139,3 +139,10 @@ invalid-argument-type = "ignore"
 invalid-method-override = "ignore"
 not-subscriptable = "ignore"
 no-matching-overload = "ignore"
+# Union function call narrowing false positives (signal_refine.py core_func dispatch)
+too-many-positional-arguments = "ignore"
+missing-argument = "ignore"
+# pysam get_tag returns object; ty can't narrow to indexable
+call-non-callable = "ignore"
+# Stale type: ignore comments that newer ty no longer needs
+unused-type-ignore-comment = "ignore"
