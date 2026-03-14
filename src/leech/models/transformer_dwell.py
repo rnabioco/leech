@@ -120,7 +120,12 @@ class TransformerDwell(BaseModel):
 
         # Signal branch: Conv1d to project signal to d_model dimensions
         self.signal_conv = nn.Sequential(
-            nn.Conv1d(signal_in_channels, 64, kernel_size=DEFAULT_SIGNAL_KERNEL, padding=DEFAULT_SIGNAL_KERNEL // 2),
+            nn.Conv1d(
+                signal_in_channels,
+                64,
+                kernel_size=DEFAULT_SIGNAL_KERNEL,
+                padding=DEFAULT_SIGNAL_KERNEL // 2,
+            ),
             nn.ReLU(),
             nn.Conv1d(
                 64, d_model, kernel_size=DEFAULT_SIGNAL_KERNEL, padding=DEFAULT_SIGNAL_KERNEL // 2
@@ -151,7 +156,9 @@ class TransformerDwell(BaseModel):
         )
 
         # Positional encoding for signal/sequence branches
-        self.pos_encoding = PositionalEncoding(d_model, max_len=max(kmer_len, signal_len), dropout=dropout)
+        self.pos_encoding = PositionalEncoding(
+            d_model, max_len=max(kmer_len, signal_len), dropout=dropout
+        )
 
         # Transformer encoder for signal and sequence branches
         encoder_layer = nn.TransformerEncoderLayer(
@@ -236,8 +243,8 @@ class TransformerDwell(BaseModel):
         # Cross-attention: merged (kmer_len positions) queries
         # dwell features (kmer_len + margin positions)
         attn_out, _ = self.cross_attn(
-            query=merged,    # (batch, kmer_len, d_model*2)
-            key=feat_out,    # (batch, feat_len, d_model)
+            query=merged,  # (batch, kmer_len, d_model*2)
+            key=feat_out,  # (batch, feat_len, d_model)
             value=feat_out,  # (batch, feat_len, d_model)
         )  # attn_out: (batch, kmer_len, d_model*2)
 

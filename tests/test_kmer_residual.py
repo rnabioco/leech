@@ -65,9 +65,7 @@ class TestComputeKmerResidualFeatures:
         table = self._make_kmer_table()
         result = compute_kmer_residual_features(sig, s2s, seq, table, kmer_len=3)
 
-        np.testing.assert_allclose(
-            result["kmer_residual_abs"], np.abs(result["kmer_residual"])
-        )
+        np.testing.assert_allclose(result["kmer_residual_abs"], np.abs(result["kmer_residual"]))
 
     def test_matching_signal_gives_zero_residual(self):
         """When signal matches expected levels, residual ≈ 0."""

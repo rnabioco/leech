@@ -78,7 +78,9 @@ class ConvLSTMDwellLNAttn(BaseModel):
             seq_in_channels = 4
 
         # Signal branch (with LayerNorm)
-        self.signal_branch = SignalBranch(conv_channels=conv_channels, norm_type="layernorm", in_channels=signal_in_channels)
+        self.signal_branch = SignalBranch(
+            conv_channels=conv_channels, norm_type="layernorm", in_channels=signal_in_channels
+        )
 
         # Sequence branch (with LayerNorm)
         self.sequence_branch = SequenceBranch(

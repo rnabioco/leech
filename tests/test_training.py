@@ -637,9 +637,9 @@ class TestBestModelResumeGuarantee:
 
         # Verify the model weights match the original best (not the last)
         for key in original_best_state:
-            assert torch.equal(
-                original_best_state[key], restored_ckpt["model_state_dict"][key]
-            ), f"Weight mismatch in {key}: best model was not correctly restored"
+            assert torch.equal(original_best_state[key], restored_ckpt["model_state_dict"][key]), (
+                f"Weight mismatch in {key}: best model was not correctly restored"
+            )
 
     def test_checkpoint_contains_best_model_state(self, temp_chunks_file, tmp_path):
         """Verify that model_last.pt checkpoint contains best_model_state_dict."""
@@ -707,9 +707,9 @@ class TestBestModelResumeGuarantee:
         # match the original best (from the stored state dict in model_last.pt)
         restored_ckpt = torch.load(best_path, map_location="cpu")
         for key in original_best_state:
-            assert torch.equal(
-                original_best_state[key], restored_ckpt["model_state_dict"][key]
-            ), f"Weight mismatch in {key}"
+            assert torch.equal(original_best_state[key], restored_ckpt["model_state_dict"][key]), (
+                f"Weight mismatch in {key}"
+            )
 
 
 if __name__ == "__main__":

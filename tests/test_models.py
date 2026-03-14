@@ -431,16 +431,37 @@ class TestModelComparisons:
         elif model_name == "ConvLSTMDwell":
             config.update({"num_features": 5, "conv_channels": [4, 16, 32], "lstm_hidden": 16})
         elif model_name in ("ConvLSTMDwellGNAttn", "ConvLSTMDwellLNAttn"):
-            config.update({"num_features": 5, "dwell_margin": dwell_margin, "conv_channels": [4, 16, 32], "lstm_hidden": 16})
+            config.update(
+                {
+                    "num_features": 5,
+                    "dwell_margin": dwell_margin,
+                    "conv_channels": [4, 16, 32],
+                    "lstm_hidden": 16,
+                }
+            )
         elif model_name == "TransformerDwell":
-            config.update({"num_features": 5, "dwell_margin": dwell_margin, "d_model": 32, "nhead": 4, "num_layers": 1})
+            config.update(
+                {
+                    "num_features": 5,
+                    "dwell_margin": dwell_margin,
+                    "d_model": 32,
+                    "nhead": 4,
+                    "num_layers": 1,
+                }
+            )
         elif model_name == "ConvOnly":
             config.update({"num_features": 5, "dwell_margin": dwell_margin, "base_channels": 4})
         elif model_name == "ResNetDwell":
             config.update({"num_features": 5, "dwell_margin": dwell_margin, "base_channels": 4})
         elif model_name in ("TCNDwell", "TCNDwellGN", "TCNDwellLN"):
             config.update(
-                {"num_features": 5, "dwell_margin": dwell_margin, "hidden_channels": 16, "num_layers": 2, "kernel_size": 3}
+                {
+                    "num_features": 5,
+                    "dwell_margin": dwell_margin,
+                    "hidden_channels": 16,
+                    "num_layers": 2,
+                    "kernel_size": 3,
+                }
             )
 
         model = get_model(model_name, **config)
@@ -471,8 +492,13 @@ class TestModelComparisons:
         """Test that a complex model can be exported with torch.export."""
         from leech.util import export_model
 
-        config = {"signal_len": 100, "kmer_len": 11, "num_features": 5,
-                  "conv_channels": [4, 16, 32], "lstm_hidden": 16}
+        config = {
+            "signal_len": 100,
+            "kmer_len": 11,
+            "num_features": 5,
+            "conv_channels": [4, 16, 32],
+            "lstm_hidden": 16,
+        }
 
         model = get_model("ConvLSTMDwell", **config)
         full_config = {"model_name": "ConvLSTMDwell", **config}

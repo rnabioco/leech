@@ -217,8 +217,11 @@ class TestDatasetDwellOffset:
         kmer_len = 2 * kmer_context + 1
 
         chunks_file = self._make_chunks_file(
-            tmp_path, read_with_known_dwells,
-            kmer_context=kmer_context, feature_start=-15, feature_end=15,
+            tmp_path,
+            read_with_known_dwells,
+            kmer_context=kmer_context,
+            feature_start=-15,
+            feature_end=15,
         )
 
         dataset = LeechDataset(
@@ -239,8 +242,11 @@ class TestDatasetDwellOffset:
         kmer_len = 2 * kmer_context + 1
 
         chunks_file = self._make_chunks_file(
-            tmp_path, read_with_known_dwells,
-            kmer_context=kmer_context, feature_start=-15, feature_end=15,
+            tmp_path,
+            read_with_known_dwells,
+            kmer_context=kmer_context,
+            feature_start=-15,
+            feature_end=15,
         )
 
         # Offset=0
@@ -279,8 +285,11 @@ class TestDatasetDwellOffset:
         # feature_start=-10: kmer_start_in_features = -5 - (-10) = 5
         # width = 10+1+10 = 21, max offset = 21-11-5 = 5
         chunks_file = self._make_chunks_file(
-            tmp_path, read_with_known_dwells,
-            kmer_context=kmer_context, feature_start=-10, feature_end=10,
+            tmp_path,
+            read_with_known_dwells,
+            kmer_context=kmer_context,
+            feature_start=-10,
+            feature_end=10,
         )
 
         with pytest.raises(ValueError, match="dwell_offset.*exceeds.*feature width"):
@@ -310,8 +319,11 @@ class TestDatasetDwellOffset:
         kmer_len = 2 * kmer_context + 1
 
         chunks_file = self._make_chunks_file(
-            tmp_path, read_with_known_dwells,
-            kmer_context=kmer_context, feature_start=-15, feature_end=15,
+            tmp_path,
+            read_with_known_dwells,
+            kmer_context=kmer_context,
+            feature_start=-15,
+            feature_end=15,
         )
 
         dataset = LeechDataset(

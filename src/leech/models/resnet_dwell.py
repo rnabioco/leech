@@ -305,8 +305,8 @@ class ResNetDwell(BaseModel):
         # Cross-attention: merged (kmer_len positions) queries
         # dwell features (kmer_len + margin positions)
         attn_out, _ = self.cross_attn(
-            query=merged,    # (batch, kmer_len, merged_dim)
-            key=feat_out,    # (batch, feat_len, 256)
+            query=merged,  # (batch, kmer_len, merged_dim)
+            key=feat_out,  # (batch, feat_len, 256)
             value=feat_out,  # (batch, feat_len, 256)
         )  # attn_out: (batch, kmer_len, merged_dim)
 

@@ -398,10 +398,13 @@ class TestModelBundle:
                 f1_score = 0.80 + 0.05 * fold_idx
                 val_loss = 0.10 + 0.10 * fold_idx
                 with open(fold_dir / "summary.json", "w") as f:
-                    json.dump({
-                        "best_val_f1": f1_score,
-                        "final_val_loss": val_loss,
-                    }, f)
+                    json.dump(
+                        {
+                            "best_val_f1": f1_score,
+                            "final_val_loss": val_loss,
+                        },
+                        f,
+                    )
 
     def test_kfold_discovery_picks_best_fold(self, tmp_path, model_config):
         """Bundle CLI discovers fold_* subdirs and picks best fold by val F1."""

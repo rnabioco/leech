@@ -26,6 +26,7 @@ from leech.constants import (
     DEFAULT_WEIGHT_DECAY,
 )
 
+
 # Model choices for CLI — lazy to avoid importing torch at CLI load time
 def get_model_choices() -> list[str]:
     """Return sorted model names, importing MODEL_REGISTRY on first call."""

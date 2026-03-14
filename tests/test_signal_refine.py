@@ -151,11 +151,13 @@ class TestSeqBandedDP:
     def test_trivial_case(self):
         """Test DP with signal that perfectly matches expected levels."""
         # 3 bases, each 10 samples
-        signal = np.concatenate([
-            np.full(10, 1.0),
-            np.full(10, 2.0),
-            np.full(10, 3.0),
-        ]).astype(np.float32)
+        signal = np.concatenate(
+            [
+                np.full(10, 1.0),
+                np.full(10, 2.0),
+                np.full(10, 3.0),
+            ]
+        ).astype(np.float32)
         levels = np.array([1.0, 2.0, 3.0], dtype=np.float32)
         seq_to_sig = np.array([0, 10, 20, 30], dtype=np.int64)
 
@@ -186,14 +188,18 @@ class TestSeqBandedDP:
         path = seq_banded_dp(signal, levels, seq_band, DEFAULT_SHORT_DWELL_PEN)
 
         for i in range(1, len(path)):
-            assert path[i] > path[i - 1], f"Non-monotonic at position {i}: {path[i-1]} -> {path[i]}"
+            assert path[i] > path[i - 1], (
+                f"Non-monotonic at position {i}: {path[i - 1]} -> {path[i]}"
+            )
 
     def test_viterbi_algo(self):
         """Test with Viterbi algorithm (no dwell penalty)."""
-        signal = np.concatenate([
-            np.full(10, 1.0),
-            np.full(10, 2.0),
-        ]).astype(np.float32)
+        signal = np.concatenate(
+            [
+                np.full(10, 1.0),
+                np.full(10, 2.0),
+            ]
+        ).astype(np.float32)
         levels = np.array([1.0, 2.0], dtype=np.float32)
         seq_to_sig = np.array([0, 10, 20], dtype=np.int64)
 
@@ -214,11 +220,13 @@ class TestRefineSignalMapping:
 
     def test_basic_refinement(self):
         """Test that refine_signal_mapping returns valid path."""
-        signal = np.concatenate([
-            np.full(10, 1.0),
-            np.full(10, 2.0),
-            np.full(10, 3.0),
-        ]).astype(np.float32)
+        signal = np.concatenate(
+            [
+                np.full(10, 1.0),
+                np.full(10, 2.0),
+                np.full(10, 3.0),
+            ]
+        ).astype(np.float32)
         levels = np.array([1.0, 2.0, 3.0], dtype=np.float32)
         seq_to_sig = np.array([0, 10, 20, 30], dtype=np.int64)
 

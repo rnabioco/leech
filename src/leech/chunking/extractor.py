@@ -138,9 +138,7 @@ class LeechRead:
         else:
             signal_chunk = np.zeros(chunk_len, dtype=np.float32)
             signal_residual_chunk = (
-                np.zeros(chunk_len, dtype=np.float32)
-                if self.signal_residual is not None
-                else None
+                np.zeros(chunk_len, dtype=np.float32) if self.signal_residual is not None else None
             )
             fill_st = 0
             fill_en = chunk_len
@@ -154,9 +152,7 @@ class LeechRead:
             if fill_en > fill_st:
                 signal_chunk[fill_st:fill_en] = self.signal[sig_start:sig_end]
                 if self.signal_residual is not None and signal_residual_chunk is not None:
-                    signal_residual_chunk[fill_st:fill_en] = self.signal_residual[
-                        sig_start:sig_end
-                    ]
+                    signal_residual_chunk[fill_st:fill_en] = self.signal_residual[sig_start:sig_end]
         chunk_sig_len = chunk_len
 
         # Extract k-mer sequence context with safe boundary handling

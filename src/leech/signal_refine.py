@@ -250,13 +250,15 @@ def _theil_sen_rescale(
     if edge_filter_bases > 0:
         edge_filter[:edge_filter_bases] = False
         edge_filter[-edge_filter_bases:] = False
-    valid = np.logical_and.reduce((
-        dwells > dwell_min,
-        dwells < dwell_max,
-        np.abs(levels - np.mean(levels)) > min_abs_level,
-        np.logical_not(np.isnan(sig_means)),
-        edge_filter,
-    ))
+    valid = np.logical_and.reduce(
+        (
+            dwells > dwell_min,
+            dwells < dwell_max,
+            np.abs(levels - np.mean(levels)) > min_abs_level,
+            np.logical_not(np.isnan(sig_means)),
+            edge_filter,
+        )
+    )
 
     filt_means = sig_means[valid].astype(np.float64)
     filt_levels = levels[valid].astype(np.float64)
@@ -290,9 +292,7 @@ def _theil_sen_rescale(
 # ============================================================================
 
 
-def compute_dwell_pen_array(
-    target: int = 4, limit: int = 3, weight: float = 0.5
-) -> np.ndarray:
+def compute_dwell_pen_array(target: int = 4, limit: int = 3, weight: float = 0.5) -> np.ndarray:
     """
     Compute short dwell penalty array.
 
@@ -308,9 +308,7 @@ def compute_dwell_pen_array(
         Float32 array of length limit
     """
     if limit > target:
-        logger.warning(
-            f"Short dwell limit ({limit}) > target ({target}). Setting limit to target."
-        )
+        logger.warning(f"Short dwell limit ({limit}) > target ({target}). Setting limit to target.")
         limit = target
     return weight * np.square(np.arange(limit, dtype=np.float32) - target)
 
@@ -571,8 +569,12 @@ def _banded_forward_dwell_penalty_step(
     unpen_scores = np.empty(n_curr, dtype=np.float32)
     unpen_tb = np.empty(n_curr, dtype=np.int32)
     _banded_forward_vit_step(
-        unpen_scores, unpen_tb, prev_scores,
-        curr_level, curr_signal, band_start_diff,
+        unpen_scores,
+        unpen_tb,
+        prev_scores,
+        curr_level,
+        curr_signal,
+        band_start_diff,
     )
 
     for bp in range(n_curr):
@@ -798,7 +800,8 @@ def seq_banded_dp(
 
     # Forward pass
     _banded_forward_dp(
-        all_scores, tb,
+        all_scores,
+        tb,
         signal.astype(np.float32),
         levels.astype(np.float32),
         seq_band,
@@ -969,9 +972,7 @@ class SigMapRefiner:
             Tuple of (rescaled_signal, refined_seq_to_sig_map).
             If scale_iters == -1, mapping is unchanged (only normalization updated).
         """
-        expected = extract_levels(
-            sequence, self.kmer_to_level, self.kmer_len, self.center_idx
-        )
+        expected = extract_levels(sequence, self.kmer_to_level, self.kmer_len, self.center_idx)
 
         # Step 1: Rough rescale normalization (quantile-based)
         if self.do_rough_rescale:
@@ -1010,9 +1011,7 @@ class SigMapRefiner:
                 # Inter-iteration rescaling (only if scale_iters > 0)
                 if self.scale_iters > 0:
                     try:
-                        work_signal = _theil_sen_rescale(
-                            work_signal, expected, seq_to_sig_map
-                        )
+                        work_signal = _theil_sen_rescale(work_signal, expected, seq_to_sig_map)
                     except Exception as e:
                         logger.debug(f"Rescaling failed at iteration {iteration}: {e}")
                         break

@@ -416,9 +416,7 @@ def _inference_worker(
                     ]
                 else:
                     kmer_context = config.chunk.kmer_context
-                    positions = list(
-                        range(kmer_context, leech_read.num_bases - kmer_context)
-                    )
+                    positions = list(range(kmer_context, leech_read.num_bases - kmer_context))
 
                 for base_idx in positions:
                     chunk = leech_read.get_chunk(base_idx, config=config.chunk)
@@ -693,10 +691,7 @@ def run_inference(
     if _feature_start is not None or _feature_end is not None:
         _fs = _feature_start if _feature_start is not None else -_kmer_context
         _fe = _feature_end if _feature_end is not None else _kmer_context
-        logger.info(
-            f"Feature window: [{_fs}, {_fe}] relative to focus "
-            f"(width={_fe - _fs + 1})"
-        )
+        logger.info(f"Feature window: [{_fs}, {_fe}] relative to focus (width={_fe - _fs + 1})")
     if motif:
         logger.info(f"Motif: {motif} (offset={motif_offset})")
 
@@ -1200,14 +1195,9 @@ def run_bundle_inference(
     logger.info(f"seq_encoding: {seq_encoding}, base_justify: {base_justify}")
     _fs = _feature_start if _feature_start is not None else -_kmer_context
     _fe = _feature_end if _feature_end is not None else _kmer_context
-    logger.info(
-        f"dwell_offset: {dwell_offset}, feature window: [{_fs}, {_fe}]"
-    )
+    logger.info(f"dwell_offset: {dwell_offset}, feature window: [{_fs}, {_fe}]")
     if _feature_start is not None or _feature_end is not None:
-        logger.info(
-            f"Feature window: [{_fs}, {_fe}] relative to focus "
-            f"(width={_fe - _fs + 1})"
-        )
+        logger.info(f"Feature window: [{_fs}, {_fe}] relative to focus (width={_fe - _fs + 1})")
 
     # Select aggregation function
     if comparison_type == "pairwise":
@@ -1347,15 +1337,18 @@ def run_bundle_inference(
             reference_sequences=reference_sequences,
         ):
             n_reads += 1
-            progress.update(task, advance=1, description=f"[cyan]Extracted {len(chunk_signals)} chunks from {n_reads} reads...")
+            progress.update(
+                task,
+                advance=1,
+                description=f"[cyan]Extracted {len(chunk_signals)} chunks from {n_reads} reads...",
+            )
 
             # Find prediction position(s)
             if motif is None:
                 positions = list(range(kmer_context, leech_read.num_bases - kmer_context))
             else:
                 positions = [
-                    pos + motif_offset
-                    for pos in find_motif_in_sequence(leech_read.sequence, motif)
+                    pos + motif_offset for pos in find_motif_in_sequence(leech_read.sequence, motif)
                 ]
 
             if not positions:

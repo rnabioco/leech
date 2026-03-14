@@ -900,7 +900,9 @@ def test(model, test_data, output, device, batch_size):
     """Test a trained model on a holdout test set."""
     from leech.commands.eval import handle_test
 
-    handle_test(model=model, test_data=test_data, output=output, device=device, batch_size=batch_size)
+    handle_test(
+        model=model, test_data=test_data, output=output, device=device, batch_size=batch_size
+    )
 
 
 @eval.command()

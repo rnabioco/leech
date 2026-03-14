@@ -34,7 +34,9 @@ def make_norm(norm_type: str, num_channels: int) -> nn.Module:
     elif norm_type == "layernorm":
         return nn.GroupNorm(num_groups=1, num_channels=num_channels)
     else:
-        raise ValueError(f"Unknown norm_type '{norm_type}'. Use 'batchnorm', 'groupnorm', or 'layernorm'.")
+        raise ValueError(
+            f"Unknown norm_type '{norm_type}'. Use 'batchnorm', 'groupnorm', or 'layernorm'."
+        )
 
 
 def _resolve_norm_type(norm_type: str, use_batchnorm: bool) -> str | None:
