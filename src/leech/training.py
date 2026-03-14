@@ -911,15 +911,30 @@ def train_model(
         loss_type = "cross_entropy"
         logger.info(f"Model {model_name} has num_out={num_out}, switching to cross_entropy loss")
 
-    # Introspect dwell margin from raw training data (source of truth for feature width)
-    _dwell_margin_left = 0
-    _dwell_margin_right = 0
+    # Introspect feature_start/feature_end from raw training data
     _raw_chunk = train_dataset.chunks[0]
-    _raw_features = _raw_chunk.get("features")
-    if _raw_features is not None and _raw_features.ndim > 1 and _raw_features.shape[1] > kmer_len:
-        _feat_width = _raw_features.shape[1]
-        _dwell_margin_left = int(_raw_chunk.get("dwell_margin_left", (_feat_width - kmer_len) // 2))
-        _dwell_margin_right = _feat_width - kmer_len - _dwell_margin_left
+    _kmer_context = kmer_len // 2
+    if "feature_start" in _raw_chunk:
+        _feature_start = int(_raw_chunk["feature_start"])
+    elif "feature_left" in _raw_chunk:
+        _feature_start = -int(_raw_chunk["feature_left"])
+    elif "dwell_margin_left" in _raw_chunk:
+        _feature_start = -(_kmer_context + int(_raw_chunk["dwell_margin_left"]))
+    else:
+        _feature_start = -_kmer_context
+    if "feature_end" in _raw_chunk:
+        _feature_end = int(_raw_chunk["feature_end"])
+    elif "feature_right" in _raw_chunk:
+        _feature_end = int(_raw_chunk["feature_right"])
+    elif "dwell_margin_right" in _raw_chunk:
+        _raw_features = _raw_chunk.get("features")
+        if _raw_features is not None and _raw_features.ndim > 1:
+            _feat_width = _raw_features.shape[1]
+            _feature_end = _feat_width - 1 + _feature_start
+        else:
+            _feature_end = _kmer_context
+    else:
+        _feature_end = _kmer_context
 
     # Save config
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -930,8 +945,8 @@ def train_model(
         "num_features": num_features,
         "signal_in_channels": signal_in_channels,
         "dwell_offset": dwell_offset,
-        "dwell_margin_left": _dwell_margin_left,
-        "dwell_margin_right": _dwell_margin_right,
+        "feature_start": _feature_start,
+        "feature_end": _feature_end,
         "motif": motif,
         "motif_offset": motif_offset,
         "base_justify": base_justify,

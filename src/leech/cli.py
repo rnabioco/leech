@@ -156,22 +156,16 @@ def data():
     help='Where to center signal chunk within the focus base: "start" (first sample), "center" (midpoint, default), or "end" (last sample, useful for 3\' modifications)',
 )
 @click.option(
-    "--dwell-margin",
-    type=int,
-    default=0,
-    help="Extra bases on each side of dwell/feature arrays (symmetric fallback, default: 0). Overridden by --dwell-margin-left/--dwell-margin-right if provided.",
-)
-@click.option(
-    "--dwell-margin-left",
+    "--feature-start",
     type=int,
     default=None,
-    help="Extra dwell bases toward tRNA body (left of focus). Keep small to avoid isoacceptor confounds.",
+    help="Feature window start as signed offset from focus base. Negative=left, 0=at focus. Default: -kmer_context (-5).",
 )
 @click.option(
-    "--dwell-margin-right",
+    "--feature-end",
     type=int,
     default=None,
-    help="Extra dwell bases toward 3' adaptor (right of focus). Safe to be generous (constant sequence).",
+    help="Feature window end as signed offset from focus base (inclusive). Default: kmer_context (5). E.g., --feature-start 0 --feature-end 20 for right-only.",
 )
 @click.option(
     "--no-reverse-signal",
@@ -240,9 +234,8 @@ def prepare(
     workers,
     chunk_size,
     base_justify,
-    dwell_margin,
-    dwell_margin_left,
-    dwell_margin_right,
+    feature_start,
+    feature_end,
     no_reverse_signal,
     anchor,
     signal_norm,
@@ -288,9 +281,8 @@ def prepare(
         workers=workers,
         chunk_size=chunk_size,
         base_justify=base_justify,
-        dwell_margin=dwell_margin,
-        dwell_margin_left=dwell_margin_left,
-        dwell_margin_right=dwell_margin_right,
+        feature_start=feature_start,
+        feature_end=feature_end,
         reverse_signal=not no_reverse_signal,
         anchor=anchor,
         signal_norm=signal_norm,
@@ -771,7 +763,7 @@ def export(model_dir, output):
     "--dwell-offsets",
     type=str,
     default="0",
-    help='Dwell offset values to search (comma-separated or start:stop:step). Shifts dwell/feature window toward 3\' end. Default: "0" (no offset). Requires chunks prepared with --dwell-margin >= max offset.',
+    help='Dwell offset values to search (comma-separated or start:stop:step). Shifts dwell/feature window toward 3\' end. Default: "0" (no offset). Requires feature_left >= kmer_context + max_offset.',
 )
 @click.option(
     "--parallel",

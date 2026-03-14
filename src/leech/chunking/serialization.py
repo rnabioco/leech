@@ -54,7 +54,8 @@ def save_chunks(chunks: list[dict], output_path: Path) -> None:
     seq_to_sig_maps = []
     sequences_with_kmer_context = []
 
-    dwell_margin_lefts = []
+    feature_starts = []
+    feature_ends = []
     source_groups = []
     signal_residuals = []
     has_signal_residual = "signal_residual" in chunks[0]
@@ -70,7 +71,8 @@ def save_chunks(chunks: list[dict], output_path: Path) -> None:
         )  # Numeric label or -1
         read_ids.append(chunk["read_id"])
         base_indices.append(chunk["base_idx"])
-        dwell_margin_lefts.append(chunk.get("dwell_margin_left", 0))
+        feature_starts.append(chunk.get("feature_start", -5))
+        feature_ends.append(chunk.get("feature_end", 5))
         source_groups.append(chunk.get("source_group", ""))
         if has_signal_residual:
             signal_residuals.append(chunk["signal_residual"])
@@ -87,7 +89,8 @@ def save_chunks(chunks: list[dict], output_path: Path) -> None:
     labels_int_arr = np.array(labels_int, dtype=np.int64)  # Numeric labels
     read_ids_arr = np.array(read_ids, dtype=str)
     base_indices_arr = np.array(base_indices, dtype=np.int64)
-    dwell_margin_lefts_arr = np.array(dwell_margin_lefts, dtype=np.int64)
+    feature_starts_arr = np.array(feature_starts, dtype=np.int64)
+    feature_ends_arr = np.array(feature_ends, dtype=np.int64)
     source_groups_arr = np.array(source_groups, dtype=str)
     sequences_with_kmer_context_arr = np.array(sequences_with_kmer_context, dtype=str)
     # seq_to_sig_maps are variable length (depend on read dwell times), keep as object
@@ -102,7 +105,8 @@ def save_chunks(chunks: list[dict], output_path: Path) -> None:
         "labels_int": labels_int_arr,
         "read_ids": read_ids_arr,
         "base_indices": base_indices_arr,
-        "dwell_margin_lefts": dwell_margin_lefts_arr,
+        "feature_starts": feature_starts_arr,
+        "feature_ends": feature_ends_arr,
         "source_groups": source_groups_arr,
         "seq_to_sig_maps": seq_to_sig_maps_arr,
         "sequences_with_kmer_context": sequences_with_kmer_context_arr,
@@ -195,8 +199,14 @@ def load_chunks(input_path: Path) -> list[dict]:
                 else data["signal_residuals"]
             )
 
-        # Asymmetric dwell margin (backward compatible)
-        has_dwell_margin = "dwell_margin_lefts" in data
+        # Feature window params (new format: feature_starts/feature_ends)
+        has_feature_se = "feature_starts" in data
+        if has_feature_se:
+            feature_starts_loaded = data["feature_starts"]
+            feature_ends_loaded = data["feature_ends"]
+
+        # Backward compat: old format had dwell_margin_lefts
+        has_dwell_margin = "dwell_margin_lefts" in data and not has_feature_se
         if has_dwell_margin:
             dwell_margin_lefts = data["dwell_margin_lefts"]
 
@@ -227,7 +237,11 @@ def load_chunks(input_path: Path) -> list[dict]:
                 chunk["sequence_with_kmer_context"] = seq_ctx if seq_ctx else None
             if has_signal_residual_data:
                 chunk["signal_residual"] = signal_residuals_loaded[i]
-            if has_dwell_margin:
+            if has_feature_se:
+                chunk["feature_start"] = int(feature_starts_loaded[i])
+                chunk["feature_end"] = int(feature_ends_loaded[i])
+            elif has_dwell_margin:
+                # Old format: convert dwell_margin_left to feature_left
                 chunk["dwell_margin_left"] = int(dwell_margin_lefts[i])
             if has_source_groups:
                 sg = str(source_groups[i])

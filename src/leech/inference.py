@@ -367,8 +367,8 @@ class InferenceWorkerConfig:
     signal_len: int
     kmer_len: int
     dwell_offset: int
-    dwell_margin_left: int
-    dwell_margin_right: int
+    feature_start: int | None
+    feature_end: int | None
     wide_features: bool
     requires_features: bool
     signal_in_channels: int
@@ -455,12 +455,8 @@ def _inference_worker(
                         signal_context=config.signal_context,
                         kmer_context=config.kmer_context,
                         base_justify=config.base_justify,
-                        dwell_margin_left=config.dwell_margin_left
-                        if config.dwell_margin_left
-                        else None,
-                        dwell_margin_right=config.dwell_margin_right
-                        if config.dwell_margin_right
-                        else None,
+                        feature_start=config.feature_start,
+                        feature_end=config.feature_end,
                     )
                     if chunk is None:
                         continue
@@ -515,11 +511,11 @@ def _inference_worker(
                         if feat_arr.size > 0:
                             feat_arr = feat_arr.astype(np.float32)
                             if config.wide_features:
-                                # Wide feature models get full margin
                                 pass
                             elif feat_arr.shape[1] > config.kmer_len:
-                                margin = (feat_arr.shape[1] - config.kmer_len) // 2
-                                s = margin + config.dwell_offset
+                                kmer_ctx = config.kmer_len // 2
+                                fs = chunk.get("feature_start", -kmer_ctx)
+                                s = (-kmer_ctx - fs) + config.dwell_offset
                                 feat_arr = feat_arr[:, s : s + config.kmer_len]
                             feat = feat_arr
 
@@ -685,24 +681,34 @@ def run_inference(
     kmer_context = kmer_len // 2
     requires_features = getattr(model_wrapper, "requires_features", False)
 
-    # Determine dwell margins from config (must match training data preparation)
+    # Determine feature_start/feature_end from config (must match training data)
     _model_type = getattr(model_wrapper, "model_type", "")
     wide_features = _model_type in ModelInferenceWrapper.WIDE_FEATURE_MODELS
-    dwell_margin_left = config.get("dwell_margin_left", 0)
-    dwell_margin_right = config.get("dwell_margin_right", 0)
-    if wide_features and dwell_margin_left == 0 and dwell_margin_right == 0:
-        # Fallback for old models without explicit margins: use model default
+    _kmer_context = kmer_len // 2
+
+    # Read new params, falling back to old dwell_margin_* for backward compat
+    _feature_start = config.get("feature_start")
+    _feature_end = config.get("feature_end")
+    if _feature_start is None and "feature_left" in config:
+        _feature_start = -config["feature_left"]
+    if _feature_end is None and "feature_right" in config:
+        _feature_end = config["feature_right"]
+    if _feature_start is None and "dwell_margin_left" in config:
+        _feature_start = -(_kmer_context + config["dwell_margin_left"])
+    if _feature_end is None and "dwell_margin_right" in config:
+        _feature_end = _kmer_context + config["dwell_margin_right"]
+    if wide_features and _feature_start is None and _feature_end is None:
         _model_margin = (
             getattr(model_wrapper.model, "dwell_margin", 0)
             if hasattr(model_wrapper, "model")
             else 0
         )
         if _model_margin:
-            dwell_margin_left = _model_margin
-            dwell_margin_right = _model_margin
+            _feature_start = -(_kmer_context + _model_margin)
+            _feature_end = _kmer_context + _model_margin
             logger.warning(
-                f"Config missing dwell_margin_left/right, "
-                f"falling back to model default: {_model_margin}"
+                f"Config missing feature_start/end, "
+                f"falling back to model default margin: {_model_margin}"
             )
 
     # Detect multi-class model
@@ -720,10 +726,12 @@ def run_inference(
         logger.info(f"Multi-class model: num_out={num_out}")
     logger.info(f"Signal context: {signal_context}")
     logger.info(f"Sequence encoding: {seq_encoding}")
-    if dwell_margin_left or dwell_margin_right:
+    if _feature_start is not None or _feature_end is not None:
+        _fs = _feature_start if _feature_start is not None else -_kmer_context
+        _fe = _feature_end if _feature_end is not None else _kmer_context
         logger.info(
-            f"Dwell margins: left={dwell_margin_left}, right={dwell_margin_right} "
-            f"(feature width={kmer_len + dwell_margin_left + dwell_margin_right})"
+            f"Feature window: [{_fs}, {_fe}] relative to focus "
+            f"(width={_fe - _fs + 1})"
         )
     if motif:
         logger.info(f"Motif: {motif} (offset={motif_offset})")
@@ -795,8 +803,8 @@ def run_inference(
             signal_len=signal_len,
             kmer_len=kmer_len,
             dwell_offset=dwell_offset,
-            dwell_margin_left=dwell_margin_left,
-            dwell_margin_right=dwell_margin_right,
+            feature_start=_feature_start,
+            feature_end=_feature_end,
             wide_features=wide_features,
             requires_features=requires_features,
             signal_in_channels=signal_in_channels,
@@ -941,8 +949,8 @@ def run_inference(
                         signal_context=signal_context,
                         kmer_context=kmer_context,
                         base_justify=base_justify,
-                        dwell_margin_left=dwell_margin_left if dwell_margin_left else None,
-                        dwell_margin_right=dwell_margin_right if dwell_margin_right else None,
+                        feature_start=_feature_start,
+                        feature_end=_feature_end,
                     )
                     if chunk is None:
                         continue
@@ -989,11 +997,10 @@ def run_inference(
                         assert isinstance(features_array, np.ndarray)
                         feat = features_array.astype(np.float32)
                         if wide_features:
-                            # Wide feature models get full margin
                             pass
                         elif feat.size > 0 and feat.shape[1] > kmer_len:
-                            margin = (feat.shape[1] - kmer_len) // 2
-                            s = margin + dwell_offset
+                            fs = chunk.get("feature_start", -_kmer_context)
+                            s = (-_kmer_context - fs) + dwell_offset
                             feat = feat[:, s : s + kmer_len]
                     batch_feats.append(feat)
                     batch_meta.append((leech_read.read_id, base_idx))
@@ -1195,30 +1202,40 @@ def run_bundle_inference(
         f"{' (TorchScript)' if is_torchscript else ''}"
     )
 
-    # Determine dwell margins from config (must match training data preparation)
+    # Determine feature_start/feature_end from config (must match training data)
     wide_features = model_type in ModelInferenceWrapper.WIDE_FEATURE_MODELS
-    dwell_margin_left = config.get("dwell_margin_left", 0)
-    dwell_margin_right = config.get("dwell_margin_right", 0)
-    if wide_features and dwell_margin_left == 0 and dwell_margin_right == 0:
-        # Fallback for old bundles without explicit margins: use model default
+    _kmer_context = kmer_len // 2
+    _feature_start = config.get("feature_start")
+    _feature_end = config.get("feature_end")
+    if _feature_start is None and "feature_left" in config:
+        _feature_start = -config["feature_left"]
+    if _feature_end is None and "feature_right" in config:
+        _feature_end = config["feature_right"]
+    if _feature_start is None and "dwell_margin_left" in config:
+        _feature_start = -(_kmer_context + config["dwell_margin_left"])
+    if _feature_end is None and "dwell_margin_right" in config:
+        _feature_end = _kmer_context + config["dwell_margin_right"]
+    if wide_features and _feature_start is None and _feature_end is None:
         _model_margin = getattr(_instantiate_model(config), "dwell_margin", 0)
         if _model_margin:
-            dwell_margin_left = _model_margin
-            dwell_margin_right = _model_margin
+            _feature_start = -(_kmer_context + _model_margin)
+            _feature_end = _kmer_context + _model_margin
             logger.warning(
-                f"Bundle config missing dwell_margin_left/right, "
-                f"falling back to model default: {_model_margin}"
+                f"Bundle config missing feature_start/end, "
+                f"falling back to model default margin: {_model_margin}"
             )
 
     logger.info(f"Signal context: {signal_context}, kmer_len: {kmer_len}")
     logger.info(f"seq_encoding: {seq_encoding}, base_justify: {base_justify}")
+    _fs = _feature_start if _feature_start is not None else -_kmer_context
+    _fe = _feature_end if _feature_end is not None else _kmer_context
     logger.info(
-        f"dwell_offset: {dwell_offset}, margins: L={dwell_margin_left} R={dwell_margin_right}"
+        f"dwell_offset: {dwell_offset}, feature window: [{_fs}, {_fe}]"
     )
-    if dwell_margin_left or dwell_margin_right:
+    if _feature_start is not None or _feature_end is not None:
         logger.info(
-            f"Dwell margins: left={dwell_margin_left}, right={dwell_margin_right} "
-            f"(feature width={kmer_len + dwell_margin_left + dwell_margin_right})"
+            f"Feature window: [{_fs}, {_fe}] relative to focus "
+            f"(width={_fe - _fs + 1})"
         )
 
     # Select aggregation function
@@ -1368,8 +1385,8 @@ def run_bundle_inference(
                 signal_context=signal_context,
                 kmer_context=kmer_context,
                 base_justify=base_justify,
-                dwell_margin_left=dwell_margin_left if dwell_margin_left else None,
-                dwell_margin_right=dwell_margin_right if dwell_margin_right else None,
+                feature_left=_feature_left,
+                feature_right=_feature_right,
             )
             if chunk is None:
                 continue
@@ -1406,8 +1423,8 @@ def run_bundle_inference(
                 if wide_features:
                     pass
                 elif features_array.size > 0 and features_array.shape[1] > kmer_len:
-                    margin = (features_array.shape[1] - kmer_len) // 2
-                    feat_start = margin + dwell_offset
+                    fs = chunk.get("feature_start", -_kmer_context)
+                    feat_start = (-_kmer_context - fs) + dwell_offset
                     features_array = features_array[:, feat_start : feat_start + kmer_len]
                 chunk_features.append(torch.from_numpy(features_array.astype(np.float32)))
 

@@ -46,9 +46,8 @@ class WorkerConfig:
     reference_sequences: dict[str, str] | None
     skip_motif_indels: bool
     base_justify: str
-    dwell_margin: int
-    dwell_margin_left: int | None
-    dwell_margin_right: int | None
+    feature_start: int | None
+    feature_end: int | None
     reverse_signal: bool
     anchor: str
     norm_method: str
@@ -144,9 +143,8 @@ def _process_read_chunk_worker(
                     label_int=config.label_int,
                     motif_searcher=motif_searcher,
                     base_justify=config.base_justify,
-                    dwell_margin=config.dwell_margin,
-                    dwell_margin_left=config.dwell_margin_left,
-                    dwell_margin_right=config.dwell_margin_right,
+                    feature_start=config.feature_start,
+                    feature_end=config.feature_end,
                 )
 
                 all_chunks.extend(read_chunks)
@@ -172,9 +170,8 @@ def prepare_training_data_parallel(
     num_workers: int = 8,
     chunk_size: int = 100,
     base_justify: str = "center",
-    dwell_margin: int = 0,
-    dwell_margin_left: int | None = None,
-    dwell_margin_right: int | None = None,
+    feature_start: int | None = None,
+    feature_end: int | None = None,
     reverse_signal: bool = True,
     anchor: str = "basecall",
     norm_method: str = "median_mad",
@@ -253,9 +250,8 @@ def prepare_training_data_parallel(
         reference_sequences=reference_sequences,
         skip_motif_indels=skip_motif_indels,
         base_justify=base_justify,
-        dwell_margin=dwell_margin,
-        dwell_margin_left=dwell_margin_left,
-        dwell_margin_right=dwell_margin_right,
+        feature_start=feature_start,
+        feature_end=feature_end,
         reverse_signal=reverse_signal,
         anchor=anchor,
         norm_method=norm_method,

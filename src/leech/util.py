@@ -268,8 +268,15 @@ def _build_example_inputs(
         num_features = config.get("num_features", 5)
         wide_features = model_name in ModelInferenceWrapper.WIDE_FEATURE_MODELS
         if wide_features:
-            dwell_margin = getattr(model, "dwell_margin", 0)
-            feat_len = kmer_len + 2 * dwell_margin
+            # Compute feature width from config (feature_end - feature_start + 1)
+            _fs = config.get("feature_start")
+            _fe = config.get("feature_end")
+            if _fs is not None and _fe is not None:
+                feat_len = _fe - _fs + 1
+            else:
+                # Fallback for old configs: use model's dwell_margin
+                dwell_margin = getattr(model, "dwell_margin", 0)
+                feat_len = kmer_len + 2 * dwell_margin
         else:
             feat_len = kmer_len
         features = torch.randn(batch_size, num_features, feat_len)

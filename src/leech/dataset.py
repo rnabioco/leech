@@ -95,7 +95,7 @@ class LeechDataset(Dataset):
             model_type: Model architecture name (e.g., "ConvLSTMDwell", "TransformerDwell")
             dwell_offset: Shift dwell/feature window toward 3' end (bases).
                 Compensates for physical offset between motor protein and
-                sensing region. Requires chunks extracted with dwell_margin >= offset.
+                sensing region. Requires feature_left >= kmer_context + offset.
             chunks: Pre-loaded list of chunk dicts. When provided, chunk_path is
                 ignored and no disk I/O occurs (useful for grid search caching).
             augmentation: Signal augmentation config dict. Keys:
@@ -252,13 +252,30 @@ class LeechDataset(Dataset):
         if features.dtype != np.float32:
             features = features.astype(np.float32)
 
+        kmer_context = self.kmer_len // 2
+
         if self.model_type in WIDE_FEATURE_MODELS:
             pass  # full-width features
         elif len(dwell) > self.kmer_len:
-            margin_left = chunk.get("dwell_margin_left", (len(dwell) - self.kmer_len) // 2)
-            if self.dwell_offset + margin_left > len(dwell) - self.kmer_len:
-                raise ValueError(f"dwell_offset ({self.dwell_offset}) exceeds dwell_margin")
-            start = margin_left + self.dwell_offset
+            # Determine feature_start (signed offset from focus).
+            # New chunks have it directly; old chunks need conversion.
+            if "feature_start" in chunk:
+                feat_start = int(chunk["feature_start"])
+            elif "feature_left" in chunk:
+                feat_start = -int(chunk["feature_left"])
+            elif "dwell_margin_left" in chunk:
+                feat_start = -(kmer_context + int(chunk["dwell_margin_left"]))
+            else:
+                feat_start = -(len(dwell) - 1) // 2  # symmetric fallback
+            # kmer-aligned start within the feature array
+            # Feature array starts at focus + feat_start, kmer starts at focus - kmer_context
+            kmer_start = (-kmer_context) - feat_start
+            start = kmer_start + self.dwell_offset
+            if start < 0 or start + self.kmer_len > features.shape[1]:
+                raise ValueError(
+                    f"dwell_offset ({self.dwell_offset}) with feature_start={feat_start} "
+                    f"exceeds feature width ({features.shape[1]})"
+                )
             if features.size > 0:
                 features = features[:, start : start + self.kmer_len]
 
