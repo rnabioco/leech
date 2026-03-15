@@ -137,6 +137,7 @@ def handle_predict(
             reverse_signal=reverse_signal,
             num_workers=workers,
             anchor=anchor,
+            reference_fasta=reference_fasta,
         )
 
     console.print("[bold green]Inference complete![/bold green]")

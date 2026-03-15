@@ -45,11 +45,7 @@ fn banded_forward_vit_step(
     }
 
     // If bands are same size, trim prev by one
-    let effective_n_prev = if n_prev == n_curr {
-        n_prev - 1
-    } else {
-        n_prev
-    };
+    let effective_n_prev = if n_prev == n_curr { n_prev - 1 } else { n_prev };
 
     // Overlap region: move vs stay
     for bp in 1..=effective_n_prev {
@@ -245,8 +241,7 @@ pub fn seq_banded_dp<'py>(
         let band_start_diff = curr_band_st - prev_band_st;
 
         // Copy prev scores out to avoid borrow conflict
-        let prev_sc: Vec<f32> =
-            all_scores[prev_offset..prev_offset + prev_bw].to_vec();
+        let prev_sc: Vec<f32> = all_scores[prev_offset..prev_offset + prev_bw].to_vec();
 
         let sig_slice = &signal[curr_band_st as usize..curr_band_en as usize];
 
@@ -342,11 +337,7 @@ pub fn extract_levels<'py>(
         .iter()
         .map(|&b| {
             let c = b.to_ascii_uppercase();
-            if c == b'U' {
-                b'T'
-            } else {
-                c
-            }
+            if c == b'U' { b'T' } else { c }
         })
         .collect();
 

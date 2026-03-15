@@ -163,7 +163,13 @@ class LeechDataset(Dataset):
         for chunk in self.chunks:
             if self._effective_seq_encoding == "signal_kmer":
                 self._encoded_seqs.append(
-                    self._encode_signal_kmer(chunk, signal_len, signal_kmer_context)
+                    self._encode_signal_kmer(
+                        chunk,
+                        signal_len,
+                        signal_kmer_context,
+                        left_context=self.left_context,
+                        right_context=self.right_context,
+                    )
                 )
             else:
                 # Pre-encode sequence (vectorized, no Python loop)
@@ -318,6 +324,8 @@ class LeechDataset(Dataset):
         chunk: dict,
         signal_len: int,
         kmer_context: tuple[int, int],
+        left_context: int | None = None,
+        right_context: int | None = None,
     ) -> torch.Tensor:
         """Encode chunk using signal-level kmer encoding.
 
@@ -325,12 +333,25 @@ class LeechDataset(Dataset):
             chunk: Chunk dict with seq_to_sig_map and sequence_with_kmer_context
             signal_len: Target signal length (pad/truncate)
             kmer_context: (kmer_before, kmer_after) for encoding
+            left_context: Left signal context for asymmetric crop adjustment
+            right_context: Right signal context for asymmetric crop adjustment
 
         Returns:
             Encoded tensor of shape (4 * kmer_len, signal_len)
         """
         seq_ctx = chunk["sequence_with_kmer_context"]
-        seq_to_sig = chunk["seq_to_sig_map"]
+        seq_to_sig = chunk["seq_to_sig_map"].copy()
+
+        # Adjust seq_to_sig_map when signal will be asymmetrically cropped.
+        # Stored chunks have coordinates in [0, stored_signal_len] but after
+        # _prepare_signal crops to [focus - left_context, focus + right_context],
+        # the signal_kmer encoder needs coordinates relative to the cropped window.
+        if left_context is not None and right_context is not None:
+            focus_pos = seq_to_sig[-1] // 2  # focus is at center of stored chunk
+            crop_start = focus_pos - left_context
+            seq_to_sig = seq_to_sig - crop_start
+            seq_to_sig = np.clip(seq_to_sig, 0, signal_len)
+
         seq_ints = sequence_to_int(seq_ctx)
         enc = encode_signal_kmer(seq_ints, seq_to_sig, signal_len, kmer_context)
         return torch.from_numpy(enc)

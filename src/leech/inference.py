@@ -507,6 +507,7 @@ def run_inference(
     num_workers: int = 0,
     chunk_size: int = 100,
     anchor: str = "reference",
+    reference_fasta: Path | None = None,
 ) -> None:
     """
     Run inference on POD5 and BAM files.
@@ -534,6 +535,7 @@ def run_inference(
             no multiprocessing overhead.
         chunk_size: Reads per worker batch
         anchor: "basecall" or "reference" for reference-anchored mode
+        reference_fasta: Path to reference FASTA (for reference-anchored mode)
     """
     # Load model
     if model_and_config is not None:
@@ -736,6 +738,16 @@ def run_inference(
     signal_in_channels = config.get("signal_in_channels", 1)
     compute_features = requires_features or signal_in_channels > 1
 
+    # Load reference sequences for reference-anchored mode
+    reference_sequences = None
+    if anchor == "reference":
+        from leech.io import get_reference_sequences
+
+        reference_sequences = get_reference_sequences(bam_path, reference_fasta)
+        logger.info(
+            f"Reference-anchored mode: loaded {len(reference_sequences)} reference sequences"
+        )
+
     if num_workers > 0:
         # ---- Parallel path ----
         from leech.io import collect_read_infos
@@ -900,6 +912,7 @@ def run_inference(
                 pod5_path,
                 signal_config=seq_signal_config,
                 min_mapq=min_mapq,
+                reference_sequences=reference_sequences,
             ):
                 total_reads += 1
                 progress.update(
