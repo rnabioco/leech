@@ -265,9 +265,12 @@ class Trainer:
             labels = batch["label"].to(self.device)
 
             # Apply label smoothing to binary targets (BCE/focal only;
-            # CrossEntropyLoss handles its own smoothing via constructor arg)
+            # CrossEntropyLoss handles its own smoothing via constructor arg).
+            # Keep original labels for metrics; smoothed targets are for loss only.
             if self.label_smoothing > 0 and self.loss_type != "cross_entropy":
-                labels = labels * (1 - self.label_smoothing) + 0.5 * self.label_smoothing
+                loss_targets = labels * (1 - self.label_smoothing) + 0.5 * self.label_smoothing
+            else:
+                loss_targets = labels
 
             # Adapt labels for CrossEntropyLoss
             if self.loss_type == "cross_entropy":
@@ -284,7 +287,7 @@ class Trainer:
                     if ce_labels is not None:
                         loss = self.criterion(logits, ce_labels)
                     else:
-                        loss = self.criterion(logits, labels)
+                        loss = self.criterion(logits, loss_targets)
 
                 # Scaled backward pass
                 self.scaler.scale(loss).backward()
@@ -301,7 +304,7 @@ class Trainer:
                 if ce_labels is not None:
                     loss = self.criterion(logits, ce_labels)
                 else:
-                    loss = self.criterion(logits, labels)
+                    loss = self.criterion(logits, loss_targets)
 
                 loss.backward()
 
