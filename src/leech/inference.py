@@ -683,11 +683,16 @@ def run_inference(
         int_to_label = None
     is_multiclass = num_out > 1
 
+    # Auto-read base_justify from config when caller used default "center"
+    if base_justify == "center" and config.get("base_justify"):
+        base_justify = config["base_justify"]
+        logger.info(f"Auto-read base_justify from model config: {base_justify}")
+
     logger.info(f"Signal length: {signal_len}, K-mer length: {kmer_len}")
     if is_multiclass:
         logger.info(f"Multi-class model: num_out={num_out}")
     logger.info(f"Signal context: {signal_context}")
-    logger.info(f"Sequence encoding: {seq_encoding}")
+    logger.info(f"Sequence encoding: {seq_encoding}, base_justify: {base_justify}")
     if _feature_start is not None or _feature_end is not None:
         _fs = _feature_start if _feature_start is not None else -_kmer_context
         _fe = _feature_end if _feature_end is not None else _kmer_context
