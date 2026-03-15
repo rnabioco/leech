@@ -857,7 +857,7 @@ def run_inference(
     motif_searcher = get_motif_searcher(
         mode="fasta" if reference_sequences else "bam",
         reference_sequences=reference_sequences,
-        skip_indels=True,
+        skip_indels=False,
         anchor=anchor,
     )
 
@@ -1419,7 +1419,7 @@ def run_bundle_inference(
     motif_searcher = get_motif_searcher(
         mode="fasta" if reference_sequences else "bam",
         reference_sequences=reference_sequences,
-        skip_indels=True,
+        skip_indels=False,
         anchor=anchor,
     )
 

@@ -46,7 +46,7 @@ class DataPrepConfig(BaseModel):
     motif_offset: int = 0
     motif_reference: Literal["bam", "fasta"] = "fasta"
     reference_fasta: Path | None = None
-    skip_motif_indels: bool = True
+    skip_motif_indels: bool = False
 
     # Labels
     label: str | None = None

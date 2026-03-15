@@ -26,7 +26,7 @@ def handle_prepare(
     motif_offset: int = 0,
     motif_reference: str = "fasta",
     reference_fasta: Path | None = None,
-    skip_motif_indels: bool = True,
+    skip_motif_indels: bool = False,
     label: str | None = None,
     min_mapq: int = 0,
     feature_set: str = "signal+dwell+levels",

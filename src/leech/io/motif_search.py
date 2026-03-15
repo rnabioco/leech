@@ -18,7 +18,7 @@ def map_reference_to_query_coords(
     aln: pysam.AlignedSegment,
     ref_start: int,
     ref_end: int,
-    skip_indels: bool = True,
+    skip_indels: bool = False,
     allow_edge_indels: bool = False,
 ) -> tuple[int, int] | None:
     """
@@ -245,7 +245,7 @@ class ReferenceMotifSearcher(MotifSearcher):
     def __init__(
         self,
         reference_sequences: dict[str, str],
-        skip_indels: bool = True,
+        skip_indels: bool = False,
         allow_edge_indels: bool = False,
         debug: bool = False,
         anchor: str = "reference",
@@ -390,7 +390,7 @@ class ReferenceMotifSearcher(MotifSearcher):
 def get_motif_searcher(
     mode: str,
     reference_sequences: dict[str, str] | None = None,
-    skip_indels: bool = True,
+    skip_indels: bool = False,
     allow_edge_indels: bool = False,
     debug: bool = False,
     anchor: str = "reference",

@@ -42,7 +42,7 @@ class MotifConfig:
     motif_offset: int = 0
     motif_reference: str = "fasta"
     reference_sequences: dict[str, str] | None = None
-    skip_motif_indels: bool = True
+    skip_motif_indels: bool = False
 
 
 @dataclass

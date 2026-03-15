@@ -90,9 +90,8 @@ def data():
     help="External reference FASTA file (if not embedded in BAM @SQ header)",
 )
 @click.option(
-    "--skip-motif-indels",
-    is_flag=True,
-    default=True,
+    "--skip-motif-indels/--no-skip-motif-indels",
+    default=False,
     help="Skip reads with indels in motif region (for motif-reference=fasta)",
 )
 @click.option(
