@@ -245,6 +245,7 @@ class TestTrainModel:
             batch_size=2,
             learning_rate=0.001,
             device="cpu",
+            motif="CCAGGC",
             seed=42,
         )
 
@@ -264,6 +265,7 @@ class TestTrainModel:
             epochs=1,
             batch_size=2,
             device="cpu",
+            motif="CCAGGC",
             seed=42,
         )
 
@@ -289,6 +291,7 @@ class TestTrainModel:
             epochs=2,
             batch_size=2,
             device="cpu",
+            motif="CCAGGC",
             seed=42,
         )
 
@@ -311,6 +314,7 @@ class TestTrainModel:
             epochs=2,
             batch_size=2,
             device="cpu",
+            motif="CCAGGC",
             seed=42,
         )
 
@@ -331,6 +335,7 @@ class TestTrainModel:
                 epochs=1,
                 batch_size=2,
                 device="cpu",
+            motif="CCAGGC",
                 seed=42,
             )
 
@@ -349,6 +354,7 @@ class TestTrainModel:
             epochs=1,
             batch_size=2,
             device="cpu",
+            motif="CCAGGC",
             seed=42,
         )
 
@@ -362,6 +368,7 @@ class TestTrainModel:
             epochs=1,
             batch_size=2,
             device="cpu",
+            motif="CCAGGC",
             seed=42,
         )
 
@@ -385,6 +392,7 @@ class TestTrainModel:
             batch_size=4,  # Custom
             learning_rate=0.01,  # Custom
             device="cpu",
+            motif="CCAGGC",
             seed=42,
             conv_channels=[4, 16, 32],  # Custom model param
         )
@@ -454,6 +462,7 @@ class TestClassWeighting:
             epochs=1,
             batch_size=2,
             device="cpu",
+            motif="CCAGGC",
             seed=42,
             use_class_weights=True,  # Enable class weighting
         )
@@ -482,6 +491,7 @@ class TestClassWeighting:
             epochs=1,
             batch_size=2,
             device="cpu",
+            motif="CCAGGC",
             seed=42,
             use_class_weights=False,  # Disable class weighting
         )
@@ -510,6 +520,7 @@ class TestClassWeighting:
             epochs=1,
             batch_size=2,
             device="cpu",
+            motif="CCAGGC",
             seed=42,
             use_class_weights=False,  # Will be overridden by manual pos_weight
             pos_weight=manual_weight,
@@ -574,6 +585,7 @@ class TestTrainingEdgeCases:
                 epochs=0,
                 batch_size=2,
                 device="cpu",
+            motif="CCAGGC",
             )
             assert len(history["train_loss"]) == 0
         except (ValueError, AssertionError):
@@ -597,6 +609,7 @@ class TestBestModelResumeGuarantee:
             epochs=3,
             batch_size=2,
             device="cpu",
+            motif="CCAGGC",
             seed=42,
         )
 
@@ -624,6 +637,7 @@ class TestBestModelResumeGuarantee:
             epochs=3,
             batch_size=2,
             device="cpu",
+            motif="CCAGGC",
             seed=42,
             resume_from=last_path,
         )
@@ -653,6 +667,7 @@ class TestBestModelResumeGuarantee:
             epochs=3,
             batch_size=2,
             device="cpu",
+            motif="CCAGGC",
             seed=42,
         )
 
@@ -674,6 +689,7 @@ class TestBestModelResumeGuarantee:
             epochs=2,
             batch_size=2,
             device="cpu",
+            motif="CCAGGC",
             seed=42,
         )
 
@@ -697,6 +713,7 @@ class TestBestModelResumeGuarantee:
             epochs=3,
             batch_size=2,
             device="cpu",
+            motif="CCAGGC",
             seed=42,
             resume_from=last_path,
         )

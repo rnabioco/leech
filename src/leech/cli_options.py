@@ -184,3 +184,31 @@ def training_hyperparams(f):
         help="Number of training epochs",
     )(f)
     return f
+
+
+def model_provenance(f):
+    """Model provenance options shared by ``train`` and ``optimize``.
+
+    Includes: motif (required), motif-offset, base-justify.
+    These are recorded in config.json for inference reproducibility.
+    """
+    # Applied in reverse order so --help display matches logical ordering.
+    f = click.option(
+        "--base-justify",
+        type=click.Choice(["start", "center", "end"]),
+        default="center",
+        help="Signal justification within focus base (recorded in config)",
+    )(f)
+    f = click.option(
+        "--motif-offset",
+        type=int,
+        default=0,
+        help="Offset within motif for focus base (0-indexed, recorded in config)",
+    )(f)
+    f = click.option(
+        "--motif",
+        type=str,
+        required=True,
+        help="Motif used for chunk extraction (recorded in config for provenance/inference)",
+    )(f)
+    return f

@@ -729,6 +729,13 @@ def train_model(
     """
     from leech.constants import generate_random_seed
 
+    # Validate required provenance fields
+    if motif is None:
+        raise ValueError(
+            "motif must not be None. Pass --motif on the CLI or motif= in code. "
+            "A null motif causes inference to predict at every position, producing noise."
+        )
+
     # Generate random seed if not provided
     if seed is None:
         seed = generate_random_seed()

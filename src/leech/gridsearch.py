@@ -153,6 +153,7 @@ class GridSearchConfig:
     output_dir: Path
     left_contexts: list[int]
     right_contexts: list[int]
+    motif: str
     kmer_context: int = 5
     epochs: int = 50
     batch_size: int = 128
@@ -160,7 +161,6 @@ class GridSearchConfig:
     device: str = "cuda"
     seed: int | None = None  # None = generate random seed
     early_stopping_patience: int = 10
-    motif: str | None = None
     motif_offset: int = 0
     base_justify: str = "center"
     dwell_offsets: list[int] | None = None
@@ -274,6 +274,9 @@ def run_grid_point(
     augment_scale_max: float = 1.0,
     num_workers: int = 0,
     balance_groups: bool = False,
+    motif: str = "",
+    motif_offset: int = 0,
+    base_justify: str = "center",
 ) -> dict:
     """
     Train model for a single grid point.
@@ -296,6 +299,9 @@ def run_grid_point(
         train_chunks: Pre-loaded training chunks (avoids redundant disk I/O)
         val_chunks: Pre-loaded validation chunks (avoids redundant disk I/O)
         pos_weight: Pre-computed positive class weight (avoids redundant computation)
+        motif: Motif string stored in config.json for inference
+        motif_offset: Offset within motif
+        base_justify: Signal chunk centering ("start", "center", or "end")
 
     Returns:
         Dictionary with grid point results
@@ -347,6 +353,9 @@ def run_grid_point(
             left_context=left_context,
             right_context=right_context,
             balance_groups=balance_groups,
+            motif=motif,
+            motif_offset=motif_offset,
+            base_justify=base_justify,
         )
 
         train_time = time.time() - start_time
@@ -445,6 +454,9 @@ def _grid_point_worker(args: dict) -> dict:
         augment_scale_max=args["augment_scale_max"],
         num_workers=args["num_workers"],
         balance_groups=args.get("balance_groups", False),
+        motif=args.get("motif"),
+        motif_offset=args.get("motif_offset", 0),
+        base_justify=args.get("base_justify", "center"),
     )
     # Free CUDA memory between grid points to prevent accumulation
     if args.get("device", "cpu") != "cpu":
@@ -600,6 +612,9 @@ def run_grid_search(config: GridSearchConfig) -> Path:
                 "augment_scale_max": config.augment_scale_max,
                 "num_workers": config.num_workers,
                 "balance_groups": config.balance_groups,
+                "motif": config.motif,
+                "motif_offset": config.motif_offset,
+                "base_justify": config.base_justify,
             }
         )
 

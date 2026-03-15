@@ -11,7 +11,7 @@ from pathlib import Path
 import rich_click as click
 
 from leech.cli_config import configure_rich_click, console
-from leech.cli_options import LazyChoice, get_model_choices, training_hyperparams
+from leech.cli_options import LazyChoice, get_model_choices, model_provenance, training_hyperparams
 from leech.constants import DEFAULT_DEVICE, DEFAULT_SEED
 from leech.logging_config import setup_logging
 
@@ -428,6 +428,7 @@ def merge(input_chunks, output_dir, train_split, val_split, seed, k_fold, compar
     help="Output directory for model and logs",
 )
 @training_hyperparams
+@model_provenance
 @click.option(
     "--use-class-weights/--no-class-weights",
     default=True,
@@ -444,24 +445,6 @@ def merge(input_chunks, output_dir, train_split, val_split, seed, k_fold, compar
     type=click.Path(path_type=Path),
     default=None,
     help="Resume training from a checkpoint file (e.g., model_last.pt). Ignored if file doesn't exist.",
-)
-@click.option(
-    "--motif",
-    type=str,
-    default=None,
-    help="Motif used for chunk extraction (recorded in config for provenance/inference)",
-)
-@click.option(
-    "--motif-offset",
-    type=int,
-    default=0,
-    help="Offset within motif for focus base (0-indexed, recorded in config)",
-)
-@click.option(
-    "--base-justify",
-    type=click.Choice(["start", "center", "end"]),
-    default="center",
-    help="Signal justification within focus base (recorded in config)",
 )
 @click.option(
     "--seq-encoding",
@@ -754,12 +737,7 @@ def export(model_dir, output):
     help="K-mer context for sequence encoding",
 )
 @training_hyperparams
-@click.option(
-    "--base-justify",
-    type=click.Choice(["start", "center", "end"]),
-    default="center",
-    help='Where to center signal chunk within the focus base: "start" (first sample), "center" (midpoint, default), or "end" (last sample, useful for 3\' modifications)',
-)
+@model_provenance
 @click.option(
     "--dwell-offsets",
     type=str,
@@ -816,6 +794,8 @@ def optimize(
     augment_scale_max,
     num_workers,
     balance_groups,
+    motif,
+    motif_offset,
 ):
     """Optimize model hyperparameters using grid search over chunk contexts."""
     from leech.commands.optimize import handle_optimize
@@ -853,6 +833,8 @@ def optimize(
         augment_scale_max=augment_scale_max,
         num_workers=num_workers,
         balance_groups=balance_groups,
+        motif=motif,
+        motif_offset=motif_offset,
     )
 
 

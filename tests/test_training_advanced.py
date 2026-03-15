@@ -421,6 +421,7 @@ class TestCheckpointRecovery:
             epochs=3,
             batch_size=2,
             device="cpu",
+            motif="CCAGGC",
             seed=42,
             early_stopping_patience=0,
         )
@@ -440,6 +441,7 @@ class TestCheckpointRecovery:
             epochs=5,
             batch_size=2,
             device="cpu",
+            motif="CCAGGC",
             seed=42,
             early_stopping_patience=0,
             resume_from=output_dir / "model_last.pt",
@@ -461,6 +463,7 @@ class TestCheckpointRecovery:
             epochs=2,
             batch_size=2,
             device="cpu",
+            motif="CCAGGC",
             seed=42,
             early_stopping_patience=0,
         )
@@ -515,6 +518,7 @@ class TestTrainModelAdvancedParams:
             epochs=1,
             batch_size=2,
             device="cpu",
+            motif="CCAGGC",
             weight_decay=0.01,
         )
         assert len(history["train_loss"]) == 1
@@ -530,6 +534,7 @@ class TestTrainModelAdvancedParams:
             epochs=1,
             batch_size=2,
             device="cpu",
+            motif="CCAGGC",
             max_grad_norm=1.0,
         )
         assert len(history["train_loss"]) == 1
@@ -545,6 +550,7 @@ class TestTrainModelAdvancedParams:
             epochs=2,
             batch_size=2,
             device="cpu",
+            motif="CCAGGC",
             scheduler="reduce_on_plateau",
             scheduler_patience=1,
         )
@@ -561,6 +567,7 @@ class TestTrainModelAdvancedParams:
             epochs=3,
             batch_size=2,
             device="cpu",
+            motif="CCAGGC",
             warmup_epochs=2,
         )
         assert len(history["train_loss"]) == 3
@@ -576,6 +583,7 @@ class TestTrainModelAdvancedParams:
             epochs=1,
             batch_size=2,
             device="cpu",
+            motif="CCAGGC",
             loss_type="focal",
             focal_gamma=2.0,
         )
@@ -592,6 +600,7 @@ class TestTrainModelAdvancedParams:
             epochs=1,
             batch_size=2,
             device="cpu",
+            motif="CCAGGC",
             augment_jitter=0.1,
             augment_scale_min=0.9,
             augment_scale_max=1.1,
@@ -609,6 +618,7 @@ class TestTrainModelAdvancedParams:
             epochs=2,
             batch_size=2,
             device="cpu",
+            motif="CCAGGC",
             weight_decay=0.01,
             max_grad_norm=1.0,
             scheduler="reduce_on_plateau",
@@ -632,6 +642,7 @@ class TestTrainModelAdvancedParams:
             epochs=1,
             batch_size=2,
             device="cpu",
+            motif="CCAGGC",
             weight_decay=0.01,
             max_grad_norm=1.0,
             scheduler="reduce_on_plateau",
@@ -723,6 +734,7 @@ class TestBackwardCompatibility:
             epochs=2,
             batch_size=2,
             device="cpu",
+            motif="CCAGGC",
             seed=42,
         )
 

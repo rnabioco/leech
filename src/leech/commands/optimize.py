@@ -48,6 +48,8 @@ def handle_optimize(
     augment_scale_max: float,
     num_workers: int,
     balance_groups: bool = False,
+    motif: str = "",
+    motif_offset: int = 0,
 ) -> Path:
     """
     Handle the optimize command logic.
@@ -144,6 +146,8 @@ def handle_optimize(
         augment_scale_max=augment_scale_max,
         num_workers=num_workers,
         balance_groups=balance_groups,
+        motif=motif,
+        motif_offset=motif_offset,
     )
 
     # Run grid search
