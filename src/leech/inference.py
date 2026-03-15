@@ -38,6 +38,88 @@ from leech.util import (
 logger = logging.getLogger("leech.inference")
 
 
+class InferenceConfigError(RuntimeError):
+    """Raised when inference input shapes don't match the model's config."""
+
+
+def _check_config_consistency[T](
+    param_name: str,
+    cli_value: T,
+    config_value: T | None,
+    cli_default: T,
+) -> T:
+    """Resolve inference param from config, erroring on CLI conflict.
+
+    Logic:
+    - config has value + CLI is default → use config (normal auto-read)
+    - config has value + CLI differs   → raise InferenceConfigError
+    - config is None/missing           → use CLI value (old models without field)
+    """
+    if config_value is not None:
+        if cli_value != cli_default and cli_value != config_value:
+            raise InferenceConfigError(
+                f"CLI --{param_name}={cli_value!r} conflicts with training config "
+                f"{param_name}={config_value!r}. Inference must use the same "
+                f"parameters the model was trained with."
+            )
+        return config_value
+    return cli_value
+
+
+def validate_inference_shapes(
+    signal: np.ndarray,
+    features: np.ndarray | None,
+    config: dict,
+) -> None:
+    """Validate that inference input shapes match the model's expected config.
+
+    Checks signal channels, feature count, and signal length. Call once on the
+    first chunk to catch mismatches early instead of silently producing garbage.
+
+    Args:
+        signal: Signal array — 1D (single channel) or 2D (channels, signal_len).
+        features: Feature array (num_features, kmer_len), or None if model has no feature branch.
+        config: Model config dict with signal_in_channels, num_features, signal_len.
+
+    Raises:
+        InferenceConfigError: On any shape mismatch.
+    """
+    expected_channels = config.get("signal_in_channels", 1)
+    if signal.ndim == 1:
+        actual_channels = 1
+    elif signal.ndim == 2:
+        actual_channels = signal.shape[0]
+    else:
+        raise InferenceConfigError(
+            f"Signal has unexpected ndim={signal.ndim}; expected 1D or 2D"
+        )
+
+    if actual_channels != expected_channels:
+        raise InferenceConfigError(
+            f"Signal has {actual_channels} channel(s), but model expects "
+            f"signal_in_channels={expected_channels}. "
+            f"This usually means signal_residual is missing (model trained with 2-channel input)."
+        )
+
+    expected_signal_len = config.get("signal_len")
+    if expected_signal_len is not None:
+        actual_signal_len = signal.shape[-1]
+        if actual_signal_len != expected_signal_len:
+            raise InferenceConfigError(
+                f"Signal length {actual_signal_len} != expected {expected_signal_len}"
+            )
+
+    if features is not None:
+        expected_features = config.get("num_features")
+        if expected_features is not None:
+            actual_features = features.shape[0]
+            if actual_features != expected_features:
+                raise InferenceConfigError(
+                    f"Feature array has {actual_features} features, "
+                    f"but model expects num_features={expected_features}"
+                )
+
+
 def _extract_remora_metadata(model_path: Path) -> dict:
     """Extract metadata from a Remora TorchScript model's embedded meta.txt."""
     import json as _json
@@ -367,6 +449,7 @@ def _inference_worker(
     read_infos, config = args
 
     results: list[tuple[str, int, np.ndarray, np.ndarray, np.ndarray | None]] = []
+    _shape_validated = False
 
     # Batch-read all POD5 signals in one traversal (avoids per-read seeks on large files)
     read_info_by_id = {ri.read_id: ri for ri in read_infos}
@@ -490,6 +573,15 @@ def _inference_worker(
                                 feat_arr = feat_arr[:, s : s + config.kmer_len]
                             feat = feat_arr
 
+                    if not _shape_validated:
+                        # config is InferenceConfig dataclass; build dict for validator
+                        _cfg_dict = {
+                            "signal_in_channels": config.signal_in_channels,
+                            "signal_len": config.signal_len,
+                        }
+                        validate_inference_shapes(sig, feat, _cfg_dict)
+                        _shape_validated = True
+
                     results.append((read_info.read_id, base_idx, sig, enc_seq, feat))
 
             except Exception as e:
@@ -570,11 +662,11 @@ def run_inference(
         signal_kmer_context = tuple(config.get("signal_kmer_context", (4, 4)))
         dwell_offset = 0
 
-        # Auto-read motif from model metadata
-        if motif is None and config.get("motif"):
-            motif = config["motif"]
-            motif_offset = config.get("motif_offset", motif_offset)
-            logger.info(f"Auto-read motif from remora model: {motif} (offset={motif_offset})")
+        # Resolve motif/offset from config, erroring on CLI conflict
+        motif = _check_config_consistency("motif", motif, config.get("motif"), None)
+        motif_offset = _check_config_consistency("motif-offset", motif_offset, config.get("motif_offset"), 0)
+        if motif is not None:
+            logger.info(f"Motif from remora config: {motif} (offset={motif_offset})")
 
         if motif is None:
             raise ValueError("--motif is required for Remora models (no config.json)")
@@ -615,11 +707,18 @@ def run_inference(
         seq_encoding = config.get("seq_encoding", "signal_kmer")
         signal_kmer_context = tuple(config.get("signal_kmer_context", (4, 4)))
 
-        # Auto-read motif from model config if not provided
-        if motif is None and config.get("motif"):
-            motif = config["motif"]
-            motif_offset = config.get("motif_offset", motif_offset)
-            logger.info(f"Auto-read motif from config: {motif} (offset={motif_offset})")
+        # Resolve motif/offset from config, erroring on CLI conflict
+        motif = _check_config_consistency("motif", motif, config.get("motif"), None)
+        motif_offset = _check_config_consistency("motif-offset", motif_offset, config.get("motif_offset"), 0)
+        if motif is not None:
+            logger.info(f"Motif from config: {motif} (offset={motif_offset})")
+
+        if motif is None:
+            raise ValueError(
+                "motif is None after auto-read from config. "
+                "Either pass --motif on the CLI or ensure config.json contains a non-null 'motif' field. "
+                "Without a motif, inference predicts at every position, producing noise."
+            )
 
         # Signal map refinement for leech models (needed for kmer residual signal channel)
         if config.get("refine_signal_map", True) or config.get("signal_in_channels", 1) > 1:
@@ -694,10 +793,9 @@ def run_inference(
         int_to_label = None
     is_multiclass = num_out > 1
 
-    # Auto-read base_justify from config when caller used default "center"
-    if base_justify == "center" and config.get("base_justify"):
-        base_justify = config["base_justify"]
-        logger.info(f"Auto-read base_justify from model config: {base_justify}")
+    # Resolve base_justify from config, erroring on CLI conflict
+    base_justify = _check_config_consistency("base-justify", base_justify, config.get("base_justify"), "center")
+    logger.info(f"base_justify: {base_justify}")
 
     logger.info(f"Signal length: {signal_len}, K-mer length: {kmer_len}")
     if is_multiclass:
@@ -885,6 +983,7 @@ def run_inference(
         batch_feats: list[np.ndarray | None] = []
         batch_meta: list[tuple[str, int]] = []  # (read_id, base_idx)
         pending: dict[str, list] = {}
+        _shape_validated = False
 
         _batch_fn = _run_batch_multiclass if is_multiclass else _run_batch
 
@@ -944,17 +1043,15 @@ def run_inference(
                 if aln is None:
                     continue
 
-                # Find positions to predict
-                if motif is None:
-                    positions = list(range(kmer_context, leech_read.num_bases - kmer_context))
-                else:
-                    aln_meta = leech_read.metadata.get("alignment")
-                    positions = [
-                        pos + motif_offset
-                        for pos in motif_searcher.find_motif_positions(
-                            leech_read.read_id, leech_read.sequence, aln_meta, motif
-                        )
-                    ]
+                # Find positions to predict (motif is validated non-None above)
+                assert motif is not None, "motif must not be None at inference time"
+                aln_meta = leech_read.metadata.get("alignment")
+                positions = [
+                    pos + motif_offset
+                    for pos in motif_searcher.find_motif_positions(
+                        leech_read.read_id, leech_read.sequence, aln_meta, motif
+                    )
+                ]
 
                 for base_idx in positions:
                     chunk = leech_read.get_chunk(base_idx, config=seq_chunk_config)
@@ -1008,6 +1105,11 @@ def run_inference(
                             fs = chunk.get("feature_start", -_kmer_context)
                             s = (-_kmer_context - fs) + dwell_offset
                             feat = feat[:, s : s + kmer_len]
+                    # Validate shapes on first chunk
+                    if not _shape_validated:
+                        validate_inference_shapes(sig, feat, config)
+                        _shape_validated = True
+
                     batch_feats.append(feat)
                     batch_meta.append((leech_read.read_id, base_idx))
 
@@ -1184,15 +1286,21 @@ def run_bundle_inference(
     seq_encoding = config.get("seq_encoding", "signal_kmer")
     signal_kmer_context = tuple(config.get("signal_kmer_context", (4, 4)))
 
-    # Auto-read motif/offset/justify from bundle config if not provided on CLI
-    if motif is None and config.get("motif"):
-        motif = config["motif"]
-        motif_offset = config.get("motif_offset", motif_offset)
-        logger.info(f"Auto-read motif from bundle config: {motif} (offset={motif_offset})")
+    # Resolve motif/offset/justify from config, erroring on CLI conflict
+    motif = _check_config_consistency("motif", motif, config.get("motif"), None)
+    motif_offset = _check_config_consistency("motif-offset", motif_offset, config.get("motif_offset"), 0)
+    if motif is not None:
+        logger.info(f"Motif from bundle config: {motif} (offset={motif_offset})")
 
-    if base_justify == "center" and config.get("base_justify"):
-        base_justify = config["base_justify"]
-        logger.info(f"Auto-read base_justify from bundle config: {base_justify}")
+    if motif is None:
+        raise ValueError(
+            "motif is None after auto-read from bundle config. "
+            "Either pass --motif on the CLI or ensure the bundle config contains a non-null 'motif' field. "
+            "Without a motif, inference predicts at every position, producing noise."
+        )
+
+    base_justify = _check_config_consistency("base-justify", base_justify, config.get("base_justify"), "center")
+    logger.info(f"base_justify: {base_justify}")
 
     # Use asymmetric context if available, otherwise fall back to symmetric
     left_ctx = config.get("left_context")
@@ -1355,6 +1463,7 @@ def run_bundle_inference(
     chunk_sequences: list[torch.Tensor] = []
     chunk_features: list[torch.Tensor] = []
     chunk_read_ids: list[str] = []
+    _shape_validated = False
 
     with Progress() as progress:
         task = progress.add_task("[cyan]Extracting chunks...", total=None)
@@ -1389,17 +1498,15 @@ def run_bundle_inference(
                 description=f"[cyan]Extracted {len(chunk_signals)} chunks from {n_reads} reads...",
             )
 
-            # Find prediction position(s)
-            if motif is None:
-                positions = list(range(kmer_context, leech_read.num_bases - kmer_context))
-            else:
-                aln_meta = leech_read.metadata.get("alignment")
-                positions = [
-                    pos + motif_offset
-                    for pos in motif_searcher.find_motif_positions(
-                        leech_read.read_id, leech_read.sequence, aln_meta, motif
-                    )
-                ]
+            # Find prediction position(s) (motif is validated non-None above)
+            assert motif is not None, "motif must not be None at inference time"
+            aln_meta = leech_read.metadata.get("alignment")
+            positions = [
+                pos + motif_offset
+                for pos in motif_searcher.find_motif_positions(
+                    leech_read.read_id, leech_read.sequence, aln_meta, motif
+                )
+            ]
 
             if not positions:
                 continue
@@ -1445,6 +1552,13 @@ def run_bundle_inference(
                     feat_start = (-_kmer_context - fs) + dwell_offset
                     features_array = features_array[:, feat_start : feat_start + kmer_len]
                 chunk_features.append(torch.from_numpy(features_array.astype(np.float32)))
+
+            if not _shape_validated:
+                _feat_for_check = (
+                    features_array.astype(np.float32) if needs_features else None
+                )
+                validate_inference_shapes(sig, _feat_for_check, config)
+                _shape_validated = True
 
     n_chunks = len(chunk_signals)
     logger.info(f"Extracted {n_chunks} chunks from {n_reads} reads")
