@@ -24,7 +24,7 @@ from rich.progress import Progress
 
 from leech.configs import ChunkConfig, InferenceConfig, MotifConfig, SignalConfig
 from leech.features import encode_signal_kmer, sequence_to_int
-from leech.io.motif_search import find_motif_in_sequence
+from leech.io.motif_search import find_motif_in_sequence, get_motif_searcher
 from leech.models.inference_wrapper import ModelInferenceWrapper, TracedModelWrapper
 from leech.models.remora_compat import RemoraModelWrapper
 from leech.preparation import encode_kmer, iter_bam_with_pod5
@@ -410,9 +410,18 @@ def _inference_worker(
 
                 # Find motif positions
                 if config.motif.motif is not None:
+                    searcher = get_motif_searcher(
+                        mode="fasta" if config.motif.reference_sequences else "bam",
+                        reference_sequences=config.motif.reference_sequences,
+                        skip_indels=config.motif.skip_motif_indels,
+                        anchor=config.signal.anchor,
+                    )
+                    aln = read_info.to_mock_alignment()
                     positions = [
                         pos + config.motif.motif_offset
-                        for pos in find_motif_in_sequence(leech_read.sequence, config.motif.motif)
+                        for pos in searcher.find_motif_positions(
+                            read_info.read_id, read_info.sequence, aln, config.motif.motif
+                        )
                     ]
                 else:
                     kmer_context = config.chunk.kmer_context
@@ -738,15 +747,21 @@ def run_inference(
     signal_in_channels = config.get("signal_in_channels", 1)
     compute_features = requires_features or signal_in_channels > 1
 
-    # Load reference sequences for reference-anchored mode
+    # Load reference sequences for reference-anchored mode and/or reference-based motif search
     reference_sequences = None
-    if anchor == "reference":
+    if anchor == "reference" or motif is not None:
         from leech.io import get_reference_sequences
 
         reference_sequences = get_reference_sequences(bam_path, reference_fasta)
-        logger.info(
-            f"Reference-anchored mode: loaded {len(reference_sequences)} reference sequences"
-        )
+        logger.info(f"Loaded {len(reference_sequences)} reference sequences")
+
+    # Create motif searcher (reference-based when reference_sequences available)
+    motif_searcher = get_motif_searcher(
+        mode="fasta" if reference_sequences else "bam",
+        reference_sequences=reference_sequences,
+        skip_indels=True,
+        anchor=anchor,
+    )
 
     if num_workers > 0:
         # ---- Parallel path ----
@@ -778,7 +793,11 @@ def run_inference(
                 refine_signal_map=refine_signal_map,
                 signal_refiner=signal_refiner,
             ),
-            motif=MotifConfig(motif=motif, motif_offset=motif_offset),
+            motif=MotifConfig(
+                motif=motif,
+                motif_offset=motif_offset,
+                reference_sequences=reference_sequences,
+            ),
             chunk=ChunkConfig(
                 base_justify=base_justify,
                 feature_start=_feature_start,
@@ -929,9 +948,12 @@ def run_inference(
                 if motif is None:
                     positions = list(range(kmer_context, leech_read.num_bases - kmer_context))
                 else:
+                    aln_meta = leech_read.metadata.get("alignment")
                     positions = [
                         pos + motif_offset
-                        for pos in find_motif_in_sequence(leech_read.sequence, motif)
+                        for pos in motif_searcher.find_motif_positions(
+                            leech_read.read_id, leech_read.sequence, aln_meta, motif
+                        )
                     ]
 
                 for base_idx in positions:
@@ -1277,15 +1299,21 @@ def run_bundle_inference(
 
     pair_names_str = ",".join(pairs)
 
-    # Load reference sequences for reference-anchored mode
+    # Load reference sequences for reference-anchored mode and/or reference-based motif search
     reference_sequences = None
-    if anchor == "reference":
+    if anchor == "reference" or motif is not None:
         from leech.io import get_reference_sequences
 
         reference_sequences = get_reference_sequences(bam_path, reference_fasta)
-        logger.info(
-            f"Reference-anchored mode: loaded {len(reference_sequences)} reference sequences"
-        )
+        logger.info(f"Loaded {len(reference_sequences)} reference sequences")
+
+    # Create motif searcher (reference-based when reference_sequences available)
+    motif_searcher = get_motif_searcher(
+        mode="fasta" if reference_sequences else "bam",
+        reference_sequences=reference_sequences,
+        skip_indels=True,
+        anchor=anchor,
+    )
 
     # Open BAM files and index alignments by read ID (avoids O(n^2) scanning)
     bam_in = pysam.AlignmentFile(str(bam_path), "rb")
@@ -1365,8 +1393,12 @@ def run_bundle_inference(
             if motif is None:
                 positions = list(range(kmer_context, leech_read.num_bases - kmer_context))
             else:
+                aln_meta = leech_read.metadata.get("alignment")
                 positions = [
-                    pos + motif_offset for pos in find_motif_in_sequence(leech_read.sequence, motif)
+                    pos + motif_offset
+                    for pos in motif_searcher.find_motif_positions(
+                        leech_read.read_id, leech_read.sequence, aln_meta, motif
+                    )
                 ]
 
             if not positions:
