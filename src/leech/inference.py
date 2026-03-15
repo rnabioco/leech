@@ -24,7 +24,7 @@ from rich.progress import Progress
 
 from leech.configs import ChunkConfig, InferenceConfig, MotifConfig, SignalConfig
 from leech.features import encode_signal_kmer, sequence_to_int
-from leech.io.motif_search import find_motif_in_sequence, get_motif_searcher
+from leech.io.motif_search import get_motif_searcher
 from leech.models.inference_wrapper import ModelInferenceWrapper, TracedModelWrapper
 from leech.models.remora_compat import RemoraModelWrapper
 from leech.preparation import encode_kmer, iter_bam_with_pod5

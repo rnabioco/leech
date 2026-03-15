@@ -48,7 +48,13 @@ def _propagate_prepare_config(input_paths: list[Path], output_dir: Path) -> None
         return
 
     # Validate consistency on critical fields
-    critical_keys = ["anchor", "refine_signal_map", "signal_norm", "reverse_signal", "motif_reference"]
+    critical_keys = [
+        "anchor",
+        "refine_signal_map",
+        "signal_norm",
+        "reverse_signal",
+        "motif_reference",
+    ]
     first = configs[0]
     for i, cfg in enumerate(configs[1:], start=1):
         for key in critical_keys:

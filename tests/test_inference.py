@@ -18,7 +18,6 @@ from leech.io.motif_search import (
     get_motif_searcher,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -26,9 +25,7 @@ from leech.io.motif_search import (
 # pysam.AlignedSegment requires a BAM header to resolve reference_name from
 # reference_id. We create a header containing our synthetic reference so that
 # tests using real pysam objects work correctly.
-_BAM_HEADER = pysam.AlignmentHeader.from_dict(
-    {"SQ": [{"SN": "tRNA-Ala", "LN": 40}]}
-)
+_BAM_HEADER = pysam.AlignmentHeader.from_dict({"SQ": [{"SN": "tRNA-Ala", "LN": 40}]})
 
 
 def _make_pysam_alignment(
