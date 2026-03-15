@@ -4,8 +4,12 @@ Inference wrapper for unified model forward passes.
 Eliminates conditional logic for models with/without feature inputs.
 """
 
+import logging
+
 import torch
 import torch.nn as nn
+
+logger = logging.getLogger("leech.models.inference_wrapper")
 
 
 class ModelInferenceWrapper:
@@ -183,7 +187,7 @@ class TracedModelWrapper:
             try:
                 self.model.eval()
             except NotImplementedError:
-                pass  # torch.export GraphModule doesn't support eval()
+                logger.debug("Model does not support eval() (torch.export GraphModule)")
 
     def to(self, device: str) -> "TracedModelWrapper":
         self.model.to(device)

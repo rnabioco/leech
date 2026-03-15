@@ -200,8 +200,8 @@ class LeechDataset(Dataset):
         try:
             self._signals_tensor = torch.stack(self._signals)
             self._signals = []  # free the list
-        except RuntimeError:
-            # Shapes differ (shouldn't happen, but defensive)
+        except RuntimeError as e:
+            logger.warning("Signal shapes differ, falling back to list access: %s", e)
             self._signals_tensor = None
 
         logger.debug(

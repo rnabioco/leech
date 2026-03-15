@@ -242,7 +242,12 @@ def iter_bam_with_pod5(
                     else:
                         try:
                             ref_seq = aln.get_reference_sequence()
-                        except Exception:
+                        except Exception as e:
+                            logger.warning(
+                                "Could not get reference sequence for %s (anchor=reference): %s",
+                                aln.query_name,
+                                e,
+                            )
                             ref_seq = None
                     cigar_tuples = aln.cigartuples
 

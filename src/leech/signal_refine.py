@@ -89,6 +89,7 @@ def load_kmer_table(table_path: Path) -> tuple[dict[str, float], int]:
             try:
                 level = float(parts[1])
             except ValueError:
+                logger.debug("Skipping unparseable kmer level line: %s", line)
                 continue
 
             kmer_to_level[kmer] = level

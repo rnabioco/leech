@@ -104,7 +104,8 @@ class ReadInfo:
         # Reference sequence (may be None if not available)
         try:
             self.reference_sequence: str | None = aln.get_reference_sequence()
-        except Exception:
+        except Exception as e:
+            logger.debug("Could not get reference sequence for %s: %s", aln.query_name, e)
             self.reference_sequence = None
 
         # Extract move table data

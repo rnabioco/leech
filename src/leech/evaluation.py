@@ -79,8 +79,8 @@ def evaluate_model(
         try:
             compile_mode = "reduce-overhead" if device != "cpu" else None
             model = torch.compile(model, mode=compile_mode)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("torch.compile failed, using eager mode: %s", e)
 
     # Wrap model for unified forward pass
     model_wrapper = ModelInferenceWrapper(model, model_type)

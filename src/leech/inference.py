@@ -177,14 +177,15 @@ def _is_leech_export(path: Path) -> bool:
         torch.export.load(str(path), extra_files=extra)
         if extra.get("leech_meta.txt", ""):
             return True
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Not torch.export format: %s", e)
     # Fall back to legacy TorchScript format
     try:
         extra = {"leech_meta.txt": ""}
         torch.jit.load(str(path), map_location="cpu", _extra_files=extra)
         return bool(extra.get("leech_meta.txt", ""))
-    except Exception:
+    except Exception as e:
+        logger.debug("Not TorchScript format: %s", e)
         return False
 
 
@@ -227,14 +228,15 @@ def load_model_auto(
                     f"signal_len={config.get('signal_len')}, kmer_len={config.get('kmer_len')}"
                 )
                 return wrapper, config
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("torch.export load failed, trying TorchScript: %s", e)
 
         # Try legacy TorchScript format
         extra = {"leech_meta.txt": ""}
         try:
             traced = torch.jit.load(str(path), map_location=device, _extra_files=extra)
-        except Exception:
+        except Exception as e:
+            logger.debug("TorchScript load failed: %s", e)
             traced = None
 
         if traced is not None and extra.get("leech_meta.txt", ""):
