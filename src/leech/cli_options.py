@@ -14,6 +14,7 @@ from leech.constants import (
     DEFAULT_DEVICE,
     DEFAULT_EPOCHS,
     DEFAULT_FOCAL_GAMMA,
+    DEFAULT_LABEL_SMOOTHING,
     DEFAULT_LEARNING_RATE,
     DEFAULT_LOSS_TYPE,
     DEFAULT_MAX_GRAD_NORM,
@@ -92,6 +93,12 @@ def training_hyperparams(f):
         help="Enable mixed precision training (CUDA only)",
     )(f)
     f = click.option(
+        "--label-smoothing",
+        type=float,
+        default=DEFAULT_LABEL_SMOOTHING,
+        help="Label smoothing factor (0 = disabled; e.g., 0.05 softens 0/1 targets)",
+    )(f)
+    f = click.option(
         "--focal-gamma",
         type=float,
         default=DEFAULT_FOCAL_GAMMA,
@@ -124,7 +131,7 @@ def training_hyperparams(f):
     )(f)
     f = click.option(
         "--scheduler",
-        type=click.Choice(["none", "reduce_on_plateau"]),
+        type=click.Choice(["none", "reduce_on_plateau", "cosine"]),
         default=DEFAULT_SCHEDULER,
         help="Learning rate scheduler",
     )(f)

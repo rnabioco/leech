@@ -60,12 +60,13 @@ DEFAULT_NUM_WORKERS = 2  # DataLoader num_workers
 # Advanced training defaults
 DEFAULT_WEIGHT_DECAY = 0.0
 DEFAULT_MAX_GRAD_NORM = 0.0  # 0 = disabled
-DEFAULT_SCHEDULER = "none"  # "none" or "reduce_on_plateau"
+DEFAULT_SCHEDULER = "none"  # "none", "reduce_on_plateau", or "cosine"
 DEFAULT_SCHEDULER_PATIENCE = 5
 DEFAULT_SCHEDULER_FACTOR = 0.5
 DEFAULT_WARMUP_EPOCHS = 0
 DEFAULT_LOSS_TYPE = "bce"  # "bce" or "focal"
 DEFAULT_FOCAL_GAMMA = 2.0
+DEFAULT_LABEL_SMOOTHING = 0.0  # 0 = disabled; e.g., 0.05 softens 0/1 targets
 DEFAULT_MIXED_PRECISION = False
 DEFAULT_AUGMENT_JITTER = 0.0
 DEFAULT_AUGMENT_SCALE_MIN = 1.0

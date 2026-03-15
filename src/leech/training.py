@@ -98,9 +98,11 @@ class Trainer:
         warmup_epochs: int = 0,
         loss_type: str = "bce",
         focal_gamma: float = 2.0,
+        label_smoothing: float = 0.0,
         use_mixed_precision: bool = False,
         resume_checkpoint: Path | None = None,
         num_out: int | None = None,
+        epochs: int = 50,
     ):
         # Wrap model with inference wrapper for unified forward pass
         self.model_wrapper = ModelInferenceWrapper(model, model_type)
@@ -122,28 +124,39 @@ class Trainer:
         # Setup loss
         self.loss_type = loss_type
         self._num_out = num_out if num_out is not None else 1
+        self.label_smoothing = label_smoothing
         pw = pos_weight.to(device) if pos_weight is not None else None
         if loss_type == "cross_entropy":
             # CrossEntropyLoss expects (B, num_classes) logits and (B,) integer labels
             if pw is not None and self._num_out <= 2:
                 # Convert pos_weight to per-class weights for CE (binary case)
                 ce_weights = torch.tensor([1.0, pw.item()], dtype=torch.float32).to(device)
-                self.criterion = nn.CrossEntropyLoss(weight=ce_weights)
+                self.criterion = nn.CrossEntropyLoss(
+                    weight=ce_weights, label_smoothing=label_smoothing
+                )
             else:
-                self.criterion = nn.CrossEntropyLoss()
+                self.criterion = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
             logger.info(f"Using CrossEntropyLoss ({self._num_out}-class)")
         elif loss_type == "focal":
             self.criterion = FocalBCEWithLogitsLoss(gamma=focal_gamma, pos_weight=pw)
-            logger.info(f"Using focal loss (gamma={focal_gamma})")
+            if label_smoothing > 0:
+                logger.info(
+                    f"Using focal loss (gamma={focal_gamma}) with label smoothing={label_smoothing}"
+                )
+            else:
+                logger.info(f"Using focal loss (gamma={focal_gamma})")
         else:
             if pw is not None:
                 self.criterion = nn.BCEWithLogitsLoss(pos_weight=pw)
             else:
                 self.criterion = nn.BCEWithLogitsLoss()
                 logger.info("Training without class weighting")
+        if label_smoothing > 0 and loss_type != "cross_entropy":
+            logger.info(f"Label smoothing={label_smoothing} (applied to binary targets)")
 
         # Setup LR scheduler
         self.scheduler = None
+        self.scheduler_type = scheduler_type
         if scheduler_type == "reduce_on_plateau":
             self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
                 self.optimizer,
@@ -153,6 +166,17 @@ class Trainer:
             )
             logger.info(
                 f"Using ReduceLROnPlateau scheduler (patience={scheduler_patience}, factor={scheduler_factor})"
+            )
+        elif scheduler_type == "cosine":
+            # T_max = total epochs minus warmup; eta_min = 1e-6 floor
+            effective_epochs = max(1, epochs - warmup_epochs)
+            self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                self.optimizer,
+                T_max=effective_epochs,
+                eta_min=1e-6,
+            )
+            logger.info(
+                f"Using CosineAnnealingLR scheduler (T_max={effective_epochs}, eta_min=1e-6)"
             )
 
         # Mixed precision (only on CUDA)
@@ -239,6 +263,11 @@ class Trainer:
         for batch in self.train_loader:
             # Move labels to device
             labels = batch["label"].to(self.device)
+
+            # Apply label smoothing to binary targets (BCE/focal only;
+            # CrossEntropyLoss handles its own smoothing via constructor arg)
+            if self.label_smoothing > 0 and self.loss_type != "cross_entropy":
+                labels = labels * (1 - self.label_smoothing) + 0.5 * self.label_smoothing
 
             # Adapt labels for CrossEntropyLoss
             if self.loss_type == "cross_entropy":
@@ -465,7 +494,11 @@ class Trainer:
                     # LR scheduler step (only after warmup)
                     if self.scheduler is not None and epoch > self.warmup_epochs:
                         old_lr = self.optimizer.param_groups[0]["lr"]
-                        self.scheduler.step(val_loss)
+                        if self.scheduler_type == "reduce_on_plateau":
+                            self.scheduler.step(val_loss)
+                        else:
+                            # Epoch-based schedulers (cosine, etc.)
+                            self.scheduler.step()
                         new_lr = self.optimizer.param_groups[0]["lr"]
                         if new_lr != old_lr:
                             logger.info(f"LR reduced: {old_lr:.6f} -> {new_lr:.6f}")
@@ -632,6 +665,7 @@ def train_model(
     loss_type: str = "bce",
     focal_gamma: float = 2.0,
     mixed_precision: bool = False,
+    label_smoothing: float = 0.0,
     augment_jitter: float = 0.0,
     augment_scale_min: float = 1.0,
     augment_scale_max: float = 1.0,
@@ -991,6 +1025,7 @@ def train_model(
         "num_out": num_out,
         "focal_gamma": focal_gamma,
         "mixed_precision": mixed_precision,
+        "label_smoothing": label_smoothing,
         "augment_jitter": augment_jitter,
         "augment_scale_min": augment_scale_min,
         "augment_scale_max": augment_scale_max,
@@ -1026,9 +1061,11 @@ def train_model(
         warmup_epochs=warmup_epochs,
         loss_type=loss_type,
         focal_gamma=focal_gamma,
+        label_smoothing=label_smoothing,
         use_mixed_precision=mixed_precision,
         resume_checkpoint=resume_from,
         num_out=num_out,
+        epochs=epochs,
     )
 
     # Train

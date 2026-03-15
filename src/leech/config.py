@@ -18,6 +18,7 @@ from leech.constants import (
     DEFAULT_EPOCHS,
     DEFAULT_FOCAL_GAMMA,
     DEFAULT_KMER_CONTEXT,
+    DEFAULT_LABEL_SMOOTHING,
     DEFAULT_LEARNING_RATE,
     DEFAULT_LOSS_TYPE,
     DEFAULT_MAX_GRAD_NORM,
@@ -164,6 +165,7 @@ class TrainingConfig(BaseModel):
     warmup_epochs: int = DEFAULT_WARMUP_EPOCHS
     loss_type: str = DEFAULT_LOSS_TYPE
     focal_gamma: float = DEFAULT_FOCAL_GAMMA
+    label_smoothing: float = DEFAULT_LABEL_SMOOTHING
     mixed_precision: bool = DEFAULT_MIXED_PRECISION
 
     # Data augmentation

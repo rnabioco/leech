@@ -173,6 +173,7 @@ class GridSearchConfig:
     warmup_epochs: int = 0
     loss_type: str = "bce"
     focal_gamma: float = 2.0
+    label_smoothing: float = 0.0
     mixed_precision: bool = False
     augment_jitter: float = 0.0
     augment_scale_min: float = 1.0
@@ -266,6 +267,7 @@ def run_grid_point(
     warmup_epochs: int = 0,
     loss_type: str = "bce",
     focal_gamma: float = 2.0,
+    label_smoothing: float = 0.0,
     mixed_precision: bool = False,
     augment_jitter: float = 0.0,
     augment_scale_min: float = 1.0,
@@ -336,6 +338,7 @@ def run_grid_point(
             warmup_epochs=warmup_epochs,
             loss_type=loss_type,
             focal_gamma=focal_gamma,
+            label_smoothing=label_smoothing,
             mixed_precision=mixed_precision,
             augment_jitter=augment_jitter,
             augment_scale_min=augment_scale_min,
@@ -435,6 +438,7 @@ def _grid_point_worker(args: dict) -> dict:
         warmup_epochs=args["warmup_epochs"],
         loss_type=args["loss_type"],
         focal_gamma=args["focal_gamma"],
+        label_smoothing=args["label_smoothing"],
         mixed_precision=args["mixed_precision"],
         augment_jitter=args["augment_jitter"],
         augment_scale_min=args["augment_scale_min"],
@@ -589,6 +593,7 @@ def run_grid_search(config: GridSearchConfig) -> Path:
                 "warmup_epochs": config.warmup_epochs,
                 "loss_type": config.loss_type,
                 "focal_gamma": config.focal_gamma,
+                "label_smoothing": config.label_smoothing,
                 "mixed_precision": config.mixed_precision,
                 "augment_jitter": config.augment_jitter,
                 "augment_scale_min": config.augment_scale_min,
