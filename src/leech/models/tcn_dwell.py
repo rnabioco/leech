@@ -207,6 +207,7 @@ class TCNDwell(BaseModel):
         signal_kmer_context: tuple[int, int] = DEFAULT_SIGNAL_KMER_CONTEXT,
         norm_type: str = "batchnorm",
         signal_in_channels: int = 1,
+        num_out: int = 1,
     ):
         super().__init__()
 
@@ -281,7 +282,7 @@ class TCNDwell(BaseModel):
             nn.ReLU(),
             make_norm(norm_type, 64),
             nn.Dropout(dropout),
-            nn.Linear(64, 1),
+            nn.Linear(64, num_out),
         )
 
     def forward(
@@ -297,7 +298,7 @@ class TCNDwell(BaseModel):
                 (batch, num_features, kmer_len + margin_left + margin_right)
 
         Returns:
-            Logits for binary classification (batch, 1)
+            Logits (batch, num_out)
         """
         # Signal branch: handle both 1-channel and multi-channel input
         if signal.dim() == 2:

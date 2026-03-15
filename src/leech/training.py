@@ -891,6 +891,20 @@ def train_model(
     signal_shape = first_batch["signal"].shape
     signal_in_channels = signal_shape[1] if len(signal_shape) == 3 else 1
 
+    # Auto-detect num_out from training data when not explicitly set
+    if num_out <= 1:
+        max_label = max(int(c["label_int"]) for c in train_dataset.chunks)
+        if max_label > 1:
+            num_out = max_label + 1
+            logger.info(f"Auto-detected multi-class: num_out={num_out}")
+            # Load label_map from sidecar if available
+            if label_map is None:
+                label_map_path = train_data_path.parent / "label_map.json"
+                if label_map_path.exists():
+                    with open(label_map_path) as f:
+                        label_map = json.load(f)
+                    logger.info(f"Loaded label_map from {label_map_path}: {label_map}")
+
     # Compute class weights if requested
     pos_weight_tensor = None
     if pos_weight is not None:
@@ -931,6 +945,12 @@ def train_model(
         "ConvLSTMDwellBNAttn",
         "ConvLSTMRemora",
         "ConvLSTMRemoraBase",
+        "TCNDwell",
+        "TCNDwellGN",
+        "TCNDwellLN",
+        "TCNDwellResidual",
+        "TCNDwellResidualGN",
+        "TCNDwellResidualLN",
     }
     if model_name in num_out_models:
         model_init_kwargs["num_out"] = num_out
