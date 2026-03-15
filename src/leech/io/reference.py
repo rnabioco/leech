@@ -76,8 +76,11 @@ def load_reference_fasta(fasta_path: Path) -> dict[str, str]:
 
     references = {}
 
-    # Regenerate .fai index to prevent stale index failures
-    pysam.faidx(str(fasta_path))
+    # Regenerate .fai if missing or older than the FASTA (stale index),
+    # but skip if already up-to-date (avoids race condition under parallel SLURM jobs)
+    fai_path = Path(str(fasta_path) + ".fai")
+    if not fai_path.exists() or fai_path.stat().st_mtime < fasta_path.stat().st_mtime:
+        pysam.faidx(str(fasta_path))
 
     with pysam.FastaFile(str(fasta_path)) as fasta:
         for ref_name in fasta.references:
