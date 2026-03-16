@@ -469,8 +469,13 @@ class TestWritePredictionTagsCompact:
     def test_basic_tags_written(self):
         aln = _make_bare_alignment()
         _write_prediction_tags(
-            aln, "Ala", 0.93, "Ala,Gly,Met",
-            [0.93, 0.05, 0.02], raw=False, min_confidence=0,
+            aln,
+            "Ala",
+            0.93,
+            "Ala,Gly,Met",
+            [0.93, 0.05, 0.02],
+            raw=False,
+            min_confidence=0,
         )
         assert aln.get_tag("aa") == "Ala"
         assert aln.get_tag("pn") == "Ala,Gly,Met"
@@ -492,8 +497,13 @@ class TestWritePredictionTagsCompact:
         """pp tag should be a B:B (unsigned byte array) in compact mode."""
         aln = _make_bare_alignment()
         _write_prediction_tags(
-            aln, "Gly", 0.8, "Ala,Gly",
-            [0.2, 0.8], raw=False, min_confidence=0,
+            aln,
+            "Gly",
+            0.8,
+            "Ala,Gly",
+            [0.2, 0.8],
+            raw=False,
+            min_confidence=0,
         )
         pp = aln.get_tag("pp")
         assert isinstance(pp, array.array)
@@ -506,8 +516,13 @@ class TestWritePredictionTagsRaw:
         aln = _make_bare_alignment()
         probs = [0.93, 0.05, 0.02]
         _write_prediction_tags(
-            aln, "Ala", 0.93, "Ala,Gly,Met",
-            probs, raw=True, min_confidence=0,
+            aln,
+            "Ala",
+            0.93,
+            "Ala,Gly,Met",
+            probs,
+            raw=True,
+            min_confidence=0,
         )
         assert aln.get_tag("aa") == "Ala"
         ac = aln.get_tag("ac")
@@ -528,8 +543,13 @@ class TestWritePredictionTagsMargin:
         """Margin = max_prob - 2nd_prob for two-class case."""
         aln = _make_bare_alignment()
         _write_prediction_tags(
-            aln, "Ala", 0.7, "Ala,Gly",
-            [0.7, 0.3], raw=True, min_confidence=0,
+            aln,
+            "Ala",
+            0.7,
+            "Ala,Gly",
+            [0.7, 0.3],
+            raw=True,
+            min_confidence=0,
         )
         assert aln.get_tag("am") == pytest.approx(0.4)
 
@@ -537,8 +557,13 @@ class TestWritePredictionTagsMargin:
         """Margin = 1.0 when only one class exists."""
         aln = _make_bare_alignment()
         _write_prediction_tags(
-            aln, "Ala", 1.0, "Ala",
-            [1.0], raw=True, min_confidence=0,
+            aln,
+            "Ala",
+            1.0,
+            "Ala",
+            [1.0],
+            raw=True,
+            min_confidence=0,
         )
         assert aln.get_tag("am") == pytest.approx(1.0)
 
@@ -546,8 +571,13 @@ class TestWritePredictionTagsMargin:
         """Margin = 0 when top two classes have identical probability."""
         aln = _make_bare_alignment()
         _write_prediction_tags(
-            aln, "Ala", 0.5, "Ala,Gly",
-            [0.5, 0.5], raw=True, min_confidence=0,
+            aln,
+            "Ala",
+            0.5,
+            "Ala,Gly",
+            [0.5, 0.5],
+            raw=True,
+            min_confidence=0,
         )
         assert aln.get_tag("am") == pytest.approx(0.0)
 
@@ -556,8 +586,13 @@ class TestWritePredictionTagsMargin:
         aln = _make_bare_alignment()
         # probs are not sorted by value — 2nd highest is 0.20 (Met), not 0.05 (Gly)
         _write_prediction_tags(
-            aln, "Ala", 0.75, "Ala,Gly,Met",
-            [0.75, 0.05, 0.20], raw=True, min_confidence=0,
+            aln,
+            "Ala",
+            0.75,
+            "Ala,Gly,Met",
+            [0.75, 0.05, 0.20],
+            raw=True,
+            min_confidence=0,
         )
         assert aln.get_tag("am") == pytest.approx(0.55)
 
@@ -565,8 +600,13 @@ class TestWritePredictionTagsMargin:
         """Compact uint8 margin survives encode/decode within 1/255 tolerance."""
         aln = _make_bare_alignment()
         _write_prediction_tags(
-            aln, "Ala", 0.85, "Ala,Gly",
-            [0.85, 0.15], raw=False, min_confidence=0,
+            aln,
+            "Ala",
+            0.85,
+            "Ala,Gly",
+            [0.85, 0.15],
+            raw=False,
+            min_confidence=0,
         )
         am = aln.get_tag("am")
         assert abs(am / 255.0 - 0.70) < 1.5 / 255.0
@@ -579,8 +619,13 @@ class TestWritePredictionTagsMinConfidence:
         aln = _make_bare_alignment()
         # conf=0.9 → uint8=230, threshold=200
         _write_prediction_tags(
-            aln, "Ala", 0.9, "Ala,Gly",
-            [0.9, 0.1], raw=False, min_confidence=200,
+            aln,
+            "Ala",
+            0.9,
+            "Ala,Gly",
+            [0.9, 0.1],
+            raw=False,
+            min_confidence=200,
         )
         assert aln.get_tag("aa") == "Ala"
         # ac should encode the actual confidence
@@ -590,8 +635,13 @@ class TestWritePredictionTagsMinConfidence:
         aln = _make_bare_alignment()
         # conf=0.6 → uint8=153, threshold=200
         _write_prediction_tags(
-            aln, "Ala", 0.6, "Ala,Gly",
-            [0.6, 0.4], raw=False, min_confidence=200,
+            aln,
+            "Ala",
+            0.6,
+            "Ala,Gly",
+            [0.6, 0.4],
+            raw=False,
+            min_confidence=200,
         )
         assert aln.get_tag("aa") == "unc"
         # ac should encode 1 - conf when unc
@@ -601,8 +651,13 @@ class TestWritePredictionTagsMinConfidence:
         """In raw mode, unc reads get ac = 1 - conf as float."""
         aln = _make_bare_alignment()
         _write_prediction_tags(
-            aln, "Met", 0.3, "Met,Ile",
-            [0.3, 0.7], raw=True, min_confidence=200,
+            aln,
+            "Met",
+            0.3,
+            "Met,Ile",
+            [0.3, 0.7],
+            raw=True,
+            min_confidence=200,
         )
         assert aln.get_tag("aa") == "unc"
         assert aln.get_tag("ac") == pytest.approx(0.7)
@@ -611,8 +666,13 @@ class TestWritePredictionTagsMinConfidence:
         """min_confidence=0 means every read is called."""
         aln = _make_bare_alignment()
         _write_prediction_tags(
-            aln, "Gly", 0.01, "Gly,Ala",
-            [0.01, 0.99], raw=False, min_confidence=0,
+            aln,
+            "Gly",
+            0.01,
+            "Gly,Ala",
+            [0.01, 0.99],
+            raw=False,
+            min_confidence=0,
         )
         assert aln.get_tag("aa") == "Gly"
 
@@ -624,8 +684,14 @@ class TestWritePredictionTagsMinMargin:
         aln = _make_bare_alignment()
         # margin = 0.9 - 0.1 = 0.8 → uint8=204, threshold=128
         _write_prediction_tags(
-            aln, "Ala", 0.9, "Ala,Gly",
-            [0.9, 0.1], raw=False, min_confidence=0, min_margin=128,
+            aln,
+            "Ala",
+            0.9,
+            "Ala,Gly",
+            [0.9, 0.1],
+            raw=False,
+            min_confidence=0,
+            min_margin=128,
         )
         assert aln.get_tag("aa") == "Ala"
 
@@ -633,16 +699,28 @@ class TestWritePredictionTagsMinMargin:
         aln = _make_bare_alignment()
         # margin = 0.55 - 0.45 = 0.1 → uint8=26, threshold=128
         _write_prediction_tags(
-            aln, "Ala", 0.55, "Ala,Gly",
-            [0.55, 0.45], raw=False, min_confidence=0, min_margin=128,
+            aln,
+            "Ala",
+            0.55,
+            "Ala,Gly",
+            [0.55, 0.45],
+            raw=False,
+            min_confidence=0,
+            min_margin=128,
         )
         assert aln.get_tag("aa") == "unc"
 
     def test_margin_threshold_zero_passes_all(self):
         aln = _make_bare_alignment()
         _write_prediction_tags(
-            aln, "Met", 0.51, "Met,Ile",
-            [0.51, 0.49], raw=False, min_confidence=0, min_margin=0,
+            aln,
+            "Met",
+            0.51,
+            "Met,Ile",
+            [0.51, 0.49],
+            raw=False,
+            min_confidence=0,
+            min_margin=0,
         )
         assert aln.get_tag("aa") == "Met"
 
@@ -654,8 +732,14 @@ class TestWritePredictionTagsCombinedThresholds:
         aln = _make_bare_alignment()
         # conf=0.95 → uint8=242, margin=0.90 → uint8=230
         _write_prediction_tags(
-            aln, "Ala", 0.95, "Ala,Gly",
-            [0.95, 0.05], raw=False, min_confidence=200, min_margin=200,
+            aln,
+            "Ala",
+            0.95,
+            "Ala,Gly",
+            [0.95, 0.05],
+            raw=False,
+            min_confidence=200,
+            min_margin=200,
         )
         assert aln.get_tag("aa") == "Ala"
 
@@ -663,8 +747,14 @@ class TestWritePredictionTagsCombinedThresholds:
         aln = _make_bare_alignment()
         # conf=0.6 → uint8=153, margin=0.5 → uint8=128
         _write_prediction_tags(
-            aln, "Ala", 0.6, "Ala,Gly",
-            [0.6, 0.1], raw=False, min_confidence=200, min_margin=50,
+            aln,
+            "Ala",
+            0.6,
+            "Ala,Gly",
+            [0.6, 0.1],
+            raw=False,
+            min_confidence=200,
+            min_margin=50,
         )
         assert aln.get_tag("aa") == "unc"
 
@@ -672,16 +762,28 @@ class TestWritePredictionTagsCombinedThresholds:
         aln = _make_bare_alignment()
         # conf=0.55 → uint8=140, margin=0.1 → uint8=26
         _write_prediction_tags(
-            aln, "Ala", 0.55, "Ala,Gly",
-            [0.55, 0.45], raw=False, min_confidence=100, min_margin=128,
+            aln,
+            "Ala",
+            0.55,
+            "Ala,Gly",
+            [0.55, 0.45],
+            raw=False,
+            min_confidence=100,
+            min_margin=128,
         )
         assert aln.get_tag("aa") == "unc"
 
     def test_fails_both_thresholds(self):
         aln = _make_bare_alignment()
         _write_prediction_tags(
-            aln, "Ala", 0.4, "Ala,Gly",
-            [0.4, 0.6], raw=False, min_confidence=200, min_margin=200,
+            aln,
+            "Ala",
+            0.4,
+            "Ala,Gly",
+            [0.4, 0.6],
+            raw=False,
+            min_confidence=200,
+            min_margin=200,
         )
         assert aln.get_tag("aa") == "unc"
 
@@ -689,8 +791,14 @@ class TestWritePredictionTagsCombinedThresholds:
         """Even when unc, all 5 tags (aa, ac, am, pn, pp) are written."""
         aln = _make_bare_alignment()
         _write_prediction_tags(
-            aln, "Ala", 0.4, "Ala,Gly,Met",
-            [0.4, 0.35, 0.25], raw=False, min_confidence=255, min_margin=255,
+            aln,
+            "Ala",
+            0.4,
+            "Ala,Gly,Met",
+            [0.4, 0.35, 0.25],
+            raw=False,
+            min_confidence=255,
+            min_margin=255,
         )
         assert aln.get_tag("aa") == "unc"
         assert aln.has_tag("ac")
@@ -792,8 +900,7 @@ def _create_pairwise_bundle(tmp_path, pair_names):
     return bundle_path
 
 
-def _run_multiclass_inference(tmp_path, class_names, *, raw=False,
-                               min_confidence=0, min_margin=0):
+def _run_multiclass_inference(tmp_path, class_names, *, raw=False, min_confidence=0, min_margin=0):
     """Run multiclass inference on tRNA fixtures and return output reads."""
     from leech.inference import run_inference
     from leech.util import load_model_from_multiclass_bundle
@@ -809,7 +916,7 @@ def _run_multiclass_inference(tmp_path, class_names, *, raw=False,
         output_path=output_bam,
         device="cpu",
         batch_size=64,
-        reverse_signal=True,   # RNA data
+        reverse_signal=True,  # RNA data
         reference_fasta=TRNA_REF,
         raw=raw,
         min_confidence=min_confidence,
@@ -906,9 +1013,15 @@ class TestRunInferenceTagsIntegration:
             out = d / "out.bam"
             run_inference(
                 model_and_config=(model, config),
-                pod5_path=TRNA_POD5, bam_path=TRNA_BAM, output_path=out,
-                device="cpu", batch_size=64, reverse_signal=True,
-                reference_fasta=TRNA_REF, raw=True, min_confidence=min_confidence,
+                pod5_path=TRNA_POD5,
+                bam_path=TRNA_BAM,
+                output_path=out,
+                device="cpu",
+                batch_size=64,
+                reverse_signal=True,
+                reference_fasta=TRNA_REF,
+                raw=True,
+                min_confidence=min_confidence,
             )
             with pysam.AlignmentFile(str(out), "rb") as bam:
                 return {r.query_name: r for r in bam if r.has_tag("aa")}

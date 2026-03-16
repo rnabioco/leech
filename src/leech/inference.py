@@ -1052,8 +1052,14 @@ def run_inference(
                     else:
                         predicted_aa = str(cls_idx)
                     _write_prediction_tags(
-                        aln, predicted_aa, conf, class_names_str,
-                        all_probs, raw, min_confidence, min_margin,
+                        aln,
+                        predicted_aa,
+                        conf,
+                        class_names_str,
+                        all_probs,
+                        raw,
+                        min_confidence,
+                        min_margin,
                     )
                 bam_out.write(aln)
         else:
@@ -1237,8 +1243,14 @@ def run_inference(
                     else:
                         predicted_aa = str(cls_idx)
                     _write_prediction_tags(
-                        aln, predicted_aa, conf, class_names_str,
-                        all_probs, raw, min_confidence, min_margin,
+                        aln,
+                        predicted_aa,
+                        conf,
+                        class_names_str,
+                        all_probs,
+                        raw,
+                        min_confidence,
+                        min_margin,
                     )
                 bam_out.write(aln)
         else:
@@ -1794,8 +1806,14 @@ def run_bundle_inference(
         predicted_aa, confidence, _ = aggregate_fn(pairs, probs)
 
         _write_prediction_tags(
-            aln, predicted_aa, confidence, pair_names_str,
-            probs, raw, min_confidence, min_margin,
+            aln,
+            predicted_aa,
+            confidence,
+            pair_names_str,
+            probs,
+            raw,
+            min_confidence,
+            min_margin,
         )
         bam_out.write(aln)
         n_predicted += 1
