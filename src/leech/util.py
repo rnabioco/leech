@@ -914,7 +914,7 @@ def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray, y_prob: np.ndarray) 
         metrics["auprc"] = 0.0
 
     # Confusion matrix
-    cm = confusion_matrix(y_true, y_pred)
+    cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
     metrics["confusion_matrix"] = cm.tolist()
 
     return metrics

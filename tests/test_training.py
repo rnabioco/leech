@@ -172,7 +172,7 @@ class TestTrainer:
         assert checkpoint_path.exists()
 
         # Load and verify checkpoint
-        checkpoint = torch.load(checkpoint_path, map_location="cpu")
+        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
         assert "model_state_dict" in checkpoint
         assert "optimizer_state_dict" in checkpoint
 
@@ -619,7 +619,7 @@ class TestBestModelResumeGuarantee:
         assert last_path.exists()
 
         # Record the best weights from phase 1
-        best_ckpt = torch.load(best_path, map_location="cpu")
+        best_ckpt = torch.load(best_path, map_location="cpu", weights_only=False)
         original_best_state = best_ckpt["model_state_dict"]
         original_best_acc = best_ckpt["best_val_acc"]
 
@@ -646,7 +646,7 @@ class TestBestModelResumeGuarantee:
         assert best_path.exists(), "model_best.pt was not recreated after resume"
 
         # Verify the restored best checkpoint has correct metadata
-        restored_ckpt = torch.load(best_path, map_location="cpu")
+        restored_ckpt = torch.load(best_path, map_location="cpu", weights_only=False)
         assert restored_ckpt["best_val_acc"] == original_best_acc
 
         # Verify the model weights match the original best (not the last)
@@ -672,7 +672,7 @@ class TestBestModelResumeGuarantee:
         )
 
         last_path = output_dir / "model_last.pt"
-        checkpoint = torch.load(last_path, map_location="cpu")
+        checkpoint = torch.load(last_path, map_location="cpu", weights_only=False)
         assert "best_model_state_dict" in checkpoint
         assert checkpoint["best_model_state_dict"] is not None
 
@@ -697,7 +697,7 @@ class TestBestModelResumeGuarantee:
         last_path = output_dir / "model_last.pt"
 
         # Record original best weights
-        best_ckpt = torch.load(best_path, map_location="cpu")
+        best_ckpt = torch.load(best_path, map_location="cpu", weights_only=False)
         original_best_state = best_ckpt["model_state_dict"]
 
         # Delete model_best.pt
@@ -722,7 +722,7 @@ class TestBestModelResumeGuarantee:
 
         # If the new epoch didn't beat the old best, the restored weights should
         # match the original best (from the stored state dict in model_last.pt)
-        restored_ckpt = torch.load(best_path, map_location="cpu")
+        restored_ckpt = torch.load(best_path, map_location="cpu", weights_only=False)
         for key in original_best_state:
             assert torch.equal(original_best_state[key], restored_ckpt["model_state_dict"][key]), (
                 f"Weight mismatch in {key}"

@@ -26,7 +26,7 @@ def display_logo():
 
 def configure_rich_click():
     """Apply rich-click styling for beautiful help display."""
-    click.rich_click.USE_RICH_MARKUP = True
+    click.rich_click.TEXT_MARKUP = "rich"
     click.rich_click.SHOW_ARGUMENTS = True
     click.rich_click.GROUP_ARGUMENTS_OPTIONS = True
     click.rich_click.MAX_WIDTH = 100
@@ -65,6 +65,19 @@ def configure_rich_click():
     click.rich_click.STYLE_COMMANDS_TABLE_PADDING = (0, 1)
 
     # Additional features
-    click.rich_click.SHOW_METAVARS_COLUMN = True
-    click.rich_click.APPEND_METAVARS_HELP = True
+    click.rich_click.OPTIONS_TABLE_COLUMN_TYPES = [
+        "required",
+        "opt_short",
+        "opt_long",
+        "metavar",
+        "help",
+    ]
+    click.rich_click.OPTIONS_TABLE_HELP_SECTIONS = [
+        "help",
+        "deprecated",
+        "envvar",
+        "default",
+        "required",
+        "metavar",
+    ]
     click.rich_click.USE_CLICK_SHORT_HELP = True

@@ -373,7 +373,7 @@ class TestCheckpointRecovery:
         )
         trainer.save_checkpoint("test.pt", epoch=5)
 
-        checkpoint = torch.load(output_dir / "test.pt", map_location="cpu")
+        checkpoint = torch.load(output_dir / "test.pt", map_location="cpu", weights_only=False)
         assert checkpoint["epoch"] == 5
 
     def test_save_checkpoint_includes_scheduler(self, sample_model, sample_dataloader, tmp_path):
@@ -390,7 +390,7 @@ class TestCheckpointRecovery:
         )
         trainer.save_checkpoint("test.pt", epoch=1)
 
-        checkpoint = torch.load(output_dir / "test.pt", map_location="cpu")
+        checkpoint = torch.load(output_dir / "test.pt", map_location="cpu", weights_only=False)
         assert checkpoint["scheduler_state_dict"] is not None
 
     def test_save_checkpoint_no_scheduler(self, sample_model, sample_dataloader, tmp_path):
@@ -405,7 +405,7 @@ class TestCheckpointRecovery:
         )
         trainer.save_checkpoint("test.pt", epoch=1)
 
-        checkpoint = torch.load(output_dir / "test.pt", map_location="cpu")
+        checkpoint = torch.load(output_dir / "test.pt", map_location="cpu", weights_only=False)
         assert checkpoint["scheduler_state_dict"] is None
 
     def test_resume_training(self, temp_chunks_file, tmp_path):
@@ -427,7 +427,9 @@ class TestCheckpointRecovery:
         )
 
         # Verify checkpoint has epoch info
-        checkpoint = torch.load(output_dir / "model_last.pt", map_location="cpu")
+        checkpoint = torch.load(
+            output_dir / "model_last.pt", map_location="cpu", weights_only=False
+        )
         assert "epoch" in checkpoint
         assert checkpoint["epoch"] == 3
 
@@ -468,7 +470,9 @@ class TestCheckpointRecovery:
             early_stopping_patience=0,
         )
 
-        checkpoint = torch.load(output_dir / "model_last.pt", map_location="cpu")
+        checkpoint = torch.load(
+            output_dir / "model_last.pt", map_location="cpu", weights_only=False
+        )
         saved_best_acc = checkpoint["best_val_acc"]
 
         # Load config to get the exact model architecture used by train_model
