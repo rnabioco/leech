@@ -547,13 +547,20 @@ def create_multiclass_bundle(
         "best_epoch": checkpoint.get("best_epoch"),
     }
 
-    # Include temperature scaling if calibrated
+    # Include temperature scaling only if it improved calibration
     temperature_path = model_dir / "temperature.json"
     if temperature_path.exists():
         with open(temperature_path) as f:
             temp_data = json.load(f)
-        model_entry["temperature"] = temp_data.get("temperature", 1.0)
-        logger.info(f"Temperature scaling: T={model_entry['temperature']:.4f}")
+        ece_before = temp_data.get("ece_before", 1.0)
+        ece_after = temp_data.get("ece_after", 0.0)
+        if ece_after < ece_before:
+            model_entry["temperature"] = temp_data.get("temperature", 1.0)
+            logger.info(f"Temperature scaling: T={model_entry['temperature']:.4f}")
+        else:
+            logger.info(
+                f"Skipping temperature scaling (ECE {ece_before:.4f} -> {ece_after:.4f}, no improvement)"
+            )
 
     bundle = {
         "metadata": {
