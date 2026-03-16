@@ -508,6 +508,122 @@ def create_bundle(
     return output_path
 
 
+def create_multiclass_bundle(
+    model_dir: Path,
+    output_path: Path,
+    version: str,
+) -> Path:
+    """Bundle a single multiclass model into a versioned .pt file.
+
+    Args:
+        model_dir: Directory with config.json and model_best.pt
+        output_path: Output .pt file path
+        version: Semantic version string
+
+    Returns:
+        Path to the saved bundle file
+    """
+    model_dir = Path(model_dir)
+
+    config_path = model_dir / "config.json"
+    if not config_path.exists():
+        raise FileNotFoundError(f"Config file not found: {config_path}")
+    with open(config_path) as f:
+        full_config = json.load(f)
+
+    arch_config = _architecture_config(full_config)
+    architecture = full_config["model_name"]
+    label_map = full_config.get("label_map", {})
+    num_classes = full_config.get("num_out", len(label_map))
+
+    checkpoint_path = model_dir / "model_best.pt"
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+
+    model_entry: dict = {
+        "state_dict": checkpoint["model_state_dict"],
+        "best_val_acc": checkpoint.get("best_val_acc"),
+        "best_epoch": checkpoint.get("best_epoch"),
+    }
+
+    # Include temperature scaling if calibrated
+    temperature_path = model_dir / "temperature.json"
+    if temperature_path.exists():
+        with open(temperature_path) as f:
+            temp_data = json.load(f)
+        model_entry["temperature"] = temp_data.get("temperature", 1.0)
+        logger.info(f"Temperature scaling: T={model_entry['temperature']:.4f}")
+
+    bundle = {
+        "metadata": {
+            "format_version": 1,
+            "bundle_version": version,
+            "architecture": architecture,
+            "comparison_type": "multiclass",
+            "num_models": 1,
+            "num_classes": num_classes,
+            "label_map": label_map,
+            "pairs": sorted(label_map.keys()),
+            "created_at": datetime.now(UTC).isoformat(),
+        },
+        "config": arch_config,
+        "model": model_entry,
+    }
+
+    # Atomic save
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=output_path.parent, suffix=".pt.tmp")
+    try:
+        os.close(fd)
+        torch.save(bundle, tmp_path)
+        os.rename(tmp_path, output_path)
+    except BaseException:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise
+
+    logger.info(
+        f"Multiclass bundle saved to {output_path} "
+        f"({num_classes} classes, version {version})"
+    )
+    return output_path
+
+
+def load_model_from_multiclass_bundle(
+    bundle_path: Path,
+    device: str = "cuda",
+) -> tuple[nn.Module, dict]:
+    """Load the multiclass model from a bundle file.
+
+    Args:
+        bundle_path: Path to multiclass bundle .pt file
+        device: Device to load model on
+
+    Returns:
+        Tuple of (model, config_dict) with label_map/num_out merged into config
+    """
+    bundle = torch.load(bundle_path, map_location="cpu", weights_only=False)
+    config = bundle["config"]
+    metadata = bundle["metadata"]
+    model_data = bundle["model"]
+
+    # Merge multiclass metadata into config for run_inference
+    config["label_map"] = metadata.get("label_map", {})
+    config["num_out"] = metadata.get("num_classes", len(config["label_map"]))
+
+    model = _instantiate_model(config)
+    state_dict = model_data["state_dict"]
+    state_dict = {k.removeprefix("_orig_mod."): v for k, v in state_dict.items()}
+    state_dict = _migrate_state_dict_keys(state_dict)
+    model.load_state_dict(state_dict)
+    model = model.to(device)
+    model.eval()
+
+    return model, config
+
+
 def create_torchscript_bundle(
     model_dirs: dict[str, Path],
     output_path: Path,

@@ -68,7 +68,35 @@ def handle_bundle(
     Returns:
         Path to created bundle file
     """
-    from leech.util import create_bundle, create_torchscript_bundle, create_vmap_bundle
+    from leech.util import (
+        create_bundle,
+        create_multiclass_bundle,
+        create_torchscript_bundle,
+        create_vmap_bundle,
+    )
+
+    # Multiclass: single model directory, no pair discovery
+    if comparison_type == "multiclass":
+        bundle_path = create_multiclass_bundle(
+            model_dir=model_dir,
+            output_path=output,
+            version=bundle_version,
+        )
+
+        table = Table(title="Bundle Summary", show_header=True, header_style="bold magenta")
+        table.add_column("Property", style="cyan")
+        table.add_column("Value", style="green")
+        table.add_row("Version", bundle_version)
+        table.add_row("Format", "multiclass")
+        table.add_row("Comparison type", comparison_type)
+        table.add_row("Models", "1")
+        table.add_row("Output", str(bundle_path))
+        size_mb = bundle_path.stat().st_size / (1024 * 1024)
+        table.add_row("File size", f"{size_mb:.1f} MB")
+
+        console.print(table)
+        console.print("[bold green]Bundle created![/bold green]")
+        return bundle_path
 
     # Auto-discover pair subdirectories
     model_dirs = {}

@@ -77,34 +77,62 @@ def handle_predict(
         min_mapq: Minimum mapping quality
         workers: Parallel chunk extraction workers
     """
+    import torch
+
     from leech.inference import run_bundle_inference, run_inference
-    from leech.util import load_model_from_bundle
+    from leech.util import load_model_from_bundle, load_model_from_multiclass_bundle
 
     validate_predict_args(model, bundle_path, pair, run_all)
 
     reverse_signal = not no_reverse_signal
 
     if bundle_path and run_all:
-        # Multi-model inference: run all models in bundle
-        logger.info(f"Running multi-model inference with bundle: {bundle_path}")
-        run_bundle_inference(
-            bundle_path=bundle_path,
-            pod5_path=pod5,
-            bam_path=bam,
-            output_path=output,
-            device=device,
-            min_mapq=min_mapq,
-            motif=motif,
-            motif_offset=motif_offset,
-            base_justify=base_justify,
-            reverse_signal=reverse_signal,
-            raw=raw,
-            aggregation=aggregation,
-            anchor=anchor,
-            reference_fasta=reference_fasta,
-            batch_size=batch_size,
-            num_workers=workers,
+        # Check if multiclass bundle — route to run_inference (single model)
+        bundle_meta = torch.load(bundle_path, map_location="cpu", weights_only=False).get(
+            "metadata", {}
         )
+        if bundle_meta.get("comparison_type") == "multiclass":
+            logger.info(f"Running multiclass inference with bundle: {bundle_path}")
+            loaded_model, mc_config = load_model_from_multiclass_bundle(
+                bundle_path, device=device
+            )
+            run_inference(
+                model_and_config=(loaded_model, mc_config),
+                pod5_path=pod5,
+                bam_path=bam,
+                output_path=output,
+                device=device,
+                min_mapq=min_mapq,
+                motif=motif,
+                motif_offset=motif_offset,
+                batch_size=batch_size,
+                base_justify=base_justify,
+                reverse_signal=reverse_signal,
+                num_workers=workers,
+                anchor=anchor,
+                reference_fasta=reference_fasta,
+            )
+        else:
+            # Multi-model inference: run all models in bundle
+            logger.info(f"Running multi-model inference with bundle: {bundle_path}")
+            run_bundle_inference(
+                bundle_path=bundle_path,
+                pod5_path=pod5,
+                bam_path=bam,
+                output_path=output,
+                device=device,
+                min_mapq=min_mapq,
+                motif=motif,
+                motif_offset=motif_offset,
+                base_justify=base_justify,
+                reverse_signal=reverse_signal,
+                raw=raw,
+                aggregation=aggregation,
+                anchor=anchor,
+                reference_fasta=reference_fasta,
+                batch_size=batch_size,
+                num_workers=workers,
+            )
     else:
         # Single-model inference (auto-detects leech vs Remora)
         if bundle_path and pair:

@@ -569,7 +569,7 @@ def train(
 )
 @click.option(
     "--comparison-type",
-    type=click.Choice(["pairwise", "one_vs_all", "group"]),
+    type=click.Choice(["pairwise", "one_vs_all", "group", "multiclass"]),
     default="pairwise",
     help="Comparison type (default: pairwise)",
 )
