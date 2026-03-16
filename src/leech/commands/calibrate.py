@@ -38,19 +38,43 @@ def handle_calibrate(
     Returns:
         Number of models calibrated
     """
-    from leech.calibration import calibrate_model
+    import json
+
+    from leech.calibration import calibrate_model, calibrate_model_temperature
+
+    def _is_multiclass(config_path: Path) -> bool:
+        """Check if model config indicates multiclass (num_out > 2)."""
+        with open(config_path) as f:
+            cfg = json.load(f)
+        return cfg.get("num_out", 1) > 2
+
+    def _calibrate_single(mdir: Path) -> str:
+        """Calibrate a single model dir, auto-detecting binary vs multiclass."""
+        config_path = mdir / "config.json"
+        if _is_multiclass(config_path):
+            t = calibrate_model_temperature(
+                mdir,
+                val_data,
+                device=device,
+                batch_size=batch_size,
+                num_workers=num_workers,
+            )
+            return f"Temperature: T={t:.4f}"
+        else:
+            a, b = calibrate_model(
+                mdir,
+                val_data,
+                device=device,
+                batch_size=batch_size,
+                num_workers=num_workers,
+            )
+            return f"Platt: a={a:.4f}, b={b:.4f}"
 
     # Check if model_dir is a single model or a parent with pair subdirs
     if (model_dir / "config.json").exists():
         # Single model directory
-        a, b = calibrate_model(
-            model_dir,
-            val_data,
-            device=device,
-            batch_size=batch_size,
-            num_workers=num_workers,
-        )
-        console.print(f"[green]Platt: a={a:.4f}, b={b:.4f}[/green]")
+        result_str = _calibrate_single(model_dir)
+        console.print(f"[green]{result_str}[/green]")
         return 1
 
     # Parent directory — calibrate each pair subdir
@@ -62,14 +86,8 @@ def handle_calibrate(
         # Direct model
         if (subdir / "config.json").exists():
             console.print(f"  [cyan]{subdir.name}[/cyan]", end=" ")
-            a, b = calibrate_model(
-                subdir,
-                val_data,
-                device=device,
-                batch_size=batch_size,
-                num_workers=num_workers,
-            )
-            console.print(f"[green]a={a:.4f}, b={b:.4f}[/green]")
+            result_str = _calibrate_single(subdir)
+            console.print(f"[green]{result_str}[/green]")
             pairs_done += 1
             continue
         # K-fold: calibrate best fold
@@ -80,14 +98,8 @@ def handle_calibrate(
         if valid_folds:
             best_fold = pick_best_fold(valid_folds)
             console.print(f"  [cyan]{subdir.name}/{best_fold.name}[/cyan]", end=" ")
-            a, b = calibrate_model(
-                best_fold,
-                val_data,
-                device=device,
-                batch_size=batch_size,
-                num_workers=num_workers,
-            )
-            console.print(f"[green]a={a:.4f}, b={b:.4f}[/green]")
+            result_str = _calibrate_single(best_fold)
+            console.print(f"[green]{result_str}[/green]")
             pairs_done += 1
 
     if pairs_done == 0:

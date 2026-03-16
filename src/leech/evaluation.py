@@ -159,16 +159,39 @@ def evaluate_model(
         top3_acc = _topk_accuracy(all_logits_combined, all_labels_arr, k=3)
         top5_acc = _topk_accuracy(all_logits_combined, all_labels_arr, k=5)
 
+        # ECE (top-1 confidence)
+        logits_t = torch.from_numpy(all_logits_combined).float()
+        labels_t = torch.from_numpy(all_labels_arr).long()
+        probs_t = torch.softmax(logits_t, dim=-1)
+        ece = _expected_calibration_error_multiclass(probs_t, labels_t)
+        logger.info(f"ECE (uncalibrated): {ece:.4f}")
+
+        # Calibrated ECE if temperature.json exists
+        ece_calibrated = None
+        temperature_path = model_path / "temperature.json"
+        if temperature_path.exists():
+            import json as _json
+
+            with open(temperature_path) as f:
+                temp_data = _json.load(f)
+            t = temp_data["temperature"]
+            cal_probs_t = torch.softmax(logits_t / t, dim=-1)
+            ece_calibrated = _expected_calibration_error_multiclass(cal_probs_t, labels_t)
+            logger.info(f"ECE (calibrated, T={t:.4f}): {ece_calibrated:.4f}")
+
         metrics: dict = {
             "accuracy": accuracy,
             "macro_f1": macro_f1,
             "weighted_f1": weighted_f1,
             "top3_accuracy": top3_acc,
             "top5_accuracy": top5_acc,
+            "ece": ece,
             "confusion_matrix": cm,
             "classification_report": report,
             "num_classes": num_out,
         }
+        if ece_calibrated is not None:
+            metrics["ece_calibrated"] = ece_calibrated
 
         # Add metadata
         metrics["model_path"] = str(model_path)
@@ -244,3 +267,22 @@ def _topk_accuracy(logits: np.ndarray, labels: np.ndarray, k: int) -> float:
     top_k_preds = np.argsort(logits, axis=1)[:, -k:]
     correct = (top_k_preds == labels[:, None]).any(axis=1)
     return float(correct.mean())
+
+
+def _expected_calibration_error_multiclass(
+    probs: torch.Tensor, labels: torch.Tensor, n_bins: int = 15
+) -> float:
+    """Compute top-1 confidence ECE for multiclass predictions."""
+    confidences, preds = probs.max(dim=-1)
+    accuracies = (preds == labels).float()
+    bin_boundaries = torch.linspace(0, 1, n_bins + 1)
+    ece = 0.0
+    n = len(labels)
+    for i in range(n_bins):
+        mask = (confidences >= bin_boundaries[i]) & (confidences < bin_boundaries[i + 1])
+        if mask.sum() == 0:
+            continue
+        bin_conf = confidences[mask].mean().item()
+        bin_acc = accuracies[mask].mean().item()
+        ece += mask.sum().item() / n * abs(bin_conf - bin_acc)
+    return ece
