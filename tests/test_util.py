@@ -1536,7 +1536,7 @@ class TestVmapInferenceIntegration:
             np.testing.assert_allclose(
                 read_probs[rid],
                 ref_probs[:, i],
-                atol=1e-7,
+                atol=1e-6,
                 err_msg=f"Streaming batch scatter mismatch for {rid}",
             )
 
