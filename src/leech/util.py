@@ -592,8 +592,7 @@ def create_multiclass_bundle(
         raise
 
     logger.info(
-        f"Multiclass bundle saved to {output_path} "
-        f"({num_classes} classes, version {version})"
+        f"Multiclass bundle saved to {output_path} ({num_classes} classes, version {version})"
     )
     return output_path
 

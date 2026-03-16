@@ -93,9 +93,7 @@ def handle_predict(
         )
         if bundle_meta.get("comparison_type") == "multiclass":
             logger.info(f"Running multiclass inference with bundle: {bundle_path}")
-            loaded_model, mc_config = load_model_from_multiclass_bundle(
-                bundle_path, device=device
-            )
+            loaded_model, mc_config = load_model_from_multiclass_bundle(bundle_path, device=device)
             run_inference(
                 model_and_config=(loaded_model, mc_config),
                 pod5_path=pod5,
