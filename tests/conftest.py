@@ -8,7 +8,6 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-import torch
 
 from leech.chunking import LeechRead, save_chunks
 from leech.features import MoveTable
@@ -167,6 +166,8 @@ def temp_chunks_file(sample_chunks, tmp_path):
 @pytest.fixture
 def sample_batch():
     """Generate a sample batch for model testing."""
+    import torch
+
     batch_size = 4
     signal_len = 400
     kmer_len = 11
