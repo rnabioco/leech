@@ -221,9 +221,12 @@ __marimo__/
 # Allow small test fixtures to be committed
 !tests/fixtures/*.pod5
 !tests/fixtures/*.bam
+!tests/fixtures/*.bam.bai
+!tests/fixtures/*.fa
 *.fasta
 *.fastq
 *.fa
+*.fa.fai
 *.fq
 *.fastq.gz
 *.fq.gz
