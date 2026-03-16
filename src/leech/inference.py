@@ -922,7 +922,8 @@ def run_inference(
         worker_args = [(batch_reads, inf_config) for batch_reads in read_batches]
 
         # Collect all results, then batch and run model
-        pending: dict[str, list[tuple[int, float]]] = {}
+        pending: dict[str, list] = {}
+        _batch_fn_p = _run_batch_multiclass if is_multiclass else _run_batch
 
         with Progress() as progress:
             task = progress.add_task("[cyan]Extracting chunks...", total=len(read_batches))
@@ -942,7 +943,7 @@ def run_inference(
                         meta_buf.append((read_id, base_idx))
 
                         if len(signals_buf) >= batch_size:
-                            _run_batch(
+                            _batch_fn_p(
                                 signals_buf,
                                 seqs_buf,
                                 feats_buf,
@@ -956,7 +957,7 @@ def run_inference(
 
                     # Flush remaining
                     if signals_buf:
-                        _run_batch(
+                        _batch_fn_p(
                             signals_buf,
                             seqs_buf,
                             feats_buf,
@@ -971,15 +972,36 @@ def run_inference(
 
         # Write all results to BAM (iterate dict to preserve original BAM order)
         total_predictions = sum(len(v) for v in pending.values())
-        for aln in alignment_by_read_id.values():
-            preds = pending.get(aln.query_name)
-            if preds:
-                preds.sort(key=lambda x: x[0])
-                positions_list = [int(p[0]) for p in preds]
-                ml_scores = [int(min(255, max(0, p[1] * 255))) for p in preds]
-                aln.set_tag("MP", array.array("i", positions_list))
-                aln.set_tag("ML", array.array("B", ml_scores))
-            bam_out.write(aln)
+        if is_multiclass:
+            if int_to_label:
+                class_names = [int_to_label[i] for i in range(num_out)]
+                class_names_str = ",".join(class_names)
+            else:
+                class_names_str = ",".join(str(i) for i in range(num_out))
+
+            for aln in alignment_by_read_id.values():
+                preds = pending.get(aln.query_name)
+                if preds:
+                    _, cls_idx, conf, all_probs = preds[0]
+                    if int_to_label:
+                        predicted_aa = int_to_label.get(cls_idx, str(cls_idx))
+                    else:
+                        predicted_aa = str(cls_idx)
+                    aln.set_tag("aa", predicted_aa)
+                    aln.set_tag("ac", conf)
+                    aln.set_tag("pn", class_names_str)
+                    aln.set_tag("pp", all_probs)
+                bam_out.write(aln)
+        else:
+            for aln in alignment_by_read_id.values():
+                preds = pending.get(aln.query_name)
+                if preds:
+                    preds.sort(key=lambda x: x[0])
+                    positions_list = [int(p[0]) for p in preds]
+                    ml_scores = [int(min(255, max(0, p[1] * 255))) for p in preds]
+                    aln.set_tag("MP", array.array("i", positions_list))
+                    aln.set_tag("ML", array.array("B", ml_scores))
+                bam_out.write(aln)
 
     else:
         # ---- Sequential path ----
