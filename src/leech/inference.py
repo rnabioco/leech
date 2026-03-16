@@ -46,6 +46,7 @@ def _write_prediction_tags(
     class_names_str: str,
     probs: list[float],
     raw: bool,
+    min_confidence: int = 0,
 ) -> None:
     """Write prediction tags to a BAM alignment.
 
@@ -56,13 +57,22 @@ def _write_prediction_tags(
         class_names_str: comma-separated class names for pn tag
         probs: full probability distribution
         raw: if True, write float tags; otherwise compact uint8
+        min_confidence: threshold in 0-255 uint8 space
     """
-    aln.set_tag("aa", predicted_aa)
+    ac_uint8 = int(min(255, max(0, round(conf * 255))))
+    is_charged = ac_uint8 >= min_confidence
+
+    if is_charged:
+        aln.set_tag("aa", predicted_aa)
+        ac_val = conf
+    else:
+        aln.set_tag("aa", "unc")
+        ac_val = 1.0 - conf
 
     if raw:
-        aln.set_tag("ac", conf)
+        aln.set_tag("ac", ac_val)
     else:
-        aln.set_tag("ac", int(min(255, max(0, round(conf * 255)))), value_type="C")
+        aln.set_tag("ac", int(min(255, max(0, round(ac_val * 255)))), value_type="C")
 
     aln.set_tag("pn", class_names_str)
     if raw:
@@ -646,6 +656,7 @@ def run_inference(
     anchor: str = "reference",
     reference_fasta: Path | None = None,
     raw: bool = False,
+    min_confidence: int = 0,
 ) -> None:
     """
     Run inference on POD5 and BAM files.
@@ -660,6 +671,7 @@ def run_inference(
         bam_path: Path to input BAM file with alignments
         output_path: Path to output BAM file with predictions
         raw: Write full float probabilities (default: compact uint8)
+        min_confidence: Confidence threshold in 0-255 uint8 space
         device: Device for inference
         min_mapq: Minimum mapping quality
         motif: Optional motif to filter predictions (auto-read from config if None)
@@ -1032,7 +1044,7 @@ def run_inference(
                         predicted_aa = str(cls_idx)
                     _write_prediction_tags(
                         aln, predicted_aa, conf, class_names_str,
-                        all_probs, raw,
+                        all_probs, raw, min_confidence,
                     )
                 bam_out.write(aln)
         else:
@@ -1217,7 +1229,7 @@ def run_inference(
                         predicted_aa = str(cls_idx)
                     _write_prediction_tags(
                         aln, predicted_aa, conf, class_names_str,
-                        all_probs, raw,
+                        all_probs, raw, min_confidence,
                     )
                 bam_out.write(aln)
         else:
@@ -1321,6 +1333,7 @@ def run_bundle_inference(
     base_justify: str = "center",
     reverse_signal: bool = True,
     raw: bool = False,
+    min_confidence: int = 0,
     aggregation: str = "naive",
     anchor: str = "reference",
     reference_fasta: Path | None = None,
@@ -1772,7 +1785,7 @@ def run_bundle_inference(
 
         _write_prediction_tags(
             aln, predicted_aa, confidence, pair_names_str,
-            probs, raw,
+            probs, raw, min_confidence,
         )
         bam_out.write(aln)
         n_predicted += 1

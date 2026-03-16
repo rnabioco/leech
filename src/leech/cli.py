@@ -1111,6 +1111,12 @@ def ablation(model, test_data, output_dir, device, no_plot):
     help="Write full float probabilities for all tags (default: compact uint8 encoding for ac/pp)",
 )
 @click.option(
+    "--min-confidence",
+    type=click.IntRange(0, 255),
+    default=0,
+    help="Confidence threshold in uint8 space (0-255). Reads below threshold are called 'unc' (uncharged). Default: 0 (all reads called).",
+)
+@click.option(
     "--pod5",
     required=True,
     type=click.Path(exists=True, path_type=Path),
@@ -1208,6 +1214,7 @@ def predict(
     pair,
     run_all,
     raw,
+    min_confidence,
     pod5,
     bam,
     output,
@@ -1243,6 +1250,7 @@ def predict(
         pair=pair,
         run_all=run_all,
         raw=raw,
+        min_confidence=min_confidence,
         pod5=pod5,
         bam=bam,
         output=output,

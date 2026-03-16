@@ -53,6 +53,7 @@ def handle_predict(
     min_mapq: int,
     workers: int,
     aggregation: str = "naive",
+    min_confidence: int = 0,
 ) -> None:
     """
     Handle the predict command logic.
@@ -76,6 +77,7 @@ def handle_predict(
         batch_size: Chunks per forward pass
         min_mapq: Minimum mapping quality
         workers: Parallel chunk extraction workers
+        min_confidence: Confidence threshold in 0-255 uint8 space
     """
     import torch
 
@@ -110,6 +112,7 @@ def handle_predict(
                 anchor=anchor,
                 reference_fasta=reference_fasta,
                 raw=raw,
+                min_confidence=min_confidence,
             )
         else:
             # Multi-model inference: run all models in bundle
@@ -126,6 +129,7 @@ def handle_predict(
                 base_justify=base_justify,
                 reverse_signal=reverse_signal,
                 raw=raw,
+                min_confidence=min_confidence,
                 aggregation=aggregation,
                 anchor=anchor,
                 reference_fasta=reference_fasta,
@@ -166,6 +170,7 @@ def handle_predict(
             anchor=anchor,
             reference_fasta=reference_fasta,
             raw=raw,
+            min_confidence=min_confidence,
         )
 
     console.print("[bold green]Inference complete![/bold green]")
