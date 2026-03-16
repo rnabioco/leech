@@ -54,6 +54,7 @@ def handle_predict(
     workers: int,
     aggregation: str = "naive",
     min_confidence: int = 0,
+    min_margin: int = 0,
 ) -> None:
     """
     Handle the predict command logic.
@@ -113,6 +114,7 @@ def handle_predict(
                 reference_fasta=reference_fasta,
                 raw=raw,
                 min_confidence=min_confidence,
+                min_margin=min_margin,
             )
         else:
             # Multi-model inference: run all models in bundle
@@ -130,6 +132,7 @@ def handle_predict(
                 reverse_signal=reverse_signal,
                 raw=raw,
                 min_confidence=min_confidence,
+                min_margin=min_margin,
                 aggregation=aggregation,
                 anchor=anchor,
                 reference_fasta=reference_fasta,
@@ -171,6 +174,7 @@ def handle_predict(
             reference_fasta=reference_fasta,
             raw=raw,
             min_confidence=min_confidence,
+            min_margin=min_margin,
         )
 
     console.print("[bold green]Inference complete![/bold green]")

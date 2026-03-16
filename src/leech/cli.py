@@ -1117,6 +1117,12 @@ def ablation(model, test_data, output_dir, device, no_plot):
     help="Confidence threshold in uint8 space (0-255). Reads below threshold are called 'unc' (uncharged). Default: 0 (all reads called).",
 )
 @click.option(
+    "--min-margin",
+    type=click.IntRange(0, 255),
+    default=0,
+    help="Margin threshold in uint8 space (0-255). Margin = max_prob - 2nd_prob. Reads below threshold are called 'unc'. Default: 0 (no margin filter).",
+)
+@click.option(
     "--pod5",
     required=True,
     type=click.Path(exists=True, path_type=Path),
@@ -1215,6 +1221,7 @@ def predict(
     run_all,
     raw,
     min_confidence,
+    min_margin,
     pod5,
     bam,
     output,
@@ -1251,6 +1258,7 @@ def predict(
         run_all=run_all,
         raw=raw,
         min_confidence=min_confidence,
+        min_margin=min_margin,
         pod5=pod5,
         bam=bam,
         output=output,

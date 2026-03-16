@@ -46,7 +46,8 @@ def _write_prediction_tags(
     class_names_str: str,
     probs: list[float],
     raw: bool,
-    min_confidence: int = 0,
+    min_confidence: int,
+    min_margin: int = 0,
 ) -> None:
     """Write prediction tags to a BAM alignment.
 
@@ -58,9 +59,13 @@ def _write_prediction_tags(
         probs: full probability distribution
         raw: if True, write float tags; otherwise compact uint8
         min_confidence: threshold in 0-255 uint8 space
+        min_margin: margin threshold in 0-255 uint8 space
     """
+    sorted_probs = sorted(probs, reverse=True)
+    margin = sorted_probs[0] - sorted_probs[1] if len(sorted_probs) > 1 else 1.0
+    margin_uint8 = int(min(255, max(0, round(margin * 255))))
     ac_uint8 = int(min(255, max(0, round(conf * 255))))
-    is_charged = ac_uint8 >= min_confidence
+    is_charged = ac_uint8 >= min_confidence and margin_uint8 >= min_margin
 
     if is_charged:
         aln.set_tag("aa", predicted_aa)
@@ -71,8 +76,10 @@ def _write_prediction_tags(
 
     if raw:
         aln.set_tag("ac", ac_val)
+        aln.set_tag("am", margin)
     else:
         aln.set_tag("ac", int(min(255, max(0, round(ac_val * 255)))), value_type="C")
+        aln.set_tag("am", margin_uint8, value_type="C")
 
     aln.set_tag("pn", class_names_str)
     if raw:
@@ -657,6 +664,7 @@ def run_inference(
     reference_fasta: Path | None = None,
     raw: bool = False,
     min_confidence: int = 0,
+    min_margin: int = 0,
 ) -> None:
     """
     Run inference on POD5 and BAM files.
@@ -672,6 +680,7 @@ def run_inference(
         output_path: Path to output BAM file with predictions
         raw: Write full float probabilities (default: compact uint8)
         min_confidence: Confidence threshold in 0-255 uint8 space
+        min_margin: Margin threshold in 0-255 uint8 space
         device: Device for inference
         min_mapq: Minimum mapping quality
         motif: Optional motif to filter predictions (auto-read from config if None)
@@ -1044,7 +1053,7 @@ def run_inference(
                         predicted_aa = str(cls_idx)
                     _write_prediction_tags(
                         aln, predicted_aa, conf, class_names_str,
-                        all_probs, raw, min_confidence,
+                        all_probs, raw, min_confidence, min_margin,
                     )
                 bam_out.write(aln)
         else:
@@ -1229,7 +1238,7 @@ def run_inference(
                         predicted_aa = str(cls_idx)
                     _write_prediction_tags(
                         aln, predicted_aa, conf, class_names_str,
-                        all_probs, raw, min_confidence,
+                        all_probs, raw, min_confidence, min_margin,
                     )
                 bam_out.write(aln)
         else:
@@ -1334,6 +1343,7 @@ def run_bundle_inference(
     reverse_signal: bool = True,
     raw: bool = False,
     min_confidence: int = 0,
+    min_margin: int = 0,
     aggregation: str = "naive",
     anchor: str = "reference",
     reference_fasta: Path | None = None,
@@ -1344,9 +1354,9 @@ def run_bundle_inference(
     Run all models from a bundle on each read, aggregate to a single AA prediction.
 
     Writes output BAM with tags (compact by default, float with --raw):
-    - aa:Z:Gly — predicted amino acid
+    - aa:Z:Gly — predicted amino acid (or "unc" if below threshold)
     - ac:C:238 (compact) or ac:f:0.93 (raw) — confidence score
-    - pn:Z:Ala_Gly,... — pair names
+    - pn:Z:Ala_Gly,... — pair names (omitted for uncharged unless --raw)
     - pp:B:B,... (compact) or pp:B:f,... (raw) — probabilities
 
     Args:
@@ -1785,7 +1795,7 @@ def run_bundle_inference(
 
         _write_prediction_tags(
             aln, predicted_aa, confidence, pair_names_str,
-            probs, raw, min_confidence,
+            probs, raw, min_confidence, min_margin,
         )
         bam_out.write(aln)
         n_predicted += 1
