@@ -24,7 +24,7 @@ from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 from torch.utils.data import DataLoader, WeightedRandomSampler
 
 from leech.dataset import LeechDataset, collate_fn
-from leech.losses import FocalBCEWithLogitsLoss
+from leech.losses import AdversarialHead, FocalBCEWithLogitsLoss
 from leech.models import get_model
 from leech.models.inference_wrapper import ModelInferenceWrapper
 
@@ -103,6 +103,9 @@ class Trainer:
         resume_checkpoint: Path | None = None,
         num_out: int | None = None,
         epochs: int = 50,
+        adversarial_lambda: float = 0.0,
+        adversarial_num_classes: int = 4,
+        adversarial_anneal_epochs: int = 0,
     ):
         # Wrap model with inference wrapper for unified forward pass
         self.model_wrapper = ModelInferenceWrapper(model, model_type)
@@ -116,10 +119,33 @@ class Trainer:
         self.warmup_epochs = warmup_epochs
         self.base_lr = learning_rate
 
-        # Setup optimizer
-        self.optimizer = torch.optim.Adam(
-            model.parameters(), lr=learning_rate, weight_decay=weight_decay
-        )
+        # Adversarial training (gradient reversal for confound invariance)
+        self.adversarial_head: AdversarialHead | None = None
+        self.adversarial_criterion: nn.CrossEntropyLoss | None = None
+        self.adversarial_lambda = adversarial_lambda
+        self.adversarial_anneal_epochs = adversarial_anneal_epochs
+
+        if adversarial_lambda > 0:
+            repr_dim = self.model_wrapper.enable_repr_capture()
+            self.adversarial_head = AdversarialHead(
+                input_dim=repr_dim,
+                num_classes=adversarial_num_classes,
+                lambda_=0.0 if adversarial_anneal_epochs > 0 else adversarial_lambda,
+            )
+            self.adversarial_head.to(device)
+            # ignore_index=-1 skips samples with unknown confound (e.g. uncharged)
+            self.adversarial_criterion = nn.CrossEntropyLoss(ignore_index=-1)
+            logger.info(
+                f"Adversarial training enabled: lambda={adversarial_lambda}, "
+                f"classes={adversarial_num_classes}, anneal_epochs={adversarial_anneal_epochs}, "
+                f"repr_dim={repr_dim}"
+            )
+
+        # Setup optimizer (include adversarial head params if present)
+        all_params = list(model.parameters())
+        if self.adversarial_head is not None:
+            all_params += list(self.adversarial_head.parameters())
+        self.optimizer = torch.optim.Adam(all_params, lr=learning_rate, weight_decay=weight_decay)
 
         # Setup loss
         self.loss_type = loss_type
@@ -203,6 +229,9 @@ class Trainer:
             "val_auc": [],
             "val_f1": [],
         }
+        if self.adversarial_head is not None:
+            self.history["train_adv_loss"] = []
+            self.history["train_adv_acc"] = []
 
         if self.output_dir:
             self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -243,6 +272,30 @@ class Trainer:
             f"at epoch {self.best_epoch})"
         )
 
+    def _adversarial_loss(
+        self, batch: dict[str, torch.Tensor]
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Compute adversarial loss from captured representation.
+
+        Returns:
+            Tuple of (loss, adv_preds, confound_labels) — all on device.
+            Loss is zero if no confound labels are in the batch or capture failed.
+        """
+        assert self.adversarial_head is not None
+        assert self.adversarial_criterion is not None
+        repr_vec = self.model_wrapper.captured_repr
+        confound_labels = batch["confound_label"].to(self.device)
+        if repr_vec is None:
+            return (
+                torch.tensor(0.0, device=self.device),
+                confound_labels,
+                confound_labels,
+            )
+        adv_logits = self.adversarial_head(repr_vec)
+        adv_loss = self.adversarial_criterion(adv_logits, confound_labels)
+        adv_preds = torch.argmax(adv_logits, dim=-1)
+        return adv_loss, adv_preds, confound_labels
+
     def train_epoch(
         self, progress: Progress | None = None, task_id: TaskID | None = None
     ) -> tuple[float, float]:
@@ -257,9 +310,14 @@ class Trainer:
             Tuple of (average_loss, accuracy)
         """
         self.model.train()
+        if self.adversarial_head is not None:
+            self.adversarial_head.train()
         total_loss = 0.0
+        total_adv_loss = 0.0
         all_preds: list[float] = []
         all_labels: list[float] = []
+        all_adv_preds: list[int] = []
+        all_adv_labels: list[int] = []
 
         for batch in self.train_loader:
             # Move labels to device
@@ -286,9 +344,21 @@ class Trainer:
                 with torch.amp.autocast("cuda"):
                     logits = self.model_wrapper.forward_batch(batch, self.device)
                     if ce_labels is not None:
-                        loss = self.criterion(logits, ce_labels)
+                        main_loss = self.criterion(logits, ce_labels)
                     else:
-                        loss = self.criterion(logits, loss_targets)
+                        main_loss = self.criterion(logits, loss_targets)
+
+                    # Adversarial loss (GRL reverses gradients to encoder)
+                    if self.adversarial_head is not None and "confound_label" in batch:
+                        adv_loss, adv_preds, adv_labels = self._adversarial_loss(batch)
+                        loss = main_loss + adv_loss
+                        total_adv_loss += adv_loss.item()
+                        mask = adv_labels != -1
+                        if mask.any():
+                            all_adv_preds.extend(adv_preds[mask].cpu().numpy().tolist())
+                            all_adv_labels.extend(adv_labels[mask].cpu().numpy().tolist())
+                    else:
+                        loss = main_loss
 
                 # Scaled backward pass
                 self.scaler.scale(loss).backward()
@@ -303,9 +373,21 @@ class Trainer:
             else:
                 logits = self.model_wrapper.forward_batch(batch, self.device)
                 if ce_labels is not None:
-                    loss = self.criterion(logits, ce_labels)
+                    main_loss = self.criterion(logits, ce_labels)
                 else:
-                    loss = self.criterion(logits, loss_targets)
+                    main_loss = self.criterion(logits, loss_targets)
+
+                # Adversarial loss (GRL reverses gradients to encoder)
+                if self.adversarial_head is not None and "confound_label" in batch:
+                    adv_loss, adv_preds, adv_labels = self._adversarial_loss(batch)
+                    loss = main_loss + adv_loss
+                    total_adv_loss += adv_loss.item()
+                    mask = adv_labels != -1
+                    if mask.any():
+                        all_adv_preds.extend(adv_preds[mask].cpu().numpy().tolist())
+                        all_adv_labels.extend(adv_labels[mask].cpu().numpy().tolist())
+                else:
+                    loss = main_loss
 
                 loss.backward()
 
@@ -316,7 +398,7 @@ class Trainer:
                 self.optimizer.step()
 
             # Track metrics
-            total_loss += loss.item()
+            total_loss += main_loss.item()
             if self.loss_type == "cross_entropy" and self._num_out > 2:
                 # Multi-class: argmax predictions
                 preds = torch.argmax(logits, dim=-1).detach().cpu().numpy()
@@ -342,6 +424,13 @@ class Trainer:
         else:
             all_preds_binary = (np.array(all_preds) > 0.5).astype(int)
             accuracy = accuracy_score(all_labels, all_preds_binary)
+
+        # Adversarial metrics
+        if self.adversarial_head is not None:
+            avg_adv_loss = total_adv_loss / max(1, len(self.train_loader))
+            adv_acc = accuracy_score(all_adv_labels, all_adv_preds) if all_adv_labels else 0.0
+            self.history["train_adv_loss"].append(avg_adv_loss)
+            self.history["train_adv_acc"].append(adv_acc)
 
         return avg_loss, accuracy
 
@@ -470,6 +559,12 @@ class Trainer:
                     for param_group in self.optimizer.param_groups:
                         param_group["lr"] = warmup_lr
 
+                # Adversarial lambda annealing (linear ramp)
+                if self.adversarial_head is not None and self.adversarial_anneal_epochs > 0:
+                    progress_frac = min(1.0, epoch / self.adversarial_anneal_epochs)
+                    current_lambda = self.adversarial_lambda * progress_frac
+                    self.adversarial_head.set_lambda(current_lambda)
+
                 # Create tasks for this epoch
                 train_task = progress.add_task(
                     f"[green]Epoch {epoch}/{epochs} - Training", total=len(self.train_loader)
@@ -516,12 +611,18 @@ class Trainer:
                         acc_label, f1_label = "Acc", "F1[*]"
                     else:
                         acc_label, f1_label = "Acc[*]", "F1"
+                    adv_str = ""
+                    if self.adversarial_head is not None and self.history["train_adv_loss"]:
+                        _adv_l = self.history["train_adv_loss"][-1]
+                        _adv_a = self.history["train_adv_acc"][-1]
+                        _lam = self.adversarial_head.grl.lambda_
+                        adv_str = f" | Adv: L={_adv_l:.3f} Acc={_adv_a:.3f} λ={_lam:.3f}"
                     console.print(
                         f"[cyan]Epoch {epoch}/{epochs}[/cyan] | "
                         f"Train Loss: {train_loss:.4f} Acc: {train_acc:.4f} | "
                         f"Val Loss: {val_loss:.4f} {acc_label}: {val_acc:.4f} "
                         f"{f1_label}: {val_f1:.4f} AUC: {val_auc:.4f}"
-                        f"{lr_str}"
+                        f"{lr_str}{adv_str}"
                     )
 
                     # Save best model — F1 for multiclass, accuracy for binary
@@ -693,6 +794,9 @@ def train_model(
     balance_groups: bool = False,
     label_map: dict[str, int] | None = None,
     num_out: int = 1,
+    adversarial_lambda: float = 0.0,
+    adversarial_anneal_epochs: int = 0,
+    confound: str | None = None,
     **model_kwargs: Any,
 ) -> dict[str, Any]:
     """
@@ -779,6 +883,33 @@ def train_model(
         }
         logger.info(f"Signal augmentation enabled: {augmentation}")
 
+    # Build confound map for adversarial training (e.g. discriminator base)
+    confound_map: dict[int, int] | None = None
+    adversarial_num_classes = 4  # default: A/C/G/T
+    if adversarial_lambda > 0 and confound == "disc_base":
+        from leech.confounds import NUM_DISC_BASES, build_confound_map
+
+        # label_map may not be known yet — try sidecar
+        _lm = label_map
+        if _lm is None:
+            _lm_path = train_data_path.parent / "label_map.json"
+            if not _lm_path.exists():
+                # k-fold: data is in fold_N/ subdir, label_map is one level up
+                _lm_path = train_data_path.parent.parent / "label_map.json"
+            if _lm_path.exists():
+                with open(_lm_path) as f:
+                    _lm = json.load(f)
+        if _lm is not None:
+            confound_map = build_confound_map(_lm)
+            adversarial_num_classes = NUM_DISC_BASES
+            logger.info(f"Adversarial confound 'disc_base': {confound_map}")
+        else:
+            logger.warning(
+                "adversarial_lambda > 0 with confound='disc_base' but no label_map found; "
+                "adversarial training disabled"
+            )
+            adversarial_lambda = 0.0
+
     # Create datasets (use pre-loaded chunks if provided)
     train_dataset = LeechDataset(
         chunk_path=train_data_path,
@@ -792,6 +923,7 @@ def train_model(
         signal_kmer_context=signal_kmer_context,
         left_context=left_context,
         right_context=right_context,
+        confound_map=confound_map,
     )
 
     val_dataset = None
@@ -807,6 +939,7 @@ def train_model(
             signal_kmer_context=signal_kmer_context,
             left_context=left_context,
             right_context=right_context,
+            confound_map=confound_map,
         )
 
     # Create data loaders
@@ -909,6 +1042,9 @@ def train_model(
             # Load label_map from sidecar if available
             if label_map is None:
                 label_map_path = train_data_path.parent / "label_map.json"
+                if not label_map_path.exists():
+                    # k-fold: data is in fold_N/ subdir, label_map is one level up
+                    label_map_path = train_data_path.parent.parent / "label_map.json"
                 if label_map_path.exists():
                     with open(label_map_path) as f:
                         label_map = json.load(f)
@@ -1070,6 +1206,9 @@ def train_model(
         "augment_scale_max": augment_scale_max,
         "balance_groups": balance_groups,
         "label_map": label_map,
+        "adversarial_lambda": adversarial_lambda,
+        "adversarial_anneal_epochs": adversarial_anneal_epochs,
+        "confound": confound,
         # Preparation metadata (from prepare_config.json sidecar)
         "anchor": prepare_metadata.get("anchor", "reference"),
         "signal_norm": prepare_metadata.get("signal_norm", "median_mad"),
@@ -1112,6 +1251,9 @@ def train_model(
         resume_checkpoint=resume_from,
         num_out=num_out,
         epochs=epochs,
+        adversarial_lambda=adversarial_lambda,
+        adversarial_num_classes=adversarial_num_classes,
+        adversarial_anneal_epochs=adversarial_anneal_epochs,
     )
 
     # Train
