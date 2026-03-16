@@ -21,21 +21,19 @@ from leech.features import (
     MoveTable,
     compute_dwell_features,
     compute_signal_features,
-    encode_signal_kmer,
     extract_move_table,
     normalize_signal,
     sequence_to_int,
 )
 from leech.signal_refine import (
     SigMapRefiner,
+    adjust_seq_band,
     compute_dwell_pen_array,
     compute_sig_band,
     convert_to_seq_band,
-    adjust_seq_band,
     extract_levels,
     load_kmer_table,
     refine_signal_mapping,
-    rough_rescale_quantile,
     seq_banded_dp,
 )
 
@@ -125,9 +123,9 @@ def _make_synthetic_read(
             end = trim_offset + total_positions * stride
         end = min(end, num_samples)
         if start < end:
-            raw_signal[start:end] = (
-                base_levels[base_i] + rng.normal(0, 15, end - start)
-            ).astype(np.int16)
+            raw_signal[start:end] = (base_levels[base_i] + rng.normal(0, 15, end - start)).astype(
+                np.int16
+            )
     return {
         "raw_signal": raw_signal,
         "moves": moves,
@@ -159,9 +157,7 @@ class TestExtractLevelsParity:
         seq = reads[0]["sequence"]
 
         py_levels = extract_levels(seq, kmer_to_level, kmer_len)
-        rs_levels = np.asarray(
-            _rs_extract_levels(seq, kmer_to_level, kmer_len)
-        )
+        rs_levels = np.asarray(_rs_extract_levels(seq, kmer_to_level, kmer_len))
 
         # Python returns float32, Rust returns float64
         np.testing.assert_allclose(
@@ -203,9 +199,7 @@ class TestRoughRescaleParity:
         num_bases = 50
         signal = rng.randn(sig_len).astype(np.float64)
         expected = rng.randn(num_bases).astype(np.float64)
-        sig_map = np.sort(rng.choice(sig_len, num_bases + 1, replace=False)).astype(
-            np.int64
-        )
+        sig_map = np.sort(rng.choice(sig_len, num_bases + 1, replace=False)).astype(np.int64)
         sig_map[0] = 0
         sig_map[-1] = sig_len
 
@@ -323,9 +317,7 @@ class TestSeqBandedDpParity:
         old_has_rust = sr.HAS_RUST
         sr.HAS_RUST = False
         try:
-            py_path = seq_banded_dp(
-                trimmed_norm, temp_levels, seq_band, sd_pen, "dwell_penalty"
-            )
+            py_path = seq_banded_dp(trimmed_norm, temp_levels, seq_band, sd_pen, "dwell_penalty")
         finally:
             sr.HAS_RUST = old_has_rust
 
@@ -339,9 +331,7 @@ class TestSeqBandedDpParity:
             )
         )
 
-        np.testing.assert_array_equal(
-            rs_path, py_path, err_msg="DP path mismatch on real data"
-        )
+        np.testing.assert_array_equal(rs_path, py_path, err_msg="DP path mismatch on real data")
 
 
 # ---------------------------------------------------------------------------
@@ -478,7 +468,7 @@ class TestMonolithicPipelineParity:
             signal_len = signal_context_left + signal_context_right
             if chunk_end - chunk_start < signal_len:
                 continue
-            sig_chunk = norm[chunk_start:chunk_start + signal_len]
+            sig_chunk = norm[chunk_start : chunk_start + signal_len]
 
             # Kmer context
             kmer_start = max(0, pos - kmer_ctx)
@@ -488,22 +478,24 @@ class TestMonolithicPipelineParity:
                 continue
 
             # Sequence encoding slice
-            seq_slice = seq_int[kmer_start:kmer_start + kmer_win]
+            seq_slice = seq_int[kmer_start : kmer_start + kmer_win]
             seq_enc = np.zeros((4, kmer_win), dtype=np.float32)
             for j, base_val in enumerate(seq_slice):
                 if 0 <= base_val < 4:
                     seq_enc[base_val, j] = 1.0
 
             # Feature slice
-            feat_slice = features[:, kmer_start:kmer_start + kmer_win].copy()
+            feat_slice = features[:, kmer_start : kmer_start + kmer_win].copy()
 
-            chunks.append({
-                "signal": sig_chunk,
-                "seq_enc": seq_enc,
-                "features": feat_slice,
-                "read_id": r["read_id"],
-                "base_idx": pos,
-            })
+            chunks.append(
+                {
+                    "signal": sig_chunk,
+                    "seq_enc": seq_enc,
+                    "features": feat_slice,
+                    "read_id": r["read_id"],
+                    "base_idx": pos,
+                }
+            )
 
         return chunks
 
@@ -541,7 +533,7 @@ class TestMonolithicPipelineParity:
                 [r["trim_offset"]],
                 200,  # signal_context_left
                 200,  # signal_context_right
-                5,    # kmer_context
+                5,  # kmer_context
                 [test_positions],
                 400,  # signal_len = left + right
                 True,  # compute_features
@@ -553,7 +545,7 @@ class TestMonolithicPipelineParity:
                 f"Rust={len(rs_chunks)}, Python={len(py_chunks)}"
             )
 
-            for i, (rs, py) in enumerate(zip(rs_chunks, py_chunks)):
+            for i, (rs, py) in enumerate(zip(rs_chunks, py_chunks, strict=True)):
                 rs_sig, rs_seq, rs_feat, rs_rid, rs_bidx = rs
 
                 np.testing.assert_allclose(
@@ -600,9 +592,13 @@ class TestMonolithicPipelineParity:
                 [r["moves"].tolist()],
                 [r["num_samples"]],
                 [r["trim_offset"]],
-                200, 200, 5,  # signal_context_left/right, kmer_context
+                200,
+                200,
+                5,  # signal_context_left/right, kmer_context
                 [test_positions],
-                400, True, True,  # signal_len, compute_features, reverse_signal
+                400,
+                True,
+                True,  # signal_len, compute_features, reverse_signal
                 refine_signal_map=True,
                 kmer_table=kmer_to_level,
                 kmer_len=kmer_len,
@@ -620,9 +616,13 @@ class TestMonolithicPipelineParity:
                 [r["moves"].tolist()],
                 [r["num_samples"]],
                 [r["trim_offset"]],
-                200, 200, 5,
+                200,
+                200,
+                5,
                 [test_positions],
-                400, True, True,
+                400,
+                True,
+                True,
             )
 
             if not rs_chunks_refined or not rs_chunks_plain:
@@ -702,18 +702,14 @@ class TestRefinerEndToEndParity:
             old_has_rust = sr.HAS_RUST
             sr.HAS_RUST = False
             try:
-                py_signal, py_map = refiner.refine(
-                    norm.copy(), seq, sig_map.copy()
-                )
+                py_signal, py_map = refiner.refine(norm.copy(), seq, sig_map.copy())
             finally:
                 sr.HAS_RUST = old_has_rust
 
             # --- Python path (with Rust DP acceleration) ---
             sr.HAS_RUST = True
             try:
-                rs_accel_signal, rs_accel_map = refiner.refine(
-                    norm.copy(), seq, sig_map.copy()
-                )
+                rs_accel_signal, rs_accel_map = refiner.refine(norm.copy(), seq, sig_map.copy())
             finally:
                 sr.HAS_RUST = old_has_rust
 

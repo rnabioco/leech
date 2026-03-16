@@ -21,7 +21,6 @@ pytest.importorskip("leech_core")
 
 from leech._rust_accel import _rs_test_process_read  # noqa: E402
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -50,7 +49,6 @@ def _make_synthetic_read(
     # Base signal ~500-700 DAC with per-base level variation and noise
     base_levels = rng.uniform(400, 800, num_bases)
     raw_signal = np.zeros(num_samples, dtype=np.int16)
-    sig_idx = trim_offset
     for base_i, mpos in enumerate(move_positions):
         start = trim_offset + mpos * stride
         if base_i < num_bases - 1:
@@ -59,9 +57,9 @@ def _make_synthetic_read(
             end = trim_offset + total_positions * stride
         end = min(end, num_samples)
         if start < end:
-            raw_signal[start:end] = (
-                base_levels[base_i] + rng.normal(0, 15, end - start)
-            ).astype(np.int16)
+            raw_signal[start:end] = (base_levels[base_i] + rng.normal(0, 15, end - start)).astype(
+                np.int16
+            )
 
     return {
         "raw_signal": raw_signal,

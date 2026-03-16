@@ -40,14 +40,16 @@ def collect_bam_data(bam_path, max_reads=2000):
                 mt = extract_move_table(aln)
             except Exception:
                 continue
-            reads.append({
-                "read_id": aln.query_name,
-                "sequence": aln.query_sequence,
-                "stride": mt.stride,
-                "moves": mt.moves,
-                "num_samples": mt.num_samples,
-                "trim_offset": mt.trim_offset,
-            })
+            reads.append(
+                {
+                    "read_id": aln.query_name,
+                    "sequence": aln.query_sequence,
+                    "stride": mt.stride,
+                    "moves": mt.moves,
+                    "num_samples": mt.num_samples,
+                    "trim_offset": mt.trim_offset,
+                }
+            )
             if len(reads) >= max_reads:
                 break
     return reads
@@ -71,6 +73,7 @@ def python_pod5_read(read_ids, pod5_path):
 def rust_pod5_read(read_ids, pod5_path):
     """Rust escapepod batch read."""
     from leech_core import read_pod5_batch
+
     return read_pod5_batch(str(pod5_path), read_ids)
 
 
@@ -115,8 +118,8 @@ def python_full_pipeline(reads, pod5_path, reverse=True):
 
         norm, _ = normalize_signal(trimmed, method="median_mad")
         dwells = np.diff(sig_map).astype(np.float32)
-        dwell_feats = compute_dwell_features(dwells)
-        sig_feats = compute_signal_features(norm, sig_map)
+        compute_dwell_features(dwells)
+        compute_signal_features(norm, sig_map)
         results.append((norm, sig_map, dwells))
 
     return results
@@ -160,7 +163,7 @@ def bench(func, args, n_runs, label):
     times = []
     for _ in range(n_runs):
         t0 = time.perf_counter()
-        result = func(*args)
+        func(*args)
         times.append(time.perf_counter() - t0)
 
     mean_t = np.mean(times)
@@ -184,23 +187,31 @@ if __name__ == "__main__":
     print("1. POD5 batch reading: Python pod5 vs Rust escapepod")
     print("=" * 72)
 
-    for batch, label in [(reads_500, "500 reads"), (reads_2k, "2000 reads"), (reads_all, f"{len(reads_all)} reads")]:
+    for batch, label in [
+        (reads_500, "500 reads"),
+        (reads_2k, "2000 reads"),
+        (reads_all, f"{len(reads_all)} reads"),
+    ]:
         ids = [r["read_id"] for r in batch]
         print(f"\n{label}:")
         py_t = bench(python_pod5_read, (ids, POD5), 3, "Python (pod5 library)")
         rs_t = bench(rust_pod5_read, (ids, POD5), 3, "Rust (escapepod-rs)")
-        print(f"  {'POD5 speedup':>30s}: {py_t/rs_t:.1f}x")
+        print(f"  {'POD5 speedup':>30s}: {py_t / rs_t:.1f}x")
 
     print()
     print("=" * 72)
     print("2. Full pipeline: POD5 + normalize + sig_map + features + chunk")
     print("=" * 72)
 
-    for batch, label in [(reads_500, "500 reads"), (reads_2k, "2000 reads"), (reads_all, f"{len(reads_all)} reads")]:
+    for batch, label in [
+        (reads_500, "500 reads"),
+        (reads_2k, "2000 reads"),
+        (reads_all, f"{len(reads_all)} reads"),
+    ]:
         print(f"\n{label}:")
         py_t = bench(python_full_pipeline, (batch, POD5), 3, "Python (full)")
         rs_t = bench(rust_full_pipeline, (batch, POD5), 3, "Rust (full monolithic)")
-        print(f"  {'Full pipeline speedup':>30s}: {py_t/rs_t:.1f}x")
+        print(f"  {'Full pipeline speedup':>30s}: {py_t / rs_t:.1f}x")
 
     print()
     print("=" * 72)
@@ -230,8 +241,13 @@ if __name__ == "__main__":
         t_norm += time.perf_counter() - t0
 
         t0 = time.perf_counter()
-        mt = MoveTable(stride=r["stride"], moves=r["moves"], read_id=r["read_id"],
-                       num_samples=ns, trim_offset=ts)
+        mt = MoveTable(
+            stride=r["stride"],
+            moves=r["moves"],
+            read_id=r["read_id"],
+            num_samples=ns,
+            trim_offset=ts,
+        )
         sig_map = mt.to_seq_to_sig_map() - ts
         sig_map = (ns - ts) - sig_map[::-1]
         dwells = np.diff(sig_map).astype(np.float32)
@@ -244,9 +260,17 @@ if __name__ == "__main__":
 
     total = t_pod5 + t_norm + t_sigmap + t_features
     n = len(reads_2k)
-    print(f"  {'POD5 reading':>20s}: {t_pod5:.3f}s  ({t_pod5/n*1e6:.1f} µs/read, {t_pod5/total*100:.0f}%)")
-    print(f"  {'Normalization':>20s}: {t_norm:.3f}s  ({t_norm/n*1e6:.1f} µs/read, {t_norm/total*100:.0f}%)")
-    print(f"  {'Sig map + dwells':>20s}: {t_sigmap:.3f}s  ({t_sigmap/n*1e6:.1f} µs/read, {t_sigmap/total*100:.0f}%)")
-    print(f"  {'Features (dwell+sig)':>20s}: {t_features:.3f}s  ({t_features/n*1e6:.1f} µs/read, {t_features/total*100:.0f}%)")
-    print(f"  {'Total':>20s}: {total:.3f}s  ({total/n*1e6:.1f} µs/read)")
+    print(
+        f"  {'POD5 reading':>20s}: {t_pod5:.3f}s  ({t_pod5 / n * 1e6:.1f} µs/read, {t_pod5 / total * 100:.0f}%)"
+    )
+    print(
+        f"  {'Normalization':>20s}: {t_norm:.3f}s  ({t_norm / n * 1e6:.1f} µs/read, {t_norm / total * 100:.0f}%)"
+    )
+    print(
+        f"  {'Sig map + dwells':>20s}: {t_sigmap:.3f}s  ({t_sigmap / n * 1e6:.1f} µs/read, {t_sigmap / total * 100:.0f}%)"
+    )
+    print(
+        f"  {'Features (dwell+sig)':>20s}: {t_features:.3f}s  ({t_features / n * 1e6:.1f} µs/read, {t_features / total * 100:.0f}%)"
+    )
+    print(f"  {'Total':>20s}: {total:.3f}s  ({total / n * 1e6:.1f} µs/read)")
     print()

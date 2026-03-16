@@ -7,6 +7,7 @@ Measures per-read time for: normalize → sig_map → dwell → features.
 import time
 
 import numpy as np
+from leech_core import _test_process_read
 
 from leech.features import (
     MoveTable,
@@ -14,7 +15,6 @@ from leech.features import (
     compute_signal_features,
     normalize_signal,
 )
-from leech_core import _test_process_read
 
 
 def make_read(num_bases=80, mean_dwell=12, stride=5, trim_offset=10, seed=42):
@@ -119,8 +119,12 @@ if __name__ == "__main__":
         )
         rs_with_conv = bench(
             lambda r=read: _test_process_read(
-                r["raw_signal"].tolist(), r["moves"].tolist(),
-                r["stride"], r["trim_offset"], r["num_samples"], True,
+                r["raw_signal"].tolist(),
+                r["moves"].tolist(),
+                r["stride"],
+                r["trim_offset"],
+                r["num_samples"],
+                True,
             ),
             (),
             n,
