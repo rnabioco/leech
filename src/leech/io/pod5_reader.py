@@ -119,16 +119,18 @@ class POD5Reader:
         ...         print(f"{read_id}: {len(signal)} samples")
     """
 
-    def __init__(self, pod5_path: Path, batch_size: int = 100):
+    def __init__(self, pod5_path: Path, batch_size: int = 100, backend: str = "auto"):
         """
         Initialize POD5 reader.
 
         Args:
             pod5_path: Path to POD5 file
             batch_size: Number of reads to fetch in each batch (for batch mode)
+            backend: "auto" (Rust if available), "rust" (force), or "python" (force)
         """
         self.pod5_path = pod5_path
         self.batch_size = batch_size
+        self.backend = backend
         self._reader = None
         self._cache: dict[str, tuple[np.ndarray, dict]] = {}
 
@@ -160,7 +162,8 @@ class POD5Reader:
 
         from leech._rust_accel import HAS_RUST, _rs_read_pod5_batch
 
-        if HAS_RUST and _rs_read_pod5_batch is not None:
+        _use_rust = HAS_RUST and _rs_read_pod5_batch is not None and self.backend != "python"
+        if _use_rust:
             batch = _rs_read_pod5_batch(str(self.pod5_path), read_ids)
             for rid, (signal, cal_offset, cal_scale) in batch.items():
                 self._cache[rid] = (

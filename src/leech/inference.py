@@ -718,6 +718,7 @@ def run_inference(
     min_confidence: int = 0,
     min_margin: int = 0,
     read_batch_size: int = 200_000,
+    backend: str = "auto",
 ) -> None:
     """
     Run inference on POD5 and BAM files.
@@ -746,6 +747,8 @@ def run_inference(
             overlaps with GPU forward passes. For CPU-only inference, the
             sequential path (0) is faster due to batched POD5 access and
             no multiprocessing overhead.
+        backend: Extraction backend. "auto" uses Rust if available, "rust"
+            forces Rust (error if unavailable), "python" forces Python.
         chunk_size: Reads per worker batch
         anchor: "basecall" or "reference" for reference-anchored mode
         reference_fasta: Path to reference FASTA (for reference-anchored mode)
@@ -753,6 +756,18 @@ def run_inference(
             Each mega-batch loads BAM alignments + POD5 signals, runs inference,
             writes predictions, then frees memory. Set to 0 to disable (load all).
     """
+    # Apply backend override to signal_refine module
+    if backend == "python":
+        import leech.signal_refine as _sr
+
+        _sr.HAS_RUST = False
+        logger.info("Backend: python — Rust acceleration disabled for all components")
+    elif backend == "rust":
+        import leech.signal_refine as _sr
+
+        if not _sr.HAS_RUST:
+            logger.warning("Backend: rust requested but signal_refine Rust not available")
+
     # Load model
     if model_and_config is not None:
         wrapper_or_model, config = model_and_config
@@ -1237,11 +1252,20 @@ def run_inference(
         # Check if we can use the Rust monolithic extraction hot path
         from leech._rust_accel import HAS_RUST, _rs_extract_inference_chunks
 
-        _use_rust_extraction = HAS_RUST and _rs_extract_inference_chunks is not None
+        _rust_available = HAS_RUST and _rs_extract_inference_chunks is not None
+        if backend == "rust" and not _rust_available:
+            raise RuntimeError(
+                "--backend rust requested but leech_core is not installed. "
+                "Build with: cd rust && uv run maturin develop --release"
+            )
+        _use_rust_extraction = _rust_available and backend != "python"
         if _use_rust_extraction:
             logger.info("Using Rust monolithic extraction (escapepod-rs + leech_core)")
         else:
-            logger.info("Rust extraction not available, using Python path")
+            logger.info(
+                "Using Python extraction path"
+                + (" (forced via --backend python)" if backend == "python" else "")
+            )
 
         def _extract_one_read(
             aln: pysam.AlignedSegment,
@@ -1642,6 +1666,7 @@ def run_bundle_inference(
     batch_size: int = 512,
     num_workers: int = 0,
     read_batch_size: int = 200_000,
+    backend: str = "auto",
 ) -> None:
     """
     Run all models from a bundle on each read, aggregate to a single AA prediction.
@@ -1986,7 +2011,7 @@ def run_bundle_inference(
     with Progress() as progress:
         task = progress.add_task("[cyan]Processing reads...", total=None)
 
-        with POD5Reader(pod5_path) as pod5_reader:
+        with POD5Reader(pod5_path, backend=backend) as pod5_reader:
             for aln_batch in iter_bam_batches(
                 bam_path, batch_size=read_batch_size, min_mapq=min_mapq
             ):
