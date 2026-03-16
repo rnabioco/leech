@@ -145,48 +145,17 @@ fn banded_forward_dwell_penalty_step(
     }
 }
 
-/// Banded Viterbi DP for signal map refinement (Remora-compatible).
-///
-/// Implements the correct Viterbi algorithm with stay/move transitions
-/// and optional short-dwell penalties. Minimizes squared error between
-/// signal and expected levels within a banded search space.
-///
-/// Args:
-///     signal: Float32 normalized signal values
-///     levels: Float32 expected signal levels per base
-///     seq_band: int32 array of shape (2, seq_len). Row 0 = lower band
-///         boundaries in signal coords, row 1 = upper boundaries.
-///     short_dwell_penalty: Float32 penalty array for short dwells
-///     algo: "Viterbi" or "dwell_penalty"
-///
-/// Returns:
-///     Int32 array of length seq_len+1 (refined seq_to_sig_map)
-#[pyfunction]
-pub fn seq_banded_dp<'py>(
-    py: Python<'py>,
-    signal: PyReadonlyArray1<'py, f32>,
-    levels: PyReadonlyArray1<'py, f32>,
-    seq_band: PyReadonlyArray2<'py, i32>,
-    short_dwell_penalty: PyReadonlyArray1<'py, f32>,
-    algo: &str,
-) -> PyResult<Bound<'py, PyArray1<i32>>> {
-    let signal = signal.as_slice()?;
-    let levels = levels.as_slice()?;
-    let sd_pen = short_dwell_penalty.as_slice()?;
-    let seq_band_arr = seq_band.as_array();
+/// Internal banded Viterbi DP (no PyO3 types).
+pub(crate) fn seq_banded_dp_inner(
+    signal: &[f32],
+    levels: &[f32],
+    band_lo: &[i32],
+    band_hi: &[i32],
+    sd_pen: &[f32],
+    use_dwell_pen: bool,
+) -> Vec<i32> {
     let seq_len = levels.len();
 
-    let use_dwell_pen = algo == "dwell_penalty";
-
-    // Read band boundaries
-    let mut band_lo = vec![0i32; seq_len];
-    let mut band_hi = vec![0i32; seq_len];
-    for i in 0..seq_len {
-        band_lo[i] = seq_band_arr[[0, i]];
-        band_hi[i] = seq_band_arr[[1, i]];
-    }
-
-    // Compute base offsets for ragged array
     let mut base_offsets = vec![0u32; seq_len + 1];
     for i in 0..seq_len {
         let bw = (band_hi[i] - band_lo[i]) as u32;
@@ -194,11 +163,9 @@ pub fn seq_banded_dp<'py>(
     }
     let band_len = base_offsets[seq_len] as usize;
 
-    // Allocate ragged arrays
     let mut all_scores = vec![0.0f32; band_len];
     let mut traceback = vec![0i32; band_len];
 
-    // First base: spoof prev_scores to force stays
     let first_bw = (band_hi[0] - band_lo[0]) as usize;
     let mut prev_scores = vec![f32::MAX; first_bw];
     prev_scores[0] = 0.0;
@@ -228,21 +195,14 @@ pub fn seq_banded_dp<'py>(
     let mut prev_bw = first_bw;
     let mut prev_offset = 0usize;
 
-    // Process remaining bases
     for base_idx in 1..seq_len {
         let curr_band_st = band_lo[base_idx];
         let curr_band_en = band_hi[base_idx];
         let curr_bw = (curr_band_en - curr_band_st) as usize;
         let curr_offset = base_offsets[base_idx] as usize;
-
-        // We need to pass slices of all_scores for both prev and curr.
-        // Since prev and curr don't overlap in the ragged array, we can
-        // split the array.
         let band_start_diff = curr_band_st - prev_band_st;
 
-        // Copy prev scores out to avoid borrow conflict
         let prev_sc: Vec<f32> = all_scores[prev_offset..prev_offset + prev_bw].to_vec();
-
         let sig_slice = &signal[curr_band_st as usize..curr_band_en as usize];
 
         let (cs, ct) = {
@@ -253,22 +213,11 @@ pub fn seq_banded_dp<'py>(
 
         if use_dwell_pen {
             banded_forward_dwell_penalty_step(
-                cs,
-                ct,
-                &prev_sc,
-                levels[base_idx],
-                sig_slice,
-                band_start_diff,
-                sd_pen,
+                cs, ct, &prev_sc, levels[base_idx], sig_slice, band_start_diff, sd_pen,
             );
         } else {
             banded_forward_vit_step(
-                cs,
-                ct,
-                &prev_sc,
-                levels[base_idx],
-                sig_slice,
-                band_start_diff,
+                cs, ct, &prev_sc, levels[base_idx], sig_slice, band_start_diff,
             );
         }
 
@@ -277,7 +226,6 @@ pub fn seq_banded_dp<'py>(
         prev_offset = curr_offset;
     }
 
-    // Traceback
     let sig_len = band_hi[seq_len - 1];
     let mut path = vec![0i32; seq_len + 1];
     path[0] = 0;
@@ -291,37 +239,47 @@ pub fn seq_banded_dp<'py>(
         path[base_idx] = sig_lookup_pos - next_sig_offset;
     }
 
+    path
+}
+
+/// PyO3 wrapper for banded Viterbi DP.
+#[pyfunction]
+pub fn seq_banded_dp<'py>(
+    py: Python<'py>,
+    signal: PyReadonlyArray1<'py, f32>,
+    levels: PyReadonlyArray1<'py, f32>,
+    seq_band: PyReadonlyArray2<'py, i32>,
+    short_dwell_penalty: PyReadonlyArray1<'py, f32>,
+    algo: &str,
+) -> PyResult<Bound<'py, PyArray1<i32>>> {
+    let signal = signal.as_slice()?;
+    let levels = levels.as_slice()?;
+    let sd_pen = short_dwell_penalty.as_slice()?;
+    let seq_band_arr = seq_band.as_array();
+    let seq_len = levels.len();
+
+    let mut band_lo = vec![0i32; seq_len];
+    let mut band_hi = vec![0i32; seq_len];
+    for i in 0..seq_len {
+        band_lo[i] = seq_band_arr[[0, i]];
+        band_hi[i] = seq_band_arr[[1, i]];
+    }
+
+    let path = seq_banded_dp_inner(signal, levels, &band_lo, &band_hi, sd_pen, algo == "dwell_penalty");
     let result = Array1::from_vec(path);
     Ok(result.into_pyarray(py))
 }
 
-/// Extract expected signal levels for each position in a sequence.
-///
-/// Matches remora's extract_levels: for each valid kmer window starting at pos,
-/// looks up the expected level and assigns it to position pos + center_idx.
-/// Edge positions where a full kmer cannot be formed are left at 0.
-///
-/// Args:
-///     sequence: DNA/RNA sequence
-///     kmer_to_level: Mapping from kmer string to expected level
-///     kmer_len: Length of kmers in the table
-///     center_idx: Position within the kmer that is the "center" base.
-///                 Use -1 for kmer_len / 2 (default).
-///
-/// Returns:
-///     Array of expected levels, length = len(sequence)
-#[pyfunction]
-#[pyo3(signature = (sequence, kmer_to_level, kmer_len, center_idx = -1))]
-pub fn extract_levels<'py>(
-    py: Python<'py>,
+/// Internal level extraction (no PyO3 types).
+pub(crate) fn extract_levels_inner(
     sequence: &str,
-    kmer_to_level: HashMap<String, f64>,
+    kmer_to_level: &HashMap<String, f64>,
     kmer_len: usize,
     center_idx: i32,
-) -> PyResult<Bound<'py, PyArray1<f64>>> {
+) -> Vec<f64> {
     let seq_bytes = sequence.as_bytes();
     let seq_len = seq_bytes.len();
-    let mut levels = Array1::<f64>::zeros(seq_len);
+    let mut levels = vec![0.0f64; seq_len];
     let cidx = if center_idx < 0 {
         kmer_len / 2
     } else {
@@ -329,10 +287,9 @@ pub fn extract_levels<'py>(
     };
 
     if seq_len < kmer_len {
-        return Ok(levels.into_pyarray(py));
+        return levels;
     }
 
-    // Pre-process sequence: uppercase and U->T
     let seq_upper: Vec<u8> = seq_bytes
         .iter()
         .map(|&b| {
@@ -348,49 +305,44 @@ pub fn extract_levels<'py>(
         }
     }
 
-    Ok(levels.into_pyarray(py))
+    levels
 }
 
-/// Rough rescaling of signal to match expected kmer levels.
-///
-/// Computes per-base mean signal and fits a linear transform to match
-/// expected levels.
-///
-/// Args:
-///     signal: Normalized signal array
-///     expected_levels: Expected levels per base from kmer table
-///     seq_to_sig_map: Base-to-signal mapping
-///
-/// Returns:
-///     Rescaled signal
+/// PyO3 wrapper for level extraction.
 #[pyfunction]
-pub fn rough_rescale<'py>(
+#[pyo3(signature = (sequence, kmer_to_level, kmer_len, center_idx = -1))]
+pub fn extract_levels<'py>(
     py: Python<'py>,
-    signal: PyReadonlyArray1<'py, f64>,
-    expected_levels: PyReadonlyArray1<'py, f64>,
-    seq_to_sig_map: PyReadonlyArray1<'py, i64>,
+    sequence: &str,
+    kmer_to_level: HashMap<String, f64>,
+    kmer_len: usize,
+    center_idx: i32,
 ) -> PyResult<Bound<'py, PyArray1<f64>>> {
-    let signal = signal.as_array();
-    let expected = expected_levels.as_array();
-    let sig_map = seq_to_sig_map.as_array();
+    let levels = extract_levels_inner(sequence, &kmer_to_level, kmer_len, center_idx);
+    let result = Array1::from_vec(levels);
+    Ok(result.into_pyarray(py))
+}
 
-    let num_bases = sig_map.len() - 1;
+/// Internal rough rescaling (no PyO3 types). Returns rescaled signal or original.
+pub(crate) fn rough_rescale_inner(
+    signal: &[f64],
+    expected: &[f64],
+    sig_map: &[i64],
+) -> Vec<f64> {
+    let num_bases = sig_map.len().saturating_sub(1);
     let mut observed = vec![0.0f64; num_bases];
-
-    let sig_slice = signal.as_slice().expect("signal must be contiguous");
 
     for i in 0..num_bases {
         let start = sig_map[i] as usize;
         let end = sig_map[i + 1] as usize;
-        if end > start {
-            let sum: f64 = sig_slice[start..end].iter().sum();
+        if end > start && end <= signal.len() {
+            let sum: f64 = signal[start..end].iter().sum();
             observed[i] = sum / (end - start) as f64;
         } else if i > 0 {
             observed[i] = observed[i - 1];
         }
     }
 
-    // Fit linear transform via least squares: observed = a * expected + b
     if num_bases > 1 {
         let n = num_bases as f64;
         let sum_x: f64 = expected.iter().sum();
@@ -408,11 +360,25 @@ pub fn rough_rescale<'py>(
             let b = (sum_y - a * sum_x) / n;
 
             if a.abs() > 1e-10 {
-                let result: Array1<f64> = signal.mapv(|s| (s - b) / a);
-                return Ok(result.into_pyarray(py));
+                return signal.iter().map(|&s| (s - b) / a).collect();
             }
         }
     }
 
-    Ok(signal.to_owned().into_pyarray(py))
+    signal.to_vec()
+}
+
+/// PyO3 wrapper for rough rescaling.
+#[pyfunction]
+pub fn rough_rescale<'py>(
+    py: Python<'py>,
+    signal: PyReadonlyArray1<'py, f64>,
+    expected_levels: PyReadonlyArray1<'py, f64>,
+    seq_to_sig_map: PyReadonlyArray1<'py, i64>,
+) -> PyResult<Bound<'py, PyArray1<f64>>> {
+    let sig = signal.as_slice()?;
+    let exp = expected_levels.as_slice()?;
+    let map = seq_to_sig_map.as_slice()?;
+    let result = rough_rescale_inner(sig, exp, map);
+    Ok(Array1::from_vec(result).into_pyarray(py))
 }
