@@ -66,7 +66,7 @@ jobs:
       - name: Install dependencies
         run: |
           # Try full install (with Rust extension); fall back without it
-          uv sync --all-extras || uv sync --all-extras --no-build-package leech-core
+          uv sync --all-extras || uv sync --extra dev --extra pipeline --extra notebook
 
       - name: Run tests
         run: uv run pytest --cov=leech --cov-report=xml --cov-report=term
