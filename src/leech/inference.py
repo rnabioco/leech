@@ -1214,6 +1214,121 @@ def run_inference(
             kmer_context=kmer_context,
         )
 
+        # Number of extraction threads: Rust functions release the GIL,
+        # so threads give real parallelism for the CPU-heavy parts
+        # (banded DP, signal stats, kmer encoding).
+        import os
+
+        # Respect SLURM allocation; fall back to system CPU count
+        _avail_cpus = int(os.environ.get("SLURM_CPUS_PER_TASK", 0)) or os.cpu_count() or 4
+        n_extract = max(1, _avail_cpus - 2)  # reserve for main + GPU
+        logger.info(f"Sequential path with {n_extract} extraction threads, double-buffered GPU")
+
+        def _extract_one_read(
+            aln: pysam.AlignedSegment,
+        ) -> list[tuple[np.ndarray, np.ndarray, np.ndarray | None, tuple[str, int]]]:
+            """Extract ready-to-batch chunks from one alignment. Thread-safe."""
+            read_id = aln.query_name
+            read_seq = aln.query_sequence
+            if read_id is None or read_seq is None:
+                return []
+
+            try:
+                move_table = extract_move_table(aln)
+                raw_signal, pod5_metadata = pod5_reader.get_signal(read_id)
+
+                ref_seq = None
+                cigar_tuples = None
+                if seq_signal_config.anchor == "reference":
+                    if reference_sequences and aln.reference_name in reference_sequences:
+                        full_ref = reference_sequences[aln.reference_name]
+                        ref_seq = full_ref[aln.reference_start : aln.reference_end]
+                    else:
+                        try:
+                            ref_seq = aln.get_reference_sequence()
+                        except Exception:
+                            ref_seq = None
+                    cigar_tuples = aln.cigartuples
+
+                leech_read = build_leech_read(
+                    read_id=read_id,
+                    sequence=read_seq,
+                    raw_signal=raw_signal,
+                    move_table=move_table,
+                    signal_config=seq_signal_config,
+                    metadata={},
+                    reference_sequence=ref_seq,
+                    cigar_tuples=cigar_tuples,
+                    cal_offset=pod5_metadata.get("calibration_offset"),
+                    cal_scale=pod5_metadata.get("calibration_scale"),
+                )
+            except Exception as e:
+                logger.warning(f"Skipping read {read_id}: {e}")
+                return []
+
+            # Find positions to predict
+            assert motif is not None
+            positions = [
+                pos + motif_offset
+                for pos in motif_searcher.find_motif_positions(
+                    leech_read.read_id, leech_read.sequence, aln, motif
+                )
+            ]
+
+            results: list[tuple[np.ndarray, np.ndarray, np.ndarray | None, tuple[str, int]]] = []
+            for base_idx in positions:
+                chunk = leech_read.get_chunk(base_idx, config=seq_chunk_config)
+                if chunk is None:
+                    continue
+
+                # Signal (with optional kmer residual channel)
+                signal_array = chunk["signal"]
+                assert isinstance(signal_array, np.ndarray)
+                sig = signal_array.astype(np.float32)
+                sig_residual = chunk.get("signal_residual")
+                if len(sig) < signal_len:
+                    sig = np.pad(sig, (0, signal_len - len(sig)), mode="constant")
+                    if sig_residual is not None:
+                        sig_residual = np.pad(
+                            sig_residual.astype(np.float32),
+                            (0, signal_len - len(sig_residual)),
+                            mode="constant",
+                        )
+                elif len(sig) > signal_len:
+                    start = (len(sig) - signal_len) // 2
+                    sig = sig[start : start + signal_len]
+                    if sig_residual is not None:
+                        sig_residual = sig_residual.astype(np.float32)[start : start + signal_len]
+                if sig_residual is not None:
+                    sig_residual = sig_residual.astype(np.float32)
+                    sig = np.stack([sig, sig_residual], axis=0)
+
+                # Sequence
+                seq_enc = _encode_sequence_for_inference(
+                    chunk, seq_encoding, signal_len, signal_kmer_context
+                )
+                if seq_enc is None:
+                    continue
+
+                seq_arr = seq_enc.numpy() if isinstance(seq_enc, torch.Tensor) else seq_enc
+
+                feat = None
+                if requires_features:
+                    features_array = chunk["features"]
+                    assert isinstance(features_array, np.ndarray)
+                    feat = features_array.astype(np.float32)
+                    if wide_features:
+                        pass
+                    elif feat.size > 0 and feat.shape[1] > kmer_len:
+                        fs = chunk.get("feature_start", -_kmer_context)
+                        s = (-_kmer_context - fs) + dwell_offset
+                        feat = feat[:, s : s + kmer_len]
+
+                results.append((sig, seq_arr, feat, (read_id, base_idx)))
+            return results
+
+        _extract_pool = ThreadPoolExecutor(max_workers=n_extract)
+
         with Progress() as progress:
             task = progress.add_task("[cyan]Running inference...", total=None)
 
@@ -1237,115 +1352,17 @@ def run_inference(
 
                     pending.clear()
 
-                    for aln in aln_batch:
-                        read_id = aln.query_name
-                        read_seq = aln.query_sequence
-                        if read_id is None or read_seq is None:
-                            continue
-
-                        try:
-                            move_table = extract_move_table(aln)
-                            raw_signal, pod5_metadata = pod5_reader.get_signal(read_id)
-
-                            ref_seq = None
-                            cigar_tuples = None
-                            if seq_signal_config.anchor == "reference":
-                                if (
-                                    reference_sequences
-                                    and aln.reference_name in reference_sequences
-                                ):
-                                    full_ref = reference_sequences[aln.reference_name]
-                                    ref_seq = full_ref[aln.reference_start : aln.reference_end]
-                                else:
-                                    try:
-                                        ref_seq = aln.get_reference_sequence()
-                                    except Exception:
-                                        ref_seq = None
-                                cigar_tuples = aln.cigartuples
-
-                            leech_read = build_leech_read(
-                                read_id=read_id,
-                                sequence=read_seq,
-                                raw_signal=raw_signal,
-                                move_table=move_table,
-                                signal_config=seq_signal_config,
-                                metadata={"alignment": aln},
-                                reference_sequence=ref_seq,
-                                cigar_tuples=cigar_tuples,
-                                cal_offset=pod5_metadata.get("calibration_offset"),
-                                cal_scale=pod5_metadata.get("calibration_scale"),
-                            )
-                        except Exception as e:
-                            logger.warning(f"Skipping read {read_id}: {e}")
-                            continue
-
-                        # Find positions to predict
-                        assert motif is not None, "motif must not be None at inference time"
-                        aln_meta = leech_read.metadata.get("alignment")
-                        positions = [
-                            pos + motif_offset
-                            for pos in motif_searcher.find_motif_positions(
-                                leech_read.read_id, leech_read.sequence, aln_meta, motif
-                            )
-                        ]
-
-                        for base_idx in positions:
-                            chunk = leech_read.get_chunk(base_idx, config=seq_chunk_config)
-                            if chunk is None:
-                                continue
-
-                            # Signal (with optional kmer residual channel)
-                            signal_array = chunk["signal"]
-                            assert isinstance(signal_array, np.ndarray)
-                            sig = signal_array.astype(np.float32)
-                            sig_residual = chunk.get("signal_residual")
-                            if len(sig) < signal_len:
-                                sig = np.pad(sig, (0, signal_len - len(sig)), mode="constant")
-                                if sig_residual is not None:
-                                    sig_residual = np.pad(
-                                        sig_residual.astype(np.float32),
-                                        (0, signal_len - len(sig_residual)),
-                                        mode="constant",
-                                    )
-                            elif len(sig) > signal_len:
-                                start = (len(sig) - signal_len) // 2
-                                sig = sig[start : start + signal_len]
-                                if sig_residual is not None:
-                                    sig_residual = sig_residual.astype(np.float32)[
-                                        start : start + signal_len
-                                    ]
-                            if sig_residual is not None:
-                                sig_residual = sig_residual.astype(np.float32)
-                                sig = np.stack([sig, sig_residual], axis=0)
-
-                            # Sequence
-                            seq_enc = _encode_sequence_for_inference(
-                                chunk, seq_encoding, signal_len, signal_kmer_context
-                            )
-                            if seq_enc is None:
-                                continue
-
-                            batch_signals.append(sig)
-                            batch_seqs.append(
-                                seq_enc.numpy() if isinstance(seq_enc, torch.Tensor) else seq_enc
-                            )
-                            feat = None
-                            if requires_features:
-                                features_array = chunk["features"]
-                                assert isinstance(features_array, np.ndarray)
-                                feat = features_array.astype(np.float32)
-                                if wide_features:
-                                    pass
-                                elif feat.size > 0 and feat.shape[1] > kmer_len:
-                                    fs = chunk.get("feature_start", -_kmer_context)
-                                    s = (-_kmer_context - fs) + dwell_offset
-                                    feat = feat[:, s : s + kmer_len]
+                    # Parallel extraction → GPU batching
+                    for chunks in _extract_pool.map(_extract_one_read, aln_batch):
+                        for sig, seq_arr, feat, meta in chunks:
                             if not _shape_validated:
                                 validate_inference_shapes(sig, feat, config)
                                 _shape_validated = True
 
+                            batch_signals.append(sig)
+                            batch_seqs.append(seq_arr)
                             batch_feats.append(feat)
-                            batch_meta.append((leech_read.read_id, base_idx))
+                            batch_meta.append(meta)
 
                             if len(batch_signals) >= batch_size:
                                 _flush_batch()
@@ -1382,6 +1399,7 @@ def run_inference(
                         ),
                     )
 
+        _extract_pool.shutdown(wait=False)
         _gpu_executor.shutdown(wait=False)
 
     bam_out.close()
