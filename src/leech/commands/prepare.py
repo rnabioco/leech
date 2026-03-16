@@ -46,7 +46,7 @@ def handle_prepare(
     pa_stdev: float | None = None,
     refine_signal_map: bool = True,
     kmer_table: Path | None = None,
-    scale_iters: int = 0,
+    scale_iters: int = 2,
 ) -> dict[str, Any]:
     """
     Handle the prepare command logic.
@@ -116,6 +116,7 @@ def handle_prepare(
             pa_mean=pa_mean,
             pa_stdev=pa_stdev,
             refine_signal_map=refine_signal_map,
+            refine_scale_iters=scale_iters,
             signal_refiner=signal_refiner,
         ),
         motif=MotifConfig(

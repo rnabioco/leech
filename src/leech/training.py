@@ -1066,6 +1066,7 @@ def train_model(
         "signal_norm": prepare_metadata.get("signal_norm", "median_mad"),
         "reverse_signal": prepare_metadata.get("reverse_signal", True),
         "refine_signal_map": prepare_metadata.get("refine_signal_map", True),
+        "refine_scale_iters": prepare_metadata.get("refine_scale_iters", 2),
         "motif_reference": prepare_metadata.get("motif_reference", "fasta"),
         **model_kwargs,
     }

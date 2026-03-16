@@ -161,7 +161,7 @@ def _extract_remora_metadata(model_path: Path) -> dict:
         raw["refine_signal_map"] = True
         raw["refine_half_bandwidth"] = int(raw["refine_half_bandwidth"])
         raw["refine_do_rough_rescale"] = raw.get("refine_do_rough_rescale", True)
-        raw["refine_scale_iters"] = int(raw.get("refine_scale_iters", -1))
+        raw["refine_scale_iters"] = int(raw.get("refine_scale_iters", 2))
         raw["refine_kmer_center_idx"] = int(raw.get("refine_kmer_center_idx", -1))
 
     return raw
@@ -732,7 +732,7 @@ def run_inference(
             kmer_table_path = get_kmer_table()
             half_bw = config.get("refine_half_bandwidth", 5)
             do_rescale = config.get("refine_do_rough_rescale", True)
-            scale_iters = config.get("refine_scale_iters", -1)
+            scale_iters = config.get("refine_scale_iters", 2)
             center_idx = config.get("refine_kmer_center_idx", -1)
             signal_refiner = SigMapRefiner.from_table(
                 kmer_table_path,
@@ -1459,7 +1459,7 @@ def run_bundle_inference(
             kmer_table_path,
             half_bandwidth=config.get("refine_half_bandwidth", 5),
             do_rough_rescale=config.get("refine_do_rough_rescale", True),
-            scale_iters=config.get("refine_scale_iters", -1),
+            scale_iters=config.get("refine_scale_iters", 2),
             center_idx=config.get("refine_kmer_center_idx", -1),
         )
         bundle_refine = True
@@ -1482,6 +1482,7 @@ def run_bundle_inference(
         bundle_signal_config = SignalConfig(
             reverse_signal=reverse_signal,
             anchor=anchor,
+            norm_method=config.get("signal_norm", "median_mad"),
             compute_features=bundle_compute_features,
             refine_signal_map=bundle_refine,
             signal_refiner=bundle_refiner,

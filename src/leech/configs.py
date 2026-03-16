@@ -30,6 +30,7 @@ class SignalConfig:
     pa_mean: float | None = None
     pa_stdev: float | None = None
     refine_signal_map: bool = True
+    refine_scale_iters: int = 2
     signal_refiner: SigMapRefiner | None = None
     compute_features: bool = True
 
@@ -81,6 +82,7 @@ class PrepareConfig:
             "reverse_signal": self.signal.reverse_signal,
             "signal_norm": self.signal.norm_method,
             "refine_signal_map": self.signal.refine_signal_map,
+            "refine_scale_iters": self.signal.refine_scale_iters,
             "motif": self.motif.motif,
             "motif_offset": self.motif.motif_offset,
             "motif_reference": self.motif.motif_reference,
