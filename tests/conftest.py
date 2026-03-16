@@ -4,12 +4,33 @@ Pytest fixtures for leech tests.
 Provides reusable test data and mock objects.
 """
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 import torch
 
 from leech.chunking import LeechRead, save_chunks
 from leech.features import MoveTable
+
+# ---------------------------------------------------------------------------
+# Fixture paths — tRNA IVC data (20 Ala reads with CCAGGC motif)
+# ---------------------------------------------------------------------------
+
+FIXTURES_DIR = Path(__file__).parent / "fixtures"
+
+# DNA canonical fixtures (existing)
+CAN_BAM = FIXTURES_DIR / "can_mappings.bam"
+CAN_POD5 = FIXTURES_DIR / "can_reads.pod5"
+LEVELS_FILE = FIXTURES_DIR / "levels.txt"
+
+# tRNA production fixtures (20 reads from AlaRS IVC experiment)
+TRNA_BAM = FIXTURES_DIR / "trna_mappings.bam"
+TRNA_POD5 = FIXTURES_DIR / "trna_reads.pod5"
+TRNA_REF = FIXTURES_DIR / "trna_reference.fa"
+
+TRNA_FIXTURES_AVAILABLE = TRNA_BAM.exists() and TRNA_POD5.exists() and TRNA_REF.exists()
+CAN_FIXTURES_AVAILABLE = CAN_BAM.exists() and CAN_POD5.exists()
 
 
 def pytest_addoption(parser):
