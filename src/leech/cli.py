@@ -1108,7 +1108,7 @@ def ablation(model, test_data, output_dir, device, no_plot):
     "--raw",
     is_flag=True,
     default=False,
-    help="With --all, additionally write per-pair probabilities (pn/pp tags)",
+    help="Write full float probabilities for all tags (default: compact uint8 encoding for ac/pp)",
 )
 @click.option(
     "--pod5",

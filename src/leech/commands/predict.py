@@ -62,7 +62,7 @@ def handle_predict(
         bundle_path: Model bundle .pt file
         pair: Single pair name from bundle
         run_all: Run every model in the bundle
-        raw: Write per-pair probabilities with --all
+        raw: Write full float tags (default: compact uint8)
         pod5: POD5 file with raw signal
         bam: BAM file with alignments
         output: Output BAM with predictions
@@ -109,6 +109,7 @@ def handle_predict(
                 num_workers=workers,
                 anchor=anchor,
                 reference_fasta=reference_fasta,
+                raw=raw,
             )
         else:
             # Multi-model inference: run all models in bundle
@@ -164,6 +165,7 @@ def handle_predict(
             num_workers=workers,
             anchor=anchor,
             reference_fasta=reference_fasta,
+            raw=raw,
         )
 
     console.print("[bold green]Inference complete![/bold green]")

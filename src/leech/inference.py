@@ -39,6 +39,41 @@ from leech.util import (
 logger = logging.getLogger("leech.inference")
 
 
+def _write_prediction_tags(
+    aln: pysam.AlignedSegment,
+    predicted_aa: str,
+    conf: float,
+    class_names_str: str,
+    probs: list[float],
+    raw: bool,
+) -> None:
+    """Write prediction tags to a BAM alignment.
+
+    Args:
+        aln: pysam alignment to tag
+        predicted_aa: predicted amino acid label
+        conf: max class probability (0.0-1.0)
+        class_names_str: comma-separated class names for pn tag
+        probs: full probability distribution
+        raw: if True, write float tags; otherwise compact uint8
+    """
+    aln.set_tag("aa", predicted_aa)
+
+    if raw:
+        aln.set_tag("ac", conf)
+    else:
+        aln.set_tag("ac", int(min(255, max(0, round(conf * 255)))), value_type="C")
+
+    aln.set_tag("pn", class_names_str)
+    if raw:
+        aln.set_tag("pp", probs)
+    else:
+        aln.set_tag(
+            "pp",
+            array.array("B", [int(min(255, max(0, round(p * 255)))) for p in probs]),
+        )
+
+
 class InferenceConfigError(RuntimeError):
     """Raised when inference input shapes don't match the model's config."""
 
@@ -610,6 +645,7 @@ def run_inference(
     chunk_size: int = 100,
     anchor: str = "reference",
     reference_fasta: Path | None = None,
+    raw: bool = False,
 ) -> None:
     """
     Run inference on POD5 and BAM files.
@@ -623,6 +659,7 @@ def run_inference(
         pod5_path: Path to POD5 file with raw signal
         bam_path: Path to input BAM file with alignments
         output_path: Path to output BAM file with predictions
+        raw: Write full float probabilities (default: compact uint8)
         device: Device for inference
         min_mapq: Minimum mapping quality
         motif: Optional motif to filter predictions (auto-read from config if None)
@@ -993,10 +1030,10 @@ def run_inference(
                         predicted_aa = int_to_label.get(cls_idx, str(cls_idx))
                     else:
                         predicted_aa = str(cls_idx)
-                    aln.set_tag("aa", predicted_aa)
-                    aln.set_tag("ac", conf)
-                    aln.set_tag("pn", class_names_str)
-                    aln.set_tag("pp", all_probs)
+                    _write_prediction_tags(
+                        aln, predicted_aa, conf, class_names_str,
+                        all_probs, raw,
+                    )
                 bam_out.write(aln)
         else:
             for aln in alignment_by_read_id.values():
@@ -1178,11 +1215,10 @@ def run_inference(
                         predicted_aa = int_to_label.get(cls_idx, str(cls_idx))
                     else:
                         predicted_aa = str(cls_idx)
-                    aln.set_tag("aa", predicted_aa)
-                    aln.set_tag("ac", conf)
-                    # Full softmax distribution
-                    aln.set_tag("pn", class_names_str)  # Z type (string)
-                    aln.set_tag("pp", all_probs)  # B:f type (float array)
+                    _write_prediction_tags(
+                        aln, predicted_aa, conf, class_names_str,
+                        all_probs, raw,
+                    )
                 bam_out.write(aln)
         else:
             for aln in alignment_by_read_id.values():
@@ -1294,12 +1330,11 @@ def run_bundle_inference(
     """
     Run all models from a bundle on each read, aggregate to a single AA prediction.
 
-    Writes output BAM with tags:
+    Writes output BAM with tags (compact by default, float with --raw):
     - aa:Z:Gly — predicted amino acid
-    - ac:f:0.93 — confidence score (vote fraction or max score)
-    With --raw, additionally:
-    - pn:Z:Ala_Gly,Ala_Ser,... — comma-separated pair names
-    - pp:B:f,0.95,0.23,... — float array of probabilities in matching order
+    - ac:C:238 (compact) or ac:f:0.93 (raw) — confidence score
+    - pn:Z:Ala_Gly,... — pair names
+    - pp:B:B,... (compact) or pp:B:f,... (raw) — probabilities
 
     Args:
         bundle_path: Path to bundle .pt file
@@ -1735,11 +1770,10 @@ def run_bundle_inference(
         probs = [float(prob_vec[pair_to_idx[pair]]) for pair in pairs]
         predicted_aa, confidence, _ = aggregate_fn(pairs, probs)
 
-        aln.set_tag("aa", predicted_aa)
-        aln.set_tag("ac", confidence)
-        if raw:
-            aln.set_tag("pn", pair_names_str)
-            aln.set_tag("pp", probs)
+        _write_prediction_tags(
+            aln, predicted_aa, confidence, pair_names_str,
+            probs, raw,
+        )
         bam_out.write(aln)
         n_predicted += 1
 
