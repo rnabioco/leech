@@ -24,11 +24,14 @@ import torch
 from rich.progress import Progress
 
 from leech.configs import ChunkConfig, InferenceConfig, MotifConfig, SignalConfig
-from leech.features import encode_signal_kmer, sequence_to_int
+from leech.features import encode_signal_kmer, extract_move_table, sequence_to_int
+from leech.io.bam_reader import iter_bam_batches
 from leech.io.motif_search import get_motif_searcher
+from leech.io.pod5_reader import POD5Reader
 from leech.models.inference_wrapper import ModelInferenceWrapper, TracedModelWrapper
 from leech.models.remora_compat import RemoraModelWrapper
-from leech.preparation import encode_kmer, iter_bam_with_pod5
+from leech.preparation import encode_kmer
+from leech.preparation.reader import build_leech_read
 from leech.util import (
     _instantiate_model,
     deserialize_exported_model,
@@ -644,6 +647,54 @@ def _inference_worker(
     return results
 
 
+def _write_mega_batch_predictions(
+    aln_batch: list[pysam.AlignedSegment],
+    pending: dict[str, list],
+    bam_out: pysam.AlignmentFile,
+    is_multiclass: bool,
+    int_to_label: dict[int, str] | None,
+    class_names_str: str | None,
+    raw: bool,
+    min_confidence: int,
+    min_margin: int,
+) -> int:
+    """Write predictions for a mega-batch of alignments. Returns prediction count."""
+    n_preds = 0
+    if is_multiclass:
+        for aln in aln_batch:
+            preds = pending.get(aln.query_name)
+            if preds:
+                _, cls_idx, conf, all_probs = preds[0]
+                if int_to_label:
+                    predicted_aa = int_to_label.get(cls_idx, str(cls_idx))
+                else:
+                    predicted_aa = str(cls_idx)
+                _write_prediction_tags(
+                    aln,
+                    predicted_aa,
+                    conf,
+                    class_names_str,
+                    all_probs,
+                    raw,
+                    min_confidence,
+                    min_margin,
+                )
+                n_preds += 1
+            bam_out.write(aln)
+    else:
+        for aln in aln_batch:
+            preds = pending.get(aln.query_name)
+            if preds:
+                preds.sort(key=lambda x: x[0])
+                positions_list = [int(p[0]) for p in preds]
+                ml_scores = [int(min(255, max(0, p[1] * 255))) for p in preds]
+                aln.set_tag("MP", array.array("i", positions_list))
+                aln.set_tag("ML", array.array("B", ml_scores))
+                n_preds += 1
+            bam_out.write(aln)
+    return n_preds
+
+
 def run_inference(
     model_and_config: tuple[torch.nn.Module | ModelInferenceWrapper | RemoraModelWrapper, dict]
     | None = None,
@@ -665,6 +716,7 @@ def run_inference(
     raw: bool = False,
     min_confidence: int = 0,
     min_margin: int = 0,
+    read_batch_size: int = 200_000,
 ) -> None:
     """
     Run inference on POD5 and BAM files.
@@ -696,6 +748,9 @@ def run_inference(
         chunk_size: Reads per worker batch
         anchor: "basecall" or "reference" for reference-anchored mode
         reference_fasta: Path to reference FASTA (for reference-anchored mode)
+        read_batch_size: Reads per mega-batch for memory-bounded streaming (default 50K).
+            Each mega-batch loads BAM alignments + POD5 signals, runs inference,
+            writes predictions, then frees memory. Set to 0 to disable (load all).
     """
     # Load model
     if model_and_config is not None:
@@ -874,28 +929,28 @@ def run_inference(
     if motif:
         logger.info(f"Motif: {motif} (offset={motif_offset})")
 
-    # Open input BAM and index alignments by read ID
+    # Open BAM for header and normalization detection
     bam_in = pysam.AlignmentFile(str(bam_path), "rb")
-    alignment_by_read_id: dict[str, pysam.AlignedSegment] = {}
-    for a in bam_in.fetch(until_eof=True):
-        if a.query_name is not None:
-            alignment_by_read_id[a.query_name] = a
 
     # Detect normalization method: read from config, with sm/sd tag override for Remora
     norm_method = config.get("signal_norm", "median_mad")
     pa_mean = config.get("pa_mean")
     pa_stdev = config.get("pa_stdev")
-    if is_remora and alignment_by_read_id:
-        first_aln = next(iter(alignment_by_read_id.values()))
-        if first_aln.has_tag("sm") and first_aln.has_tag("sd"):
-            pa_mean = float(first_aln.get_tag("sm"))
-            pa_stdev = float(first_aln.get_tag("sd"))
-            norm_method = "pa_scaling"
-            logger.info(f"Using pa_scaling normalization (sm={pa_mean}, sd={pa_stdev})")
+    if is_remora:
+        # Peek at first alignment for pa_scaling tags
+        for first_aln in bam_in.fetch(until_eof=True):
+            if first_aln.query_name is not None:
+                if first_aln.has_tag("sm") and first_aln.has_tag("sd"):
+                    pa_mean = float(first_aln.get_tag("sm"))
+                    pa_stdev = float(first_aln.get_tag("sd"))
+                    norm_method = "pa_scaling"
+                    logger.info(f"Using pa_scaling normalization (sm={pa_mean}, sd={pa_stdev})")
+                break
 
     # Create output BAM
     output_path.parent.mkdir(parents=True, exist_ok=True)
     bam_out = pysam.AlignmentFile(str(output_path), "wb", template=bam_in)
+    bam_in.close()
 
     total_reads = 0
     total_predictions = 0
@@ -926,24 +981,22 @@ def run_inference(
         anchor=anchor,
     )
 
+    # Prepare class_names_str for multiclass (shared across mega-batches)
+    class_names_str = None
+    if is_multiclass:
+        if int_to_label:
+            class_names = [int_to_label[i] for i in range(num_out)]
+            class_names_str = ",".join(class_names)
+        else:
+            class_names_str = ",".join(str(i) for i in range(num_out))
+
+    logger.info(f"Streaming inference with read_batch_size={read_batch_size}")
+
     if num_workers > 0:
-        # ---- Parallel path ----
-        from leech.io import collect_read_infos
+        # ---- Parallel path (mega-batched) ----
+        from leech.io.bam_reader import ReadInfo
 
         logger.info(f"Parallel inference with {num_workers} workers")
-
-        read_infos = collect_read_infos(bam_path, min_mapq=min_mapq)
-        total_reads = len(read_infos)
-        logger.info(f"Found {total_reads} reads")
-
-        if total_reads == 0:
-            bam_in.close()
-            bam_out.close()
-            return
-
-        read_batches = [
-            read_infos[i : i + chunk_size] for i in range(0, len(read_infos), chunk_size)
-        ]
 
         inf_config = InferenceConfig(
             pod5_path=pod5_path,
@@ -978,10 +1031,6 @@ def run_inference(
             signal_in_channels=signal_in_channels,
         )
 
-        worker_args = [(batch_reads, inf_config) for batch_reads in read_batches]
-
-        # Collect all results, then batch and run model
-        pending: dict[str, list] = {}
         calibration = config.get("calibration") if is_multiclass else None
         _batch_fn_p = (
             functools.partial(_run_batch_multiclass, calibration=calibration)
@@ -990,23 +1039,67 @@ def run_inference(
         )
 
         with Progress() as progress:
-            task = progress.add_task("[cyan]Extracting chunks...", total=len(read_batches))
+            task = progress.add_task("[cyan]Running inference...", total=None)
 
             with mp.Pool(processes=num_workers) as pool:
-                for worker_results in pool.imap_unordered(_inference_worker, worker_args):
-                    # Accumulate into batch buffer
-                    signals_buf = []
-                    seqs_buf = []
-                    feats_buf = []
-                    meta_buf = []  # (read_id, base_idx)
+                for aln_batch in iter_bam_batches(
+                    bam_path, batch_size=read_batch_size, min_mapq=min_mapq
+                ):
+                    logger.info(f"Mega-batch: {len(aln_batch)} alignments read from BAM")
 
-                    for read_id, base_idx, sig, enc_seq, feat in worker_results:
-                        signals_buf.append(sig)
-                        seqs_buf.append(enc_seq)
-                        feats_buf.append(feat)
-                        meta_buf.append((read_id, base_idx))
+                    # Build ReadInfo objects from this mega-batch
+                    read_infos = []
+                    for aln in aln_batch:
+                        try:
+                            read_infos.append(ReadInfo(aln))
+                        except Exception as e:
+                            logger.warning(f"Skipping read {aln.query_name}: {e}")
 
-                        if len(signals_buf) >= batch_size:
+                    logger.info(
+                        f"Built {len(read_infos)} ReadInfo objects, "
+                        f"dispatching to {num_workers} workers"
+                    )
+
+                    if not read_infos:
+                        for aln in aln_batch:
+                            bam_out.write(aln)
+                        total_reads += len(aln_batch)
+                        continue
+
+                    # Split into worker sub-batches and dispatch
+                    worker_batches = [
+                        read_infos[i : i + chunk_size]
+                        for i in range(0, len(read_infos), chunk_size)
+                    ]
+                    worker_args = [(wb, inf_config) for wb in worker_batches]
+
+                    pending: dict[str, list] = {}
+                    for worker_results in pool.imap_unordered(_inference_worker, worker_args):
+                        signals_buf = []
+                        seqs_buf = []
+                        feats_buf = []
+                        meta_buf = []
+
+                        for read_id, base_idx, sig, enc_seq, feat in worker_results:
+                            signals_buf.append(sig)
+                            seqs_buf.append(enc_seq)
+                            feats_buf.append(feat)
+                            meta_buf.append((read_id, base_idx))
+
+                            if len(signals_buf) >= batch_size:
+                                _batch_fn_p(
+                                    signals_buf,
+                                    seqs_buf,
+                                    feats_buf,
+                                    meta_buf,
+                                    model_wrapper,
+                                    requires_features,
+                                    device,
+                                    pending,
+                                )
+                                signals_buf, seqs_buf, feats_buf, meta_buf = [], [], [], []
+
+                        if signals_buf:
                             _batch_fn_p(
                                 signals_buf,
                                 seqs_buf,
@@ -1017,69 +1110,43 @@ def run_inference(
                                 device,
                                 pending,
                             )
-                            signals_buf, seqs_buf, feats_buf, meta_buf = [], [], [], []
 
-                    # Flush remaining
-                    if signals_buf:
-                        _batch_fn_p(
-                            signals_buf,
-                            seqs_buf,
-                            feats_buf,
-                            meta_buf,
-                            model_wrapper,
-                            requires_features,
-                            device,
-                            pending,
-                        )
-
-                    progress.advance(task)
-
-        # Write all results to BAM (iterate dict to preserve original BAM order)
-        total_predictions = sum(len(v) for v in pending.values())
-        if is_multiclass:
-            if int_to_label:
-                class_names = [int_to_label[i] for i in range(num_out)]
-                class_names_str = ",".join(class_names)
-            else:
-                class_names_str = ",".join(str(i) for i in range(num_out))
-
-            for aln in alignment_by_read_id.values():
-                preds = pending.get(aln.query_name)
-                if preds:
-                    _, cls_idx, conf, all_probs = preds[0]
-                    if int_to_label:
-                        predicted_aa = int_to_label.get(cls_idx, str(cls_idx))
-                    else:
-                        predicted_aa = str(cls_idx)
-                    _write_prediction_tags(
-                        aln,
-                        predicted_aa,
-                        conf,
+                    # Write this mega-batch's predictions
+                    batch_preds = _write_mega_batch_predictions(
+                        aln_batch,
+                        pending,
+                        bam_out,
+                        is_multiclass,
+                        int_to_label,
                         class_names_str,
-                        all_probs,
                         raw,
                         min_confidence,
                         min_margin,
                     )
-                bam_out.write(aln)
-        else:
-            for aln in alignment_by_read_id.values():
-                preds = pending.get(aln.query_name)
-                if preds:
-                    preds.sort(key=lambda x: x[0])
-                    positions_list = [int(p[0]) for p in preds]
-                    ml_scores = [int(min(255, max(0, p[1] * 255))) for p in preds]
-                    aln.set_tag("MP", array.array("i", positions_list))
-                    aln.set_tag("ML", array.array("B", ml_scores))
-                bam_out.write(aln)
+                    total_reads += len(aln_batch)
+                    total_predictions += batch_preds
+                    logger.info(
+                        f"Mega-batch complete: wrote {batch_preds} predictions "
+                        f"for {len(aln_batch)} reads"
+                    )
+
+                    progress.update(
+                        task,
+                        advance=0,
+                        description=(
+                            f"[cyan]Processed {total_reads} reads "
+                            f"({total_predictions} predictions)..."
+                        ),
+                    )
 
     else:
-        # ---- Sequential path ----
-        # Accumulate chunks across reads for batched model forward passes
+        # ---- Sequential path (mega-batched, double-buffered GPU) ----
+        from concurrent.futures import Future, ThreadPoolExecutor
+
         batch_signals: list[np.ndarray] = []
         batch_seqs: list[np.ndarray] = []
         batch_feats: list[np.ndarray | None] = []
-        batch_meta: list[tuple[str, int]] = []  # (read_id, base_idx)
+        batch_meta: list[tuple[str, int]] = []
         pending: dict[str, list] = {}
         _shape_validated = False
 
@@ -1090,181 +1157,233 @@ def run_inference(
             else _run_batch
         )
 
+        _gpu_executor = ThreadPoolExecutor(max_workers=1)
+        _gpu_future: Future | None = None
+
         def _flush_batch() -> None:
-            """Run accumulated chunks through model."""
-            nonlocal batch_signals, batch_seqs, batch_feats, batch_meta
+            """Submit accumulated chunks to GPU thread (double-buffered)."""
+            nonlocal batch_signals, batch_seqs, batch_feats, batch_meta, _gpu_future
             if not batch_signals:
                 return
-            _batch_fn(
+            # Wait for previous GPU batch before submitting next
+            if _gpu_future is not None:
+                _gpu_future.result()
+            # Capture current batch and reset buffers
+            sigs, seqs, feats, meta = (
                 batch_signals,
                 batch_seqs,
                 batch_feats,
                 batch_meta,
+            )
+            batch_signals, batch_seqs, batch_feats, batch_meta = [], [], [], []
+            # Submit GPU work — runs while main thread continues extraction
+            _gpu_future = _gpu_executor.submit(
+                _batch_fn,
+                sigs,
+                seqs,
+                feats,
+                meta,
                 model_wrapper,
                 requires_features,
                 device,
                 pending,
             )
-            batch_signals, batch_seqs, batch_feats, batch_meta = [], [], [], []
+
+        def _drain_gpu() -> None:
+            """Wait for any in-flight GPU batch to complete."""
+            nonlocal _gpu_future
+            if _gpu_future is not None:
+                _gpu_future.result()
+                _gpu_future = None
+
+        seq_signal_config = SignalConfig(
+            reverse_signal=reverse_signal,
+            anchor=anchor,
+            norm_method=norm_method,
+            pa_mean=pa_mean,
+            pa_stdev=pa_stdev,
+            refine_signal_map=refine_signal_map,
+            signal_refiner=signal_refiner,
+            compute_features=compute_features,
+        )
+        seq_chunk_config = ChunkConfig(
+            base_justify=base_justify,
+            feature_start=_feature_start,
+            feature_end=_feature_end,
+            signal_context=signal_context,
+            kmer_context=kmer_context,
+        )
 
         with Progress() as progress:
             task = progress.add_task("[cyan]Running inference...", total=None)
 
-            seq_signal_config = SignalConfig(
-                reverse_signal=reverse_signal,
-                anchor=anchor,
-                norm_method=norm_method,
-                pa_mean=pa_mean,
-                pa_stdev=pa_stdev,
-                refine_signal_map=refine_signal_map,
-                signal_refiner=signal_refiner,
-                compute_features=compute_features,
-            )
-            seq_chunk_config = ChunkConfig(
-                base_justify=base_justify,
-                feature_start=_feature_start,
-                feature_end=_feature_end,
-                signal_context=signal_context,
-                kmer_context=kmer_context,
-            )
+            with POD5Reader(pod5_path) as pod5_reader:
+                for aln_batch in iter_bam_batches(
+                    bam_path, batch_size=read_batch_size, min_mapq=min_mapq
+                ):
+                    # Preload POD5 signals for this mega-batch
+                    batch_read_ids = [
+                        aln.query_name
+                        for aln in aln_batch
+                        if aln.query_name is not None and aln.query_sequence is not None
+                    ]
+                    if batch_read_ids:
+                        pod5_reader.preload(batch_read_ids)
 
-            for leech_read in iter_bam_with_pod5(
-                bam_path,
-                pod5_path,
-                signal_config=seq_signal_config,
-                min_mapq=min_mapq,
-                reference_sequences=reference_sequences,
-            ):
-                total_reads += 1
-                progress.update(
-                    task,
-                    advance=1,
-                    description=f"[cyan]Processed {total_reads} reads...",
-                )
-
-                aln = alignment_by_read_id.get(leech_read.read_id)
-                if aln is None:
-                    continue
-
-                # Find positions to predict (motif is validated non-None above)
-                assert motif is not None, "motif must not be None at inference time"
-                aln_meta = leech_read.metadata.get("alignment")
-                positions = [
-                    pos + motif_offset
-                    for pos in motif_searcher.find_motif_positions(
-                        leech_read.read_id, leech_read.sequence, aln_meta, motif
+                    logger.info(
+                        f"Mega-batch: {len(aln_batch)} alignments, "
+                        f"{len(batch_read_ids)} preloaded from POD5"
                     )
-                ]
 
-                for base_idx in positions:
-                    chunk = leech_read.get_chunk(base_idx, config=seq_chunk_config)
-                    if chunk is None:
-                        continue
+                    pending.clear()
 
-                    # Signal (with optional kmer residual channel)
-                    signal_array = chunk["signal"]
-                    assert isinstance(signal_array, np.ndarray)
-                    sig = signal_array.astype(np.float32)
-                    sig_residual = chunk.get("signal_residual")
-                    if len(sig) < signal_len:
-                        sig = np.pad(sig, (0, signal_len - len(sig)), mode="constant")
-                        if sig_residual is not None:
-                            sig_residual = np.pad(
-                                sig_residual.astype(np.float32),
-                                (0, signal_len - len(sig_residual)),
-                                mode="constant",
+                    for aln in aln_batch:
+                        read_id = aln.query_name
+                        read_seq = aln.query_sequence
+                        if read_id is None or read_seq is None:
+                            continue
+
+                        try:
+                            move_table = extract_move_table(aln)
+                            raw_signal, pod5_metadata = pod5_reader.get_signal(read_id)
+
+                            ref_seq = None
+                            cigar_tuples = None
+                            if seq_signal_config.anchor == "reference":
+                                if (
+                                    reference_sequences
+                                    and aln.reference_name in reference_sequences
+                                ):
+                                    full_ref = reference_sequences[aln.reference_name]
+                                    ref_seq = full_ref[aln.reference_start : aln.reference_end]
+                                else:
+                                    try:
+                                        ref_seq = aln.get_reference_sequence()
+                                    except Exception:
+                                        ref_seq = None
+                                cigar_tuples = aln.cigartuples
+
+                            leech_read = build_leech_read(
+                                read_id=read_id,
+                                sequence=read_seq,
+                                raw_signal=raw_signal,
+                                move_table=move_table,
+                                signal_config=seq_signal_config,
+                                metadata={"alignment": aln},
+                                reference_sequence=ref_seq,
+                                cigar_tuples=cigar_tuples,
+                                cal_offset=pod5_metadata.get("calibration_offset"),
+                                cal_scale=pod5_metadata.get("calibration_scale"),
                             )
-                    elif len(sig) > signal_len:
-                        start = (len(sig) - signal_len) // 2
-                        sig = sig[start : start + signal_len]
-                        if sig_residual is not None:
-                            sig_residual = sig_residual.astype(np.float32)[
-                                start : start + signal_len
-                            ]
-                    if sig_residual is not None:
-                        sig_residual = sig_residual.astype(np.float32)
-                        sig = np.stack([sig, sig_residual], axis=0)  # (2, signal_len)
+                        except Exception as e:
+                            logger.warning(f"Skipping read {read_id}: {e}")
+                            continue
 
-                    # Sequence
-                    seq_enc = _encode_sequence_for_inference(
-                        chunk, seq_encoding, signal_len, signal_kmer_context
-                    )
-                    if seq_enc is None:
-                        continue
+                        # Find positions to predict
+                        assert motif is not None, "motif must not be None at inference time"
+                        aln_meta = leech_read.metadata.get("alignment")
+                        positions = [
+                            pos + motif_offset
+                            for pos in motif_searcher.find_motif_positions(
+                                leech_read.read_id, leech_read.sequence, aln_meta, motif
+                            )
+                        ]
 
-                    batch_signals.append(sig)
-                    batch_seqs.append(
-                        seq_enc.numpy() if isinstance(seq_enc, torch.Tensor) else seq_enc
-                    )
-                    # Features
-                    feat = None
-                    if requires_features:
-                        features_array = chunk["features"]
-                        assert isinstance(features_array, np.ndarray)
-                        feat = features_array.astype(np.float32)
-                        if wide_features:
-                            pass
-                        elif feat.size > 0 and feat.shape[1] > kmer_len:
-                            fs = chunk.get("feature_start", -_kmer_context)
-                            s = (-_kmer_context - fs) + dwell_offset
-                            feat = feat[:, s : s + kmer_len]
-                    # Validate shapes on first chunk
-                    if not _shape_validated:
-                        validate_inference_shapes(sig, feat, config)
-                        _shape_validated = True
+                        for base_idx in positions:
+                            chunk = leech_read.get_chunk(base_idx, config=seq_chunk_config)
+                            if chunk is None:
+                                continue
 
-                    batch_feats.append(feat)
-                    batch_meta.append((leech_read.read_id, base_idx))
+                            # Signal (with optional kmer residual channel)
+                            signal_array = chunk["signal"]
+                            assert isinstance(signal_array, np.ndarray)
+                            sig = signal_array.astype(np.float32)
+                            sig_residual = chunk.get("signal_residual")
+                            if len(sig) < signal_len:
+                                sig = np.pad(sig, (0, signal_len - len(sig)), mode="constant")
+                                if sig_residual is not None:
+                                    sig_residual = np.pad(
+                                        sig_residual.astype(np.float32),
+                                        (0, signal_len - len(sig_residual)),
+                                        mode="constant",
+                                    )
+                            elif len(sig) > signal_len:
+                                start = (len(sig) - signal_len) // 2
+                                sig = sig[start : start + signal_len]
+                                if sig_residual is not None:
+                                    sig_residual = sig_residual.astype(np.float32)[
+                                        start : start + signal_len
+                                    ]
+                            if sig_residual is not None:
+                                sig_residual = sig_residual.astype(np.float32)
+                                sig = np.stack([sig, sig_residual], axis=0)
 
-                    if len(batch_signals) >= batch_size:
-                        _flush_batch()
+                            # Sequence
+                            seq_enc = _encode_sequence_for_inference(
+                                chunk, seq_encoding, signal_len, signal_kmer_context
+                            )
+                            if seq_enc is None:
+                                continue
 
-            # Flush remaining chunks
-            _flush_batch()
+                            batch_signals.append(sig)
+                            batch_seqs.append(
+                                seq_enc.numpy() if isinstance(seq_enc, torch.Tensor) else seq_enc
+                            )
+                            feat = None
+                            if requires_features:
+                                features_array = chunk["features"]
+                                assert isinstance(features_array, np.ndarray)
+                                feat = features_array.astype(np.float32)
+                                if wide_features:
+                                    pass
+                                elif feat.size > 0 and feat.shape[1] > kmer_len:
+                                    fs = chunk.get("feature_start", -_kmer_context)
+                                    s = (-_kmer_context - fs) + dwell_offset
+                                    feat = feat[:, s : s + kmer_len]
+                            if not _shape_validated:
+                                validate_inference_shapes(sig, feat, config)
+                                _shape_validated = True
 
-        # Write all results to BAM
-        total_predictions = sum(len(v) for v in pending.values())
-        if is_multiclass:
-            # Multi-class: write aa/ac tags + full softmax (pn/pp)
-            # pn:Z — comma-separated class names (sorted by label_int)
-            if int_to_label:
-                class_names = [int_to_label[i] for i in range(num_out)]
-                class_names_str = ",".join(class_names)
-            else:
-                class_names_str = ",".join(str(i) for i in range(num_out))
+                            batch_feats.append(feat)
+                            batch_meta.append((leech_read.read_id, base_idx))
 
-            for aln in alignment_by_read_id.values():
-                preds = pending.get(aln.query_name)
-                if preds:
-                    # Take first prediction (typically one motif per read)
-                    _, cls_idx, conf, all_probs = preds[0]
-                    if int_to_label:
-                        predicted_aa = int_to_label.get(cls_idx, str(cls_idx))
-                    else:
-                        predicted_aa = str(cls_idx)
-                    _write_prediction_tags(
-                        aln,
-                        predicted_aa,
-                        conf,
+                            if len(batch_signals) >= batch_size:
+                                _flush_batch()
+
+                    # Flush remaining chunks for this mega-batch
+                    _flush_batch()
+                    _drain_gpu()
+
+                    # Write this mega-batch's predictions
+                    batch_preds = _write_mega_batch_predictions(
+                        aln_batch,
+                        pending,
+                        bam_out,
+                        is_multiclass,
+                        int_to_label,
                         class_names_str,
-                        all_probs,
                         raw,
                         min_confidence,
                         min_margin,
                     )
-                bam_out.write(aln)
-        else:
-            for aln in alignment_by_read_id.values():
-                preds = pending.get(aln.query_name)
-                if preds:
-                    preds.sort(key=lambda x: x[0])
-                    positions_list = [int(p[0]) for p in preds]
-                    ml_scores = [int(min(255, max(0, p[1] * 255))) for p in preds]
-                    aln.set_tag("MP", array.array("i", positions_list))
-                    aln.set_tag("ML", array.array("B", ml_scores))
-                bam_out.write(aln)
+                    total_reads += len(aln_batch)
+                    total_predictions += batch_preds
+                    logger.info(
+                        f"Mega-batch complete: wrote {batch_preds} predictions "
+                        f"for {len(aln_batch)} reads"
+                    )
 
-    bam_in.close()
+                    progress.update(
+                        task,
+                        advance=0,
+                        description=(
+                            f"[cyan]Processed {total_reads} reads "
+                            f"({total_predictions} predictions)..."
+                        ),
+                    )
+
+        _gpu_executor.shutdown(wait=False)
+
     bam_out.close()
 
     logger.info("Inference complete!")
@@ -1361,6 +1480,7 @@ def run_bundle_inference(
     reference_fasta: Path | None = None,
     batch_size: int = 512,
     num_workers: int = 0,
+    read_batch_size: int = 200_000,
 ) -> None:
     """
     Run all models from a bundle on each read, aggregate to a single AA prediction.
@@ -1546,17 +1666,18 @@ def run_bundle_inference(
         anchor=anchor,
     )
 
-    # Open BAM files and index alignments by read ID (avoids O(n^2) scanning)
+    # Open BAM for header only
     bam_in = pysam.AlignmentFile(str(bam_path), "rb")
-    alignment_by_read_id: dict[str, pysam.AlignedSegment] = {}
-    for a in bam_in.fetch(until_eof=True):
-        if a.query_name is not None:
-            alignment_by_read_id[a.query_name] = a
     output_path.parent.mkdir(parents=True, exist_ok=True)
     bam_out = pysam.AlignmentFile(str(output_path), "wb", template=bam_in)
+    bam_in.close()
 
-    first_wrapper = next(iter(wrappers.values()))
-    needs_features = first_wrapper.requires_features
+    # Determine feature requirements (needs_features for vmap detection too)
+    if format_version == 4:
+        needs_features = metadata.get("requires_features", False)
+    else:
+        first_wrapper = next(iter(wrappers.values()))
+        needs_features = first_wrapper.requires_features
     bundle_signal_in_channels = config.get("signal_in_channels", 1)
     bundle_compute_features = needs_features or bundle_signal_in_channels > 1
 
@@ -1611,13 +1732,11 @@ def run_bundle_inference(
         vmapped_forward = torch.vmap(_single_forward, in_dims=(0, 0, None, None, None))
         logger.info("vmap vectorized forward initialized")
 
-    # ── Streaming batch inference ──
-    # Accumulate chunks into batches, flush when full. This avoids materializing
-    # all chunks in memory before inference starts.
-    read_probs: dict[str, np.ndarray] = {}  # read_id → shape (n_pairs,)
+    # ── Streaming mega-batch inference ──
     pair_to_idx = {pair: i for i, pair in enumerate(pairs)}
     n_pairs = len(pairs)
 
+    read_probs: dict[str, np.ndarray] = {}  # read_id → shape (n_pairs,)
     batch_signals: list[torch.Tensor] = []
     batch_sequences: list[torch.Tensor] = []
     batch_features: list[torch.Tensor] = []
@@ -1637,7 +1756,6 @@ def run_bundle_inference(
 
         with torch.inference_mode():
             if is_vmap and vmapped_forward is not None:
-                # Vectorized: run all N models in one pass
                 if needs_features:
                     all_logits = vmapped_forward(
                         vmap_stacked_params, vmap_stacked_buffers, sig_t, seq_t, feat_t
@@ -1646,11 +1764,9 @@ def run_bundle_inference(
                     all_logits = vmapped_forward(
                         vmap_stacked_params, vmap_stacked_buffers, sig_t, seq_t, None
                     )
-                # all_logits: (n_models, batch_size, 1) → apply Platt scaling
                 all_logits = vmap_platt_a[:, None, None] * all_logits + vmap_platt_b[:, None, None]
-                all_p = torch.sigmoid(all_logits).squeeze(-1).cpu().numpy()  # (n_models, batch)
+                all_p = torch.sigmoid(all_logits).squeeze(-1).cpu().numpy()
             else:
-                # Sequential: run each model on the batch
                 all_p = np.empty((n_pairs, len(batch_signals)), dtype=np.float32)
                 for pair in pairs:
                     batch_dict: dict[str, torch.Tensor] = {
@@ -1666,9 +1782,8 @@ def run_bundle_inference(
                         logits = a * logits + b
                     all_p[pair_to_idx[pair]] = torch.sigmoid(logits).cpu().numpy().flatten()
 
-        # Scatter into read_probs
         for i, rid in enumerate(batch_read_ids):
-            read_probs[rid] = all_p[:, i]  # shape (n_pairs,)
+            read_probs[rid] = all_p[:, i]
 
         batch_signals.clear()
         batch_sequences.clear()
@@ -1677,6 +1792,7 @@ def run_bundle_inference(
         n_batches_done += 1
 
     n_reads = 0
+    n_predicted = 0
 
     bundle_signal_config = SignalConfig(
         reverse_signal=reverse_signal,
@@ -1696,130 +1812,184 @@ def run_bundle_inference(
         kmer_context=kmer_context,
     )
 
+    logger.info(f"Streaming bundle inference with read_batch_size={read_batch_size}")
+
     with Progress() as progress:
         task = progress.add_task("[cyan]Processing reads...", total=None)
 
-        for leech_read in iter_bam_with_pod5(
-            bam_path,
-            pod5_path,
-            signal_config=bundle_signal_config,
-            min_mapq=min_mapq,
-            reference_sequences=reference_sequences,
-        ):
-            n_reads += 1
+        with POD5Reader(pod5_path) as pod5_reader:
+            for aln_batch in iter_bam_batches(
+                bam_path, batch_size=read_batch_size, min_mapq=min_mapq
+            ):
+                # Preload POD5 signals for this mega-batch
+                batch_rids = [
+                    aln.query_name
+                    for aln in aln_batch
+                    if aln.query_name is not None and aln.query_sequence is not None
+                ]
+                if batch_rids:
+                    pod5_reader.preload(batch_rids)
 
-            # Find prediction position(s) (motif is validated non-None above)
-            assert motif is not None, "motif must not be None at inference time"
-            aln_meta = leech_read.metadata.get("alignment")
-            positions = [
-                pos + motif_offset
-                for pos in motif_searcher.find_motif_positions(
-                    leech_read.read_id, leech_read.sequence, aln_meta, motif
+                logger.info(
+                    f"Mega-batch: {len(aln_batch)} alignments, "
+                    f"{len(batch_rids)} preloaded from POD5"
                 )
-            ]
 
-            if not positions:
-                continue
+                read_probs.clear()
 
-            base_idx = positions[0]
-            chunk = leech_read.get_chunk(base_idx, config=bundle_chunk_config)
-            if chunk is None:
-                continue
+                for aln in aln_batch:
+                    read_id = aln.query_name
+                    read_seq = aln.query_sequence
+                    if read_id is None or read_seq is None:
+                        continue
 
-            # Prepare tensors (with optional kmer residual channel)
-            signal_array = chunk["signal"]
-            assert isinstance(signal_array, np.ndarray)
-            sig = signal_array.astype(np.float32)
-            sig_residual = chunk.get("signal_residual")
-            if sig_residual is not None:
-                sig_residual = sig_residual.astype(np.float32)
-                if len(sig_residual) < len(sig):
-                    sig_residual = np.pad(
-                        sig_residual, (0, len(sig) - len(sig_residual)), mode="constant"
+                    try:
+                        move_table = extract_move_table(aln)
+                        raw_signal, pod5_metadata = pod5_reader.get_signal(read_id)
+
+                        ref_seq = None
+                        cigar_tuples = None
+                        if bundle_signal_config.anchor == "reference":
+                            if reference_sequences and aln.reference_name in reference_sequences:
+                                full_ref = reference_sequences[aln.reference_name]
+                                ref_seq = full_ref[aln.reference_start : aln.reference_end]
+                            else:
+                                try:
+                                    ref_seq = aln.get_reference_sequence()
+                                except Exception:
+                                    ref_seq = None
+                            cigar_tuples = aln.cigartuples
+
+                        leech_read = build_leech_read(
+                            read_id=read_id,
+                            sequence=read_seq,
+                            raw_signal=raw_signal,
+                            move_table=move_table,
+                            signal_config=bundle_signal_config,
+                            metadata={"alignment": aln},
+                            reference_sequence=ref_seq,
+                            cigar_tuples=cigar_tuples,
+                            cal_offset=pod5_metadata.get("calibration_offset"),
+                            cal_scale=pod5_metadata.get("calibration_scale"),
+                        )
+                    except Exception as e:
+                        logger.warning(f"Skipping read {read_id}: {e}")
+                        continue
+
+                    n_reads += 1
+
+                    # Find prediction position(s)
+                    assert motif is not None, "motif must not be None at inference time"
+                    aln_meta = leech_read.metadata.get("alignment")
+                    positions = [
+                        pos + motif_offset
+                        for pos in motif_searcher.find_motif_positions(
+                            leech_read.read_id, leech_read.sequence, aln_meta, motif
+                        )
+                    ]
+
+                    if not positions:
+                        continue
+
+                    base_idx = positions[0]
+                    chunk = leech_read.get_chunk(base_idx, config=bundle_chunk_config)
+                    if chunk is None:
+                        continue
+
+                    # Prepare tensors (with optional kmer residual channel)
+                    signal_array = chunk["signal"]
+                    assert isinstance(signal_array, np.ndarray)
+                    sig = signal_array.astype(np.float32)
+                    sig_residual = chunk.get("signal_residual")
+                    if sig_residual is not None:
+                        sig_residual = sig_residual.astype(np.float32)
+                        if len(sig_residual) < len(sig):
+                            sig_residual = np.pad(
+                                sig_residual,
+                                (0, len(sig) - len(sig_residual)),
+                                mode="constant",
+                            )
+                        elif len(sig_residual) > len(sig):
+                            sig_residual = sig_residual[: len(sig)]
+                        sig = np.stack([sig, sig_residual], axis=0)
+                    signal_t = torch.from_numpy(sig)
+
+                    seq_t = _encode_sequence_for_inference(
+                        chunk, seq_encoding, signal_len, signal_kmer_context
                     )
-                elif len(sig_residual) > len(sig):
-                    sig_residual = sig_residual[: len(sig)]
-                sig = np.stack([sig, sig_residual], axis=0)  # (2, signal_len)
-            signal_t = torch.from_numpy(sig)
+                    if seq_t is None:
+                        continue
 
-            seq_t = _encode_sequence_for_inference(
-                chunk, seq_encoding, signal_len, signal_kmer_context
-            )
-            if seq_t is None:
-                continue
+                    n_chunks += 1
+                    batch_signals.append(signal_t)
+                    batch_sequences.append(seq_t)
+                    batch_read_ids.append(leech_read.read_id)
 
-            n_chunks += 1
-            batch_signals.append(signal_t)
-            batch_sequences.append(seq_t)
-            batch_read_ids.append(leech_read.read_id)
+                    if needs_features:
+                        features_array = chunk["features"]
+                        assert isinstance(features_array, np.ndarray)
+                        if wide_features:
+                            pass
+                        elif features_array.size > 0 and features_array.shape[1] > kmer_len:
+                            fs = chunk.get("feature_start", -_kmer_context)
+                            feat_start = (-_kmer_context - fs) + dwell_offset
+                            features_array = features_array[:, feat_start : feat_start + kmer_len]
+                        batch_features.append(torch.from_numpy(features_array.astype(np.float32)))
 
-            if needs_features:
-                features_array = chunk["features"]
-                assert isinstance(features_array, np.ndarray)
-                if wide_features:
-                    pass
-                elif features_array.size > 0 and features_array.shape[1] > kmer_len:
-                    fs = chunk.get("feature_start", -_kmer_context)
-                    feat_start = (-_kmer_context - fs) + dwell_offset
-                    features_array = features_array[:, feat_start : feat_start + kmer_len]
-                batch_features.append(torch.from_numpy(features_array.astype(np.float32)))
+                    if not _shape_validated:
+                        _feat_for_check = (
+                            features_array.astype(np.float32) if needs_features else None
+                        )
+                        validate_inference_shapes(sig, _feat_for_check, config)
+                        _shape_validated = True
 
-            if not _shape_validated:
-                _feat_for_check = features_array.astype(np.float32) if needs_features else None
-                validate_inference_shapes(sig, _feat_for_check, config)
-                _shape_validated = True
+                    if len(batch_signals) >= batch_size:
+                        _flush_batch()
 
-            if len(batch_signals) >= batch_size:
+                # Flush remaining chunks for this mega-batch
                 _flush_batch()
 
-            progress.update(
-                task,
-                advance=0,
-                description=(
-                    f"[cyan]Processed {n_chunks} chunks from {n_reads} reads "
-                    f"({n_batches_done} batches)..."
-                ),
-            )
+                # ── Aggregate per-read and write BAM for this mega-batch ──
+                batch_preds = 0
+                for aln in aln_batch:
+                    prob_vec = read_probs.get(aln.query_name)
+                    if prob_vec is None:
+                        bam_out.write(aln)
+                        continue
 
-        # Flush remaining chunks
-        _flush_batch()
+                    probs = [float(prob_vec[pair_to_idx[pair]]) for pair in pairs]
+                    predicted_aa, confidence, _ = aggregate_fn(pairs, probs)
+
+                    _write_prediction_tags(
+                        aln,
+                        predicted_aa,
+                        confidence,
+                        pair_names_str,
+                        probs,
+                        raw,
+                        min_confidence,
+                        min_margin,
+                    )
+                    bam_out.write(aln)
+                    n_predicted += 1
+                    batch_preds += 1
+
+                logger.info(
+                    f"Mega-batch complete: wrote {batch_preds} predictions "
+                    f"for {len(aln_batch)} reads"
+                )
+
+                progress.update(
+                    task,
+                    advance=0,
+                    description=(
+                        f"[cyan]Processed {n_chunks} chunks from {n_reads} reads "
+                        f"({n_batches_done} batches, {n_predicted} predicted)..."
+                    ),
+                )
 
     logger.info(f"Extracted and inferred {n_chunks} chunks from {n_reads} reads")
-
-    if n_chunks == 0:
-        # No valid chunks — write all reads without tags
-        for aln in alignment_by_read_id.values():
-            bam_out.write(aln)
-        bam_in.close()
-        bam_out.close()
-        return
-
-    # ── Aggregate per-read and write BAM ──
-    n_predicted = 0
-    for read_id, aln in alignment_by_read_id.items():
-        prob_vec = read_probs.get(read_id)
-        if prob_vec is None:
-            bam_out.write(aln)
-            continue
-
-        probs = [float(prob_vec[pair_to_idx[pair]]) for pair in pairs]
-        predicted_aa, confidence, _ = aggregate_fn(pairs, probs)
-
-        _write_prediction_tags(
-            aln,
-            predicted_aa,
-            confidence,
-            pair_names_str,
-            probs,
-            raw,
-            min_confidence,
-            min_margin,
-        )
-        bam_out.write(aln)
-        n_predicted += 1
-
-    logger.info(f"Predicted {n_predicted}/{len(alignment_by_read_id)} reads")
-    bam_in.close()
+    logger.info(f"Predicted {n_predicted} reads")
     bam_out.close()
 
     logger.info(f"Bundle inference complete: {n_reads} reads, {len(pairs)} models")
