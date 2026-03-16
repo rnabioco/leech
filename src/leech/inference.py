@@ -12,6 +12,7 @@ Supports:
 """
 
 import array
+import functools
 import json
 import logging
 import multiprocessing as mp
@@ -923,7 +924,12 @@ def run_inference(
 
         # Collect all results, then batch and run model
         pending: dict[str, list] = {}
-        _batch_fn_p = _run_batch_multiclass if is_multiclass else _run_batch
+        calibration = config.get("calibration") if is_multiclass else None
+        _batch_fn_p = (
+            functools.partial(_run_batch_multiclass, calibration=calibration)
+            if is_multiclass
+            else _run_batch
+        )
 
         with Progress() as progress:
             task = progress.add_task("[cyan]Extracting chunks...", total=len(read_batches))
@@ -1013,7 +1019,12 @@ def run_inference(
         pending: dict[str, list] = {}
         _shape_validated = False
 
-        _batch_fn = _run_batch_multiclass if is_multiclass else _run_batch
+        calibration = config.get("calibration") if is_multiclass else None
+        _batch_fn = (
+            functools.partial(_run_batch_multiclass, calibration=calibration)
+            if is_multiclass
+            else _run_batch
+        )
 
         def _flush_batch() -> None:
             """Run accumulated chunks through model."""
@@ -1202,6 +1213,7 @@ def _run_batch_multiclass(
     requires_features: bool,
     device: str,
     pending: dict[str, list[tuple[int, int, float, list[float]]]],
+    calibration: dict | None = None,
 ) -> None:
     """Run a multi-class batch: store (base_idx, class_idx, confidence, all_probs) per read."""
     signal_t = torch.from_numpy(np.stack(signals)).to(device)
@@ -1215,6 +1227,10 @@ def _run_batch_multiclass(
 
     with torch.no_grad():
         logits = model_wrapper.forward_batch(batch, device)
+        if calibration is not None:
+            from leech.calibration import apply_calibration
+
+            logits = apply_calibration(logits, calibration)
         probs = torch.softmax(logits, dim=-1).cpu().numpy()
         class_indices = np.argmax(probs, axis=-1)
         confidences = probs.max(axis=-1)

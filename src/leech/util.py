@@ -547,19 +547,21 @@ def create_multiclass_bundle(
         "best_epoch": checkpoint.get("best_epoch"),
     }
 
-    # Include temperature scaling only if it improved calibration
-    temperature_path = model_dir / "temperature.json"
-    if temperature_path.exists():
-        with open(temperature_path) as f:
-            temp_data = json.load(f)
-        ece_before = temp_data.get("ece_before", 1.0)
-        ece_after = temp_data.get("ece_after", 0.0)
+    # Include calibration only if it improved ECE
+    from leech.calibration import load_calibration
+
+    cal_params = load_calibration(model_dir)
+    if cal_params is not None:
+        ece_before = cal_params.get("ece_before", 1.0)
+        ece_after = cal_params.get("ece_after", 0.0)
         if ece_after < ece_before:
-            model_entry["temperature"] = temp_data.get("temperature", 1.0)
-            logger.info(f"Temperature scaling: T={model_entry['temperature']:.4f}")
+            model_entry["calibration"] = cal_params
+            cal_method = cal_params.get("method", "unknown")
+            logger.info(f"Calibration ({cal_method}): ECE {ece_before:.4f} -> {ece_after:.4f}")
         else:
+            cal_method = cal_params.get("method", "unknown")
             logger.info(
-                f"Skipping temperature scaling (ECE {ece_before:.4f} -> {ece_after:.4f}, no improvement)"
+                f"Skipping calibration ({cal_method}, ECE {ece_before:.4f} -> {ece_after:.4f}, no improvement)"
             )
 
     bundle = {
@@ -618,6 +620,10 @@ def load_model_from_multiclass_bundle(
     # Merge multiclass metadata into config for run_inference
     config["label_map"] = metadata.get("label_map", {})
     config["num_out"] = metadata.get("num_classes", len(config["label_map"]))
+
+    # Extract calibration params
+    if "calibration" in model_data:
+        config["calibration"] = model_data["calibration"]
 
     model = _instantiate_model(config)
     state_dict = model_data["state_dict"]

@@ -166,18 +166,17 @@ def evaluate_model(
         ece = _expected_calibration_error_multiclass(probs_t, labels_t)
         logger.info(f"ECE (uncalibrated): {ece:.4f}")
 
-        # Calibrated ECE if temperature.json exists
+        # Calibrated ECE if calibration params exist
         ece_calibrated = None
-        temperature_path = model_path / "temperature.json"
-        if temperature_path.exists():
-            import json as _json
+        from leech.calibration import apply_calibration, load_calibration
 
-            with open(temperature_path) as f:
-                temp_data = _json.load(f)
-            t = temp_data["temperature"]
-            cal_probs_t = torch.softmax(logits_t / t, dim=-1)
+        cal_params = load_calibration(model_path)
+        if cal_params is not None:
+            cal_logits = apply_calibration(logits_t, cal_params)
+            cal_probs_t = torch.softmax(cal_logits, dim=-1)
             ece_calibrated = _expected_calibration_error_multiclass(cal_probs_t, labels_t)
-            logger.info(f"ECE (calibrated, T={t:.4f}): {ece_calibrated:.4f}")
+            cal_method = cal_params.get("method", "unknown")
+            logger.info(f"ECE (calibrated, method={cal_method}): {ece_calibrated:.4f}")
 
         metrics: dict = {
             "accuracy": accuracy,

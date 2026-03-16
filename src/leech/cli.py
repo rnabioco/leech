@@ -645,14 +645,33 @@ def bundle_info(bundle):
     default=0,
     help="DataLoader workers (default: 0)",
 )
-def calibrate(model_dir, val_data, device, batch_size, num_workers):
-    """Learn post-hoc Platt scaling on the validation set.
+@click.option(
+    "--method",
+    type=click.Choice(["temperature", "matrix", "dirichlet"]),
+    default="temperature",
+    help="Multiclass calibration method (default: temperature). Binary models always use Platt scaling.",
+)
+@click.option(
+    "--reg-lambda",
+    type=float,
+    default=0.01,
+    help="L2 regularization toward identity for matrix/dirichlet methods (default: 0.01)",
+)
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Output path for calibration JSON (default: model_dir/calibration.json). Single model only.",
+)
+def calibrate(model_dir, val_data, device, batch_size, num_workers, method, reg_lambda, output):
+    """Learn post-hoc calibration on the validation set.
 
-    Fits two parameters (a, b) per model so that sigmoid(a*logit + b) is
-    better calibrated. This handles both confidence scaling (a) and decision
-    threshold shift (b) — critical when class imbalance biases the boundary.
+    Binary models: Platt scaling — fits a, b so sigmoid(a*logit + b) is
+    better calibrated. Writes platt.json.
 
-    Writes platt.json to the model directory.
+    Multiclass models: Temperature (default), matrix, or Dirichlet scaling.
+    Writes calibration.json.
 
     For a parent directory with pair subdirs (e.g., one_vs_all/Ala_notAla/),
     calibrates each pair independently.
@@ -665,6 +684,9 @@ def calibrate(model_dir, val_data, device, batch_size, num_workers):
         device=device,
         batch_size=batch_size,
         num_workers=num_workers,
+        method=method,
+        reg_lambda=reg_lambda,
+        output=output,
     )
 
 

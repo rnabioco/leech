@@ -21,11 +21,16 @@ def handle_calibrate(
     device: str = "cpu",
     batch_size: int = 1024,
     num_workers: int = 0,
+    method: str = "temperature",
+    reg_lambda: float = 0.01,
+    output: Path | None = None,
 ) -> int:
     """
     Handle the calibrate command logic.
 
-    Fits Platt scaling parameters (a, b) per model on the validation set.
+    Binary models: Platt scaling (method param ignored).
+    Multiclass models: temperature, matrix, or dirichlet scaling.
+
     For a parent directory with pair subdirs, calibrates each pair independently.
 
     Args:
@@ -34,13 +39,16 @@ def handle_calibrate(
         device: Device for inference
         batch_size: Batch size for validation pass
         num_workers: DataLoader workers
+        method: Multiclass calibration method
+        reg_lambda: L2 regularization for matrix/dirichlet
+        output: Explicit output path for calibration JSON (single model only)
 
     Returns:
         Number of models calibrated
     """
     import json
 
-    from leech.calibration import calibrate_model, calibrate_model_temperature
+    from leech.calibration import calibrate_model, calibrate_model_multiclass
 
     def _is_multiclass(config_path: Path) -> bool:
         """Check if model config indicates multiclass (num_out > 2)."""
@@ -48,22 +56,29 @@ def handle_calibrate(
             cfg = json.load(f)
         return cfg.get("num_out", 1) > 2
 
-    def _calibrate_single(mdir: Path) -> str:
+    def _calibrate_single(mdir: Path, output_path: Path | None = None) -> str:
         """Calibrate a single model dir, auto-detecting binary vs multiclass."""
         config_path = mdir / "config.json"
         if _is_multiclass(config_path):
-            t = calibrate_model_temperature(
+            result = calibrate_model_multiclass(
                 mdir,
                 val_data,
+                method=method,
+                reg_lambda=reg_lambda,
+                output_path=output_path,
                 device=device,
                 batch_size=batch_size,
                 num_workers=num_workers,
             )
-            return f"Temperature: T={t:.4f}"
+            m = result["method"]
+            ece_b = result["ece_before"]
+            ece_a = result["ece_after"]
+            return f"{m}: ECE {ece_b:.4f} -> {ece_a:.4f}"
         else:
             a, b = calibrate_model(
                 mdir,
                 val_data,
+                output_path=output_path,
                 device=device,
                 batch_size=batch_size,
                 num_workers=num_workers,
@@ -73,7 +88,7 @@ def handle_calibrate(
     # Check if model_dir is a single model or a parent with pair subdirs
     if (model_dir / "config.json").exists():
         # Single model directory
-        result_str = _calibrate_single(model_dir)
+        result_str = _calibrate_single(model_dir, output_path=output)
         console.print(f"[green]{result_str}[/green]")
         return 1
 
