@@ -186,7 +186,8 @@ class Trainer:
             self.scaler = torch.amp.GradScaler("cuda")
             logger.info("Mixed precision training enabled")
 
-        # Track best model
+        # Track best model — multiclass checkpoints on F1 (macro), binary on accuracy
+        self._checkpoint_on_f1 = self._num_out > 2
         self.best_val_acc = 0.0
         self.best_val_f1 = 0.0
         self.best_epoch = 0
@@ -506,21 +507,29 @@ class Trainer:
                         if new_lr != old_lr:
                             logger.info(f"LR reduced: {old_lr:.6f} -> {new_lr:.6f}")
 
-                    # Display metrics
+                    # Display metrics — [*] marks the checkpoint criterion
                     lr_str = ""
                     current_lr = self.optimizer.param_groups[0]["lr"]
                     if current_lr != self.base_lr:
                         lr_str = f" LR: {current_lr:.6f}"
+                    if self._checkpoint_on_f1:
+                        acc_label, f1_label = "Acc", "F1[*]"
+                    else:
+                        acc_label, f1_label = "Acc[*]", "F1"
                     console.print(
                         f"[cyan]Epoch {epoch}/{epochs}[/cyan] | "
                         f"Train Loss: {train_loss:.4f} Acc: {train_acc:.4f} | "
-                        f"Val Loss: {val_loss:.4f} Acc: {val_acc:.4f} "
-                        f"F1: {val_f1:.4f} AUC: {val_auc:.4f}"
+                        f"Val Loss: {val_loss:.4f} {acc_label}: {val_acc:.4f} "
+                        f"{f1_label}: {val_f1:.4f} AUC: {val_auc:.4f}"
                         f"{lr_str}"
                     )
 
-                    # Save best model
-                    if val_acc > self.best_val_acc:
+                    # Save best model — F1 for multiclass, accuracy for binary
+                    if self._checkpoint_on_f1:
+                        improved = val_f1 > self.best_val_f1
+                    else:
+                        improved = val_acc > self.best_val_acc
+                    if improved:
                         self.best_val_acc = val_acc
                         self.best_val_f1 = val_f1
                         self.best_epoch = epoch
