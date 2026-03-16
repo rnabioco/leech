@@ -52,6 +52,7 @@ def handle_bundle(
     bundle_version: str,
     comparison_type: str = "pairwise",
     torchscript: bool = False,
+    vmap: bool = False,
 ) -> Path:
     """
     Handle the bundle command logic.
@@ -62,11 +63,12 @@ def handle_bundle(
         bundle_version: Semantic version string
         comparison_type: Comparison type (pairwise, one_vs_all, group)
         torchscript: Whether to bundle as TorchScript
+        vmap: Whether to bundle with pre-stacked vmap parameters
 
     Returns:
         Path to created bundle file
     """
-    from leech.util import create_bundle, create_torchscript_bundle
+    from leech.util import create_bundle, create_torchscript_bundle, create_vmap_bundle
 
     # Auto-discover pair subdirectories
     model_dirs = {}
@@ -93,13 +95,22 @@ def handle_bundle(
 
     logger.info(f"Found {len(model_dirs)} model directories")
 
-    if torchscript:
+    if vmap:
+        bundle_path = create_vmap_bundle(
+            model_dirs=model_dirs,
+            output_path=output,
+            comparison_type=comparison_type,
+            version=bundle_version,
+        )
+        format_label = "vmap"
+    elif torchscript:
         bundle_path = create_torchscript_bundle(
             model_dirs=model_dirs,
             output_path=output,
             comparison_type=comparison_type,
             version=bundle_version,
         )
+        format_label = "TorchScript"
     else:
         bundle_path = create_bundle(
             model_dirs=model_dirs,
@@ -107,13 +118,14 @@ def handle_bundle(
             comparison_type=comparison_type,
             version=bundle_version,
         )
+        format_label = "state_dict"
 
     # Print summary table
     table = Table(title="Bundle Summary", show_header=True, header_style="bold magenta")
     table.add_column("Property", style="cyan")
     table.add_column("Value", style="green")
     table.add_row("Version", bundle_version)
-    table.add_row("Format", "TorchScript" if torchscript else "state_dict")
+    table.add_row("Format", format_label)
     table.add_row("Comparison type", comparison_type)
     table.add_row("Models", str(len(model_dirs)))
     table.add_row("Output", str(bundle_path))
@@ -146,8 +158,15 @@ def handle_bundle_info(bundle: Path) -> dict[str, Any]:
 
     table.add_row("Bundle version", metadata.get("bundle_version", "unknown"))
     table.add_row("Format version", str(metadata.get("format_version", "unknown")))
+    is_vmap = metadata.get("vmap", False)
     is_ts = metadata.get("torchscript", False)
-    table.add_row("Format", "TorchScript" if is_ts else "state_dict")
+    if is_vmap:
+        format_str = "vmap"
+    elif is_ts:
+        format_str = "TorchScript"
+    else:
+        format_str = "state_dict"
+    table.add_row("Format", format_str)
     table.add_row("Architecture", metadata.get("architecture", "unknown"))
     table.add_row("Comparison type", metadata.get("comparison_type", "unknown"))
     table.add_row("Number of models", str(metadata.get("num_models", 0)))

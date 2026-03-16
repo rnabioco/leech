@@ -578,9 +578,17 @@ def train(
     default=False,
     help="Bundle as TorchScript (standalone, no leech needed to load). Default: False.",
 )
-def bundle(model_dir, output, bundle_version, comparison_type, torchscript):
+@click.option(
+    "--vmap/--no-vmap",
+    default=False,
+    help="Bundle with pre-stacked parameters for vectorized inference (requires vmap-compatible architecture, e.g. TCN with GroupNorm/LayerNorm). Default: False.",
+)
+def bundle(model_dir, output, bundle_version, comparison_type, torchscript, vmap):
     """Bundle trained models into a single versioned file."""
     from leech.commands.bundle import handle_bundle
+
+    if vmap and torchscript:
+        raise click.UsageError("--vmap and --torchscript are mutually exclusive")
 
     handle_bundle(
         model_dir=model_dir,
@@ -588,6 +596,7 @@ def bundle(model_dir, output, bundle_version, comparison_type, torchscript):
         bundle_version=bundle_version,
         comparison_type=comparison_type,
         torchscript=torchscript,
+        vmap=vmap,
     )
 
 

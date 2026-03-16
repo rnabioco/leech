@@ -15,6 +15,7 @@ from leech.util import (
     compute_metrics,
     create_bundle,
     create_torchscript_bundle,
+    create_vmap_bundle,
     deserialize_exported_model,
     deserialize_traced_model,
     export_model,
@@ -1036,6 +1037,510 @@ class TestModelExport:
         bundle_path = tmp_path / "bad_ts_bundle.pt"
         with pytest.raises(ValueError, match="Architecture config mismatch"):
             create_torchscript_bundle(model_dirs, bundle_path, "pairwise", "0.1.0")
+
+
+class TestVmapBundle:
+    """Test vmap bundle creation and inference."""
+
+    TCN_CONFIG = {
+        "signal_len": 200,
+        "kmer_len": 11,
+        "num_features": 5,
+        "hidden_channels": 16,
+        "num_layers": 2,
+        "kernel_size": 3,
+        "num_attn_heads": 1,
+        "dropout": 0.0,
+    }
+
+    def _create_tcn_model_dirs(self, tmp_path, pair_names, platt=False):
+        """Create fake TCNDwellGN model directories for testing."""
+        model_dirs = {}
+        for pair in pair_names:
+            pair_dir = tmp_path / pair
+            pair_dir.mkdir(parents=True)
+
+            config = {
+                "model_name": "TCNDwellGN",
+                **self.TCN_CONFIG,
+                "epochs": 10,
+                "batch_size": 32,
+                "learning_rate": 0.001,
+                "device": "cpu",
+                "seed": 42,
+            }
+            with open(pair_dir / "config.json", "w") as f:
+                json.dump(config, f)
+
+            model = get_model("TCNDwellGN", **self.TCN_CONFIG)
+            torch.save(
+                {
+                    "model_state_dict": model.state_dict(),
+                    "best_val_acc": 0.90,
+                    "best_epoch": 5,
+                },
+                pair_dir / "model_best.pt",
+            )
+
+            if platt:
+                with open(pair_dir / "platt.json", "w") as f:
+                    json.dump({"platt_a": 1.05, "platt_b": -0.02}, f)
+
+            model_dirs[pair] = pair_dir
+        return model_dirs
+
+    def test_create_vmap_bundle(self, tmp_path):
+        """Create a vmap bundle from 3 TCNDwellGN models, verify format_version 4."""
+        pairs = ["Ala_Gly", "Ala_Ser", "Gly_Ser"]
+        model_dirs = self._create_tcn_model_dirs(tmp_path / "models", pairs)
+
+        bundle_path = tmp_path / "vmap_bundle.pt"
+        create_vmap_bundle(model_dirs, bundle_path, "pairwise", "1.0.0")
+        assert bundle_path.exists()
+
+        bundle = torch.load(bundle_path, map_location="cpu", weights_only=False)
+        metadata = bundle["metadata"]
+        assert metadata["format_version"] == 4
+        assert metadata["vmap"] is True
+        assert metadata["architecture"] == "TCNDwellGN"
+        assert metadata["num_models"] == 3
+        assert set(metadata["pairs"]) == set(pairs)
+
+        # Verify stacked params have leading model dimension
+        for key, val in bundle["stacked_params"].items():
+            assert val.shape[0] == 3, f"stacked_params[{key}] leading dim should be 3"
+
+        # Verify Platt scaling tensors
+        assert bundle["platt_a"].shape == (3,)
+        assert bundle["platt_b"].shape == (3,)
+
+    def test_vmap_bundle_with_platt(self, tmp_path):
+        """vmap bundle loads Platt scaling parameters correctly."""
+        pairs = ["Ala_Gly"]
+        model_dirs = self._create_tcn_model_dirs(tmp_path / "models", pairs, platt=True)
+
+        bundle_path = tmp_path / "vmap_platt.pt"
+        create_vmap_bundle(model_dirs, bundle_path, "pairwise", "1.0.0")
+
+        bundle = torch.load(bundle_path, map_location="cpu", weights_only=False)
+        assert abs(bundle["platt_a"][0].item() - 1.05) < 1e-5
+        assert abs(bundle["platt_b"][0].item() - (-0.02)) < 1e-5
+
+    def test_vmap_bundle_incompatible_architecture(self, tmp_path):
+        """ValueError when architecture is vmap-incompatible (ConvLSTMDwell has LSTM)."""
+        pair_dir = tmp_path / "models" / "Ala_Gly"
+        pair_dir.mkdir(parents=True)
+
+        config = {
+            "model_name": "ConvLSTMDwell",
+            "signal_len": 400,
+            "kmer_len": 11,
+            "num_features": 5,
+            "conv_channels": [4, 16, 64],
+            "lstm_hidden": 32,
+            "dropout": 0.1,
+            "epochs": 10,
+            "batch_size": 32,
+            "learning_rate": 0.001,
+        }
+        with open(pair_dir / "config.json", "w") as f:
+            json.dump(config, f)
+
+        model = get_model(
+            "ConvLSTMDwell",
+            signal_len=400,
+            kmer_len=11,
+            num_features=5,
+            conv_channels=[4, 16, 64],
+            lstm_hidden=32,
+            dropout=0.1,
+        )
+        torch.save(
+            {"model_state_dict": model.state_dict()},
+            pair_dir / "model_best.pt",
+        )
+
+        bundle_path = tmp_path / "bad_vmap.pt"
+        with pytest.raises(ValueError, match="not vmap-compatible"):
+            create_vmap_bundle({"Ala_Gly": pair_dir}, bundle_path, "pairwise", "1.0.0")
+
+    def test_load_model_from_vmap_bundle(self, tmp_path):
+        """Round-trip: create vmap bundle, load single model, verify forward pass."""
+        pairs = ["Ala_Gly", "Ala_Ser"]
+        model_dirs = self._create_tcn_model_dirs(tmp_path / "models", pairs)
+
+        bundle_path = tmp_path / "vmap_bundle.pt"
+        create_vmap_bundle(model_dirs, bundle_path, "pairwise", "1.0.0")
+
+        model, config = load_model_from_bundle(bundle_path, "Ala_Gly", device="cpu")
+        assert config["model_name"] == "TCNDwellGN"
+
+        # Forward pass
+        signal = torch.randn(1, self.TCN_CONFIG["signal_len"])
+        sequence = torch.randn(1, 4, self.TCN_CONFIG["kmer_len"])
+        feat_len = self.TCN_CONFIG["kmer_len"] + 2 * 15  # default dwell_margin=15
+        features = torch.randn(1, self.TCN_CONFIG["num_features"], feat_len)
+        with torch.no_grad():
+            output = model(signal, sequence, features)
+        assert output.shape == (1, 1)
+
+    def test_load_missing_pair_from_vmap_bundle(self, tmp_path):
+        """KeyError for nonexistent pair in vmap bundle."""
+        pairs = ["Ala_Gly"]
+        model_dirs = self._create_tcn_model_dirs(tmp_path / "models", pairs)
+
+        bundle_path = tmp_path / "vmap_bundle.pt"
+        create_vmap_bundle(model_dirs, bundle_path, "pairwise", "1.0.0")
+
+        with pytest.raises(KeyError, match="nonexistent"):
+            load_model_from_bundle(bundle_path, "nonexistent", device="cpu")
+
+    def test_numerical_equivalence_v1_vs_v4(self, tmp_path):
+        """Models loaded from v1 and v4 bundles produce identical outputs."""
+        pairs = ["Ala_Gly", "Ala_Ser", "Gly_Ser"]
+        model_dirs = self._create_tcn_model_dirs(tmp_path / "models", pairs)
+
+        v1_path = tmp_path / "v1_bundle.pt"
+        v4_path = tmp_path / "v4_bundle.pt"
+        create_bundle(model_dirs, v1_path, "pairwise", "1.0.0")
+        create_vmap_bundle(model_dirs, v4_path, "pairwise", "1.0.0")
+
+        signal = torch.randn(2, self.TCN_CONFIG["signal_len"])
+        sequence = torch.randn(2, 4, self.TCN_CONFIG["kmer_len"])
+        feat_len = self.TCN_CONFIG["kmer_len"] + 2 * 15
+        features = torch.randn(2, self.TCN_CONFIG["num_features"], feat_len)
+
+        for pair in pairs:
+            m_v1, _ = load_model_from_bundle(v1_path, pair, device="cpu")
+            m_v4, _ = load_model_from_bundle(v4_path, pair, device="cpu")
+            with torch.no_grad():
+                out_v1 = m_v1(signal, sequence, features)
+                out_v4 = m_v4(signal, sequence, features)
+            np.testing.assert_allclose(
+                out_v1.numpy(),
+                out_v4.numpy(),
+                atol=1e-6,
+                err_msg=f"Numerical mismatch for pair {pair}",
+            )
+
+    def test_list_vmap_bundle_models(self, tmp_path):
+        """Metadata from vmap bundle reports correct format."""
+        pairs = ["Ala_Gly"]
+        model_dirs = self._create_tcn_model_dirs(tmp_path / "models", pairs)
+
+        bundle_path = tmp_path / "vmap_bundle.pt"
+        create_vmap_bundle(model_dirs, bundle_path, "pairwise", "2.0.0")
+
+        metadata = list_bundle_models(bundle_path)
+        assert metadata["format_version"] == 4
+        assert metadata["bundle_version"] == "2.0.0"
+        assert metadata["vmap"] is True
+
+    def test_vmap_bundle_config_mismatch(self, tmp_path):
+        """Error when models have incompatible architectures in vmap bundle."""
+        model_dirs = {}
+        for pair, sig_len in [("Ala_Gly", 200), ("Ala_Ser", 100)]:
+            pair_dir = tmp_path / "models" / pair
+            pair_dir.mkdir(parents=True)
+
+            config = {
+                "model_name": "TCNDwellGN",
+                **self.TCN_CONFIG,
+                "signal_len": sig_len,
+                "epochs": 10,
+                "batch_size": 32,
+            }
+            with open(pair_dir / "config.json", "w") as f:
+                json.dump(config, f)
+
+            mc = {**self.TCN_CONFIG, "signal_len": sig_len}
+            m = get_model("TCNDwellGN", **mc)
+            torch.save(
+                {"model_state_dict": m.state_dict()},
+                pair_dir / "model_best.pt",
+            )
+            model_dirs[pair] = pair_dir
+
+        bundle_path = tmp_path / "bad_vmap.pt"
+        with pytest.raises(ValueError, match="Architecture config mismatch"):
+            create_vmap_bundle(model_dirs, bundle_path, "pairwise", "1.0.0")
+
+
+class TestVmapInferenceIntegration:
+    """Integration tests for the vmap vectorized inference path.
+
+    Exercises the full vmap inference pipeline: loading a vmap bundle,
+    setting up vmapped_forward via torch.func, running batches of
+    synthetic data through both vmap and sequential paths, and verifying
+    numerical equivalence and correct Platt scaling.
+    """
+
+    TCN_CONFIG = {
+        "signal_len": 200,
+        "kmer_len": 11,
+        "num_features": 5,
+        "hidden_channels": 16,
+        "num_layers": 2,
+        "kernel_size": 3,
+        "num_attn_heads": 1,
+        "dropout": 0.0,
+    }
+
+    def _create_tcn_model_dirs(self, tmp_path, pair_names, platt_params=None):
+        """Create TCNDwellGN model directories with optional per-pair Platt scaling."""
+        model_dirs = {}
+        for pair in pair_names:
+            pair_dir = tmp_path / pair
+            pair_dir.mkdir(parents=True)
+
+            config = {
+                "model_name": "TCNDwellGN",
+                **self.TCN_CONFIG,
+                "epochs": 10,
+                "batch_size": 32,
+                "learning_rate": 0.001,
+                "device": "cpu",
+                "seed": 42,
+            }
+            with open(pair_dir / "config.json", "w") as f:
+                json.dump(config, f)
+
+            model = get_model("TCNDwellGN", **self.TCN_CONFIG)
+            torch.save(
+                {
+                    "model_state_dict": model.state_dict(),
+                    "best_val_acc": 0.90,
+                    "best_epoch": 5,
+                },
+                pair_dir / "model_best.pt",
+            )
+
+            if platt_params and pair in platt_params:
+                a, b = platt_params[pair]
+                with open(pair_dir / "platt.json", "w") as f:
+                    json.dump({"platt_a": a, "platt_b": b}, f)
+
+            model_dirs[pair] = pair_dir
+        return model_dirs
+
+    def _make_synthetic_batch(self, batch_size):
+        """Create a synthetic (signal, sequence, features) batch."""
+        dwell_margin = 15  # TCNDwell default
+        feat_len = self.TCN_CONFIG["kmer_len"] + 2 * dwell_margin
+        signal = torch.randn(batch_size, self.TCN_CONFIG["signal_len"])
+        sequence = torch.randn(batch_size, 4, self.TCN_CONFIG["kmer_len"])
+        features = torch.randn(batch_size, self.TCN_CONFIG["num_features"], feat_len)
+        return signal, sequence, features
+
+    def _run_sequential_inference(self, bundle_path, pairs, signal, sequence, features):
+        """Run inference the old way: load each model, run sequentially."""
+        n_pairs = len(pairs)
+        batch_size = signal.shape[0]
+        probs = np.empty((n_pairs, batch_size), dtype=np.float32)
+
+        bundle = torch.load(bundle_path, map_location="cpu", weights_only=False)
+
+        for i, pair in enumerate(pairs):
+            model, _ = load_model_from_bundle(bundle_path, pair, device="cpu")
+            model.eval()
+            with torch.no_grad():
+                logits = model(signal, sequence, features)
+
+            # Apply Platt scaling
+            platt_a = bundle["platt_a"][i].item()
+            platt_b = bundle["platt_b"][i].item()
+            logits = platt_a * logits + platt_b
+
+            probs[i] = torch.sigmoid(logits).numpy().flatten()
+        return probs
+
+    def _run_vmap_inference(self, bundle_path, signal, sequence, features):
+        """Run inference the vmap way: stack_module_state + vmap."""
+        from leech.util import _instantiate_model
+
+        bundle = torch.load(bundle_path, map_location="cpu", weights_only=False)
+        config = bundle["config"]
+
+        stacked_params = bundle["stacked_params"]
+        stacked_buffers = bundle["stacked_buffers"]
+        platt_a = bundle["platt_a"]
+        platt_b = bundle["platt_b"]
+
+        base_model = _instantiate_model(config).eval()
+
+        def single_forward(params, buffers, sig, seq, feat):
+            return torch.func.functional_call(base_model, (params, buffers), (sig, seq, feat))
+
+        vmapped_forward = torch.vmap(single_forward, in_dims=(0, 0, None, None, None))
+
+        with torch.inference_mode():
+            all_logits = vmapped_forward(
+                stacked_params, stacked_buffers, signal, sequence, features
+            )
+            all_logits = platt_a[:, None, None] * all_logits + platt_b[:, None, None]
+            probs = torch.sigmoid(all_logits).squeeze(-1).numpy()
+
+        return probs
+
+    def test_vmap_matches_sequential_inference(self, tmp_path):
+        """Core integration test: vmap and sequential paths produce identical results."""
+        pairs = ["Ala_Gly", "Ala_Ser", "Gly_Ser"]
+        model_dirs = self._create_tcn_model_dirs(tmp_path / "models", pairs)
+
+        bundle_path = tmp_path / "vmap_bundle.pt"
+        create_vmap_bundle(model_dirs, bundle_path, "pairwise", "1.0.0")
+
+        signal, sequence, features = self._make_synthetic_batch(batch_size=8)
+
+        probs_seq = self._run_sequential_inference(bundle_path, pairs, signal, sequence, features)
+        probs_vmap = self._run_vmap_inference(bundle_path, signal, sequence, features)
+
+        np.testing.assert_allclose(
+            probs_seq,
+            probs_vmap,
+            atol=1e-6,
+            err_msg="vmap inference does not match sequential inference",
+        )
+
+    def test_vmap_with_platt_scaling(self, tmp_path):
+        """vmap path applies Platt scaling identically to sequential."""
+        pairs = ["Ala_Gly", "Ala_Ser"]
+        platt = {"Ala_Gly": (1.15, -0.3), "Ala_Ser": (0.9, 0.1)}
+        model_dirs = self._create_tcn_model_dirs(tmp_path / "models", pairs, platt_params=platt)
+
+        bundle_path = tmp_path / "vmap_platt.pt"
+        create_vmap_bundle(model_dirs, bundle_path, "pairwise", "1.0.0")
+
+        signal, sequence, features = self._make_synthetic_batch(batch_size=4)
+
+        probs_seq = self._run_sequential_inference(bundle_path, pairs, signal, sequence, features)
+        probs_vmap = self._run_vmap_inference(bundle_path, signal, sequence, features)
+
+        np.testing.assert_allclose(
+            probs_seq,
+            probs_vmap,
+            atol=1e-6,
+            err_msg="Platt-scaled vmap inference does not match sequential",
+        )
+
+    @pytest.mark.parametrize("batch_size", [1, 4, 16])
+    def test_vmap_various_batch_sizes(self, tmp_path, batch_size):
+        """vmap produces correct results across different batch sizes."""
+        pairs = ["Ala_Gly", "Gly_Ser"]
+        model_dirs = self._create_tcn_model_dirs(tmp_path / "models", pairs)
+
+        bundle_path = tmp_path / "vmap_batch.pt"
+        create_vmap_bundle(model_dirs, bundle_path, "pairwise", "1.0.0")
+
+        signal, sequence, features = self._make_synthetic_batch(batch_size=batch_size)
+
+        probs_seq = self._run_sequential_inference(bundle_path, pairs, signal, sequence, features)
+        probs_vmap = self._run_vmap_inference(bundle_path, signal, sequence, features)
+
+        np.testing.assert_allclose(
+            probs_seq,
+            probs_vmap,
+            atol=1e-6,
+            err_msg=f"Mismatch at batch_size={batch_size}",
+        )
+
+    def test_vmap_output_shapes(self, tmp_path):
+        """vmap output has correct shape (n_models, batch_size)."""
+        pairs = ["Ala_Gly", "Ala_Ser", "Gly_Ser"]
+        model_dirs = self._create_tcn_model_dirs(tmp_path / "models", pairs)
+
+        bundle_path = tmp_path / "vmap_shape.pt"
+        create_vmap_bundle(model_dirs, bundle_path, "pairwise", "1.0.0")
+
+        signal, sequence, features = self._make_synthetic_batch(batch_size=5)
+        probs = self._run_vmap_inference(bundle_path, signal, sequence, features)
+
+        assert probs.shape == (3, 5), f"Expected (3, 5), got {probs.shape}"
+        assert np.all((probs >= 0) & (probs <= 1)), "Probabilities must be in [0, 1]"
+
+    def test_vmap_deterministic(self, tmp_path):
+        """Two vmap runs on the same input produce identical results."""
+        pairs = ["Ala_Gly"]
+        model_dirs = self._create_tcn_model_dirs(tmp_path / "models", pairs)
+
+        bundle_path = tmp_path / "vmap_det.pt"
+        create_vmap_bundle(model_dirs, bundle_path, "pairwise", "1.0.0")
+
+        signal, sequence, features = self._make_synthetic_batch(batch_size=4)
+
+        probs1 = self._run_vmap_inference(bundle_path, signal, sequence, features)
+        probs2 = self._run_vmap_inference(bundle_path, signal, sequence, features)
+
+        np.testing.assert_array_equal(probs1, probs2, err_msg="vmap is not deterministic")
+
+    def test_streaming_batch_scatter(self, tmp_path):
+        """Simulate the streaming batch scatter pattern from run_bundle_inference.
+
+        Verifies that splitting data into multiple flush_batch calls and scattering
+        into read_probs produces the same result as a single batch.
+        """
+        pairs = ["Ala_Gly", "Ala_Ser", "Gly_Ser"]
+        model_dirs = self._create_tcn_model_dirs(tmp_path / "models", pairs)
+
+        bundle_path = tmp_path / "vmap_stream.pt"
+        create_vmap_bundle(model_dirs, bundle_path, "pairwise", "1.0.0")
+
+        from leech.util import _instantiate_model
+
+        bundle = torch.load(bundle_path, map_location="cpu", weights_only=False)
+        config = bundle["config"]
+        stacked_params = bundle["stacked_params"]
+        stacked_buffers = bundle["stacked_buffers"]
+        platt_a = bundle["platt_a"]
+        platt_b = bundle["platt_b"]
+
+        base_model = _instantiate_model(config).eval()
+
+        def single_forward(params, buffers, sig, seq, feat):
+            return torch.func.functional_call(base_model, (params, buffers), (sig, seq, feat))
+
+        vmapped_forward = torch.vmap(single_forward, in_dims=(0, 0, None, None, None))
+
+        # Create 10 chunks with read IDs
+        total_chunks = 10
+        batch_size = 3  # Will create batches of [3, 3, 3, 1]
+        signal, sequence, features = self._make_synthetic_batch(batch_size=total_chunks)
+        read_ids = [f"read_{i:04d}" for i in range(total_chunks)]
+
+        # Simulate streaming: accumulate into small batches and scatter
+        read_probs: dict[str, np.ndarray] = {}
+
+        for start in range(0, total_chunks, batch_size):
+            end = min(start + batch_size, total_chunks)
+            sig_t = signal[start:end]
+            seq_t = sequence[start:end]
+            feat_t = features[start:end]
+
+            with torch.inference_mode():
+                all_logits = vmapped_forward(stacked_params, stacked_buffers, sig_t, seq_t, feat_t)
+                all_logits = platt_a[:, None, None] * all_logits + platt_b[:, None, None]
+                all_p = torch.sigmoid(all_logits).squeeze(-1).cpu().numpy()
+
+            for i, rid in enumerate(read_ids[start:end]):
+                read_probs[rid] = all_p[:, i]
+
+        # Compare with single-batch reference
+        with torch.inference_mode():
+            ref_logits = vmapped_forward(
+                stacked_params, stacked_buffers, signal, sequence, features
+            )
+            ref_logits = platt_a[:, None, None] * ref_logits + platt_b[:, None, None]
+            ref_probs = torch.sigmoid(ref_logits).squeeze(-1).cpu().numpy()
+
+        for i, rid in enumerate(read_ids):
+            np.testing.assert_allclose(
+                read_probs[rid],
+                ref_probs[:, i],
+                atol=1e-7,
+                err_msg=f"Streaming batch scatter mismatch for {rid}",
+            )
+
+        assert len(read_probs) == total_chunks
 
 
 if __name__ == "__main__":

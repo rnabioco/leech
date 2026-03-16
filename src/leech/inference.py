@@ -1374,10 +1374,15 @@ def run_bundle_inference(
     else:
         aggregate_fn = aggregate_one_vs_all
 
-    # Load all models
+    # Load all models (skip for vmap bundles — stacked params loaded in vmap setup)
     wrappers: dict[str, ModelInferenceWrapper | TracedModelWrapper] = {}
     format_version = metadata.get("format_version", 1)
-    if is_torchscript and format_version >= 3:
+    platt_params: dict[str, tuple[float, float]] = {}
+
+    if format_version == 4:
+        # vmap bundle: params are pre-stacked, Platt scaling is pre-vectorized
+        logger.info("vmap bundle (format_version=4): using vectorized inference")
+    elif is_torchscript and format_version >= 3:
         # torch.export format (format_version 3+)
         requires_features = metadata.get("requires_features", False)
         for pair in pairs:
@@ -1405,15 +1410,15 @@ def run_bundle_inference(
             m.eval()
             wrappers[pair] = ModelInferenceWrapper(m, model_type)
 
-    # Load per-model Platt scaling params (for post-hoc calibration)
-    platt_params: dict[str, tuple[float, float]] = {}
-    for pair in pairs:
-        a = bundle["models"][pair].get("platt_a")
-        b = bundle["models"][pair].get("platt_b")
-        if a is not None and b is not None:
-            platt_params[pair] = (a, b)
-    if platt_params:
-        logger.info(f"Platt scaling enabled for {len(platt_params)}/{len(pairs)} models")
+    # Load per-model Platt scaling params (for post-hoc calibration, non-vmap bundles)
+    if format_version != 4 and "models" in bundle:
+        for pair in pairs:
+            a = bundle["models"][pair].get("platt_a")
+            b = bundle["models"][pair].get("platt_b")
+            if a is not None and b is not None:
+                platt_params[pair] = (a, b)
+        if platt_params:
+            logger.info(f"Platt scaling enabled for {len(platt_params)}/{len(pairs)} models")
 
     pair_names_str = ",".join(pairs)
 
@@ -1468,34 +1473,123 @@ def run_bundle_inference(
             f"(signal_in_channels={bundle_signal_in_channels})"
         )
 
-    # ── Phase 1: Extract all chunks into memory ──
-    chunk_signals: list[torch.Tensor] = []
-    chunk_sequences: list[torch.Tensor] = []
-    chunk_features: list[torch.Tensor] = []
-    chunk_read_ids: list[str] = []
+    # ── Setup vmap forward for format_version 4, else use sequential wrappers ──
+    is_vmap = format_version == 4
+    vmapped_forward = None
+    vmap_stacked_params = None
+    vmap_stacked_buffers = None
+    vmap_platt_a = None
+    vmap_platt_b = None
+    vmap_base_model = None
+
+    if is_vmap:
+        vmap_stacked_params = {k: v.to(device) for k, v in bundle["stacked_params"].items()}
+        vmap_stacked_buffers = {k: v.to(device) for k, v in bundle["stacked_buffers"].items()}
+        vmap_platt_a = bundle["platt_a"].to(device)  # (n_models,)
+        vmap_platt_b = bundle["platt_b"].to(device)  # (n_models,)
+
+        vmap_base_model = _instantiate_model(config).to(device).eval()
+
+        def _single_forward(params, buffers, signal, sequence, features):
+            if needs_features:
+                return torch.func.functional_call(
+                    vmap_base_model, (params, buffers), (signal, sequence, features)
+                )
+            else:
+                return torch.func.functional_call(
+                    vmap_base_model, (params, buffers), (signal, sequence)
+                )
+
+        vmapped_forward = torch.vmap(_single_forward, in_dims=(0, 0, None, None, None))
+        logger.info("vmap vectorized forward initialized")
+
+    # ── Streaming batch inference ──
+    # Accumulate chunks into batches, flush when full. This avoids materializing
+    # all chunks in memory before inference starts.
+    read_probs: dict[str, np.ndarray] = {}  # read_id → shape (n_pairs,)
+    pair_to_idx = {pair: i for i, pair in enumerate(pairs)}
+    n_pairs = len(pairs)
+
+    batch_signals: list[torch.Tensor] = []
+    batch_sequences: list[torch.Tensor] = []
+    batch_features: list[torch.Tensor] = []
+    batch_read_ids: list[str] = []
     _shape_validated = False
+    n_chunks = 0
+    n_batches_done = 0
+
+    def _flush_batch() -> None:
+        nonlocal n_batches_done
+        if not batch_signals:
+            return
+
+        sig_t = torch.stack(batch_signals).to(device)
+        seq_t = torch.stack(batch_sequences).to(device)
+        feat_t = torch.stack(batch_features).to(device) if needs_features else None
+
+        with torch.inference_mode():
+            if is_vmap and vmapped_forward is not None:
+                # Vectorized: run all N models in one pass
+                if needs_features:
+                    all_logits = vmapped_forward(
+                        vmap_stacked_params, vmap_stacked_buffers, sig_t, seq_t, feat_t
+                    )
+                else:
+                    all_logits = vmapped_forward(
+                        vmap_stacked_params, vmap_stacked_buffers, sig_t, seq_t, None
+                    )
+                # all_logits: (n_models, batch_size, 1) → apply Platt scaling
+                all_logits = vmap_platt_a[:, None, None] * all_logits + vmap_platt_b[:, None, None]
+                all_p = torch.sigmoid(all_logits).squeeze(-1).cpu().numpy()  # (n_models, batch)
+            else:
+                # Sequential: run each model on the batch
+                all_p = np.empty((n_pairs, len(batch_signals)), dtype=np.float32)
+                for pair in pairs:
+                    batch_dict: dict[str, torch.Tensor] = {
+                        "signal": sig_t,
+                        "sequence": seq_t,
+                    }
+                    if feat_t is not None:
+                        batch_dict["features"] = feat_t
+                    logits = wrappers[pair].forward_batch(batch_dict, device)
+                    pp = platt_params.get(pair)
+                    if pp is not None:
+                        a, b = pp
+                        logits = a * logits + b
+                    all_p[pair_to_idx[pair]] = torch.sigmoid(logits).cpu().numpy().flatten()
+
+        # Scatter into read_probs
+        for i, rid in enumerate(batch_read_ids):
+            read_probs[rid] = all_p[:, i]  # shape (n_pairs,)
+
+        batch_signals.clear()
+        batch_sequences.clear()
+        batch_features.clear()
+        batch_read_ids.clear()
+        n_batches_done += 1
+
+    n_reads = 0
+
+    bundle_signal_config = SignalConfig(
+        reverse_signal=reverse_signal,
+        anchor=anchor,
+        norm_method=config.get("signal_norm", "median_mad"),
+        pa_mean=config.get("pa_mean"),
+        pa_stdev=config.get("pa_stdev"),
+        compute_features=bundle_compute_features,
+        refine_signal_map=bundle_refine,
+        signal_refiner=bundle_refiner,
+    )
+    bundle_chunk_config = ChunkConfig(
+        base_justify=base_justify,
+        feature_start=_feature_start,
+        feature_end=_feature_end,
+        signal_context=signal_context,
+        kmer_context=kmer_context,
+    )
 
     with Progress() as progress:
-        task = progress.add_task("[cyan]Extracting chunks...", total=None)
-        n_reads = 0
-
-        bundle_signal_config = SignalConfig(
-            reverse_signal=reverse_signal,
-            anchor=anchor,
-            norm_method=config.get("signal_norm", "median_mad"),
-            pa_mean=config.get("pa_mean"),
-            pa_stdev=config.get("pa_stdev"),
-            compute_features=bundle_compute_features,
-            refine_signal_map=bundle_refine,
-            signal_refiner=bundle_refiner,
-        )
-        bundle_chunk_config = ChunkConfig(
-            base_justify=base_justify,
-            feature_start=_feature_start,
-            feature_end=_feature_end,
-            signal_context=signal_context,
-            kmer_context=kmer_context,
-        )
+        task = progress.add_task("[cyan]Processing reads...", total=None)
 
         for leech_read in iter_bam_with_pod5(
             bam_path,
@@ -1505,11 +1599,6 @@ def run_bundle_inference(
             reference_sequences=reference_sequences,
         ):
             n_reads += 1
-            progress.update(
-                task,
-                advance=1,
-                description=f"[cyan]Extracted {len(chunk_signals)} chunks from {n_reads} reads...",
-            )
 
             # Find prediction position(s) (motif is validated non-None above)
             assert motif is not None, "motif must not be None at inference time"
@@ -1551,9 +1640,10 @@ def run_bundle_inference(
             if seq_t is None:
                 continue
 
-            chunk_signals.append(signal_t)
-            chunk_sequences.append(seq_t)
-            chunk_read_ids.append(leech_read.read_id)
+            n_chunks += 1
+            batch_signals.append(signal_t)
+            batch_sequences.append(seq_t)
+            batch_read_ids.append(leech_read.read_id)
 
             if needs_features:
                 features_array = chunk["features"]
@@ -1564,15 +1654,29 @@ def run_bundle_inference(
                     fs = chunk.get("feature_start", -_kmer_context)
                     feat_start = (-_kmer_context - fs) + dwell_offset
                     features_array = features_array[:, feat_start : feat_start + kmer_len]
-                chunk_features.append(torch.from_numpy(features_array.astype(np.float32)))
+                batch_features.append(torch.from_numpy(features_array.astype(np.float32)))
 
             if not _shape_validated:
                 _feat_for_check = features_array.astype(np.float32) if needs_features else None
                 validate_inference_shapes(sig, _feat_for_check, config)
                 _shape_validated = True
 
-    n_chunks = len(chunk_signals)
-    logger.info(f"Extracted {n_chunks} chunks from {n_reads} reads")
+            if len(batch_signals) >= batch_size:
+                _flush_batch()
+
+            progress.update(
+                task,
+                advance=0,
+                description=(
+                    f"[cyan]Processed {n_chunks} chunks from {n_reads} reads "
+                    f"({n_batches_done} batches)..."
+                ),
+            )
+
+        # Flush remaining chunks
+        _flush_batch()
+
+    logger.info(f"Extracted and inferred {n_chunks} chunks from {n_reads} reads")
 
     if n_chunks == 0:
         # No valid chunks — write all reads without tags
@@ -1582,57 +1686,15 @@ def run_bundle_inference(
         bam_out.close()
         return
 
-    # Stack into tensors and move to device once
-    all_signals = torch.stack(chunk_signals).to(device)
-    all_sequences = torch.stack(chunk_sequences).to(device)
-    all_features = torch.stack(chunk_features).to(device) if needs_features else None
-    del chunk_signals, chunk_sequences, chunk_features
-
-    # ── Phase 2: Batched model inference ──
-    all_probs: dict[str, np.ndarray] = {}
-
-    with Progress() as progress:
-        task = progress.add_task(
-            f"[cyan]Running {len(pairs)} models (batch_size={batch_size})...",
-            total=len(pairs),
-        )
-
-        with torch.inference_mode():
-            for pair in pairs:
-                pair_logits: list[torch.Tensor] = []
-
-                for start in range(0, n_chunks, batch_size):
-                    end = min(start + batch_size, n_chunks)
-                    batch: dict[str, torch.Tensor] = {
-                        "signal": all_signals[start:end],
-                        "sequence": all_sequences[start:end],
-                    }
-                    if all_features is not None:
-                        batch["features"] = all_features[start:end]
-
-                    logits = wrappers[pair].forward_batch(batch, device)
-                    pair_logits.append(logits.cpu())
-
-                logits_cat = torch.cat(pair_logits)
-                pp = platt_params.get(pair)
-                if pp is not None:
-                    a, b = pp
-                    logits_cat = a * logits_cat + b
-                all_probs[pair] = torch.sigmoid(logits_cat).numpy().flatten()
-
-                progress.advance(task)
-
-    # ── Phase 3: Aggregate per-read and write BAM ──
-    read_id_to_idx: dict[str, int] = {rid: idx for idx, rid in enumerate(chunk_read_ids)}
-
+    # ── Aggregate per-read and write BAM ──
     n_predicted = 0
     for read_id, aln in alignment_by_read_id.items():
-        idx = read_id_to_idx.get(read_id)
-        if idx is None:
+        prob_vec = read_probs.get(read_id)
+        if prob_vec is None:
             bam_out.write(aln)
             continue
 
-        probs = [float(all_probs[pair][idx]) for pair in pairs]
+        probs = [float(prob_vec[pair_to_idx[pair]]) for pair in pairs]
         predicted_aa, confidence, _ = aggregate_fn(pairs, probs)
 
         aln.set_tag("aa", predicted_aa)

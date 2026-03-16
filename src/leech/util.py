@@ -623,6 +623,170 @@ def create_torchscript_bundle(
     return output_path
 
 
+# Architectures known to be vmap-incompatible (contain nn.LSTM or nn.BatchNorm1d)
+_VMAP_INCOMPATIBLE_ARCHITECTURES = {
+    "ConvLSTMBase",
+    "ConvLSTMBaseBN",
+    "ConvLSTMBaseAttn",
+    "ConvLSTMBaseBNAttn",
+    "ConvLSTMDwell",
+    "ConvLSTMDwellBN",
+    "ConvLSTMDwellAttn",
+    "ConvLSTMDwellBNAttn",
+    "ConvLSTMDwellGNAttn",
+    "ConvLSTMDwellLNAttn",
+    "ConvLSTMRemora",
+    "ConvLSTMRemoraBase",
+    "ConvOnly",  # uses nn.BatchNorm1d
+}
+
+
+def create_vmap_bundle(
+    model_dirs: dict[str, Path],
+    output_path: Path,
+    comparison_type: str,
+    version: str,
+) -> Path:
+    """Bundle multiple trained models with pre-stacked parameters for vectorized inference.
+
+    Uses ``torch.func.stack_module_state`` to stack all model parameters into
+    tensors with a leading model dimension, enabling ``torch.vmap`` to run all
+    N models in a single vectorized forward pass.
+
+    Requires a vmap-compatible architecture (no ``nn.LSTM``, no ``nn.BatchNorm1d``).
+    TCN variants with GroupNorm or LayerNorm are fully compatible.
+
+    Args:
+        model_dirs: Mapping of pair name -> model directory
+        output_path: Output .pt file path
+        comparison_type: "pairwise" or "one_vs_all"
+        version: Semantic version string
+
+    Returns:
+        Path to the saved bundle file
+
+    Raises:
+        ValueError: If architecture is vmap-incompatible or configs don't match
+    """
+    from leech.models.inference_wrapper import ModelInferenceWrapper
+
+    if not model_dirs:
+        raise ValueError("model_dirs must not be empty")
+
+    pairs = sorted(model_dirs.keys())
+
+    # Load first model's config as reference
+    first_dir = model_dirs[pairs[0]]
+    ref_config_path = first_dir / "config.json"
+    if not ref_config_path.exists():
+        raise FileNotFoundError(f"Config file not found: {ref_config_path}")
+    with open(ref_config_path) as f:
+        ref_full_config = json.load(f)
+    ref_arch_config = _architecture_config(ref_full_config)
+
+    architecture = ref_full_config["model_name"]
+    requires_features = architecture in ModelInferenceWrapper.FEATURE_MODELS
+
+    # Validate vmap compatibility
+    if architecture in _VMAP_INCOMPATIBLE_ARCHITECTURES:
+        raise ValueError(
+            f"Architecture '{architecture}' is not vmap-compatible "
+            f"(contains nn.LSTM or nn.BatchNorm1d). "
+            f"Use create_bundle() or create_torchscript_bundle() instead, "
+            f"or switch to a TCN variant with GroupNorm/LayerNorm."
+        )
+
+    # Instantiate all models and load state dicts
+    models_list: list[nn.Module] = []
+    platt_a_list: list[float] = []
+    platt_b_list: list[float] = []
+
+    for pair in pairs:
+        model_dir = Path(model_dirs[pair])
+
+        # Validate config matches
+        config_path = model_dir / "config.json"
+        if not config_path.exists():
+            raise FileNotFoundError(f"Config file not found: {config_path}")
+        with open(config_path) as f:
+            pair_config = json.load(f)
+        pair_arch_config = _architecture_config(pair_config)
+
+        if pair_arch_config != ref_arch_config:
+            raise ValueError(
+                f"Architecture config mismatch for {pair}. "
+                f"Expected {ref_arch_config}, got {pair_arch_config}"
+            )
+
+        # Load checkpoint
+        checkpoint_path = model_dir / "model_best.pt"
+        if not checkpoint_path.exists():
+            raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+
+        # Strip _orig_mod. prefix added by torch.compile()
+        state_dict = checkpoint["model_state_dict"]
+        state_dict = {k.removeprefix("_orig_mod."): v for k, v in state_dict.items()}
+        state_dict = _migrate_state_dict_keys(state_dict)
+
+        model = _instantiate_model(ref_arch_config)
+        model.load_state_dict(state_dict)
+        model.eval()
+        models_list.append(model)
+
+        # Platt scaling
+        platt_path = model_dir / "platt.json"
+        if platt_path.exists():
+            with open(platt_path) as f:
+                platt_data = json.load(f)
+            platt_a_list.append(platt_data["platt_a"])
+            platt_b_list.append(platt_data["platt_b"])
+            logger.info(
+                f"{pair}: platt a={platt_data['platt_a']:.4f}, b={platt_data['platt_b']:.4f}"
+            )
+        else:
+            platt_a_list.append(1.0)
+            platt_b_list.append(0.0)
+
+    # Stack model parameters for vmap
+    stacked_params, stacked_buffers = torch.func.stack_module_state(models_list)
+
+    bundle = {
+        "metadata": {
+            "format_version": 4,
+            "bundle_version": version,
+            "architecture": architecture,
+            "comparison_type": comparison_type,
+            "num_models": len(pairs),
+            "pairs": pairs,
+            "created_at": datetime.now(UTC).isoformat(),
+            "vmap": True,
+            "requires_features": requires_features,
+        },
+        "config": ref_arch_config,
+        "stacked_params": stacked_params,
+        "stacked_buffers": stacked_buffers,
+        "platt_a": torch.tensor(platt_a_list, dtype=torch.float32),
+        "platt_b": torch.tensor(platt_b_list, dtype=torch.float32),
+    }
+
+    # Atomic save
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=output_path.parent, suffix=".pt.tmp")
+    try:
+        os.close(fd)
+        torch.save(bundle, tmp_path)
+        os.rename(tmp_path, output_path)
+    except BaseException:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise
+
+    logger.info(f"vmap bundle saved to {output_path} ({len(pairs)} models, version {version})")
+    return output_path
+
+
 def load_model_from_bundle(
     bundle_path: Path,
     pair: str,
@@ -646,31 +810,44 @@ def load_model_from_bundle(
         KeyError: If pair not found in bundle
     """
     bundle = torch.load(bundle_path, map_location="cpu", weights_only=False)
-    models = bundle["models"]
-
-    if pair not in models:
-        available = ", ".join(sorted(models.keys()))
-        raise KeyError(f"Pair '{pair}' not in bundle. Available: {available}")
-
     config = bundle["config"]
     metadata = bundle.get("metadata", {})
-
     format_version = metadata.get("format_version", 1)
-    if format_version >= 3:
-        # torch.export bundle (format_version 3+)
-        # Model was exported in eval mode; GraphModule doesn't need .eval()
-        model = deserialize_exported_model(models[pair]["exported_bytes"], device=device)
-    elif metadata.get("torchscript", False):
-        # Legacy TorchScript bundle (format_version 2)
-        model = deserialize_traced_model(models[pair]["traced_bytes"], device=device)
-        model.eval()
-    else:
-        # Legacy state_dict bundle (format_version 1)
+
+    if format_version == 4:
+        # vmap bundle: extract single model from stacked params
+        pairs = metadata["pairs"]
+        if pair not in pairs:
+            available = ", ".join(sorted(pairs))
+            raise KeyError(f"Pair '{pair}' not in bundle. Available: {available}")
+        pair_idx = pairs.index(pair)
         model = _instantiate_model(config)
-        state_dict = _migrate_state_dict_keys(models[pair]["state_dict"])
-        model.load_state_dict(state_dict)
+        # Extract this pair's params from the stacked tensors
+        single_params = {k: v[pair_idx] for k, v in bundle["stacked_params"].items()}
+        single_buffers = {k: v[pair_idx] for k, v in bundle["stacked_buffers"].items()}
+        model.load_state_dict({**single_params, **single_buffers})
         model = model.to(device)
         model.eval()
+    else:
+        models = bundle["models"]
+        if pair not in models:
+            available = ", ".join(sorted(models.keys()))
+            raise KeyError(f"Pair '{pair}' not in bundle. Available: {available}")
+
+        if format_version >= 3:
+            # torch.export bundle (format_version 3+)
+            model = deserialize_exported_model(models[pair]["exported_bytes"], device=device)
+        elif metadata.get("torchscript", False):
+            # Legacy TorchScript bundle (format_version 2)
+            model = deserialize_traced_model(models[pair]["traced_bytes"], device=device)
+            model.eval()
+        else:
+            # Legacy state_dict bundle (format_version 1)
+            model = _instantiate_model(config)
+            state_dict = _migrate_state_dict_keys(models[pair]["state_dict"])
+            model.load_state_dict(state_dict)
+            model = model.to(device)
+            model.eval()
 
     return model, config
 
