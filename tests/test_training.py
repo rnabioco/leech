@@ -335,7 +335,7 @@ class TestTrainModel:
                 epochs=1,
                 batch_size=2,
                 device="cpu",
-            motif="CCAGGC",
+                motif="CCAGGC",
                 seed=42,
             )
 
@@ -585,7 +585,7 @@ class TestTrainingEdgeCases:
                 epochs=0,
                 batch_size=2,
                 device="cpu",
-            motif="CCAGGC",
+                motif="CCAGGC",
             )
             assert len(history["train_loss"]) == 0
         except (ValueError, AssertionError):

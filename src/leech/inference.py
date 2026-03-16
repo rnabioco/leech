@@ -90,9 +90,7 @@ def validate_inference_shapes(
     elif signal.ndim == 2:
         actual_channels = signal.shape[0]
     else:
-        raise InferenceConfigError(
-            f"Signal has unexpected ndim={signal.ndim}; expected 1D or 2D"
-        )
+        raise InferenceConfigError(f"Signal has unexpected ndim={signal.ndim}; expected 1D or 2D")
 
     if actual_channels != expected_channels:
         raise InferenceConfigError(
@@ -666,7 +664,9 @@ def run_inference(
 
         # Resolve motif/offset from config, erroring on CLI conflict
         motif = _check_config_consistency("motif", motif, config.get("motif"), None)
-        motif_offset = _check_config_consistency("motif-offset", motif_offset, config.get("motif_offset"), 0)
+        motif_offset = _check_config_consistency(
+            "motif-offset", motif_offset, config.get("motif_offset"), 0
+        )
         if motif is not None:
             logger.info(f"Motif from remora config: {motif} (offset={motif_offset})")
 
@@ -711,7 +711,9 @@ def run_inference(
 
         # Resolve motif/offset from config, erroring on CLI conflict
         motif = _check_config_consistency("motif", motif, config.get("motif"), None)
-        motif_offset = _check_config_consistency("motif-offset", motif_offset, config.get("motif_offset"), 0)
+        motif_offset = _check_config_consistency(
+            "motif-offset", motif_offset, config.get("motif_offset"), 0
+        )
         if motif is not None:
             logger.info(f"Motif from config: {motif} (offset={motif_offset})")
 
@@ -796,7 +798,9 @@ def run_inference(
     is_multiclass = num_out > 1
 
     # Resolve base_justify from config, erroring on CLI conflict
-    base_justify = _check_config_consistency("base-justify", base_justify, config.get("base_justify"), "center")
+    base_justify = _check_config_consistency(
+        "base-justify", base_justify, config.get("base_justify"), "center"
+    )
     logger.info(f"base_justify: {base_justify}")
 
     logger.info(f"Signal length: {signal_len}, K-mer length: {kmer_len}")
@@ -1290,7 +1294,9 @@ def run_bundle_inference(
 
     # Resolve motif/offset/justify from config, erroring on CLI conflict
     motif = _check_config_consistency("motif", motif, config.get("motif"), None)
-    motif_offset = _check_config_consistency("motif-offset", motif_offset, config.get("motif_offset"), 0)
+    motif_offset = _check_config_consistency(
+        "motif-offset", motif_offset, config.get("motif_offset"), 0
+    )
     if motif is not None:
         logger.info(f"Motif from bundle config: {motif} (offset={motif_offset})")
 
@@ -1301,7 +1307,9 @@ def run_bundle_inference(
             "Without a motif, inference predicts at every position, producing noise."
         )
 
-    base_justify = _check_config_consistency("base-justify", base_justify, config.get("base_justify"), "center")
+    base_justify = _check_config_consistency(
+        "base-justify", base_justify, config.get("base_justify"), "center"
+    )
     logger.info(f"base_justify: {base_justify}")
 
     # Use asymmetric context if available, otherwise fall back to symmetric
@@ -1556,9 +1564,7 @@ def run_bundle_inference(
                 chunk_features.append(torch.from_numpy(features_array.astype(np.float32)))
 
             if not _shape_validated:
-                _feat_for_check = (
-                    features_array.astype(np.float32) if needs_features else None
-                )
+                _feat_for_check = features_array.astype(np.float32) if needs_features else None
                 validate_inference_shapes(sig, _feat_for_check, config)
                 _shape_validated = True
 
