@@ -757,16 +757,16 @@ def run_inference(
             writes predictions, then frees memory. Set to 0 to disable (load all).
     """
     # Apply backend override to signal_refine module
+    logger.info(f"Extraction backend: {backend}")
     if backend == "python":
         import leech.signal_refine as _sr
 
         _sr.HAS_RUST = False
-        logger.info("Backend: python — Rust acceleration disabled for all components")
     elif backend == "rust":
         import leech.signal_refine as _sr
 
         if not _sr.HAS_RUST:
-            logger.warning("Backend: rust requested but signal_refine Rust not available")
+            logger.warning("Backend rust requested but signal_refine Rust not available")
 
     # Load model
     if model_and_config is not None:
@@ -1692,6 +1692,12 @@ def run_bundle_inference(
         anchor: "basecall" or "reference" for reference-anchored mode
         reference_fasta: Path to reference FASTA (for reference-anchored mode)
     """
+    logger.info(f"Extraction backend: {backend}")
+    if backend == "python":
+        import leech.signal_refine as _sr
+
+        _sr.HAS_RUST = False
+
     bundle = torch.load(bundle_path, map_location="cpu", weights_only=False)
     metadata = bundle["metadata"]
     config = bundle["config"]
