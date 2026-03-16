@@ -15,6 +15,7 @@ import array
 import functools
 import json
 import logging
+import math
 import multiprocessing as mp
 from pathlib import Path
 
@@ -25,7 +26,7 @@ from rich.progress import Progress
 
 from leech.configs import ChunkConfig, InferenceConfig, MotifConfig, SignalConfig
 from leech.features import encode_signal_kmer, extract_move_table, sequence_to_int
-from leech.io.bam_reader import iter_bam_batches
+from leech.io.bam_reader import count_bam_reads, iter_bam_batches
 from leech.io.motif_search import get_motif_searcher
 from leech.io.pod5_reader import POD5Reader
 from leech.models.inference_wrapper import ModelInferenceWrapper, TracedModelWrapper
@@ -992,6 +993,14 @@ def run_inference(
 
     logger.info(f"Streaming inference with read_batch_size={read_batch_size}")
 
+    n_total_reads = count_bam_reads(bam_path)
+    n_total_mega_batches = math.ceil(n_total_reads / read_batch_size) if n_total_reads > 0 else 0
+    logger.info(
+        f"BAM contains ~{n_total_reads} mapped reads → ~{n_total_mega_batches} mega-batches "
+        f"of {read_batch_size}"
+    )
+    mega_batch_idx = 0
+
     if num_workers > 0:
         # ---- Parallel path (mega-batched) ----
         from leech.io.bam_reader import ReadInfo
@@ -1125,9 +1134,10 @@ def run_inference(
                     )
                     total_reads += len(aln_batch)
                     total_predictions += batch_preds
+                    mega_batch_idx += 1
                     logger.info(
-                        f"Mega-batch complete: wrote {batch_preds} predictions "
-                        f"for {len(aln_batch)} reads"
+                        f"Mega-batch {mega_batch_idx}/{n_total_mega_batches} complete: "
+                        f"wrote {batch_preds} predictions for {len(aln_batch)} reads"
                     )
 
                     progress.update(
@@ -1385,9 +1395,10 @@ def run_inference(
                     )
                     total_reads += len(aln_batch)
                     total_predictions += batch_preds
+                    mega_batch_idx += 1
                     logger.info(
-                        f"Mega-batch complete: wrote {batch_preds} predictions "
-                        f"for {len(aln_batch)} reads"
+                        f"Mega-batch {mega_batch_idx}/{n_total_mega_batches} complete: "
+                        f"wrote {batch_preds} predictions for {len(aln_batch)} reads"
                     )
 
                     progress.update(
@@ -1832,6 +1843,14 @@ def run_bundle_inference(
 
     logger.info(f"Streaming bundle inference with read_batch_size={read_batch_size}")
 
+    n_total_reads = count_bam_reads(bam_path)
+    n_total_mega_batches = math.ceil(n_total_reads / read_batch_size) if n_total_reads > 0 else 0
+    logger.info(
+        f"BAM contains ~{n_total_reads} mapped reads → ~{n_total_mega_batches} mega-batches "
+        f"of {read_batch_size}"
+    )
+    mega_batch_idx = 0
+
     with Progress() as progress:
         task = progress.add_task("[cyan]Processing reads...", total=None)
 
@@ -1992,9 +2011,10 @@ def run_bundle_inference(
                     n_predicted += 1
                     batch_preds += 1
 
+                mega_batch_idx += 1
                 logger.info(
-                    f"Mega-batch complete: wrote {batch_preds} predictions "
-                    f"for {len(aln_batch)} reads"
+                    f"Mega-batch {mega_batch_idx}/{n_total_mega_batches} complete: "
+                    f"wrote {batch_preds} predictions for {len(aln_batch)} reads"
                 )
 
                 progress.update(

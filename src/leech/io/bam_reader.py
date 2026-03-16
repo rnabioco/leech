@@ -17,6 +17,43 @@ from leech.features import MoveTable, extract_move_table
 logger = logging.getLogger("leech.io.bam_reader")
 
 
+def count_bam_reads(bam_path: Path) -> int:
+    """Count mapped reads from BAM index (O(1), no iteration)."""
+    with pysam.AlignmentFile(str(bam_path), "rb") as bam:
+        return bam.mapped
+
+
+def iter_bam_batches(
+    bam_path: Path,
+    batch_size: int = 200_000,
+    min_mapq: int = 0,
+    require_tags: list[str] | None = None,
+) -> Iterator[list[pysam.AlignedSegment]]:
+    """
+    Yield lists of pysam.AlignedSegment in mega-batches.
+
+    Used for streaming inference to bound memory usage. Each batch contains
+    up to ``batch_size`` alignments in file order.
+
+    Args:
+        bam_path: Path to BAM file
+        batch_size: Maximum alignments per batch
+        min_mapq: Minimum mapping quality
+        require_tags: List of required BAM tags (default: ["mv", "ns"])
+
+    Yields:
+        Lists of filtered BAM alignments, each up to batch_size long
+    """
+    batch: list[pysam.AlignedSegment] = []
+    for aln in iter_bam_alignments(bam_path, min_mapq=min_mapq, require_tags=require_tags):
+        batch.append(aln)
+        if len(batch) >= batch_size:
+            yield batch
+            batch = []
+    if batch:
+        yield batch
+
+
 def iter_bam_alignments(
     bam_path: Path,
     min_mapq: int = 0,
