@@ -31,6 +31,9 @@ class SignalConfig:
     pa_stdev: float | None = None
     refine_signal_map: bool = True
     refine_scale_iters: int = 2
+    refine_half_bandwidth: int = 5
+    refine_do_rough_rescale: bool = True
+    refine_kmer_center_idx: int = -1
     signal_refiner: SigMapRefiner | None = None
     compute_features: bool = True
 
@@ -83,6 +86,11 @@ class PrepareConfig:
             "signal_norm": self.signal.norm_method,
             "refine_signal_map": self.signal.refine_signal_map,
             "refine_scale_iters": self.signal.refine_scale_iters,
+            "refine_half_bandwidth": self.signal.refine_half_bandwidth,
+            "refine_do_rough_rescale": self.signal.refine_do_rough_rescale,
+            "refine_kmer_center_idx": self.signal.refine_kmer_center_idx,
+            "pa_mean": self.signal.pa_mean,
+            "pa_stdev": self.signal.pa_stdev,
             "motif": self.motif.motif,
             "motif_offset": self.motif.motif_offset,
             "motif_reference": self.motif.motif_reference,

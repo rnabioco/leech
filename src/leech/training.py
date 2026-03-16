@@ -1068,6 +1068,12 @@ def train_model(
         "refine_signal_map": prepare_metadata.get("refine_signal_map", True),
         "refine_scale_iters": prepare_metadata.get("refine_scale_iters", 2),
         "motif_reference": prepare_metadata.get("motif_reference", "fasta"),
+        "pa_mean": prepare_metadata.get("pa_mean"),
+        "pa_stdev": prepare_metadata.get("pa_stdev"),
+        "skip_motif_indels": prepare_metadata.get("skip_motif_indels", False),
+        "refine_half_bandwidth": prepare_metadata.get("refine_half_bandwidth", 5),
+        "refine_do_rough_rescale": prepare_metadata.get("refine_do_rough_rescale", True),
+        "refine_kmer_center_idx": prepare_metadata.get("refine_kmer_center_idx", -1),
         **model_kwargs,
     }
 

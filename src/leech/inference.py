@@ -822,10 +822,10 @@ def run_inference(
         if a.query_name is not None:
             alignment_by_read_id[a.query_name] = a
 
-    # Detect normalization method: for remora models, use sm/sd tags if available
-    norm_method = "median_mad"
-    pa_mean = None
-    pa_stdev = None
+    # Detect normalization method: read from config, with sm/sd tag override for Remora
+    norm_method = config.get("signal_norm", "median_mad")
+    pa_mean = config.get("pa_mean")
+    pa_stdev = config.get("pa_stdev")
     if is_remora and alignment_by_read_id:
         first_aln = next(iter(alignment_by_read_id.values()))
         if first_aln.has_tag("sm") and first_aln.has_tag("sd"):
@@ -863,7 +863,7 @@ def run_inference(
     motif_searcher = get_motif_searcher(
         mode="fasta" if reference_sequences else "bam",
         reference_sequences=reference_sequences,
-        skip_indels=False,
+        skip_indels=config.get("skip_motif_indels", False),
         anchor=anchor,
     )
 
@@ -1429,7 +1429,7 @@ def run_bundle_inference(
     motif_searcher = get_motif_searcher(
         mode="fasta" if reference_sequences else "bam",
         reference_sequences=reference_sequences,
-        skip_indels=False,
+        skip_indels=config.get("skip_motif_indels", False),
         anchor=anchor,
     )
 
@@ -1483,6 +1483,8 @@ def run_bundle_inference(
             reverse_signal=reverse_signal,
             anchor=anchor,
             norm_method=config.get("signal_norm", "median_mad"),
+            pa_mean=config.get("pa_mean"),
+            pa_stdev=config.get("pa_stdev"),
             compute_features=bundle_compute_features,
             refine_signal_map=bundle_refine,
             signal_refiner=bundle_refiner,
