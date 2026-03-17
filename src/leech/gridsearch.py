@@ -183,6 +183,8 @@ class GridSearchConfig:
     adversarial_lambda: float = 0.0
     adversarial_anneal_epochs: int = 0
     confound: str | None = None
+    cl_regression: bool = False
+    cl_lambda: float = 1.0
 
 
 def prepare_chunks_with_context(
@@ -283,6 +285,8 @@ def run_grid_point(
     adversarial_lambda: float = 0.0,
     adversarial_anneal_epochs: int = 0,
     confound: str | None = None,
+    cl_regression: bool = False,
+    cl_lambda: float = 1.0,
 ) -> dict:
     """
     Train model for a single grid point.
@@ -365,6 +369,8 @@ def run_grid_point(
             adversarial_lambda=adversarial_lambda,
             adversarial_anneal_epochs=adversarial_anneal_epochs,
             confound=confound,
+            cl_regression=cl_regression,
+            cl_lambda=cl_lambda,
         )
 
         train_time = time.time() - start_time
@@ -469,6 +475,8 @@ def _grid_point_worker(args: dict) -> dict:
         adversarial_lambda=args.get("adversarial_lambda", 0.0),
         adversarial_anneal_epochs=args.get("adversarial_anneal_epochs", 0),
         confound=args.get("confound"),
+        cl_regression=args.get("cl_regression", False),
+        cl_lambda=args.get("cl_lambda", 1.0),
     )
     # Free CUDA memory between grid points to prevent accumulation
     if args.get("device", "cpu") != "cpu":
@@ -630,6 +638,8 @@ def run_grid_search(config: GridSearchConfig) -> Path:
                 "adversarial_lambda": config.adversarial_lambda,
                 "adversarial_anneal_epochs": config.adversarial_anneal_epochs,
                 "confound": config.confound,
+                "cl_regression": config.cl_regression,
+                "cl_lambda": config.cl_lambda,
             }
         )
 

@@ -74,6 +74,7 @@ def _process_read_chunk_worker(
                     "reference_start": read_info.reference_start,
                     "reference_end": read_info.reference_end,
                     "is_reverse": read_info.is_reverse,
+                    "cl_value": getattr(read_info, "cl_value", None),
                 }
 
                 # For reference-based motif search, add mock alignment
