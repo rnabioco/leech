@@ -78,8 +78,25 @@ def handle_bundle(
 
     # Multiclass: single model directory, no pair discovery
     if comparison_type == "multiclass":
+        # K-fold: pick best fold by validation loss/F1
+        effective_dir = model_dir
+        if not (model_dir / "config.json").exists():
+            fold_dirs = sorted(model_dir.glob("fold_*/"))
+            valid_folds = [
+                f
+                for f in fold_dirs
+                if (f / "model_best.pt").exists() and (f / "config.json").exists()
+            ]
+            if valid_folds:
+                effective_dir = pick_best_fold(valid_folds)
+                logger.info(f"multiclass: selected {effective_dir.name} (lowest val loss)")
+            else:
+                raise FileNotFoundError(
+                    f"No config.json found in {model_dir} or its fold_*/ subdirectories"
+                )
+
         bundle_path = create_multiclass_bundle(
-            model_dir=model_dir,
+            model_dir=effective_dir,
             output_path=output,
             version=bundle_version,
         )
