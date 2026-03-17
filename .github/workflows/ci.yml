@@ -49,6 +49,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Fetch submodules (optional, may fail for private repos)
+        run: git submodule update --init --recursive
+        continue-on-error: true
+
       - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:
@@ -60,7 +64,9 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: uv sync --all-extras
+        run: |
+          # Try full install (with Rust extension); fall back without it
+          uv sync --all-extras || uv sync --extra dev --extra pipeline --extra notebook
 
       - name: Run tests
         run: uv run pytest --cov=leech --cov-report=xml --cov-report=term

@@ -57,6 +57,7 @@ def handle_predict(
     min_confidence: int = 0,
     min_margin: int = 0,
     read_batch_size: int = 200_000,
+    backend: str = "auto",
 ) -> None:
     """
     Handle the predict command logic.
@@ -119,6 +120,7 @@ def handle_predict(
                 min_confidence=min_confidence,
                 min_margin=min_margin,
                 read_batch_size=read_batch_size,
+                backend=backend,
             )
         else:
             # Multi-model inference: run all models in bundle
@@ -143,6 +145,7 @@ def handle_predict(
                 batch_size=batch_size,
                 num_workers=workers,
                 read_batch_size=read_batch_size,
+                backend=backend,
             )
     else:
         # Single-model inference (auto-detects leech vs Remora)
@@ -181,6 +184,7 @@ def handle_predict(
             min_confidence=min_confidence,
             min_margin=min_margin,
             read_batch_size=read_batch_size,
+            backend=backend,
         )
 
     console.print("[bold green]Inference complete![/bold green]")

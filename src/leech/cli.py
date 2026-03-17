@@ -1214,6 +1214,12 @@ def ablation(model, test_data, output_dir, device, no_plot):
     default="naive",
     help='Pairwise aggregation method: "naive" (sum votes), "weighted" (confidence-weighted), "tournament" (two-round elimination). Default: naive.',
 )
+@click.option(
+    "--backend",
+    type=click.Choice(["auto", "rust", "python"]),
+    default="auto",
+    help='Extraction backend: "auto" (default, Rust if available), "rust" (force Rust, error if unavailable), "python" (force Python). Useful for comparing outputs between paths.',
+)
 def predict(
     model,
     bundle_path,
@@ -1237,6 +1243,7 @@ def predict(
     min_mapq,
     workers,
     aggregation,
+    backend,
 ):
     """Run inference on new data to generate predictions."""
     import warnings
@@ -1273,6 +1280,7 @@ def predict(
         min_mapq=min_mapq,
         workers=workers,
         aggregation=aggregation,
+        backend=backend,
     )
 
 

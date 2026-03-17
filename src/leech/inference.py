@@ -718,6 +718,7 @@ def run_inference(
     min_confidence: int = 0,
     min_margin: int = 0,
     read_batch_size: int = 200_000,
+    backend: str = "auto",
 ) -> None:
     """
     Run inference on POD5 and BAM files.
@@ -746,6 +747,8 @@ def run_inference(
             overlaps with GPU forward passes. For CPU-only inference, the
             sequential path (0) is faster due to batched POD5 access and
             no multiprocessing overhead.
+        backend: Extraction backend. "auto" uses Rust if available, "rust"
+            forces Rust (error if unavailable), "python" forces Python.
         chunk_size: Reads per worker batch
         anchor: "basecall" or "reference" for reference-anchored mode
         reference_fasta: Path to reference FASTA (for reference-anchored mode)
@@ -753,6 +756,18 @@ def run_inference(
             Each mega-batch loads BAM alignments + POD5 signals, runs inference,
             writes predictions, then frees memory. Set to 0 to disable (load all).
     """
+    # Apply backend override to signal_refine module
+    logger.info(f"Extraction backend: {backend}")
+    if backend == "python":
+        import leech.signal_refine as _sr
+
+        _sr.HAS_RUST = False
+    elif backend == "rust":
+        import leech.signal_refine as _sr
+
+        if not _sr.HAS_RUST:
+            logger.warning("Backend rust requested but signal_refine Rust not available")
+
     # Load model
     if model_and_config is not None:
         wrapper_or_model, config = model_and_config
@@ -1234,6 +1249,24 @@ def run_inference(
         n_extract = max(1, _avail_cpus - 2)  # reserve for main + GPU
         logger.info(f"Sequential path with {n_extract} extraction threads, double-buffered GPU")
 
+        # Check if we can use the Rust monolithic extraction hot path
+        from leech._rust_accel import HAS_RUST, _rs_extract_inference_chunks
+
+        _rust_available = HAS_RUST and _rs_extract_inference_chunks is not None
+        if backend == "rust" and not _rust_available:
+            raise RuntimeError(
+                "--backend rust requested but leech_core is not installed. "
+                "Build with: cd rust && uv run maturin develop --release"
+            )
+        _use_rust_extraction = _rust_available and backend != "python"
+        if _use_rust_extraction:
+            logger.info("Using Rust monolithic extraction (escapepod-rs + leech_core)")
+        else:
+            logger.info(
+                "Using Python extraction path"
+                + (" (forced via --backend python)" if backend == "python" else "")
+            )
+
         def _extract_one_read(
             aln: pysam.AlignedSegment,
         ) -> list[tuple[np.ndarray, np.ndarray, np.ndarray | None, tuple[str, int]]]:
@@ -1346,36 +1379,159 @@ def run_inference(
                 for aln_batch in iter_bam_batches(
                     bam_path, batch_size=read_batch_size, min_mapq=min_mapq
                 ):
-                    # Preload POD5 signals for this mega-batch
-                    batch_read_ids = [
-                        aln.query_name
-                        for aln in aln_batch
-                        if aln.query_name is not None and aln.query_sequence is not None
-                    ]
-                    if batch_read_ids:
-                        pod5_reader.preload(batch_read_ids)
-
-                    logger.info(
-                        f"Mega-batch: {len(aln_batch)} alignments, "
-                        f"{len(batch_read_ids)} preloaded from POD5"
-                    )
-
                     pending.clear()
 
-                    # Parallel extraction → GPU batching
-                    for chunks in _extract_pool.map(_extract_one_read, aln_batch):
-                        for sig, seq_arr, feat, meta in chunks:
-                            if not _shape_validated:
-                                validate_inference_shapes(sig, feat, config)
-                                _shape_validated = True
+                    if _use_rust_extraction:
+                        # ---- Rust hot path ----
+                        # Pre-extract lightweight BAM data, then batch everything
+                        # through the Rust monolithic pipeline (POD5 + normalize +
+                        # features + chunk extraction in one call).
+                        rs_read_ids: list[str] = []
+                        rs_sequences: list[str] = []
+                        rs_mv_strides: list[int] = []
+                        rs_mv_arrays: list[list[int]] = []
+                        rs_num_samples: list[int] = []
+                        rs_trim_offsets: list[int] = []
+                        rs_motif_positions: list[list[int]] = []
+                        rs_cigar_tuples: list[list[tuple[int, int]]] = []
+                        rs_ref_sequences: list[str | None] = []
 
-                            batch_signals.append(sig)
-                            batch_seqs.append(seq_arr)
-                            batch_feats.append(feat)
-                            batch_meta.append(meta)
+                        assert motif is not None
+                        for aln in aln_batch:
+                            if aln.query_name is None or aln.query_sequence is None:
+                                continue
+                            try:
+                                mt = extract_move_table(aln)
+                                positions = [
+                                    pos + motif_offset
+                                    for pos in motif_searcher.find_motif_positions(
+                                        aln.query_name, aln.query_sequence, aln, motif
+                                    )
+                                ]
+                                if not positions:
+                                    continue
+                                rs_read_ids.append(aln.query_name)
+                                rs_sequences.append(aln.query_sequence)
+                                rs_mv_strides.append(mt.stride)
+                                rs_mv_arrays.append(mt.moves.tolist())
+                                rs_num_samples.append(mt.num_samples)
+                                rs_trim_offsets.append(mt.trim_offset)
+                                rs_motif_positions.append(positions)
 
-                            if len(batch_signals) >= batch_size:
-                                _flush_batch()
+                                # Collect CIGAR + ref seq for reference anchoring
+                                ref_seq = None
+                                cigar = []
+                                if anchor == "reference":
+                                    cigar = list(aln.cigartuples) if aln.cigartuples else []
+                                    if (
+                                        reference_sequences
+                                        and aln.reference_name in reference_sequences
+                                    ):
+                                        full_ref = reference_sequences[aln.reference_name]
+                                        ref_seq = full_ref[aln.reference_start : aln.reference_end]
+                                    else:
+                                        try:
+                                            ref_seq = aln.get_reference_sequence()
+                                        except Exception:
+                                            ref_seq = None
+                                rs_cigar_tuples.append(cigar)
+                                rs_ref_sequences.append(ref_seq)
+                            except Exception as e:
+                                logger.warning(f"Skipping read {aln.query_name}: {e}")
+                                continue
+
+                        # Get kmer table dict for refinement
+                        _kmer_table_dict = None
+                        _kmer_table_len = 9
+                        _kmer_table_center = -1
+                        if refine_signal_map and signal_refiner is not None:
+                            _kmer_table_dict = getattr(signal_refiner, "kmer_to_level", None)
+                            _kmer_table_len = getattr(signal_refiner, "kmer_len", 9)
+                            _kmer_table_center = getattr(signal_refiner, "center_idx", -1)
+
+                        logger.info(
+                            f"Mega-batch: {len(aln_batch)} alignments, "
+                            f"{len(rs_read_ids)} for Rust extraction"
+                        )
+
+                        if rs_read_ids:
+                            assert _rs_extract_inference_chunks is not None
+                            chunks = _rs_extract_inference_chunks(
+                                str(pod5_path),
+                                read_ids=rs_read_ids,
+                                sequences=rs_sequences,
+                                mv_strides=rs_mv_strides,
+                                mv_arrays=rs_mv_arrays,
+                                num_samples_list=rs_num_samples,
+                                trim_offsets=rs_trim_offsets,
+                                signal_context_left=signal_context[0],
+                                signal_context_right=signal_context[1],
+                                kmer_context=kmer_context,
+                                motif_positions=rs_motif_positions,
+                                signal_len=signal_len,
+                                compute_features=compute_features,
+                                reverse_signal=reverse_signal,
+                                feature_start=_feature_start,
+                                feature_end=_feature_end,
+                                dwell_offset=dwell_offset,
+                                anchor=anchor,
+                                cigar_tuples=rs_cigar_tuples if anchor == "reference" else None,
+                                reference_sequences=rs_ref_sequences
+                                if anchor == "reference"
+                                else None,
+                                seq_encoding=seq_encoding,
+                                signal_kmer_context=signal_kmer_context
+                                if seq_encoding == "signal_kmer"
+                                else None,
+                                refine_signal_map=refine_signal_map,
+                                kmer_table=_kmer_table_dict,
+                                kmer_len=_kmer_table_len,
+                                kmer_center_idx=_kmer_table_center,
+                                refine_half_bandwidth=config.get("refine_half_bandwidth", 5),
+                                refine_scale_iters=config.get("refine_scale_iters", 2),
+                                signal_in_channels=signal_in_channels,
+                            )
+                            for sig, seq_arr, feat, read_id, base_idx in chunks:
+                                if not _shape_validated:
+                                    validate_inference_shapes(sig, feat, config)
+                                    _shape_validated = True
+
+                                batch_signals.append(sig)
+                                batch_seqs.append(seq_arr)
+                                batch_feats.append(feat)
+                                batch_meta.append((read_id, base_idx))
+
+                                if len(batch_signals) >= batch_size:
+                                    _flush_batch()
+                    else:
+                        # ---- Python extraction path ----
+                        batch_read_ids = [
+                            aln.query_name
+                            for aln in aln_batch
+                            if aln.query_name is not None and aln.query_sequence is not None
+                        ]
+                        if batch_read_ids:
+                            pod5_reader.preload(batch_read_ids)
+
+                        logger.info(
+                            f"Mega-batch: {len(aln_batch)} alignments, "
+                            f"{len(batch_read_ids)} preloaded from POD5"
+                        )
+
+                        # Parallel extraction → GPU batching
+                        for chunks in _extract_pool.map(_extract_one_read, aln_batch):
+                            for sig, seq_arr, feat, meta in chunks:
+                                if not _shape_validated:
+                                    validate_inference_shapes(sig, feat, config)
+                                    _shape_validated = True
+
+                                batch_signals.append(sig)
+                                batch_seqs.append(seq_arr)
+                                batch_feats.append(feat)
+                                batch_meta.append(meta)
+
+                                if len(batch_signals) >= batch_size:
+                                    _flush_batch()
 
                     # Flush remaining chunks for this mega-batch
                     _flush_batch()
@@ -1510,6 +1666,7 @@ def run_bundle_inference(
     batch_size: int = 512,
     num_workers: int = 0,
     read_batch_size: int = 200_000,
+    backend: str = "auto",
 ) -> None:
     """
     Run all models from a bundle on each read, aggregate to a single AA prediction.
@@ -1535,6 +1692,12 @@ def run_bundle_inference(
         anchor: "basecall" or "reference" for reference-anchored mode
         reference_fasta: Path to reference FASTA (for reference-anchored mode)
     """
+    logger.info(f"Extraction backend: {backend}")
+    if backend == "python":
+        import leech.signal_refine as _sr
+
+        _sr.HAS_RUST = False
+
     bundle = torch.load(bundle_path, map_location="cpu", weights_only=False)
     metadata = bundle["metadata"]
     config = bundle["config"]
@@ -1854,7 +2017,7 @@ def run_bundle_inference(
     with Progress() as progress:
         task = progress.add_task("[cyan]Processing reads...", total=None)
 
-        with POD5Reader(pod5_path) as pod5_reader:
+        with POD5Reader(pod5_path, backend=backend) as pod5_reader:
             for aln_batch in iter_bam_batches(
                 bam_path, batch_size=read_batch_size, min_mapq=min_mapq
             ):
