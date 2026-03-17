@@ -2,9 +2,21 @@
 Rich-click styling configuration and branding for the leech CLI.
 """
 
+import os
+import sys
+from typing import Any
+
 import rich_click as click
 from rich.console import Console
 from rich.panel import Panel
+
+
+def make_console(**kwargs: Any) -> Console:
+    """Create Console with wide fallback for non-interactive contexts (SLURM)."""
+    if "width" not in kwargs and not sys.stdout.isatty() and "COLUMNS" not in os.environ:
+        kwargs["width"] = 160
+    return Console(**kwargs)
+
 
 # ASCII Logo
 LOGO = """
@@ -16,7 +28,7 @@ LOGO = """
     V
 """
 
-console = Console()
+console = make_console()
 
 
 def display_logo():

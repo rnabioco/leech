@@ -10,11 +10,12 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from rich.console import Console
 from rich.table import Table
 
+from leech.cli_config import make_console
+
 logger = logging.getLogger("leech.commands.bundle")
-console = Console()
+console = make_console()
 
 
 def pick_best_fold(fold_dirs: list[Path]) -> Path:

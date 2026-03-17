@@ -8,10 +8,11 @@ import logging
 from pathlib import Path
 
 import rich_click as click
-from rich.console import Console
+
+from leech.cli_config import make_console
 
 logger = logging.getLogger("leech.commands.predict")
-console = Console()
+console = make_console()
 
 
 def validate_predict_args(
@@ -55,6 +56,7 @@ def handle_predict(
     aggregation: str = "naive",
     min_confidence: int = 0,
     min_margin: int = 0,
+    read_batch_size: int = 200_000,
 ) -> None:
     """
     Handle the predict command logic.
@@ -79,6 +81,7 @@ def handle_predict(
         min_mapq: Minimum mapping quality
         workers: Parallel chunk extraction workers
         min_confidence: Confidence threshold in 0-255 uint8 space
+        read_batch_size: Reads per mega-batch for memory-bounded streaming
     """
     import torch
 
@@ -115,6 +118,7 @@ def handle_predict(
                 raw=raw,
                 min_confidence=min_confidence,
                 min_margin=min_margin,
+                read_batch_size=read_batch_size,
             )
         else:
             # Multi-model inference: run all models in bundle
@@ -138,6 +142,7 @@ def handle_predict(
                 reference_fasta=reference_fasta,
                 batch_size=batch_size,
                 num_workers=workers,
+                read_batch_size=read_batch_size,
             )
     else:
         # Single-model inference (auto-detects leech vs Remora)
@@ -175,6 +180,7 @@ def handle_predict(
             raw=raw,
             min_confidence=min_confidence,
             min_margin=min_margin,
+            read_batch_size=read_batch_size,
         )
 
     console.print("[bold green]Inference complete![/bold green]")

@@ -7,10 +7,10 @@ This module contains the business logic for testing models on holdout data.
 import logging
 from pathlib import Path
 
-from rich.console import Console
+from leech.cli_config import make_console
 
 logger = logging.getLogger("leech.commands.eval")
-console = Console()
+console = make_console()
 
 
 def handle_test(

@@ -11,7 +11,6 @@ from typing import Any
 import numpy as np
 import torch
 import torch.nn as nn
-from rich.console import Console
 from rich.progress import (
     BarColumn,
     Progress,
@@ -23,13 +22,14 @@ from rich.progress import (
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 from torch.utils.data import DataLoader, WeightedRandomSampler
 
+from leech.cli_config import make_console
 from leech.dataset import LeechDataset, collate_fn
 from leech.losses import AdversarialHead, FocalBCEWithLogitsLoss
 from leech.models import get_model
 from leech.models.inference_wrapper import ModelInferenceWrapper
 
 logger = logging.getLogger("leech.training")
-console = Console()
+console = make_console()
 
 
 def compute_class_weights(dataset: LeechDataset) -> torch.Tensor | None:

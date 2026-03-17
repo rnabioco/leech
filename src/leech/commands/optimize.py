@@ -9,10 +9,11 @@ import logging
 from pathlib import Path
 
 import rich_click as click
-from rich.console import Console
+
+from leech.cli_config import make_console
 
 logger = logging.getLogger("leech.commands.optimize")
-console = Console()
+console = make_console()
 
 
 def handle_optimize(
@@ -50,6 +51,9 @@ def handle_optimize(
     balance_groups: bool = False,
     motif: str = "",
     motif_offset: int = 0,
+    adversarial_lambda: float = 0.0,
+    adversarial_anneal_epochs: int = 0,
+    confound: str | None = None,
 ) -> Path:
     """
     Handle the optimize command logic.
@@ -148,6 +152,9 @@ def handle_optimize(
         balance_groups=balance_groups,
         motif=motif,
         motif_offset=motif_offset,
+        adversarial_lambda=adversarial_lambda,
+        adversarial_anneal_epochs=adversarial_anneal_epochs,
+        confound=confound,
     )
 
     # Run grid search

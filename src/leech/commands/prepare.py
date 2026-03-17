@@ -9,13 +9,13 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from rich.console import Console
 from rich.table import Table
 
+from leech.cli_config import make_console
 from leech.constants import DEFAULT_SEED
 
 logger = logging.getLogger("leech.commands.prepare")
-console = Console()
+console = make_console()
 
 
 def handle_prepare(

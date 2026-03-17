@@ -9,11 +9,12 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from rich.console import Console
 from rich.table import Table
 
+from leech.cli_config import make_console
+
 logger = logging.getLogger("leech.commands.train")
-console = Console()
+console = make_console()
 
 
 def handle_train(
@@ -50,6 +51,9 @@ def handle_train(
     base_justify: str = "center",
     seq_encoding: str = "signal_kmer",
     balance_groups: bool = False,
+    adversarial_lambda: float = 0.0,
+    adversarial_anneal_epochs: int = 0,
+    confound: str | None = None,
     **model_kwargs: Any,
 ) -> dict[str, Any]:
     """
@@ -136,6 +140,9 @@ def handle_train(
         "motif_offset",
         "base_justify",
         "num_out",
+        "adversarial_lambda",
+        "adversarial_anneal_epochs",
+        "confound",
     }
     for key in _explicit_keys:
         extra_kwargs.pop(key, None)
@@ -174,6 +181,9 @@ def handle_train(
         base_justify=base_justify,
         seq_encoding=seq_encoding,
         balance_groups=balance_groups,
+        adversarial_lambda=adversarial_lambda,
+        adversarial_anneal_epochs=adversarial_anneal_epochs,
+        confound=confound,
         **extra_kwargs,
     )
 
@@ -188,6 +198,8 @@ def handle_train(
         table.add_row("Best Validation Accuracy", f"{history['val_acc'][-1]:.4f}")
     if "val_loss" in history and history["val_loss"]:
         table.add_row("Final Validation Loss", f"{history['val_loss'][-1]:.4f}")
+    if "val_f1" in history and history["val_f1"]:
+        table.add_row("Best Validation F1", f"{history['val_f1'][-1]:.4f}")
 
     table.add_row("Model saved to", str(output_dir))
 

@@ -7,12 +7,11 @@ This module contains the business logic for post-hoc Platt scaling calibration.
 import logging
 from pathlib import Path
 
-from rich.console import Console
-
+from leech.cli_config import make_console
 from leech.commands.bundle import pick_best_fold
 
 logger = logging.getLogger("leech.commands.calibrate")
-console = Console()
+console = make_console()
 
 
 def handle_calibrate(

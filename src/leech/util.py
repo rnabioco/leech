@@ -17,7 +17,6 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn as nn
-from rich.console import Console
 from rich.table import Table
 from sklearn.metrics import (
     accuracy_score,
@@ -29,11 +28,12 @@ from sklearn.metrics import (
     roc_auc_score,
 )
 
+from leech.cli_config import make_console
 from leech.constants import generate_random_seed
 from leech.models import MODEL_REGISTRY, get_model
 
 logger = logging.getLogger("leech.util")
-console = Console()
+console = make_console()
 
 
 def setup_random_seed(seed: int | None, output_dir: Path | None = None) -> int:

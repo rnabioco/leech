@@ -15,17 +15,17 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-from rich.console import Console
 from rich.table import Table
 
 from leech.chunking import extract_training_chunks, load_chunks, save_chunks
+from leech.cli_config import make_console
 from leech.configs import ChunkConfig, LabelConfig, MotifConfig, SignalConfig
 from leech.models.inference_wrapper import ModelInferenceWrapper
 from leech.preparation import iter_bam_with_pod5
 from leech.training import train_model
 
 logger = logging.getLogger("leech.gridsearch")
-console = Console()
+console = make_console()
 
 
 def parse_values(spec: str) -> list[int]:
@@ -180,6 +180,9 @@ class GridSearchConfig:
     augment_scale_max: float = 1.0
     num_workers: int = 0
     balance_groups: bool = False
+    adversarial_lambda: float = 0.0
+    adversarial_anneal_epochs: int = 0
+    confound: str | None = None
 
 
 def prepare_chunks_with_context(
@@ -277,6 +280,9 @@ def run_grid_point(
     motif: str = "",
     motif_offset: int = 0,
     base_justify: str = "center",
+    adversarial_lambda: float = 0.0,
+    adversarial_anneal_epochs: int = 0,
+    confound: str | None = None,
 ) -> dict:
     """
     Train model for a single grid point.
@@ -356,6 +362,9 @@ def run_grid_point(
             motif=motif,
             motif_offset=motif_offset,
             base_justify=base_justify,
+            adversarial_lambda=adversarial_lambda,
+            adversarial_anneal_epochs=adversarial_anneal_epochs,
+            confound=confound,
         )
 
         train_time = time.time() - start_time
@@ -457,6 +466,9 @@ def _grid_point_worker(args: dict) -> dict:
         motif=args.get("motif"),
         motif_offset=args.get("motif_offset", 0),
         base_justify=args.get("base_justify", "center"),
+        adversarial_lambda=args.get("adversarial_lambda", 0.0),
+        adversarial_anneal_epochs=args.get("adversarial_anneal_epochs", 0),
+        confound=args.get("confound"),
     )
     # Free CUDA memory between grid points to prevent accumulation
     if args.get("device", "cpu") != "cpu":
@@ -615,6 +627,9 @@ def run_grid_search(config: GridSearchConfig) -> Path:
                 "motif": config.motif,
                 "motif_offset": config.motif_offset,
                 "base_justify": config.base_justify,
+                "adversarial_lambda": config.adversarial_lambda,
+                "adversarial_anneal_epochs": config.adversarial_anneal_epochs,
+                "confound": config.confound,
             }
         )
 
