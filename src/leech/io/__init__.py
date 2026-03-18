@@ -11,6 +11,7 @@ from leech.io.bam_reader import (
     ReadInfo,
     collect_read_infos,
     iter_bam_alignments,
+    iter_bam_batches,
 )
 from leech.io.motif_search import (
     BasecalledMotifSearcher,
@@ -39,6 +40,7 @@ __all__ = [
     "MockAlignment",
     "ReadInfo",
     "iter_bam_alignments",
+    "iter_bam_batches",
     "collect_read_infos",
     # POD5 reading
     "POD5Reader",
