@@ -1322,7 +1322,7 @@ def train_model(
         "use_class_weights": use_class_weights,
         "pos_weight": pos_weight
         if pos_weight is not None
-        else (pos_weight_tensor.item() if pos_weight_tensor is not None else None),
+        else (pos_weight_tensor.tolist() if pos_weight_tensor is not None else None),
         "weight_decay": weight_decay,
         "max_grad_norm": max_grad_norm,
         "scheduler": scheduler,
