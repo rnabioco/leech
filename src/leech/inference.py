@@ -52,6 +52,7 @@ def _write_prediction_tags(
     raw: bool,
     min_confidence: int,
     min_margin: int = 0,
+    predicted_cl: float | None = None,
 ) -> None:
     """Write prediction tags to a BAM alignment.
 
@@ -64,6 +65,7 @@ def _write_prediction_tags(
         raw: if True, write float tags; otherwise compact uint8
         min_confidence: threshold in 0-255 uint8 space
         min_margin: margin threshold in 0-255 uint8 space
+        predicted_cl: predicted charging level in [0, 1] (None = no CL head)
     """
     sorted_probs = sorted(probs, reverse=True)
     margin = sorted_probs[0] - sorted_probs[1] if len(sorted_probs) > 1 else 1.0
@@ -93,6 +95,13 @@ def _write_prediction_tags(
             "pp",
             array.array("B", [int(min(255, max(0, round(p * 255)))) for p in probs]),
         )
+
+    # Predicted charging level (CL regression head)
+    if predicted_cl is not None:
+        if raw:
+            aln.set_tag("pc", predicted_cl)
+        else:
+            aln.set_tag("pc", int(min(255, max(0, round(predicted_cl * 255)))), value_type="C")
 
 
 class InferenceConfigError(RuntimeError):
@@ -665,7 +674,13 @@ def _write_mega_batch_predictions(
         for aln in aln_batch:
             preds = pending.get(aln.query_name)
             if preds:
-                _, cls_idx, conf, all_probs = preds[0]
+                pred = preds[0]
+                # Unpack: 4-tuple (old) or 5-tuple (with CL prediction)
+                if len(pred) == 5:
+                    _, cls_idx, conf, all_probs, cl_pred = pred
+                else:
+                    _, cls_idx, conf, all_probs = pred
+                    cl_pred = None
                 if int_to_label:
                     predicted_aa = int_to_label.get(cls_idx, str(cls_idx))
                 else:
@@ -679,6 +694,7 @@ def _write_mega_batch_predictions(
                     raw,
                     min_confidence,
                     min_margin,
+                    predicted_cl=cl_pred,
                 )
                 n_preds += 1
             bam_out.write(aln)
@@ -976,6 +992,20 @@ def run_inference(
     if hasattr(model_wrapper, "eval"):
         model_wrapper.eval()
 
+    # Set up CL regression head if present in config (multiclass bundles)
+    _cl_head: torch.nn.Module | None = None
+    if config.get("cl_regression") and isinstance(model_wrapper, ModelInferenceWrapper):
+        from leech.losses import RegressionHead
+
+        cl_state = config.get("cl_regression_head_state_dict")
+        if cl_state is not None:
+            repr_dim = model_wrapper.enable_repr_capture()
+            _cl_head = RegressionHead(input_dim=repr_dim)
+            _cl_head.load_state_dict(cl_state)
+            _cl_head.to(device)
+            _cl_head.eval()
+            logger.info(f"CL regression head loaded (repr_dim={repr_dim})")
+
     # Skip feature computation when model doesn't need them (big speedup)
     # But always compute when signal_in_channels > 1 (needed for kmer residual)
     signal_in_channels = config.get("signal_in_channels", 1)
@@ -1057,7 +1087,11 @@ def run_inference(
 
         calibration = config.get("calibration") if is_multiclass else None
         _batch_fn_p = (
-            functools.partial(_run_batch_multiclass, calibration=calibration)
+            functools.partial(
+                _run_batch_multiclass,
+                calibration=calibration,
+                cl_regression_head=_cl_head,
+            )
             if is_multiclass
             else _run_batch
         )
@@ -1177,7 +1211,11 @@ def run_inference(
 
         calibration = config.get("calibration") if is_multiclass else None
         _batch_fn = (
-            functools.partial(_run_batch_multiclass, calibration=calibration)
+            functools.partial(
+                _run_batch_multiclass,
+                calibration=calibration,
+                cl_regression_head=_cl_head,
+            )
             if is_multiclass
             else _run_batch
         )
@@ -1771,10 +1809,11 @@ def _run_batch_multiclass(
     model_wrapper: ModelInferenceWrapper | TracedModelWrapper | RemoraModelWrapper,
     requires_features: bool,
     device: str,
-    pending: dict[str, list[tuple[int, int, float, list[float]]]],
+    pending: dict[str, list[tuple[int, int, float, list[float], float | None]]],
     calibration: dict | None = None,
+    cl_regression_head: "torch.nn.Module | None" = None,
 ) -> None:
-    """Run a multi-class batch: store (base_idx, class_idx, confidence, all_probs) per read."""
+    """Run a multi-class batch: store (base_idx, class_idx, confidence, all_probs, cl_pred) per read."""
     signal_t = torch.from_numpy(np.stack(signals)).to(device)
     seq_t = torch.from_numpy(np.stack(sequences)).to(device)
     batch = {"signal": signal_t, "sequence": seq_t}
@@ -1794,12 +1833,24 @@ def _run_batch_multiclass(
         class_indices = np.argmax(probs, axis=-1)
         confidences = probs.max(axis=-1)
 
-    for (read_id, base_idx), cls_idx, conf, prob_vec in zip(
-        meta, class_indices.flatten(), confidences.flatten(), probs, strict=True
+        # CL regression prediction from captured representation
+        cl_preds: np.ndarray | None = None
+        if (
+            cl_regression_head is not None
+            and isinstance(model_wrapper, ModelInferenceWrapper)
+            and model_wrapper.captured_repr is not None
+        ):
+            cl_preds = cl_regression_head(model_wrapper.captured_repr).cpu().numpy()
+
+    for i, ((read_id, base_idx), cls_idx, conf, prob_vec) in enumerate(
+        zip(meta, class_indices.flatten(), confidences.flatten(), probs, strict=True)
     ):
+        cl_val = float(cl_preds[i]) if cl_preds is not None else None
         if read_id not in pending:
             pending[read_id] = []
-        pending[read_id].append((base_idx, int(cls_idx), float(conf), [float(p) for p in prob_vec]))
+        pending[read_id].append(
+            (base_idx, int(cls_idx), float(conf), [float(p) for p in prob_vec], cl_val)
+        )
 
 
 def _run_batch(

@@ -54,6 +54,8 @@ def handle_train(
     adversarial_lambda: float = 0.0,
     adversarial_anneal_epochs: int = 0,
     confound: str | None = None,
+    cl_regression: bool = False,
+    cl_lambda: float = 1.0,
     **model_kwargs: Any,
 ) -> dict[str, Any]:
     """
@@ -143,6 +145,8 @@ def handle_train(
         "adversarial_lambda",
         "adversarial_anneal_epochs",
         "confound",
+        "cl_regression",
+        "cl_lambda",
     }
     for key in _explicit_keys:
         extra_kwargs.pop(key, None)
@@ -184,6 +188,8 @@ def handle_train(
         adversarial_lambda=adversarial_lambda,
         adversarial_anneal_epochs=adversarial_anneal_epochs,
         confound=confound,
+        cl_regression=cl_regression,
+        cl_lambda=cl_lambda,
         **extra_kwargs,
     )
 

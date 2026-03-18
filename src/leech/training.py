@@ -24,7 +24,7 @@ from torch.utils.data import DataLoader, WeightedRandomSampler
 
 from leech.cli_config import make_console
 from leech.dataset import LeechDataset, collate_fn
-from leech.losses import AdversarialHead, FocalBCEWithLogitsLoss
+from leech.losses import AdversarialHead, FocalBCEWithLogitsLoss, RegressionHead
 from leech.models import get_model
 from leech.models.inference_wrapper import ModelInferenceWrapper
 
@@ -126,6 +126,8 @@ class Trainer:
         adversarial_lambda: float = 0.0,
         adversarial_num_classes: int = 4,
         adversarial_anneal_epochs: int = 0,
+        cl_regression: bool = False,
+        cl_lambda: float = 1.0,
     ):
         # Wrap model with inference wrapper for unified forward pass
         self.model_wrapper = ModelInferenceWrapper(model, model_type)
@@ -161,10 +163,26 @@ class Trainer:
                 f"repr_dim={repr_dim}"
             )
 
-        # Setup optimizer (include adversarial head params if present)
+        # CL regression head (continuous charging-level prediction)
+        self.cl_regression_head: RegressionHead | None = None
+        self.cl_lambda = cl_lambda
+
+        if cl_regression:
+            # Enable repr capture if not already active for adversarial
+            if self.adversarial_head is None:
+                repr_dim = self.model_wrapper.enable_repr_capture()
+            else:
+                repr_dim = self.model_wrapper.enable_repr_capture()
+            self.cl_regression_head = RegressionHead(input_dim=repr_dim)
+            self.cl_regression_head.to(device)
+            logger.info(f"CL regression head enabled: repr_dim={repr_dim}, cl_lambda={cl_lambda}")
+
+        # Setup optimizer (include adversarial + CL regression head params if present)
         all_params = list(model.parameters())
         if self.adversarial_head is not None:
             all_params += list(self.adversarial_head.parameters())
+        if self.cl_regression_head is not None:
+            all_params += list(self.cl_regression_head.parameters())
         self.optimizer = torch.optim.Adam(all_params, lr=learning_rate, weight_decay=weight_decay)
 
         # Setup loss
@@ -258,6 +276,9 @@ class Trainer:
         if self.adversarial_head is not None:
             self.history["train_adv_loss"] = []
             self.history["train_adv_acc"] = []
+        if self.cl_regression_head is not None:
+            self.history["train_cl_loss"] = []
+            self.history["val_cl_loss"] = []
 
         if self.output_dir:
             self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -292,6 +313,13 @@ class Trainer:
         if self.scaler is not None and checkpoint.get("scaler_state_dict") is not None:
             self.scaler.load_state_dict(checkpoint["scaler_state_dict"])
 
+        # Restore CL regression head if available
+        if (
+            self.cl_regression_head is not None
+            and checkpoint.get("cl_regression_head_state_dict") is not None
+        ):
+            self.cl_regression_head.load_state_dict(checkpoint["cl_regression_head_state_dict"])
+
         logger.info(
             f"Resumed from epoch {self.start_epoch - 1} "
             f"(best_val_acc={self.best_val_acc:.4f}, best_val_f1={self.best_val_f1:.4f} "
@@ -322,6 +350,23 @@ class Trainer:
         adv_preds = torch.argmax(adv_logits, dim=-1)
         return adv_loss, adv_preds, confound_labels
 
+    def _cl_regression_loss(self, batch: dict[str, torch.Tensor]) -> torch.Tensor:
+        """Compute CL regression loss from captured representation.
+
+        Only valid samples (cl_target >= 0) contribute to the loss.
+        Returns zero if no valid targets exist or capture failed.
+        """
+        assert self.cl_regression_head is not None
+        repr_vec = self.model_wrapper.captured_repr
+        cl_targets = batch["cl_target"].to(self.device)
+        if repr_vec is None:
+            return torch.tensor(0.0, device=self.device)
+        mask = cl_targets >= 0
+        if not mask.any():
+            return torch.tensor(0.0, device=self.device)
+        preds = self.cl_regression_head(repr_vec[mask])
+        return nn.functional.mse_loss(preds, cl_targets[mask])
+
     def train_epoch(
         self, progress: Progress | None = None, task_id: TaskID | None = None
     ) -> tuple[float, float]:
@@ -338,8 +383,11 @@ class Trainer:
         self.model.train()
         if self.adversarial_head is not None:
             self.adversarial_head.train()
+        if self.cl_regression_head is not None:
+            self.cl_regression_head.train()
         total_loss = 0.0
         total_adv_loss = 0.0
+        total_cl_loss = 0.0
         all_preds: list[float] = []
         all_labels: list[float] = []
         all_adv_preds: list[int] = []
@@ -386,6 +434,12 @@ class Trainer:
                     else:
                         loss = main_loss
 
+                    # CL regression loss
+                    if self.cl_regression_head is not None and "cl_target" in batch:
+                        cl_loss = self._cl_regression_loss(batch)
+                        loss = loss + self.cl_lambda * cl_loss
+                        total_cl_loss += cl_loss.item()
+
                 # Scaled backward pass
                 self.scaler.scale(loss).backward()
 
@@ -414,6 +468,12 @@ class Trainer:
                         all_adv_labels.extend(adv_labels[mask].cpu().numpy().tolist())
                 else:
                     loss = main_loss
+
+                # CL regression loss
+                if self.cl_regression_head is not None and "cl_target" in batch:
+                    cl_loss = self._cl_regression_loss(batch)
+                    loss = loss + self.cl_lambda * cl_loss
+                    total_cl_loss += cl_loss.item()
 
                 loss.backward()
 
@@ -458,6 +518,11 @@ class Trainer:
             self.history["train_adv_loss"].append(avg_adv_loss)
             self.history["train_adv_acc"].append(adv_acc)
 
+        # CL regression metrics
+        if self.cl_regression_head is not None:
+            avg_cl_loss = total_cl_loss / max(1, len(self.train_loader))
+            self.history["train_cl_loss"].append(avg_cl_loss)
+
         return avg_loss, accuracy
 
     def validate(
@@ -477,7 +542,10 @@ class Trainer:
             return 0.0, 0.0, 0.0, 0.0
 
         self.model.eval()
+        if self.cl_regression_head is not None:
+            self.cl_regression_head.eval()
         total_loss = 0.0
+        total_cl_loss = 0.0
         all_preds: list[float] = []
         all_labels: list[float] = []
 
@@ -506,6 +574,22 @@ class Trainer:
                         loss = self.criterion(logits, ce_labels)
                     else:
                         loss = self.criterion(logits, labels)
+
+                # CL regression validation loss
+                if (
+                    self.cl_regression_head is not None
+                    and "cl_target" in batch
+                    and self.model_wrapper.captured_repr is not None
+                ):
+                    cl_targets = batch["cl_target"].to(self.device)
+                    cl_mask = cl_targets >= 0
+                    if cl_mask.any():
+                        cl_preds = self.cl_regression_head(
+                            self.model_wrapper.captured_repr[cl_mask]
+                        )
+                        total_cl_loss += nn.functional.mse_loss(
+                            cl_preds, cl_targets[cl_mask]
+                        ).item()
 
                 # Track metrics
                 total_loss += loss.item()
@@ -536,6 +620,11 @@ class Trainer:
             accuracy = accuracy_score(all_labels, all_preds_binary)
             auc = roc_auc_score(all_labels, all_preds) if len(np.unique(all_labels)) > 1 else 0.0
             f1 = f1_score(all_labels, all_preds_binary, zero_division=0.0)
+
+        # CL regression validation metrics
+        if self.cl_regression_head is not None:
+            avg_cl_loss = total_cl_loss / max(1, len(self.val_loader))
+            self.history["val_cl_loss"].append(avg_cl_loss)
 
         return avg_loss, accuracy, auc, f1
 
@@ -643,12 +732,19 @@ class Trainer:
                         _adv_a = self.history["train_adv_acc"][-1]
                         _lam = self.adversarial_head.grl.lambda_
                         adv_str = f" | Adv: L={_adv_l:.3f} Acc={_adv_a:.3f} λ={_lam:.3f}"
+                    cl_str = ""
+                    if self.cl_regression_head is not None and self.history["train_cl_loss"]:
+                        _tcl = self.history["train_cl_loss"][-1]
+                        _vcl = (
+                            self.history["val_cl_loss"][-1] if self.history["val_cl_loss"] else 0.0
+                        )
+                        cl_str = f" | CL: train={_tcl:.4f} val={_vcl:.4f}"
                     console.print(
                         f"[cyan]Epoch {epoch}/{epochs}[/cyan] | "
                         f"Train Loss: {train_loss:.4f} Acc: {train_acc:.4f} | "
                         f"Val Loss: {val_loss:.4f} {acc_label}: {val_acc:.4f} "
                         f"{f1_label}: {val_f1:.4f} AUC: {val_auc:.4f}"
-                        f"{lr_str}{adv_str}"
+                        f"{lr_str}{adv_str}{cl_str}"
                     )
 
                     # Save best model — F1 for multiclass, accuracy for binary
@@ -740,6 +836,8 @@ class Trainer:
             "scaler_state_dict": self.scaler.state_dict() if self.scaler else None,
             "best_model_state_dict": self._best_model_state,
         }
+        if self.cl_regression_head is not None:
+            checkpoint["cl_regression_head_state_dict"] = self.cl_regression_head.state_dict()
         torch.save(checkpoint, checkpoint_path)
 
     def save_history(self) -> None:
@@ -823,6 +921,8 @@ def train_model(
     adversarial_lambda: float = 0.0,
     adversarial_anneal_epochs: int = 0,
     confound: str | None = None,
+    cl_regression: bool = False,
+    cl_lambda: float = 1.0,
     **model_kwargs: Any,
 ) -> dict[str, Any]:
     """
@@ -955,6 +1055,7 @@ def train_model(
         left_context=left_context,
         right_context=right_context,
         confound_map=confound_map,
+        cl_regression=cl_regression,
     )
 
     val_dataset = None
@@ -971,6 +1072,7 @@ def train_model(
             left_context=left_context,
             right_context=right_context,
             confound_map=confound_map,
+            cl_regression=cl_regression,
         )
 
     # Create data loaders
@@ -1240,6 +1342,8 @@ def train_model(
         "adversarial_lambda": adversarial_lambda,
         "adversarial_anneal_epochs": adversarial_anneal_epochs,
         "confound": confound,
+        "cl_regression": cl_regression,
+        "cl_lambda": cl_lambda,
         # Preparation metadata (from prepare_config.json sidecar)
         "anchor": prepare_metadata.get("anchor", "reference"),
         "signal_norm": prepare_metadata.get("signal_norm", "median_mad"),
@@ -1285,6 +1389,8 @@ def train_model(
         adversarial_lambda=adversarial_lambda,
         adversarial_num_classes=adversarial_num_classes,
         adversarial_anneal_epochs=adversarial_anneal_epochs,
+        cl_regression=cl_regression,
+        cl_lambda=cl_lambda,
     )
 
     # Train

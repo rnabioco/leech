@@ -58,6 +58,7 @@ def save_chunks(chunks: list[dict], output_path: Path) -> None:
     feature_ends = []
     source_groups = []
     signal_residuals = []
+    cl_values = []
     has_signal_residual = "signal_residual" in chunks[0]
 
     for chunk in chunks:
@@ -74,6 +75,9 @@ def save_chunks(chunks: list[dict], output_path: Path) -> None:
         feature_starts.append(chunk.get("feature_start", -5))
         feature_ends.append(chunk.get("feature_end", 5))
         source_groups.append(chunk.get("source_group", ""))
+        # Charging level: sentinel -1 for missing
+        cl_val = chunk.get("cl_value")
+        cl_values.append(cl_val if cl_val is not None else -1)
         if has_signal_residual:
             signal_residuals.append(chunk["signal_residual"])
         # Signal-level kmer encoding fields (may be None for old chunks)
@@ -99,6 +103,8 @@ def save_chunks(chunks: list[dict], output_path: Path) -> None:
     # Create parent directories if they don't exist
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
+    cl_values_arr = np.array(cl_values, dtype=np.int16)
+
     save_kwargs: dict[str, np.ndarray] = {
         "sequences": sequences_arr,
         "labels": labels_arr,
@@ -110,6 +116,7 @@ def save_chunks(chunks: list[dict], output_path: Path) -> None:
         "source_groups": source_groups_arr,
         "seq_to_sig_maps": seq_to_sig_maps_arr,
         "sequences_with_kmer_context": sequences_with_kmer_context_arr,
+        "cl_values": cl_values_arr,
     }
 
     # Signals: try stacking into 2D float32 (all chunks should be same length)
@@ -215,6 +222,11 @@ def load_chunks(input_path: Path) -> list[dict]:
         if has_source_groups:
             source_groups = data["source_groups"]
 
+        # Charging level (backward compatible)
+        has_cl_values = "cl_values" in data
+        if has_cl_values:
+            cl_values_loaded = data["cl_values"]
+
         n_chunks = len(labels_arr)
         chunks = []
 
@@ -246,6 +258,11 @@ def load_chunks(input_path: Path) -> list[dict]:
             if has_source_groups:
                 sg = str(source_groups[i])
                 chunk["source_group"] = sg if sg else None
+            if has_cl_values:
+                cl_val = int(cl_values_loaded[i])
+                chunk["cl_value"] = cl_val if cl_val >= 0 else None
+            else:
+                chunk["cl_value"] = None
 
             chunks.append(chunk)
 

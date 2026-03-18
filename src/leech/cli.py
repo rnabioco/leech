@@ -468,6 +468,35 @@ def merge(input_chunks, output_dir, train_split, val_split, seed, k_fold, compar
     default=1,
     help="Number of output classes. 1 = binary (BCE), >1 = multi-class (CrossEntropy). Default: 1.",
 )
+@click.option(
+    "--adversarial-lambda",
+    type=float,
+    default=0.0,
+    help="Gradient reversal strength for adversarial confound removal (0 = disabled).",
+)
+@click.option(
+    "--adversarial-anneal-epochs",
+    type=int,
+    default=0,
+    help="Linearly ramp adversarial lambda from 0 to target over this many epochs (0 = constant).",
+)
+@click.option(
+    "--confound",
+    type=click.Choice(["disc_base"]),
+    default=None,
+    help="Confound to decorrelate via gradient reversal. 'disc_base' = discriminator base at tRNA position 73.",
+)
+@click.option(
+    "--cl-regression/--no-cl-regression",
+    default=False,
+    help="Enable continuous charging-level (CL) regression head. Uses CL tag from BAM as regression target.",
+)
+@click.option(
+    "--cl-lambda",
+    type=float,
+    default=1.0,
+    help="Weight for CL regression loss (default: 1.0). Combined loss = main + cl_lambda * cl_loss.",
+)
 def train(
     train_data,
     val_data,
@@ -503,6 +532,11 @@ def train(
     num_workers,
     balance_groups,
     num_out,
+    adversarial_lambda,
+    adversarial_anneal_epochs,
+    confound,
+    cl_regression,
+    cl_lambda,
 ):
     """Train a model on prepared data."""
     from leech.commands.train import handle_train
@@ -542,6 +576,11 @@ def train(
         seq_encoding=seq_encoding,
         balance_groups=balance_groups,
         num_out=num_out,
+        adversarial_lambda=adversarial_lambda,
+        adversarial_anneal_epochs=adversarial_anneal_epochs,
+        confound=confound,
+        cl_regression=cl_regression,
+        cl_lambda=cl_lambda,
     )
 
 
@@ -791,6 +830,35 @@ def export(model_dir, output):
     default=False,
     help="Balance sampling across source groups (e.g., per-AA) so each group contributes equally per epoch",
 )
+@click.option(
+    "--adversarial-lambda",
+    type=float,
+    default=0.0,
+    help="Gradient reversal strength for adversarial confound removal (0 = disabled).",
+)
+@click.option(
+    "--adversarial-anneal-epochs",
+    type=int,
+    default=0,
+    help="Linearly ramp adversarial lambda from 0 to target over this many epochs (0 = constant).",
+)
+@click.option(
+    "--confound",
+    type=click.Choice(["disc_base"]),
+    default=None,
+    help="Confound to decorrelate via gradient reversal. 'disc_base' = discriminator base at tRNA position 73.",
+)
+@click.option(
+    "--cl-regression/--no-cl-regression",
+    default=False,
+    help="Enable continuous charging-level (CL) regression head.",
+)
+@click.option(
+    "--cl-lambda",
+    type=float,
+    default=1.0,
+    help="Weight for CL regression loss (default: 1.0).",
+)
 def optimize(
     train_data,
     val_data,
@@ -826,6 +894,11 @@ def optimize(
     balance_groups,
     motif,
     motif_offset,
+    adversarial_lambda,
+    adversarial_anneal_epochs,
+    confound,
+    cl_regression,
+    cl_lambda,
 ):
     """Optimize model hyperparameters using grid search over chunk contexts."""
     from leech.commands.optimize import handle_optimize
@@ -865,6 +938,11 @@ def optimize(
         balance_groups=balance_groups,
         motif=motif,
         motif_offset=motif_offset,
+        adversarial_lambda=adversarial_lambda,
+        adversarial_anneal_epochs=adversarial_anneal_epochs,
+        confound=confound,
+        cl_regression=cl_regression,
+        cl_lambda=cl_lambda,
     )
 
 
@@ -1226,6 +1304,12 @@ def ablation(model, test_data, output_dir, device, no_plot):
     default="auto",
     help='Extraction backend: "auto" (default, Rust if available), "rust" (force Rust, error if unavailable), "python" (force Python). Useful for comparing outputs between paths.',
 )
+@click.option(
+    "--read-batch-size",
+    type=int,
+    default=200_000,
+    help="Reads per mega-batch for memory-bounded streaming (default: 200000). Reduces peak memory for large BAMs.",
+)
 def predict(
     model,
     bundle_path,
@@ -1251,6 +1335,7 @@ def predict(
     aggregation,
     read_batch_size,
     backend,
+    read_batch_size,
 ):
     """Run inference on new data to generate predictions."""
     import warnings
@@ -1289,6 +1374,7 @@ def predict(
         aggregation=aggregation,
         read_batch_size=read_batch_size,
         backend=backend,
+        read_batch_size=read_batch_size,
     )
 
 

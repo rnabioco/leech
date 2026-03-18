@@ -118,6 +118,11 @@ def load_model_from_checkpoint(
     model = model.to(device)
     model.eval()
 
+    # Pass CL regression head state dict through config for inference setup
+    if checkpoint.get("cl_regression_head_state_dict") is not None:
+        config["cl_regression"] = True
+        config["cl_regression_head_state_dict"] = checkpoint["cl_regression_head_state_dict"]
+
     return model, config
 
 
@@ -547,6 +552,11 @@ def create_multiclass_bundle(
         "best_epoch": checkpoint.get("best_epoch"),
     }
 
+    # Include CL regression head if present
+    if checkpoint.get("cl_regression_head_state_dict") is not None:
+        model_entry["cl_regression_head_state_dict"] = checkpoint["cl_regression_head_state_dict"]
+        logger.info("CL regression head included in multiclass bundle")
+
     # Include calibration only if it improved ECE
     from leech.calibration import load_calibration
 
@@ -575,6 +585,7 @@ def create_multiclass_bundle(
             "label_map": label_map,
             "pairs": sorted(label_map.keys()),
             "created_at": datetime.now(UTC).isoformat(),
+            "cl_regression": full_config.get("cl_regression", False),
         },
         "config": arch_config,
         "model": model_entry,
@@ -632,6 +643,11 @@ def load_model_from_multiclass_bundle(
     model.load_state_dict(state_dict)
     model = model.to(device)
     model.eval()
+
+    # Pass CL regression head state dict through config for inference setup
+    if model_data.get("cl_regression_head_state_dict") is not None:
+        config["cl_regression"] = True
+        config["cl_regression_head_state_dict"] = model_data["cl_regression_head_state_dict"]
 
     return model, config
 

@@ -155,6 +155,15 @@ class ReadInfo:
         self.num_samples = int(aln.get_tag("ns"))
         self.trim_offset = int(aln.get_tag("ts")) if aln.has_tag("ts") else 0
 
+        # Optional charging level tag (CL)
+        try:
+            cl_tag = aln.get_tag("CL")
+            self.cl_value: int | None = (
+                int(cl_tag[0]) if hasattr(cl_tag, "__getitem__") else int(cl_tag)
+            )
+        except (KeyError, TypeError):
+            self.cl_value = None
+
     def to_move_table(self) -> MoveTable:
         """
         Reconstruct MoveTable from stored data.

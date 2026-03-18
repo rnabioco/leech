@@ -24,7 +24,7 @@ from leech.features import (
     extract_move_table,
     normalize_signal,
 )
-from leech.io import POD5Reader, iter_bam_alignments
+from leech.io import POD5Reader, iter_bam_batches
 
 logger = logging.getLogger("leech.preparation.reader")
 
@@ -185,9 +185,14 @@ def iter_bam_with_pod5(
     min_mapq: int = 0,
     require_tags: list[str] | None = None,
     reference_sequences: dict[str, str] | None = None,
+    read_batch_size: int = 200_000,
 ) -> Iterator[LeechRead]:
     """
     Iterate over aligned reads, loading signal from POD5.
+
+    Reads are processed in mega-batches (default 50K) to bound memory usage.
+    Each batch: load BAM alignments, preload POD5 signals, yield LeechReads,
+    then free the batch.
 
     Args:
         bam_path: Path to BAM file with mv tags
@@ -196,6 +201,7 @@ def iter_bam_with_pod5(
         min_mapq: Minimum mapping quality
         require_tags: BAM tags that must be present (default: ["mv", "ns"])
         reference_sequences: Dict of reference sequences (for anchor mode)
+        read_batch_size: Reads per mega-batch for memory-bounded streaming
 
     Yields:
         LeechRead objects with full feature extraction
@@ -203,77 +209,83 @@ def iter_bam_with_pod5(
     if require_tags is None:
         require_tags = REQUIRED_BAM_TAGS
 
-    # First pass: collect all BAM alignments to get read IDs for batched POD5 access
-    alignments: list = []
-    read_ids: list[str] = []
-    for aln in iter_bam_alignments(bam_path, min_mapq=min_mapq, require_tags=require_tags):
-        rid = aln.query_name
-        if rid is not None and aln.query_sequence is not None:
-            alignments.append(aln)
-            read_ids.append(rid)
-
-    if not alignments:
-        return
-
-    # Batch-preload all POD5 signals (single traversal plan vs per-read)
     with POD5Reader(pod5_path) as pod5_reader:
-        pod5_reader.preload(read_ids)
-
-        for aln in alignments:
-            try:
-                move_table = extract_move_table(aln)
-                read_id = aln.query_name
-                read_seq = aln.query_sequence
-                if read_id is None or read_seq is None:
-                    continue
-
-                raw_signal, pod5_metadata = pod5_reader.get_signal(read_id)
-
-                cal_offset = pod5_metadata.get("calibration_offset")
-                cal_scale = pod5_metadata.get("calibration_scale")
-
-                # Get reference sequence for anchor mode
-                ref_seq = None
-                cigar_tuples = None
-                if signal_config.anchor == "reference":
-                    if reference_sequences and aln.reference_name in reference_sequences:
-                        full_ref = reference_sequences[aln.reference_name]
-                        ref_seq = full_ref[aln.reference_start : aln.reference_end]
-                    else:
-                        try:
-                            ref_seq = aln.get_reference_sequence()
-                        except Exception as e:
-                            logger.warning(
-                                "Could not get reference sequence for %s (anchor=reference): %s",
-                                aln.query_name,
-                                e,
-                            )
-                            ref_seq = None
-                    cigar_tuples = aln.cigartuples
-
-                metadata = {
-                    **pod5_metadata,
-                    "mapping_quality": aln.mapping_quality,
-                    "reference_name": aln.reference_name,
-                    "reference_start": aln.reference_start,
-                    "reference_end": aln.reference_end,
-                    "is_reverse": aln.is_reverse,
-                    "alignment": aln,
-                }
-
-                yield build_leech_read(
-                    read_id=read_id,
-                    sequence=read_seq,
-                    raw_signal=raw_signal,
-                    move_table=move_table,
-                    signal_config=signal_config,
-                    metadata=metadata,
-                    reference_sequence=ref_seq,
-                    cigar_tuples=cigar_tuples,
-                    cal_offset=cal_offset,
-                    cal_scale=cal_scale,
-                )
-
-            except Exception as e:
-                logger.warning(f"Skipping read {aln.query_name}: {e}")
+        for aln_batch in iter_bam_batches(
+            bam_path, batch_size=read_batch_size, min_mapq=min_mapq, require_tags=require_tags
+        ):
+            # Preload POD5 signals for this batch only
+            batch_read_ids = [
+                aln.query_name
+                for aln in aln_batch
+                if aln.query_name is not None and aln.query_sequence is not None
+            ]
+            if not batch_read_ids:
                 continue
+            pod5_reader.preload(batch_read_ids)
+
+            for aln in aln_batch:
+                try:
+                    move_table = extract_move_table(aln)
+                    read_id = aln.query_name
+                    read_seq = aln.query_sequence
+                    if read_id is None or read_seq is None:
+                        continue
+
+                    raw_signal, pod5_metadata = pod5_reader.get_signal(read_id)
+
+                    cal_offset = pod5_metadata.get("calibration_offset")
+                    cal_scale = pod5_metadata.get("calibration_scale")
+
+                    # Get reference sequence for anchor mode
+                    ref_seq = None
+                    cigar_tuples = None
+                    if signal_config.anchor == "reference":
+                        if reference_sequences and aln.reference_name in reference_sequences:
+                            full_ref = reference_sequences[aln.reference_name]
+                            ref_seq = full_ref[aln.reference_start : aln.reference_end]
+                        else:
+                            try:
+                                ref_seq = aln.get_reference_sequence()
+                            except Exception as e:
+                                logger.warning(
+                                    "Could not get reference sequence for %s (anchor=reference): %s",
+                                    aln.query_name,
+                                    e,
+                                )
+                                ref_seq = None
+                        cigar_tuples = aln.cigartuples
+
+                    # Extract optional CL tag
+                    try:
+                        cl_tag = aln.get_tag("CL")
+                        cl_value = int(cl_tag[0]) if hasattr(cl_tag, "__getitem__") else int(cl_tag)
+                    except (KeyError, TypeError):
+                        cl_value = None
+
+                    metadata = {
+                        **pod5_metadata,
+                        "mapping_quality": aln.mapping_quality,
+                        "reference_name": aln.reference_name,
+                        "reference_start": aln.reference_start,
+                        "reference_end": aln.reference_end,
+                        "is_reverse": aln.is_reverse,
+                        "alignment": aln,
+                        "cl_value": cl_value,
+                    }
+
+                    yield build_leech_read(
+                        read_id=read_id,
+                        sequence=read_seq,
+                        raw_signal=raw_signal,
+                        move_table=move_table,
+                        signal_config=signal_config,
+                        metadata=metadata,
+                        reference_sequence=ref_seq,
+                        cigar_tuples=cigar_tuples,
+                        cal_offset=cal_offset,
+                        cal_scale=cal_scale,
+                    )
+
+                except Exception as e:
+                    logger.warning(f"Skipping read {aln.query_name}: {e}")
+                    continue

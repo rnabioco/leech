@@ -85,6 +85,7 @@ class LeechDataset(Dataset):
         left_context: int | None = None,
         right_context: int | None = None,
         confound_map: dict[int, int] | None = None,
+        cl_regression: bool = False,
     ):
         """
         Initialize dataset.
@@ -106,6 +107,12 @@ class LeechDataset(Dataset):
                 When both left_context and right_context are provided, crop
                 asymmetrically around the focus base instead of center-cropping.
             right_context: Right signal context (samples after focus base).
+            confound_map: Optional mapping from ``label_int`` to confound class
+                (e.g. discriminator base identity).  When provided, each batch
+                includes a ``confound_label`` tensor for adversarial training.
+                Labels not found in the map get ``-1`` (ignored by CE loss).
+            cl_regression: When True, include ``cl_target`` in each batch
+                (cl_value / 255.0 in [0,1]; sentinel -1.0 for missing).
         """
         self.chunk_path = chunk_path
         self.signal_len = signal_len
@@ -117,7 +124,6 @@ class LeechDataset(Dataset):
         self.signal_kmer_context = signal_kmer_context
         self.left_context = left_context
         self.right_context = right_context
-        self.confound_map = confound_map
 
         # Use pre-loaded chunks or load from file
         if chunks is not None:
@@ -140,6 +146,11 @@ class LeechDataset(Dataset):
         self._signals: list[torch.Tensor] = []
         self._features: list[torch.Tensor] = []
         self._needs_features = model_type in FEATURE_MODELS
+        self._confound_map = confound_map
+        self._has_confound = confound_map is not None
+        self._confound_labels: list[torch.Tensor] = []
+        self._cl_regression = cl_regression
+        self._cl_targets: list[torch.Tensor] = []
 
         # Determine effective encoding: fall back to base_onehot if chunks lack signal_kmer data
         self._effective_seq_encoding = seq_encoding
@@ -198,6 +209,20 @@ class LeechDataset(Dataset):
             else:
                 self._features.append(torch.empty(0))
 
+            # Confound label (e.g. discriminator base identity)
+            if self._has_confound:
+                label_int = chunk["label_int"]
+                confound_class = confound_map.get(label_int, -1)
+                self._confound_labels.append(torch.tensor(confound_class, dtype=torch.long))
+
+            # CL regression target (cl_value / 255.0; sentinel -1.0 for missing)
+            if self._cl_regression:
+                cl_val = chunk.get("cl_value")
+                if cl_val is not None and cl_val >= 0:
+                    self._cl_targets.append(torch.tensor(cl_val / 255.0, dtype=torch.float32))
+                else:
+                    self._cl_targets.append(torch.tensor(-1.0, dtype=torch.float32))
+
         # Stack into contiguous tensors for cache-friendly access
         try:
             self._signals_tensor = torch.stack(self._signals)
@@ -205,15 +230,6 @@ class LeechDataset(Dataset):
         except RuntimeError as e:
             logger.warning("Signal shapes differ, falling back to list access: %s", e)
             self._signals_tensor = None
-
-        # Pre-compute confound labels (for adversarial training)
-        self._confound_labels: list[torch.Tensor] | None = None
-        if confound_map is not None:
-            self._confound_labels = []
-            for chunk in self.chunks:
-                label_int = chunk["label_int"]
-                cl = confound_map.get(label_int, -1)  # -1 → ignored by CE
-                self._confound_labels.append(torch.tensor(cl, dtype=torch.long))
 
         logger.debug(
             f"Pre-tensorized {len(self.chunks)} chunks "
@@ -413,8 +429,11 @@ class LeechDataset(Dataset):
             result["features"] = self._features[idx]
 
         # Include confound label for adversarial training
-        if self._confound_labels is not None:
+        if self._has_confound:
             result["confound_label"] = self._confound_labels[idx]
+
+        if self._cl_regression:
+            result["cl_target"] = self._cl_targets[idx]
 
         return result
 
@@ -448,5 +467,10 @@ def collate_fn(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
     # Add confound labels if present (adversarial training)
     if "confound_label" in batch[0]:
         result["confound_label"] = torch.stack([item["confound_label"] for item in batch])
+
+    # Add CL regression targets if present
+    if "cl_target" in batch[0]:
+        result["cl_target"] = torch.stack([item["cl_target"] for item in batch])
+
 
     return result

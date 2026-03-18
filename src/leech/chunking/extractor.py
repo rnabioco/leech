@@ -297,6 +297,7 @@ def extract_training_chunks(
         focus_bases = [pos + motif_config.motif_offset for pos in motif_positions]
 
     # Extract chunks
+    cl_value = leech_read.metadata.get("cl_value")
     for base_idx in focus_bases:
         chunk = leech_read.get_chunk(base_idx, config=chunk_config)
         if chunk is not None:
@@ -305,6 +306,8 @@ def extract_training_chunks(
             chunk["label_int"] = chunk.pop("label", None)
             # Add string label
             chunk["label"] = labeling.label
+            # Add charging level (may be None)
+            chunk["cl_value"] = cl_value
             chunks.append(chunk)
 
     return chunks
