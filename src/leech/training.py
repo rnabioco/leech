@@ -34,13 +34,17 @@ console = make_console()
 
 def compute_class_weights(dataset: LeechDataset) -> torch.Tensor | None:
     """
-    Compute pos_weight for BCEWithLogitsLoss from dataset.
+    Compute class weights from dataset label distribution.
+
+    For binary (2-class): returns pos_weight tensor for BCEWithLogitsLoss.
+    For multiclass (>2 classes): returns per-class weight tensor (inverse sqrt
+    frequency) for CrossEntropyLoss.
 
     Args:
-        dataset: Dataset with binary labels (0/1)
+        dataset: Dataset with integer labels
 
     Returns:
-        pos_weight tensor for BCEWithLogitsLoss, or None if balanced
+        Weight tensor, or None if balanced / single class
     """
     # Count class occurrences
     labels = []
@@ -51,26 +55,42 @@ def compute_class_weights(dataset: LeechDataset) -> torch.Tensor | None:
     labels_array = np.array(labels)
     unique, counts = np.unique(labels_array, return_counts=True)
 
-    if len(unique) != 2:
-        logger.warning(f"Expected 2 classes, found {len(unique)}. Skipping class weighting.")
+    if len(unique) < 2:
+        logger.warning(f"Only {len(unique)} class(es) found. Skipping class weighting.")
         return None
 
-    # Count negatives (0) and positives (1)
-    label_counts = dict(zip(unique, counts, strict=True))
-    neg_count = label_counts.get(0, 0)
-    pos_count = label_counts.get(1, 0)
+    if len(unique) == 2:
+        # Binary: pos_weight = neg_count / pos_count
+        label_counts = dict(zip(unique, counts, strict=True))
+        neg_count = label_counts.get(0, 0)
+        pos_count = label_counts.get(1, 0)
 
-    if pos_count == 0:
-        logger.warning("No positive samples found. Skipping class weighting.")
-        return None
+        if pos_count == 0:
+            logger.warning("No positive samples found. Skipping class weighting.")
+            return None
 
-    # Calculate pos_weight = neg_count / pos_count
-    pos_weight = neg_count / pos_count
+        pos_weight = neg_count / pos_count
+        logger.info(f"Class distribution: negative={neg_count}, positive={pos_count}")
+        logger.info(f"Using pos_weight={pos_weight:.4f} for class weighting")
+        return torch.tensor([pos_weight], dtype=torch.float32)
 
-    logger.info(f"Class distribution: negative={neg_count}, positive={pos_count}")
-    logger.info(f"Using pos_weight={pos_weight:.4f} for class weighting")
+    # Multiclass: inverse sqrt frequency weights
+    # w_c = sqrt(N / (K * n_c)) — balances rare classes without over-weighting
+    num_classes = int(unique.max()) + 1
+    total = counts.sum()
+    weights = torch.ones(num_classes, dtype=torch.float32)
+    for cls, count in zip(unique, counts, strict=True):
+        weights[cls] = float(np.sqrt(total / (num_classes * count)))
 
-    return torch.tensor([pos_weight], dtype=torch.float32)
+    logger.info(
+        f"Multiclass class weights ({num_classes} classes): "
+        f"min={weights.min():.3f}, max={weights.max():.3f}, "
+        f"range={weights.max() / weights.min():.1f}x"
+    )
+    for cls, count in zip(unique, counts, strict=True):
+        logger.info(f"  class {cls}: n={count}, weight={weights[cls]:.3f}")
+
+    return weights
 
 
 class Trainer:
@@ -160,6 +180,12 @@ class Trainer:
                 self.criterion = nn.CrossEntropyLoss(
                     weight=ce_weights, label_smoothing=label_smoothing
                 )
+            elif pw is not None and self._num_out > 2:
+                # Multiclass: pw is already a per-class weight tensor
+                self.criterion = nn.CrossEntropyLoss(
+                    weight=pw.to(device), label_smoothing=label_smoothing
+                )
+                logger.info(f"Using class weights for {self._num_out}-class CE")
             else:
                 self.criterion = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
             logger.info(f"Using CrossEntropyLoss ({self._num_out}-class)")
@@ -887,7 +913,11 @@ def train_model(
     confound_map: dict[int, int] | None = None
     adversarial_num_classes = 4  # default: A/C/G/T
     if adversarial_lambda > 0 and confound == "disc_base":
-        from leech.confounds import NUM_DISC_BASES, build_confound_map
+        from leech.confounds import (
+            NUM_DISC_BASES,
+            build_confound_map,
+            load_disc_base_map,
+        )
 
         # label_map may not be known yet — try sidecar
         _lm = label_map
@@ -900,7 +930,8 @@ def train_model(
                 with open(_lm_path) as f:
                     _lm = json.load(f)
         if _lm is not None:
-            confound_map = build_confound_map(_lm)
+            _dbm = load_disc_base_map(train_data_path.parent)
+            confound_map = build_confound_map(_lm, disc_base_map=_dbm)
             adversarial_num_classes = NUM_DISC_BASES
             logger.info(f"Adversarial confound 'disc_base': {confound_map}")
         else:

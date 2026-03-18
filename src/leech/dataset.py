@@ -84,6 +84,7 @@ class LeechDataset(Dataset):
         signal_kmer_context: tuple[int, int] = (4, 4),
         left_context: int | None = None,
         right_context: int | None = None,
+        confound_map: dict[int, int] | None = None,
     ):
         """
         Initialize dataset.
@@ -116,6 +117,7 @@ class LeechDataset(Dataset):
         self.signal_kmer_context = signal_kmer_context
         self.left_context = left_context
         self.right_context = right_context
+        self.confound_map = confound_map
 
         # Use pre-loaded chunks or load from file
         if chunks is not None:
@@ -203,6 +205,15 @@ class LeechDataset(Dataset):
         except RuntimeError as e:
             logger.warning("Signal shapes differ, falling back to list access: %s", e)
             self._signals_tensor = None
+
+        # Pre-compute confound labels (for adversarial training)
+        self._confound_labels: list[torch.Tensor] | None = None
+        if confound_map is not None:
+            self._confound_labels = []
+            for chunk in self.chunks:
+                label_int = chunk["label_int"]
+                cl = confound_map.get(label_int, -1)  # -1 → ignored by CE
+                self._confound_labels.append(torch.tensor(cl, dtype=torch.long))
 
         logger.debug(
             f"Pre-tensorized {len(self.chunks)} chunks "
@@ -401,6 +412,10 @@ class LeechDataset(Dataset):
         if self._needs_features:
             result["features"] = self._features[idx]
 
+        # Include confound label for adversarial training
+        if self._confound_labels is not None:
+            result["confound_label"] = self._confound_labels[idx]
+
         return result
 
 
@@ -429,5 +444,9 @@ def collate_fn(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
     if "features" in batch[0]:
         features = torch.stack([item["features"] for item in batch])
         result["features"] = features
+
+    # Add confound labels if present (adversarial training)
+    if "confound_label" in batch[0]:
+        result["confound_label"] = torch.stack([item["confound_label"] for item in batch])
 
     return result

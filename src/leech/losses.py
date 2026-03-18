@@ -5,6 +5,59 @@ Custom loss functions for leech models.
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.autograd import Function
+
+
+class _GradientReversalFunction(Function):
+    """Gradient reversal layer (Ganin et al. 2016).
+
+    Forward: identity. Backward: negate gradients and scale by lambda.
+    """
+
+    @staticmethod
+    def forward(ctx, x, lambda_):
+        ctx.lambda_ = lambda_
+        return x.clone()
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        return -ctx.lambda_ * grad_output, None
+
+
+class GradientReversalLayer(nn.Module):
+    """Wraps _GradientReversalFunction as an nn.Module with mutable lambda."""
+
+    def __init__(self, lambda_: float = 1.0):
+        super().__init__()
+        self.lambda_ = lambda_
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return _GradientReversalFunction.apply(x, self.lambda_)
+
+
+class AdversarialHead(nn.Module):
+    """Adversarial classifier with gradient reversal for confound invariance.
+
+    Args:
+        input_dim: Dimension of the representation vector.
+        num_classes: Number of confound classes.
+        lambda_: Initial gradient reversal scaling factor.
+    """
+
+    def __init__(self, input_dim: int, num_classes: int, lambda_: float = 1.0):
+        super().__init__()
+        self.grl = GradientReversalLayer(lambda_)
+        self.classifier = nn.Sequential(
+            nn.Linear(input_dim, input_dim // 2),
+            nn.ReLU(),
+            nn.Linear(input_dim // 2, num_classes),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.classifier(self.grl(x))
+
+    def set_lambda(self, lambda_: float) -> None:
+        self.grl.lambda_ = lambda_
 
 
 class FocalBCEWithLogitsLoss(nn.Module):
