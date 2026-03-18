@@ -1215,6 +1215,12 @@ def ablation(model, test_data, output_dir, device, no_plot):
     help='Pairwise aggregation method: "naive" (sum votes), "weighted" (confidence-weighted), "tournament" (two-round elimination). Default: naive.',
 )
 @click.option(
+    "--read-batch-size",
+    type=int,
+    default=200_000,
+    help="Reads per mega-batch for memory-bounded streaming (default: 200000)",
+)
+@click.option(
     "--backend",
     type=click.Choice(["auto", "rust", "python"]),
     default="auto",
@@ -1243,6 +1249,7 @@ def predict(
     min_mapq,
     workers,
     aggregation,
+    read_batch_size,
     backend,
 ):
     """Run inference on new data to generate predictions."""
@@ -1280,6 +1287,7 @@ def predict(
         min_mapq=min_mapq,
         workers=workers,
         aggregation=aggregation,
+        read_batch_size=read_batch_size,
         backend=backend,
     )
 

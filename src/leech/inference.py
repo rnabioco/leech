@@ -1184,6 +1184,8 @@ def run_inference(
 
         _gpu_executor = ThreadPoolExecutor(max_workers=1)
         _gpu_future: Future | None = None
+        _bam_write_executor = ThreadPoolExecutor(max_workers=1)
+        _bam_write_future: Future | None = None
 
         def _flush_batch() -> None:
             """Submit accumulated chunks to GPU thread (double-buffered)."""
@@ -1250,7 +1252,12 @@ def run_inference(
         logger.info(f"Sequential path with {n_extract} extraction threads, double-buffered GPU")
 
         # Check if we can use the Rust monolithic extraction hot path
-        from leech._rust_accel import HAS_RUST, _rs_extract_inference_chunks
+        from leech._rust_accel import (
+            HAS_RUST,
+            _rs_extract_chunks_from_preloaded,
+            _rs_extract_inference_chunks,
+            _rs_preload_pod5_signals,
+        )
 
         _rust_available = HAS_RUST and _rs_extract_inference_chunks is not None
         if backend == "rust" and not _rust_available:
@@ -1266,6 +1273,24 @@ def run_inference(
                 "Using Python extraction path"
                 + (" (forced via --backend python)" if backend == "python" else "")
             )
+
+        # Check for prefetch support (split POD5 preload + chunk extraction)
+        _has_prefetch = (
+            _use_rust_extraction
+            and _rs_preload_pod5_signals is not None
+            and _rs_extract_chunks_from_preloaded is not None
+        )
+        if _has_prefetch:
+            logger.info("POD5 prefetch pipeline enabled (overlapped I/O)")
+
+        # Kmer table for signal refinement (constant across mega-batches)
+        _kmer_table_dict = None
+        _kmer_table_len = 9
+        _kmer_table_center = -1
+        if _use_rust_extraction and refine_signal_map and signal_refiner is not None:
+            _kmer_table_dict = getattr(signal_refiner, "kmer_to_level", None)
+            _kmer_table_len = getattr(signal_refiner, "kmer_len", 9)
+            _kmer_table_center = getattr(signal_refiner, "center_idx", -1)
 
         def _extract_one_read(
             aln: pysam.AlignedSegment,
@@ -1372,6 +1397,215 @@ def run_inference(
 
         _extract_pool = ThreadPoolExecutor(max_workers=n_extract)
 
+        # Shared Rust kwargs (constant across mega-batches)
+        _rs_kwargs = {
+            "signal_context_left": signal_context[0],
+            "signal_context_right": signal_context[1],
+            "kmer_context": kmer_context,
+            "signal_len": signal_len,
+            "compute_features": compute_features,
+            "reverse_signal": reverse_signal,
+            "feature_start": _feature_start,
+            "feature_end": _feature_end,
+            "dwell_offset": dwell_offset,
+            "anchor": anchor,
+            "seq_encoding": seq_encoding,
+            "signal_kmer_context": signal_kmer_context if seq_encoding == "signal_kmer" else None,
+            "refine_signal_map": refine_signal_map,
+            "kmer_table": _kmer_table_dict,
+            "kmer_len": _kmer_table_len,
+            "kmer_center_idx": _kmer_table_center,
+            "refine_half_bandwidth": config.get("refine_half_bandwidth", 5),
+            "refine_scale_iters": config.get("refine_scale_iters", 2),
+            "signal_in_channels": signal_in_channels,
+        }
+
+        def _collect_bam_metadata(
+            aln_batch: list,
+        ) -> tuple[
+            list[str],
+            list[str],
+            list[int],
+            list[list[int]],
+            list[int],
+            list[int],
+            list[list[int]],
+            list[list[tuple[int, int]]],
+            list[str | None],
+        ]:
+            """Extract BAM metadata for Rust extraction (main thread only)."""
+            rs_rids: list[str] = []
+            rs_seqs: list[str] = []
+            rs_strides: list[int] = []
+            rs_mvs: list[list[int]] = []
+            rs_ns: list[int] = []
+            rs_trims: list[int] = []
+            rs_motifs: list[list[int]] = []
+            rs_cigars: list[list[tuple[int, int]]] = []
+            rs_refs: list[str | None] = []
+
+            assert motif is not None
+            for aln in aln_batch:
+                if aln.query_name is None or aln.query_sequence is None:
+                    continue
+                try:
+                    mt = extract_move_table(aln)
+                    positions = [
+                        pos + motif_offset
+                        for pos in motif_searcher.find_motif_positions(
+                            aln.query_name, aln.query_sequence, aln, motif
+                        )
+                    ]
+                    if not positions:
+                        continue
+                    rs_rids.append(aln.query_name)
+                    rs_seqs.append(aln.query_sequence)
+                    rs_strides.append(mt.stride)
+                    rs_mvs.append(mt.moves.tolist())
+                    rs_ns.append(mt.num_samples)
+                    rs_trims.append(mt.trim_offset)
+                    rs_motifs.append(positions)
+
+                    ref_seq = None
+                    cigar_list: list[tuple[int, int]] = []
+                    if anchor == "reference":
+                        cigar_list = list(aln.cigartuples) if aln.cigartuples else []
+                        if reference_sequences and aln.reference_name in reference_sequences:
+                            full_ref = reference_sequences[aln.reference_name]
+                            ref_seq = full_ref[aln.reference_start : aln.reference_end]
+                        else:
+                            try:
+                                ref_seq = aln.get_reference_sequence()
+                            except Exception:
+                                ref_seq = None
+                    rs_cigars.append(cigar_list)
+                    rs_refs.append(ref_seq)
+                except Exception as e:
+                    logger.warning(f"Skipping read {aln.query_name}: {e}")
+                    continue
+
+            return (
+                rs_rids,
+                rs_seqs,
+                rs_strides,
+                rs_mvs,
+                rs_ns,
+                rs_trims,
+                rs_motifs,
+                rs_cigars,
+                rs_refs,
+            )
+
+        _SUB_BATCH_SIZE = 25_000  # Sub-batch Rust extraction for continuous GPU feeding
+
+        def _extract_chunks_from_preloaded(preloaded, rs_meta):
+            """Yield chunks in sub-batches for continuous GPU feeding.
+
+            Instead of extracting all reads at once (blocking GPU for ~2 min),
+            process ~25K reads at a time (~15-20s each) so chunks flow to GPU
+            after each sub-batch completes.
+            """
+            (
+                rs_rids,
+                rs_seqs,
+                rs_strides,
+                rs_mvs,
+                rs_ns,
+                rs_trims,
+                rs_motifs,
+                rs_cigars,
+                rs_refs,
+            ) = rs_meta
+            assert _rs_extract_chunks_from_preloaded is not None
+            n = len(rs_rids)
+            for start in range(0, n, _SUB_BATCH_SIZE):
+                end = min(start + _SUB_BATCH_SIZE, n)
+                if n > _SUB_BATCH_SIZE:
+                    logger.info(
+                        f"  Sub-batch {start // _SUB_BATCH_SIZE + 1}/"
+                        f"{(n + _SUB_BATCH_SIZE - 1) // _SUB_BATCH_SIZE}: "
+                        f"reads {start}-{end} of {n}"
+                    )
+                sub_chunks = _rs_extract_chunks_from_preloaded(
+                    preloaded,
+                    read_ids=rs_rids[start:end],
+                    sequences=rs_seqs[start:end],
+                    mv_strides=rs_strides[start:end],
+                    mv_arrays=rs_mvs[start:end],
+                    num_samples_list=rs_ns[start:end],
+                    trim_offsets=rs_trims[start:end],
+                    motif_positions=rs_motifs[start:end],
+                    cigar_tuples=rs_cigars[start:end] if anchor == "reference" else None,
+                    reference_sequences=rs_refs[start:end] if anchor == "reference" else None,
+                    **_rs_kwargs,
+                )
+                yield from sub_chunks
+
+        def _consume_rust_chunks(chunks):
+            """Iterate Rust chunks into batch buffers, flushing to GPU as needed."""
+            nonlocal _shape_validated
+            for sig, seq_arr, feat, read_id, base_idx in chunks:
+                if signal_in_channels > 1 and sig.ndim == 1:
+                    sig = sig.reshape(signal_in_channels, -1)
+                if not _shape_validated:
+                    validate_inference_shapes(sig, feat, config)
+                    _shape_validated = True
+                batch_signals.append(sig)
+                batch_seqs.append(seq_arr)
+                batch_feats.append(feat)
+                batch_meta.append((read_id, base_idx))
+                if len(batch_signals) >= batch_size:
+                    _flush_batch()
+
+        def _wait_for_bam_write():
+            """Wait for any in-flight async BAM write to complete."""
+            nonlocal _bam_write_future
+            if _bam_write_future is not None:
+                _bam_write_future.result()
+                _bam_write_future = None
+
+        def _finalize_mega_batch(aln_batch_to_write):
+            """Flush GPU, submit async BAM write, update counters.
+
+            BAM writes are overlapped with the next mega-batch's extraction.
+            We serialize writes (wait for previous) since pysam is not thread-safe.
+            """
+            nonlocal total_reads, total_predictions, mega_batch_idx
+            nonlocal pending, _bam_write_future
+            _flush_batch()
+            _drain_gpu()
+            # Wait for any previous BAM write (serializes bam_out access)
+            _wait_for_bam_write()
+            # Swap pending → snapshot; next mega-batch gets a fresh dict
+            write_pending = pending
+            pending = {}
+            batch_preds = len(write_pending)
+            # Submit BAM write to background thread
+            _bam_write_future = _bam_write_executor.submit(
+                _write_mega_batch_predictions,
+                aln_batch_to_write,
+                write_pending,
+                bam_out,
+                is_multiclass,
+                int_to_label,
+                class_names_str,
+                raw,
+                min_confidence,
+                min_margin,
+            )
+            total_reads += len(aln_batch_to_write)
+            total_predictions += batch_preds
+            mega_batch_idx += 1
+            logger.info(
+                f"Mega-batch {mega_batch_idx}/{n_total_mega_batches} complete: "
+                f"wrote {batch_preds} predictions for {len(aln_batch_to_write)} reads"
+            )
+
+        # Prefetch pipeline state
+        _prefetch_prev = None  # (future, rs_meta, aln_batch) or None
+        if _has_prefetch:
+            _prefetch_exec = ThreadPoolExecutor(max_workers=1)
+
         with Progress() as progress:
             task = progress.add_task("[cyan]Running inference...", total=None)
 
@@ -1379,75 +1613,46 @@ def run_inference(
                 for aln_batch in iter_bam_batches(
                     bam_path, batch_size=read_batch_size, min_mapq=min_mapq
                 ):
-                    pending.clear()
+                    if _has_prefetch:
+                        # ---- Prefetch Rust pipeline ----
+                        # Collect BAM metadata (main thread, pysam not thread-safe)
+                        rs_meta = _collect_bam_metadata(aln_batch)
+
+                        # Submit prefetch for current batch (background thread)
+                        assert _rs_preload_pod5_signals is not None
+                        cur_future = _prefetch_exec.submit(
+                            _rs_preload_pod5_signals, str(pod5_path), rs_meta[0]
+                        )
+
+                        # Process PREVIOUS batch while current prefetch runs
+                        if _prefetch_prev is not None:
+                            p_future, p_meta, p_aln = _prefetch_prev
+                            preloaded = p_future.result()
+                            p_rids = p_meta[0]
+                            logger.info(
+                                f"Mega-batch: {len(p_aln)} alignments, "
+                                f"{len(p_rids)} for Rust extraction"
+                            )
+                            if p_rids:
+                                chunks = _extract_chunks_from_preloaded(preloaded, p_meta)
+                                _consume_rust_chunks(chunks)
+                            _finalize_mega_batch(p_aln)
+                            progress.update(
+                                task,
+                                advance=0,
+                                description=(
+                                    f"[cyan]Processed {total_reads} reads "
+                                    f"({total_predictions} predictions)..."
+                                ),
+                            )
+
+                        _prefetch_prev = (cur_future, rs_meta, aln_batch)
+                        continue
 
                     if _use_rust_extraction:
-                        # ---- Rust hot path ----
-                        # Pre-extract lightweight BAM data, then batch everything
-                        # through the Rust monolithic pipeline (POD5 + normalize +
-                        # features + chunk extraction in one call).
-                        rs_read_ids: list[str] = []
-                        rs_sequences: list[str] = []
-                        rs_mv_strides: list[int] = []
-                        rs_mv_arrays: list[list[int]] = []
-                        rs_num_samples: list[int] = []
-                        rs_trim_offsets: list[int] = []
-                        rs_motif_positions: list[list[int]] = []
-                        rs_cigar_tuples: list[list[tuple[int, int]]] = []
-                        rs_ref_sequences: list[str | None] = []
-
-                        assert motif is not None
-                        for aln in aln_batch:
-                            if aln.query_name is None or aln.query_sequence is None:
-                                continue
-                            try:
-                                mt = extract_move_table(aln)
-                                positions = [
-                                    pos + motif_offset
-                                    for pos in motif_searcher.find_motif_positions(
-                                        aln.query_name, aln.query_sequence, aln, motif
-                                    )
-                                ]
-                                if not positions:
-                                    continue
-                                rs_read_ids.append(aln.query_name)
-                                rs_sequences.append(aln.query_sequence)
-                                rs_mv_strides.append(mt.stride)
-                                rs_mv_arrays.append(mt.moves.tolist())
-                                rs_num_samples.append(mt.num_samples)
-                                rs_trim_offsets.append(mt.trim_offset)
-                                rs_motif_positions.append(positions)
-
-                                # Collect CIGAR + ref seq for reference anchoring
-                                ref_seq = None
-                                cigar = []
-                                if anchor == "reference":
-                                    cigar = list(aln.cigartuples) if aln.cigartuples else []
-                                    if (
-                                        reference_sequences
-                                        and aln.reference_name in reference_sequences
-                                    ):
-                                        full_ref = reference_sequences[aln.reference_name]
-                                        ref_seq = full_ref[aln.reference_start : aln.reference_end]
-                                    else:
-                                        try:
-                                            ref_seq = aln.get_reference_sequence()
-                                        except Exception:
-                                            ref_seq = None
-                                rs_cigar_tuples.append(cigar)
-                                rs_ref_sequences.append(ref_seq)
-                            except Exception as e:
-                                logger.warning(f"Skipping read {aln.query_name}: {e}")
-                                continue
-
-                        # Get kmer table dict for refinement
-                        _kmer_table_dict = None
-                        _kmer_table_len = 9
-                        _kmer_table_center = -1
-                        if refine_signal_map and signal_refiner is not None:
-                            _kmer_table_dict = getattr(signal_refiner, "kmer_to_level", None)
-                            _kmer_table_len = getattr(signal_refiner, "kmer_len", 9)
-                            _kmer_table_center = getattr(signal_refiner, "center_idx", -1)
+                        # ---- Rust monolithic hot path (no prefetch fallback) ----
+                        rs_meta = _collect_bam_metadata(aln_batch)
+                        rs_read_ids = rs_meta[0]
 
                         logger.info(
                             f"Mega-batch: {len(aln_batch)} alignments, "
@@ -1459,50 +1664,17 @@ def run_inference(
                             chunks = _rs_extract_inference_chunks(
                                 str(pod5_path),
                                 read_ids=rs_read_ids,
-                                sequences=rs_sequences,
-                                mv_strides=rs_mv_strides,
-                                mv_arrays=rs_mv_arrays,
-                                num_samples_list=rs_num_samples,
-                                trim_offsets=rs_trim_offsets,
-                                signal_context_left=signal_context[0],
-                                signal_context_right=signal_context[1],
-                                kmer_context=kmer_context,
-                                motif_positions=rs_motif_positions,
-                                signal_len=signal_len,
-                                compute_features=compute_features,
-                                reverse_signal=reverse_signal,
-                                feature_start=_feature_start,
-                                feature_end=_feature_end,
-                                dwell_offset=dwell_offset,
-                                anchor=anchor,
-                                cigar_tuples=rs_cigar_tuples if anchor == "reference" else None,
-                                reference_sequences=rs_ref_sequences
-                                if anchor == "reference"
-                                else None,
-                                seq_encoding=seq_encoding,
-                                signal_kmer_context=signal_kmer_context
-                                if seq_encoding == "signal_kmer"
-                                else None,
-                                refine_signal_map=refine_signal_map,
-                                kmer_table=_kmer_table_dict,
-                                kmer_len=_kmer_table_len,
-                                kmer_center_idx=_kmer_table_center,
-                                refine_half_bandwidth=config.get("refine_half_bandwidth", 5),
-                                refine_scale_iters=config.get("refine_scale_iters", 2),
-                                signal_in_channels=signal_in_channels,
+                                sequences=rs_meta[1],
+                                mv_strides=rs_meta[2],
+                                mv_arrays=rs_meta[3],
+                                num_samples_list=rs_meta[4],
+                                trim_offsets=rs_meta[5],
+                                motif_positions=rs_meta[6],
+                                cigar_tuples=rs_meta[7] if anchor == "reference" else None,
+                                reference_sequences=rs_meta[8] if anchor == "reference" else None,
+                                **_rs_kwargs,
                             )
-                            for sig, seq_arr, feat, read_id, base_idx in chunks:
-                                if not _shape_validated:
-                                    validate_inference_shapes(sig, feat, config)
-                                    _shape_validated = True
-
-                                batch_signals.append(sig)
-                                batch_seqs.append(seq_arr)
-                                batch_feats.append(feat)
-                                batch_meta.append((read_id, base_idx))
-
-                                if len(batch_signals) >= batch_size:
-                                    _flush_batch()
+                            _consume_rust_chunks(chunks)
                     else:
                         # ---- Python extraction path ----
                         batch_read_ids = [
@@ -1533,30 +1705,29 @@ def run_inference(
                                 if len(batch_signals) >= batch_size:
                                     _flush_batch()
 
-                    # Flush remaining chunks for this mega-batch
-                    _flush_batch()
-                    _drain_gpu()
+                    _finalize_mega_batch(aln_batch)
 
-                    # Write this mega-batch's predictions
-                    batch_preds = _write_mega_batch_predictions(
-                        aln_batch,
-                        pending,
-                        bam_out,
-                        is_multiclass,
-                        int_to_label,
-                        class_names_str,
-                        raw,
-                        min_confidence,
-                        min_margin,
+                    progress.update(
+                        task,
+                        advance=0,
+                        description=(
+                            f"[cyan]Processed {total_reads} reads "
+                            f"({total_predictions} predictions)..."
+                        ),
                     )
-                    total_reads += len(aln_batch)
-                    total_predictions += batch_preds
-                    mega_batch_idx += 1
+
+                # Process final prefetch batch after loop ends
+                if _prefetch_prev is not None:
+                    p_future, p_meta, p_aln = _prefetch_prev
+                    preloaded = p_future.result()
+                    p_rids = p_meta[0]
                     logger.info(
-                        f"Mega-batch {mega_batch_idx}/{n_total_mega_batches} complete: "
-                        f"wrote {batch_preds} predictions for {len(aln_batch)} reads"
+                        f"Mega-batch: {len(p_aln)} alignments, {len(p_rids)} for Rust extraction"
                     )
-
+                    if p_rids:
+                        chunks = _extract_chunks_from_preloaded(preloaded, p_meta)
+                        _consume_rust_chunks(chunks)
+                    _finalize_mega_batch(p_aln)
                     progress.update(
                         task,
                         advance=0,
@@ -1568,6 +1739,10 @@ def run_inference(
 
         _extract_pool.shutdown(wait=False)
         _gpu_executor.shutdown(wait=False)
+        _wait_for_bam_write()  # Ensure final BAM write completes before close
+        _bam_write_executor.shutdown(wait=False)
+        if _has_prefetch:
+            _prefetch_exec.shutdown(wait=False)
 
     bam_out.close()
 
