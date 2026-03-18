@@ -83,6 +83,54 @@ class ModelInferenceWrapper:
         self.model = model
         self.model_type = model_type
         self.requires_features = model_type in self.FEATURE_MODELS
+        self.captured_repr: torch.Tensor | None = None
+        self._repr_hook = None
+
+    def enable_repr_capture(self) -> int:
+        """Register a hook to capture the penultimate representation.
+
+        The hook intercepts the input to the classifier/fc head so that
+        ``self.captured_repr`` holds the representation after each forward
+        pass.  This is used by the adversarial and CL-regression heads.
+
+        Returns:
+            Dimension of the captured representation vector.
+        """
+        # Find the classification head (Sequential named 'classifier' or 'fc')
+        head: nn.Module | None = None
+        head_name = ""
+        for name in ("classifier", "fc"):
+            head = getattr(self.model, name, None)
+            if head is not None:
+                head_name = name
+                break
+        if head is None:
+            raise RuntimeError(
+                f"Cannot find 'classifier' or 'fc' attribute on "
+                f"{type(self.model).__name__}; enable_repr_capture requires "
+                f"a model with a named classification head."
+            )
+
+        # Infer repr_dim from the first Linear layer in the head
+        repr_dim: int | None = None
+        for mod in head.modules():
+            if isinstance(mod, nn.Linear):
+                repr_dim = mod.in_features
+                break
+        if repr_dim is None:
+            raise RuntimeError(
+                f"No nn.Linear found in classification head of {type(self.model).__name__}"
+            )
+
+        # Register pre-hook to capture the head's input
+        def _capture_hook(module, args):
+            self.captured_repr = args[0]
+
+        self._repr_hook = head.register_forward_pre_hook(_capture_hook)
+        logger.info(
+            f"Repr capture enabled on {type(self.model).__name__}.{head_name}, dim={repr_dim}"
+        )
+        return repr_dim
 
     def forward_batch(self, batch: dict, device: str) -> torch.Tensor:
         """
