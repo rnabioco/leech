@@ -916,6 +916,7 @@ def train_model(
     left_context: int | None = None,
     right_context: int | None = None,
     balance_groups: bool = False,
+    oversample_minority: bool = False,
     label_map: dict[str, int] | None = None,
     num_out: int = 1,
     adversarial_lambda: float = 0.0,
@@ -1114,6 +1115,14 @@ def train_model(
             f"reducing to {effective_batch_size}"
         )
 
+    # Validate mutually exclusive sampling strategies
+    if balance_groups and oversample_minority:
+        raise ValueError(
+            "--balance-groups and --oversample-minority are mutually exclusive. "
+            "Use --balance-groups to equalize source groups, or "
+            "--oversample-minority to equalize class labels."
+        )
+
     # Build balanced sampler if requested
     train_sampler = None
     if balance_groups:
@@ -1138,6 +1147,28 @@ def train_model(
             logger.warning(
                 f"balance_groups enabled but only 1 source group found "
                 f"({list(group_counts.keys())}). Falling back to shuffle."
+            )
+    elif oversample_minority:
+        # Compute per-sample weights inversely proportional to class frequency
+        label_counts: dict[int, int] = {}
+        for chunk in train_dataset.chunks:
+            lbl = chunk["label_int"]
+            label_counts[lbl] = label_counts.get(lbl, 0) + 1
+
+        if len(label_counts) > 1:
+            weights = []
+            for chunk in train_dataset.chunks:
+                lbl = chunk["label_int"]
+                weights.append(1.0 / label_counts[lbl])
+            train_sampler = WeightedRandomSampler(
+                weights, num_samples=len(train_dataset), replacement=True
+            )
+            logger.info(f"Minority oversampling enabled across {len(label_counts)} classes:")
+            for lbl, count in sorted(label_counts.items()):
+                logger.info(f"  class {lbl}: {count} chunks, weight={1.0 / count:.6f}")
+        else:
+            logger.warning(
+                "oversample_minority enabled but only 1 class found. Falling back to shuffle."
             )
 
     # Use drop_last=True for training to avoid BatchNorm issues with batch_size=1

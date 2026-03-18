@@ -17,6 +17,7 @@ import json
 import logging
 import math
 import multiprocessing as mp
+from contextlib import nullcontext
 from pathlib import Path
 
 import numpy as np
@@ -1006,6 +1007,25 @@ def run_inference(
             _cl_head.eval()
             logger.info(f"CL regression head loaded (repr_dim={repr_dim})")
 
+    # torch.compile the model for faster inference (CUDA graph + kernel fusion).
+    # Skip when repr capture hooks are active — CUDA graphs don't replay hooks.
+    _has_repr_hook = (
+        isinstance(model_wrapper, ModelInferenceWrapper) and model_wrapper._repr_hook is not None
+    )
+    if (
+        isinstance(model_wrapper, ModelInferenceWrapper)
+        and device.startswith("cuda")
+        and hasattr(torch, "compile")
+        and not _has_repr_hook
+    ):
+        try:
+            model_wrapper.model = torch.compile(model_wrapper.model, mode="reduce-overhead")
+            logger.info("torch.compile enabled (mode=reduce-overhead)")
+        except Exception as e:
+            logger.warning(f"torch.compile failed, using eager mode: {e}")
+    elif _has_repr_hook:
+        logger.info("torch.compile skipped (repr capture hooks incompatible with CUDA graphs)")
+
     # Skip feature computation when model doesn't need them (big speedup)
     # But always compute when signal_in_channels > 1 (needed for kmer residual)
     signal_in_channels = config.get("signal_in_channels", 1)
@@ -1658,7 +1678,11 @@ def run_inference(
         with Progress() as progress:
             task = progress.add_task("[cyan]Running inference...", total=None)
 
-            with POD5Reader(pod5_path) as pod5_reader:
+            # Skip opening Python DatasetReader when Rust handles all POD5 I/O.
+            # Opening a 40+ GB POD5 file in Python just to index it is expensive
+            # and completely unused on the Rust extraction paths.
+            _pod5_ctx = nullcontext() if _use_rust_extraction else POD5Reader(pod5_path)
+            with _pod5_ctx as pod5_reader:
                 for aln_batch in iter_bam_batches(
                     bam_path, batch_size=read_batch_size, min_mapq=min_mapq
                 ):
@@ -1823,7 +1847,7 @@ def _run_batch_multiclass(
         if valid_feats:
             batch["features"] = torch.from_numpy(np.stack(valid_feats)).to(device)
 
-    with torch.no_grad():
+    with torch.inference_mode():
         logits = model_wrapper.forward_batch(batch, device)
         if calibration is not None:
             from leech.calibration import apply_calibration
@@ -1873,7 +1897,7 @@ def _run_batch(
         if valid_feats:
             batch["features"] = torch.from_numpy(np.stack(valid_feats)).to(device)
 
-    with torch.no_grad():
+    with torch.inference_mode():
         logits = model_wrapper.forward_batch(batch, device)
         probs = torch.sigmoid(logits).cpu().numpy().flatten()
 

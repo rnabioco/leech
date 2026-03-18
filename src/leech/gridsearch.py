@@ -180,6 +180,7 @@ class GridSearchConfig:
     augment_scale_max: float = 1.0
     num_workers: int = 0
     balance_groups: bool = False
+    oversample_minority: bool = False
     adversarial_lambda: float = 0.0
     adversarial_anneal_epochs: int = 0
     confound: str | None = None
@@ -279,6 +280,7 @@ def run_grid_point(
     augment_scale_max: float = 1.0,
     num_workers: int = 0,
     balance_groups: bool = False,
+    oversample_minority: bool = False,
     motif: str = "",
     motif_offset: int = 0,
     base_justify: str = "center",
@@ -363,6 +365,7 @@ def run_grid_point(
             left_context=left_context,
             right_context=right_context,
             balance_groups=balance_groups,
+            oversample_minority=oversample_minority,
             motif=motif,
             motif_offset=motif_offset,
             base_justify=base_justify,
@@ -632,6 +635,7 @@ def run_grid_search(config: GridSearchConfig) -> Path:
                 "augment_scale_max": config.augment_scale_max,
                 "num_workers": config.num_workers,
                 "balance_groups": config.balance_groups,
+                "oversample_minority": config.oversample_minority,
                 "motif": config.motif,
                 "motif_offset": config.motif_offset,
                 "base_justify": config.base_justify,

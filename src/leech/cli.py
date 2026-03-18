@@ -463,6 +463,12 @@ def merge(input_chunks, output_dir, train_split, val_split, seed, k_fold, compar
     help="Balance sampling across source groups (e.g., per-AA) so each group contributes equally per epoch",
 )
 @click.option(
+    "--oversample-minority/--no-oversample-minority",
+    default=False,
+    help="Oversample minority classes so each class contributes equally per epoch "
+    "(mutually exclusive with --balance-groups)",
+)
+@click.option(
     "--num-out",
     type=int,
     default=1,
@@ -531,6 +537,7 @@ def train(
     seq_encoding,
     num_workers,
     balance_groups,
+    oversample_minority,
     num_out,
     adversarial_lambda,
     adversarial_anneal_epochs,
@@ -575,6 +582,7 @@ def train(
         base_justify=base_justify,
         seq_encoding=seq_encoding,
         balance_groups=balance_groups,
+        oversample_minority=oversample_minority,
         num_out=num_out,
         adversarial_lambda=adversarial_lambda,
         adversarial_anneal_epochs=adversarial_anneal_epochs,
@@ -831,6 +839,12 @@ def export(model_dir, output):
     help="Balance sampling across source groups (e.g., per-AA) so each group contributes equally per epoch",
 )
 @click.option(
+    "--oversample-minority/--no-oversample-minority",
+    default=False,
+    help="Oversample minority classes so each class contributes equally per epoch "
+    "(mutually exclusive with --balance-groups)",
+)
+@click.option(
     "--adversarial-lambda",
     type=float,
     default=0.0,
@@ -892,6 +906,7 @@ def optimize(
     augment_scale_max,
     num_workers,
     balance_groups,
+    oversample_minority,
     motif,
     motif_offset,
     adversarial_lambda,
@@ -936,6 +951,7 @@ def optimize(
         augment_scale_max=augment_scale_max,
         num_workers=num_workers,
         balance_groups=balance_groups,
+        oversample_minority=oversample_minority,
         motif=motif,
         motif_offset=motif_offset,
         adversarial_lambda=adversarial_lambda,
