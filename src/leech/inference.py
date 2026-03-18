@@ -1249,6 +1249,17 @@ def run_inference(
         # Respect SLURM allocation; fall back to system CPU count
         _avail_cpus = int(os.environ.get("SLURM_CPUS_PER_TASK", 0)) or os.cpu_count() or 4
         n_extract = max(1, _avail_cpus - 2)  # reserve for main + GPU
+
+        # Limit Rust rayon thread pool to match SLURM allocation.
+        # Without this, rayon defaults to ALL system CPUs (e.g., 63 on a 64-core node),
+        # causing massive oversubscription when multiple jobs share a node.
+        if "RAYON_NUM_THREADS" not in os.environ:
+            rayon_threads = max(1, _avail_cpus - 2)
+            os.environ["RAYON_NUM_THREADS"] = str(rayon_threads)
+            logger.info(
+                f"Set RAYON_NUM_THREADS={rayon_threads} (from {_avail_cpus} available CPUs)"
+            )
+
         logger.info(f"Sequential path with {n_extract} extraction threads, double-buffered GPU")
 
         # Check if we can use the Rust monolithic extraction hot path
@@ -1615,16 +1626,8 @@ def run_inference(
                 ):
                     if _has_prefetch:
                         # ---- Prefetch Rust pipeline ----
-                        # Collect BAM metadata (main thread, pysam not thread-safe)
-                        rs_meta = _collect_bam_metadata(aln_batch)
-
-                        # Submit prefetch for current batch (background thread)
-                        assert _rs_preload_pod5_signals is not None
-                        cur_future = _prefetch_exec.submit(
-                            _rs_preload_pod5_signals, str(pod5_path), rs_meta[0]
-                        )
-
-                        # Process PREVIOUS batch while current prefetch runs
+                        # Process PREVIOUS batch first (no prefetch running,
+                        # rayon is free for extraction)
                         if _prefetch_prev is not None:
                             p_future, p_meta, p_aln = _prefetch_prev
                             preloaded = p_future.result()
@@ -1646,6 +1649,14 @@ def run_inference(
                                 ),
                             )
 
+                        # Submit prefetch for current batch AFTER extraction done.
+                        # Overlaps with async BAM write + next loop iteration's
+                        # BAM read/metadata collection — not with rayon extraction.
+                        rs_meta = _collect_bam_metadata(aln_batch)
+                        assert _rs_preload_pod5_signals is not None
+                        cur_future = _prefetch_exec.submit(
+                            _rs_preload_pod5_signals, str(pod5_path), rs_meta[0]
+                        )
                         _prefetch_prev = (cur_future, rs_meta, aln_batch)
                         continue
 

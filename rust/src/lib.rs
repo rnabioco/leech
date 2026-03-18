@@ -14,7 +14,13 @@ fn leech_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(encoding::encode_signal_kmer, m)?)?;
     m.add_function(wrap_pyfunction!(signal_stats::compute_signal_stats, m)?)?;
     m.add_function(wrap_pyfunction!(pod5_io::read_pod5_batch, m)?)?;
+    m.add_function(wrap_pyfunction!(pod5_io::preload_pod5_signals, m)?)?;
+    m.add_class::<pod5_io::PreloadedSignals>()?;
     m.add_function(wrap_pyfunction!(inference_pipeline::extract_inference_chunks, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        inference_pipeline::extract_chunks_from_preloaded,
+        m
+    )?)?;
     m.add_function(wrap_pyfunction!(inference_pipeline::_test_process_read, m)?)?;
     Ok(())
 }

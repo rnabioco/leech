@@ -15,6 +15,7 @@ use pyo3::prelude::*;
 use rayon::prelude::*;
 
 use crate::encoding::encode_signal_kmer_inner;
+use crate::pod5_io::PreloadedSignals;
 use crate::signal_refine::{extract_levels_inner, seq_banded_dp_inner};
 
 // ---------------------------------------------------------------------------
@@ -1028,7 +1029,106 @@ struct PipelineConfig {
 }
 
 // ---------------------------------------------------------------------------
-// PyO3 entry point
+// Shared Phase 2 (rayon) + Phase 3 (numpy) — called by both entry points
+// ---------------------------------------------------------------------------
+
+/// Run per-read processing in parallel (rayon, GIL released) then convert
+/// results to numpy arrays.  Shared by [`extract_inference_chunks`] and
+/// [`extract_chunks_from_preloaded`].
+#[allow(clippy::too_many_arguments)]
+fn _process_and_convert<'py>(
+    py: Python<'py>,
+    signal_map: &HashMap<String, Vec<i16>>,
+    read_ids: &[String],
+    sequences: &[String],
+    mv_arrays: &[Vec<u8>],
+    mv_strides: &[u32],
+    num_samples_list: &[u64],
+    trim_offsets: &[i64],
+    motif_positions: &[Vec<i64>],
+    cfg: &PipelineConfig,
+    cigar_tuples: &Option<Vec<Vec<(u32, u32)>>>,
+    reference_sequences: &Option<Vec<Option<String>>>,
+) -> PyResult<
+    Vec<(
+        Py<PyArray1<f32>>,
+        Py<PyArray2<f32>>,
+        Option<Py<PyArray2<f32>>>,
+        String,
+        i64,
+    )>,
+> {
+    let n_reads = read_ids.len();
+
+    // --- Phase 2: Per-read processing (parallel via rayon, GIL released) ---
+    let all_chunks: Vec<Vec<ChunkResult>>;
+    {
+        let pool_result: Vec<Vec<ChunkResult>> = py.detach(|| {
+            (0..n_reads)
+                .into_par_iter()
+                .map(|i| {
+                    let rid = &read_ids[i];
+                    let raw_i16 = match signal_map.get(rid.as_str()) {
+                        Some(s) => s,
+                        None => return vec![],
+                    };
+                    let cigar = cigar_tuples
+                        .as_ref()
+                        .and_then(|c| c.get(i))
+                        .map(|v| v.as_slice());
+                    let rseq = reference_sequences
+                        .as_ref()
+                        .and_then(|r| r.get(i))
+                        .and_then(|s| s.as_deref());
+
+                    process_one_read(
+                        raw_i16,
+                        rid,
+                        &sequences[i],
+                        &mv_arrays[i],
+                        mv_strides[i],
+                        num_samples_list[i],
+                        trim_offsets[i],
+                        &motif_positions[i],
+                        cfg,
+                        cigar,
+                        rseq,
+                    )
+                })
+                .collect()
+        });
+        all_chunks = pool_result;
+    }
+
+    // --- Phase 3: Convert to numpy (needs GIL) ---
+    let mut results = Vec::new();
+    for chunks in all_chunks {
+        for c in chunks {
+            let sig_py = c.signal.into_pyarray(py).unbind();
+            let seq_arr = numpy::ndarray::Array2::from_shape_vec((c.seq_rows, c.seq_cols), c.seq_enc)
+                .map_err(|e| {
+                    pyo3::exceptions::PyValueError::new_err(format!("Seq error: {e}"))
+                })?;
+            let seq_py = seq_arr.into_pyarray(py).unbind();
+            let feat_py = if let Some(flat) = c.features {
+                let arr =
+                    numpy::ndarray::Array2::from_shape_vec((c.num_features, c.dwell_width), flat)
+                        .map_err(|e| {
+                            pyo3::exceptions::PyValueError::new_err(format!("Feat error: {e}"))
+                        })?;
+                Some(arr.into_pyarray(py).unbind())
+            } else {
+                None
+            };
+            results.push((sig_py, seq_py, feat_py, c.read_id, c.base_idx));
+        }
+    }
+
+    Ok(results)
+}
+
+// ---------------------------------------------------------------------------
+// PyO3 entry point — monolithic (POD5 I/O + processing)
 // ---------------------------------------------------------------------------
 
 /// Extract inference-ready chunks for a batch of reads in one Rust call.
@@ -1149,7 +1249,7 @@ pub fn extract_inference_chunks<'py>(
         signal_in_channels,
     };
 
-    // --- Phase 1: POD5 I/O (projected cols 0+1, UUID-native filter, early termination) ---
+    // --- Phase 1: POD5 I/O (scan reads, UUID filter, early termination, bulk extract) ---
     let target_uuids: HashSet<escapepod::Uuid> = read_ids
         .iter()
         .filter_map(|s| escapepod::Uuid::parse_str(s).ok())
@@ -1158,83 +1258,178 @@ pub fn extract_inference_chunks<'py>(
         pyo3::exceptions::PyIOError::new_err(format!("Failed to open POD5: {e}"))
     })?;
 
-    let matched = reader.read_id_signal_rows_filtered(&target_uuids).map_err(|e| {
-        pyo3::exceptions::PyIOError::new_err(format!("Failed to read POD5 index: {e}"))
-    })?;
-    let to_extract: Vec<(String, Vec<u64>)> = matched
-        .into_iter()
-        .map(|(uuid, rows)| (uuid.to_string(), rows))
-        .collect();
+    let mut to_extract: Vec<(String, Vec<u64>)> = Vec::with_capacity(target_uuids.len());
+    for read_result in reader.reads().map_err(|e| {
+        pyo3::exceptions::PyIOError::new_err(format!("Failed to iterate reads: {e}"))
+    })? {
+        let read = read_result.map_err(|e| {
+            pyo3::exceptions::PyIOError::new_err(format!("Failed to parse read: {e}"))
+        })?;
+        if target_uuids.contains(&read.read_id) {
+            to_extract.push((read.read_id.to_string(), read.signal_rows));
+            if to_extract.len() == target_uuids.len() {
+                break;
+            }
+        }
+    }
 
     let bulk_signals = reader.get_signal_bulk(&to_extract).map_err(|e| {
         pyo3::exceptions::PyIOError::new_err(format!("Signal extraction failed: {e}"))
     })?;
     let signal_map: HashMap<String, Vec<i16>> = bulk_signals.into_iter().collect();
 
-    // --- Phase 2: Per-read processing (parallel via rayon, GIL released) ---
-    let all_chunks: Vec<Vec<ChunkResult>>;
+    _process_and_convert(
+        py,
+        &signal_map,
+        &read_ids,
+        &sequences,
+        &mv_arrays,
+        &mv_strides,
+        &num_samples_list,
+        &trim_offsets,
+        &motif_positions,
+        &cfg,
+        &cigar_tuples,
+        &reference_sequences,
+    )
+}
+
+// ---------------------------------------------------------------------------
+// PyO3 entry point — from preloaded signals (prefetch pipeline)
+// ---------------------------------------------------------------------------
+
+/// Extract inference-ready chunks using pre-fetched POD5 signals.
+///
+/// Identical to [`extract_inference_chunks`] but skips Phase 1 (POD5 I/O).
+/// The `preloaded` handle is produced by [`preload_pod5_signals`] which can
+/// run in a background thread to overlap I/O with processing + GPU inference.
+#[pyfunction]
+#[pyo3(signature = (
+    preloaded,
+    read_ids,
+    sequences,
+    mv_strides,
+    mv_arrays,
+    num_samples_list,
+    trim_offsets,
+    signal_context_left,
+    signal_context_right,
+    kmer_context,
+    motif_positions,
+    signal_len,
+    compute_features,
+    reverse_signal = true,
+    feature_start = None,
+    feature_end = None,
+    dwell_offset = 0,
+    anchor = "basecall",
+    cigar_tuples = None,
+    reference_sequences = None,
+    seq_encoding = "base_onehot",
+    signal_kmer_context = None,
+    refine_signal_map = false,
+    kmer_table = None,
+    kmer_len = 9,
+    kmer_center_idx = -1,
+    refine_half_bandwidth = 5,
+    refine_scale_iters = 2,
+    signal_in_channels = 1,
+))]
+#[allow(clippy::too_many_arguments, unused_variables)]
+pub fn extract_chunks_from_preloaded<'py>(
+    py: Python<'py>,
+    preloaded: &PreloadedSignals,
+    read_ids: Vec<String>,
+    sequences: Vec<String>,
+    mv_strides: Vec<u32>,
+    mv_arrays: Vec<Vec<u8>>,
+    num_samples_list: Vec<u64>,
+    trim_offsets: Vec<i64>,
+    signal_context_left: i64,
+    signal_context_right: i64,
+    kmer_context: i64,
+    motif_positions: Vec<Vec<i64>>,
+    signal_len: usize,
+    compute_features: bool,
+    reverse_signal: bool,
+    feature_start: Option<i64>,
+    feature_end: Option<i64>,
+    dwell_offset: i64,
+    anchor: &str,
+    cigar_tuples: Option<Vec<Vec<(u32, u32)>>>,
+    reference_sequences: Option<Vec<Option<String>>>,
+    seq_encoding: &str,
+    signal_kmer_context: Option<(usize, usize)>,
+    refine_signal_map: bool,
+    kmer_table: Option<HashMap<String, f64>>,
+    kmer_len: usize,
+    kmer_center_idx: i32,
+    refine_half_bandwidth: i32,
+    refine_scale_iters: i32,
+    signal_in_channels: usize,
+) -> PyResult<
+    Vec<(
+        Py<PyArray1<f32>>,
+        Py<PyArray2<f32>>,
+        Option<Py<PyArray2<f32>>>,
+        String,
+        i64,
+    )>,
+> {
+    let n_reads = read_ids.len();
+    if sequences.len() != n_reads
+        || mv_strides.len() != n_reads
+        || mv_arrays.len() != n_reads
+        || num_samples_list.len() != n_reads
+        || trim_offsets.len() != n_reads
+        || motif_positions.len() != n_reads
     {
-        // Release the GIL so Python threads can proceed during Rust computation
-        let pool_result: Vec<Vec<ChunkResult>> = py
-            .detach(|| {
-                (0..n_reads)
-                    .into_par_iter()
-                    .map(|i| {
-                        let rid = &read_ids[i];
-                        let raw_i16 = match signal_map.get(rid.as_str()) {
-                            Some(s) => s,
-                            None => return vec![],
-                        };
-                        let cigar = cigar_tuples
-                            .as_ref()
-                            .and_then(|c| c.get(i))
-                            .map(|v| v.as_slice());
-                        let rseq = reference_sequences
-                            .as_ref()
-                            .and_then(|r| r.get(i))
-                            .and_then(|s| s.as_deref());
-
-                        process_one_read(
-                            raw_i16,
-                            rid,
-                            &sequences[i],
-                            &mv_arrays[i],
-                            mv_strides[i],
-                            num_samples_list[i],
-                            trim_offsets[i],
-                            &motif_positions[i],
-                            &cfg,
-                            cigar,
-                            rseq,
-                        )
-                    })
-                    .collect()
-            });
-        all_chunks = pool_result;
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "All input arrays must have the same length",
+        ));
     }
 
-    // --- Phase 3: Convert to numpy (needs GIL) ---
-    let mut results = Vec::new();
-    for chunks in all_chunks {
-        for c in chunks {
-            let sig_py = c.signal.into_pyarray(py).unbind();
-            let seq_arr = numpy::ndarray::Array2::from_shape_vec(
-                (c.seq_rows, c.seq_cols), c.seq_enc,
-            ).map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Seq error: {e}")))?;
-            let seq_py = seq_arr.into_pyarray(py).unbind();
-            let feat_py = if let Some(flat) = c.features {
-                let arr = numpy::ndarray::Array2::from_shape_vec(
-                    (c.num_features, c.dwell_width), flat,
-                ).map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Feat error: {e}")))?;
-                Some(arr.into_pyarray(py).unbind())
-            } else {
-                None
-            };
-            results.push((sig_py, seq_py, feat_py, c.read_id, c.base_idx));
-        }
-    }
+    let kmer_ctx = kmer_context;
 
-    Ok(results)
+    let cfg = PipelineConfig {
+        reverse_signal,
+        use_reference: anchor == "reference",
+        use_signal_kmer: seq_encoding == "signal_kmer",
+        skmer_ctx: signal_kmer_context.unwrap_or((4, 4)),
+        signal_context_left,
+        signal_context_right,
+        kmer_ctx,
+        kmer_win: (2 * kmer_ctx + 1) as usize,
+        signal_len,
+        compute_features,
+        feat_start: feature_start.unwrap_or(-kmer_ctx),
+        feat_end: feature_end.unwrap_or(kmer_ctx),
+        dwell_width: (feature_end.unwrap_or(kmer_ctx) - feature_start.unwrap_or(-kmer_ctx) + 1)
+            as usize,
+        refine_signal_map,
+        kmer_table,
+        kmer_len,
+        kmer_center_idx,
+        refine_half_bandwidth,
+        refine_scale_iters,
+        signal_in_channels,
+    };
+
+    // Skip Phase 1 — use preloaded signals directly
+    _process_and_convert(
+        py,
+        &preloaded.signals,
+        &read_ids,
+        &sequences,
+        &mv_arrays,
+        &mv_strides,
+        &num_samples_list,
+        &trim_offsets,
+        &motif_positions,
+        &cfg,
+        &cigar_tuples,
+        &reference_sequences,
+    )
 }
 
 // ---------------------------------------------------------------------------
