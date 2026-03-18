@@ -472,5 +472,4 @@ def collate_fn(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
     if "cl_target" in batch[0]:
         result["cl_target"] = torch.stack([item["cl_target"] for item in batch])
 
-
     return result

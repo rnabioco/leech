@@ -1335,7 +1335,6 @@ def predict(
     aggregation,
     read_batch_size,
     backend,
-    read_batch_size,
 ):
     """Run inference on new data to generate predictions."""
     import warnings
@@ -1374,7 +1373,6 @@ def predict(
         aggregation=aggregation,
         read_batch_size=read_batch_size,
         backend=backend,
-        read_batch_size=read_batch_size,
     )
 
 
