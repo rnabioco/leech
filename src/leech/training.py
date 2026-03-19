@@ -128,6 +128,7 @@ class Trainer:
         adversarial_anneal_epochs: int = 0,
         cl_regression: bool = False,
         cl_lambda: float = 1.0,
+        window_lr_multiplier: float = 0.0,
     ):
         # Wrap model with inference wrapper for unified forward pass
         self.model_wrapper = ModelInferenceWrapper(model, model_type)
@@ -177,13 +178,39 @@ class Trainer:
             self.cl_regression_head.to(device)
             logger.info(f"CL regression head enabled: repr_dim={repr_dim}, cl_lambda={cl_lambda}")
 
+        # Track adaptive window capability
+        self._has_adaptive_window = hasattr(model, "get_learned_windows")
+
         # Setup optimizer (include adversarial + CL regression head params if present)
-        all_params = list(model.parameters())
-        if self.adversarial_head is not None:
-            all_params += list(self.adversarial_head.parameters())
-        if self.cl_regression_head is not None:
-            all_params += list(self.cl_regression_head.parameters())
-        self.optimizer = torch.optim.Adam(all_params, lr=learning_rate, weight_decay=weight_decay)
+        if window_lr_multiplier > 0 and hasattr(model, "adaptive_params"):
+            adaptive_param_ids = {id(p) for p in model.adaptive_params()}
+            adaptive_ps = list(model.adaptive_params())
+            other_ps = [p for p in model.parameters() if id(p) not in adaptive_param_ids]
+            all_params_for_opt: list[dict] = [
+                {"params": other_ps},
+                {"params": adaptive_ps, "lr": learning_rate * window_lr_multiplier},
+            ]
+            if self.adversarial_head is not None:
+                all_params_for_opt[0]["params"] += list(self.adversarial_head.parameters())
+            if self.cl_regression_head is not None:
+                all_params_for_opt[0]["params"] += list(self.cl_regression_head.parameters())
+            self.optimizer = torch.optim.Adam(
+                all_params_for_opt, lr=learning_rate, weight_decay=weight_decay
+            )
+            logger.info(
+                f"Adaptive window optimizer: {len(adaptive_ps)} window params at "
+                f"lr={learning_rate * window_lr_multiplier:.6f}, "
+                f"{len(other_ps)} model params at lr={learning_rate:.6f}"
+            )
+        else:
+            all_params = list(model.parameters())
+            if self.adversarial_head is not None:
+                all_params += list(self.adversarial_head.parameters())
+            if self.cl_regression_head is not None:
+                all_params += list(self.cl_regression_head.parameters())
+            self.optimizer = torch.optim.Adam(
+                all_params, lr=learning_rate, weight_decay=weight_decay
+            )
 
         # Setup loss
         self.loss_type = loss_type
@@ -747,6 +774,17 @@ class Trainer:
                         f"{lr_str}{adv_str}{cl_str}"
                     )
 
+                    # Log learned windows if adaptive
+                    if self._has_adaptive_window:
+                        windows = self.model.get_learned_windows()
+                        for key, val in windows.items():
+                            hist_key = f"learned_{key}"
+                            if hist_key not in self.history:
+                                self.history[hist_key] = []
+                            self.history[hist_key].append(val)
+                        window_str = " ".join(f"{k}={v}" for k, v in windows.items())
+                        console.print(f"  [dim]Window: {window_str}[/dim]")
+
                     # Save best model — F1 for multiclass, accuracy for binary
                     if self._checkpoint_on_f1:
                         improved = val_f1 > self.best_val_f1
@@ -928,6 +966,13 @@ def train_model(
     confound: str | None = None,
     cl_regression: bool = False,
     cl_lambda: float = 1.0,
+    learnable_window: bool = False,
+    window_mode: str = "adaptive",
+    window_sharpness: float = 0.1,
+    window_lr_multiplier: float = 10.0,
+    init_left_context: int | None = None,
+    init_right_context: int | None = None,
+    independent_residual_window: bool = False,
     **model_kwargs: Any,
 ) -> dict[str, Any]:
     """
@@ -966,6 +1011,13 @@ def train_model(
         motif: Motif used for chunk extraction (recorded in config for provenance)
         motif_offset: Offset within motif for focus base (recorded in config)
         base_justify: Signal justification within focus base (recorded in config)
+        learnable_window: Enable adaptive signal context window learning
+        window_mode: Window learning mode ("adaptive" or "gate")
+        window_sharpness: Sigmoid sharpness for adaptive mode
+        window_lr_multiplier: LR multiplier for window parameters
+        init_left_context: Initial left context for adaptive window
+        init_right_context: Initial right context for adaptive window
+        independent_residual_window: Use separate mask for residual channel
         **model_kwargs: Additional model parameters (passed to model constructor)
 
     Returns:
@@ -1274,6 +1326,40 @@ def train_model(
 
     model = get_model(model_name, **model_init_kwargs)
 
+    # Wrap model with learnable window mask if requested
+    if learnable_window:
+        from leech.models.adaptive_window import BoundaryMaskedModel, BranchBoundaryMask, BranchGate
+
+        max_left = left_context if left_context is not None else signal_len // 2
+        max_right = right_context if right_context is not None else signal_len // 2
+
+        if window_mode == "gate":
+            signal_mask = BranchGate(in_channels=signal_in_channels)
+            residual_mask = None
+        else:  # "adaptive" sigmoid mode
+            signal_mask = BranchBoundaryMask(
+                max_left=max_left,
+                max_right=max_right,
+                init_left=init_left_context,
+                init_right=init_right_context,
+                sharpness=window_sharpness,
+            )
+            residual_mask = None
+            if independent_residual_window and signal_in_channels > 1:
+                residual_mask = BranchBoundaryMask(
+                    max_left=max_left,
+                    max_right=max_right,
+                    init_left=init_left_context,
+                    init_right=init_right_context,
+                    sharpness=window_sharpness,
+                )
+
+        model = BoundaryMaskedModel(model, signal_mask=signal_mask, residual_mask=residual_mask)
+        logger.info(
+            f"Adaptive window enabled: mode={window_mode}, "
+            f"max_left={max_left}, max_right={max_right}"
+        )
+
     # Enable cuDNN autotuner for fixed-size inputs (finds fastest conv algorithms)
     if device != "cpu":
         torch.backends.cudnn.benchmark = True
@@ -1403,6 +1489,16 @@ def train_model(
         **model_kwargs,
     }
 
+    # Save adaptive window config if enabled
+    if learnable_window:
+        config["learnable_window"] = True
+        config["window_mode"] = window_mode
+        config["window_sharpness"] = window_sharpness
+        config["window_lr_multiplier"] = window_lr_multiplier
+        config["init_left_context"] = init_left_context
+        config["init_right_context"] = init_right_context
+        config["independent_residual_window"] = independent_residual_window
+
     with open(output_dir / "config.json", "w") as f:
         json.dump(config, f, indent=2)
 
@@ -1434,6 +1530,7 @@ def train_model(
         adversarial_anneal_epochs=adversarial_anneal_epochs,
         cl_regression=cl_regression,
         cl_lambda=cl_lambda,
+        window_lr_multiplier=window_lr_multiplier if learnable_window else 0.0,
     )
 
     # Train

@@ -602,6 +602,265 @@ def train(
 
 @model.command()
 @click.option(
+    "--train-data",
+    required=True,
+    type=click.Path(exists=True, path_type=Path),
+    help="Training dataset config (JSON)",
+)
+@click.option(
+    "--val-data",
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
+    help="Validation dataset config (JSON)",
+)
+@click.option(
+    "--model",
+    type=LazyChoice(get_model_choices),
+    default="TCNDwellResidualLN",
+    help="Model architecture",
+)
+@click.option(
+    "--model-config",
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
+    help="Model hyperparameters (JSON)",
+)
+@click.option(
+    "--output-dir",
+    "-o",
+    required=True,
+    type=click.Path(path_type=Path),
+    help="Output directory for model and logs",
+)
+@training_hyperparams
+@model_provenance
+@click.option(
+    "--use-class-weights/--no-class-weights",
+    default=True,
+    help="Auto-compute class weights from training data to handle class imbalance (default: enabled)",
+)
+@click.option(
+    "--pos-weight",
+    type=float,
+    default=None,
+    help="Manual positive class weight for BCEWithLogitsLoss (overrides --use-class-weights)",
+)
+@click.option(
+    "--resume",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Resume training from a checkpoint file (e.g., model_last.pt). Ignored if file doesn't exist.",
+)
+@click.option(
+    "--seq-encoding",
+    type=click.Choice(["base_onehot", "signal_kmer"]),
+    default="signal_kmer",
+    help="Sequence encoding type: signal_kmer (36, signal_len) or base_onehot (4, kmer_len)",
+)
+@click.option(
+    "--num-workers",
+    type=int,
+    default=0,
+    help="DataLoader workers (0=auto: 8 for GPU, 0 for CPU)",
+)
+@click.option(
+    "--balance-groups/--no-balance-groups",
+    default=False,
+    help="Balance sampling across source groups (e.g., per-AA) so each group contributes equally per epoch",
+)
+@click.option(
+    "--oversample-minority/--no-oversample-minority",
+    default=False,
+    help="Oversample minority classes so each class contributes equally per epoch "
+    "(mutually exclusive with --balance-groups)",
+)
+@click.option(
+    "--num-out",
+    type=int,
+    default=1,
+    help="Number of output classes. 1 = binary (BCE), >1 = multi-class (CrossEntropy). Default: 1.",
+)
+@click.option(
+    "--adversarial-lambda",
+    type=float,
+    default=0.0,
+    help="Gradient reversal strength for adversarial confound removal (0 = disabled).",
+)
+@click.option(
+    "--adversarial-anneal-epochs",
+    type=int,
+    default=0,
+    help="Linearly ramp adversarial lambda from 0 to target over this many epochs (0 = constant).",
+)
+@click.option(
+    "--confound",
+    type=click.Choice(["disc_base"]),
+    default=None,
+    help="Confound to decorrelate via gradient reversal. 'disc_base' = discriminator base at tRNA position 73.",
+)
+@click.option(
+    "--cl-regression/--no-cl-regression",
+    default=False,
+    help="Enable continuous charging-level (CL) regression head.",
+)
+@click.option(
+    "--cl-lambda",
+    type=float,
+    default=1.0,
+    help="Weight for CL regression loss (default: 1.0).",
+)
+@click.option(
+    "--window-mode",
+    type=click.Choice(["adaptive", "gate"]),
+    default="adaptive",
+    help="Window learning mode: 'adaptive' (sigmoid boundary) or 'gate' (content-dependent).",
+)
+@click.option(
+    "--window-sharpness",
+    type=float,
+    default=0.1,
+    help="Sigmoid sharpness for adaptive mode (controls transition width). Default: 0.1.",
+)
+@click.option(
+    "--window-lr-multiplier",
+    type=float,
+    default=10.0,
+    help="LR multiplier for window parameters (higher = faster window learning). Default: 10.0.",
+)
+@click.option(
+    "--init-left-context",
+    type=int,
+    default=None,
+    help="Initial left context for adaptive window (default: use max from data).",
+)
+@click.option(
+    "--init-right-context",
+    type=int,
+    default=None,
+    help="Initial right context for adaptive window (default: use max from data).",
+)
+@click.option(
+    "--independent-residual-window/--shared-residual-window",
+    default=False,
+    help="Use independent mask for residual signal channel (default: shared).",
+)
+def adaptive(
+    train_data,
+    val_data,
+    model,
+    model_config,
+    output_dir,
+    epochs,
+    batch_size,
+    learning_rate,
+    device,
+    seed,
+    early_stopping,
+    use_class_weights,
+    pos_weight,
+    resume,
+    weight_decay,
+    max_grad_norm,
+    scheduler,
+    scheduler_patience,
+    scheduler_factor,
+    warmup_epochs,
+    loss_type,
+    focal_gamma,
+    label_smoothing,
+    mixed_precision,
+    augment_jitter,
+    augment_scale_min,
+    augment_scale_max,
+    augment_time_mask_bases,
+    augment_time_mask_count,
+    augment_shift_max_bases,
+    augment_feature_noise_scale,
+    motif,
+    motif_offset,
+    base_justify,
+    seq_encoding,
+    num_workers,
+    balance_groups,
+    oversample_minority,
+    num_out,
+    adversarial_lambda,
+    adversarial_anneal_epochs,
+    confound,
+    cl_regression,
+    cl_lambda,
+    window_mode,
+    window_sharpness,
+    window_lr_multiplier,
+    init_left_context,
+    init_right_context,
+    independent_residual_window,
+):
+    """Train a model with learnable signal context window boundaries.
+
+    Wraps the inner model with a BranchBoundaryMask (adaptive mode) or
+    BranchGate (gate mode) that learns the optimal left/right signal
+    context during training. Window parameters use a separate LR
+    (--window-lr-multiplier x base LR) for faster convergence.
+    """
+    from leech.commands.adaptive import handle_adaptive
+
+    handle_adaptive(
+        train_data=train_data,
+        val_data=val_data,
+        model_name=model,
+        model_config=model_config,
+        output_dir=output_dir,
+        epochs=epochs,
+        batch_size=batch_size,
+        learning_rate=learning_rate,
+        device=device,
+        seed=seed,
+        early_stopping=early_stopping,
+        use_class_weights=use_class_weights,
+        pos_weight=pos_weight,
+        resume=resume,
+        weight_decay=weight_decay,
+        max_grad_norm=max_grad_norm,
+        scheduler=scheduler,
+        scheduler_patience=scheduler_patience,
+        scheduler_factor=scheduler_factor,
+        warmup_epochs=warmup_epochs,
+        loss_type=loss_type,
+        focal_gamma=focal_gamma,
+        label_smoothing=label_smoothing,
+        mixed_precision=mixed_precision,
+        augment_jitter=augment_jitter,
+        augment_scale_min=augment_scale_min,
+        augment_scale_max=augment_scale_max,
+        augment_time_mask_bases=augment_time_mask_bases,
+        augment_time_mask_count=augment_time_mask_count,
+        augment_shift_max_bases=augment_shift_max_bases,
+        augment_feature_noise_scale=augment_feature_noise_scale,
+        num_workers=num_workers,
+        motif=motif,
+        motif_offset=motif_offset,
+        base_justify=base_justify,
+        seq_encoding=seq_encoding,
+        balance_groups=balance_groups,
+        oversample_minority=oversample_minority,
+        num_out=num_out,
+        adversarial_lambda=adversarial_lambda,
+        adversarial_anneal_epochs=adversarial_anneal_epochs,
+        confound=confound,
+        cl_regression=cl_regression,
+        cl_lambda=cl_lambda,
+        window_mode=window_mode,
+        window_sharpness=window_sharpness,
+        window_lr_multiplier=window_lr_multiplier,
+        init_left_context=init_left_context,
+        init_right_context=init_right_context,
+        independent_residual_window=independent_residual_window,
+    )
+
+
+@model.command()
+@click.option(
     "--model-dir",
     required=True,
     type=click.Path(exists=True, path_type=Path),

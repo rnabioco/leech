@@ -96,18 +96,23 @@ class ModelInferenceWrapper:
         Returns:
             Dimension of the captured representation vector.
         """
+        # Look through BoundaryMaskedModel wrapper if present
+        target_model = self.model
+        if hasattr(target_model, "inner_model"):
+            target_model = target_model.inner_model
+
         # Find the classification head (Sequential named 'classifier' or 'fc')
         head: nn.Module | None = None
         head_name = ""
         for name in ("classifier", "fc"):
-            head = getattr(self.model, name, None)
+            head = getattr(target_model, name, None)
             if head is not None:
                 head_name = name
                 break
         if head is None:
             raise RuntimeError(
                 f"Cannot find 'classifier' or 'fc' attribute on "
-                f"{type(self.model).__name__}; enable_repr_capture requires "
+                f"{type(target_model).__name__}; enable_repr_capture requires "
                 f"a model with a named classification head."
             )
 
@@ -119,7 +124,7 @@ class ModelInferenceWrapper:
                 break
         if repr_dim is None:
             raise RuntimeError(
-                f"No nn.Linear found in classification head of {type(self.model).__name__}"
+                f"No nn.Linear found in classification head of {type(target_model).__name__}"
             )
 
         # Register pre-hook to capture the head's input
@@ -128,7 +133,7 @@ class ModelInferenceWrapper:
 
         self._repr_hook = head.register_forward_pre_hook(_capture_hook)
         logger.info(
-            f"Repr capture enabled on {type(self.model).__name__}.{head_name}, dim={repr_dim}"
+            f"Repr capture enabled on {type(target_model).__name__}.{head_name}, dim={repr_dim}"
         )
         return repr_dim
 

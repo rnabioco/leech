@@ -103,6 +103,38 @@ def load_model_from_checkpoint(
     # Create model from config (filters training params and validates constructor args)
     model = _instantiate_model(config)
 
+    # Reconstruct adaptive window wrapper if needed (before loading state dict,
+    # since checkpoint keys include signal_mask.* and inner_model.* prefixes)
+    if config.get("learnable_window", False):
+        from leech.models.adaptive_window import BoundaryMaskedModel, BranchBoundaryMask, BranchGate
+
+        window_mode = config.get("window_mode", "adaptive")
+        max_left = config.get("left_context") or config["signal_len"] // 2
+        max_right = config.get("right_context") or config["signal_len"] // 2
+
+        if window_mode == "gate":
+            signal_mask: nn.Module = BranchGate(in_channels=config.get("signal_in_channels", 1))
+            residual_mask = None
+        else:
+            signal_mask = BranchBoundaryMask(
+                max_left=max_left,
+                max_right=max_right,
+                init_left=config.get("init_left_context"),
+                init_right=config.get("init_right_context"),
+                sharpness=config.get("window_sharpness", 0.1),
+            )
+            residual_mask = None
+            if config.get("independent_residual_window", False):
+                residual_mask = BranchBoundaryMask(
+                    max_left=max_left,
+                    max_right=max_right,
+                    init_left=config.get("init_left_context"),
+                    init_right=config.get("init_right_context"),
+                    sharpness=config.get("window_sharpness", 0.1),
+                )
+
+        model = BoundaryMaskedModel(model, signal_mask=signal_mask, residual_mask=residual_mask)
+
     # Load checkpoint
     checkpoint_file = checkpoint_path / checkpoint_name
     if not checkpoint_file.exists():
