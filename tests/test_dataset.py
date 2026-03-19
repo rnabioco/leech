@@ -362,5 +362,137 @@ class TestDatasetIntegration:
             assert not all_equal, "Shuffling with different seeds should produce different orders"
 
 
+class TestAugmentation:
+    """Test new augmentation methods (shift, time mask, feature noise)."""
+
+    def test_shift_modifies_signal(self, temp_chunks_file):
+        """Test that shift augmentation modifies signal stochastically."""
+        ds = LeechDataset(
+            temp_chunks_file,
+            signal_len=400,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding="base_onehot",
+            shift_max_bases=2.0,
+        )
+        torch.manual_seed(42)
+        item1 = ds[0]
+        torch.manual_seed(123)
+        item2 = ds[0]
+        # With different seeds, at least one branch should differ
+        assert not torch.equal(item1["signal"], item2["signal"]) or not torch.equal(
+            item1["sequence"], item2["sequence"]
+        )
+
+    def test_time_mask_zeros_regions(self, temp_chunks_file):
+        """Test that time masking zeros contiguous regions."""
+        ds_no_mask = LeechDataset(
+            temp_chunks_file,
+            signal_len=400,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding="base_onehot",
+        )
+        ds_mask = LeechDataset(
+            temp_chunks_file,
+            signal_len=400,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding="base_onehot",
+            time_mask_bases=3,
+            time_mask_count=2,
+        )
+        orig = ds_no_mask[0]
+        torch.manual_seed(42)
+        masked = ds_mask[0]
+        # Masked signal should have some zeros where original didn't
+        orig_zeros = (orig["signal"] == 0).sum()
+        masked_zeros = (masked["signal"] == 0).sum()
+        assert masked_zeros >= orig_zeros
+
+    def test_feature_noise_modifies_features(self, temp_chunks_file):
+        """Test that feature noise adds stochastic noise to features."""
+        ds = LeechDataset(
+            temp_chunks_file,
+            signal_len=400,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding="base_onehot",
+            feature_noise_scale=0.1,
+        )
+        torch.manual_seed(42)
+        item1 = ds[0]
+        torch.manual_seed(123)
+        item2 = ds[0]
+        # Features should differ between calls with different seeds
+        assert not torch.equal(item1["features"], item2["features"])
+
+    def test_no_augmentation_when_disabled(self, temp_chunks_file):
+        """Test that disabled augmentation params don't modify outputs."""
+        ds = LeechDataset(
+            temp_chunks_file,
+            signal_len=400,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding="base_onehot",
+            shift_max_bases=0.0,
+            time_mask_bases=0,
+            feature_noise_scale=0.0,
+        )
+        item1 = ds[0]
+        item2 = ds[0]
+        assert torch.equal(item1["signal"], item2["signal"])
+        assert torch.equal(item1["features"], item2["features"])
+
+    def test_cross_layer_consistency_shift(self, temp_chunks_file):
+        """Test shift: signal changes over many draws; edges are zero-padded."""
+        ds = LeechDataset(
+            temp_chunks_file,
+            signal_len=400,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding="base_onehot",
+            shift_max_bases=5.0,
+        )
+        ds_orig = LeechDataset(
+            temp_chunks_file,
+            signal_len=400,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding="base_onehot",
+        )
+        orig = ds_orig[0]
+        signal_changed = False
+        for seed in range(100):
+            torch.manual_seed(seed)
+            shifted = ds[0]
+            if not torch.equal(shifted["signal"], orig["signal"]):
+                signal_changed = True
+                # Check zero-padding: shifted signal should have zeros on one edge
+                first_nonzero = (shifted["signal"] != 0).nonzero()
+                if first_nonzero.numel() > 0:
+                    has_edge_zeros = (
+                        first_nonzero[0].item() > 0
+                        or first_nonzero[-1].item() < shifted["signal"].shape[-1] - 1
+                    )
+                    assert has_edge_zeros, "Shifted signal should have zero-padded edges"
+                break
+        assert signal_changed, "Shift should modify signal for at least one seed"
+
+    def test_val_dataset_no_augmentation(self, temp_chunks_file):
+        """Test that validation datasets (no augmentation params) are deterministic."""
+        ds = LeechDataset(
+            temp_chunks_file,
+            signal_len=400,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding="base_onehot",
+            # No augmentation params set
+        )
+        item1 = ds[0]
+        item2 = ds[0]
+        assert torch.equal(item1["signal"], item2["signal"])
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

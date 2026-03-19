@@ -71,6 +71,12 @@ DEFAULT_MIXED_PRECISION = False
 DEFAULT_AUGMENT_JITTER = 0.0
 DEFAULT_AUGMENT_SCALE_MIN = 1.0
 DEFAULT_AUGMENT_SCALE_MAX = 1.0
+DEFAULT_AUGMENT_TIME_MASK_BASES = 0  # Max width in bases per mask (0 = disabled)
+DEFAULT_AUGMENT_TIME_MASK_COUNT = 1  # Number of masks to apply
+DEFAULT_AUGMENT_SHIFT_MAX_BASES = (
+    0.0  # Max cross-layer shift in bases (0 = disabled, float for sub-base)
+)
+DEFAULT_AUGMENT_FEATURE_NOISE_SCALE = 0.0  # Per-channel Gaussian noise scale (0 = disabled)
 
 # Model defaults
 DEFAULT_SIGNAL_LEN = 400  # Default signal chunk length

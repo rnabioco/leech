@@ -178,6 +178,10 @@ class GridSearchConfig:
     augment_jitter: float = 0.0
     augment_scale_min: float = 1.0
     augment_scale_max: float = 1.0
+    augment_time_mask_bases: int = 0
+    augment_time_mask_count: int = 1
+    augment_shift_max_bases: float = 0.0
+    augment_feature_noise_scale: float = 0.0
     num_workers: int = 0
     balance_groups: bool = False
     oversample_minority: bool = False
@@ -278,6 +282,10 @@ def run_grid_point(
     augment_jitter: float = 0.0,
     augment_scale_min: float = 1.0,
     augment_scale_max: float = 1.0,
+    augment_time_mask_bases: int = 0,
+    augment_time_mask_count: int = 1,
+    augment_shift_max_bases: float = 0.0,
+    augment_feature_noise_scale: float = 0.0,
     num_workers: int = 0,
     balance_groups: bool = False,
     oversample_minority: bool = False,
@@ -361,6 +369,10 @@ def run_grid_point(
             augment_jitter=augment_jitter,
             augment_scale_min=augment_scale_min,
             augment_scale_max=augment_scale_max,
+            augment_time_mask_bases=augment_time_mask_bases,
+            augment_time_mask_count=augment_time_mask_count,
+            augment_shift_max_bases=augment_shift_max_bases,
+            augment_feature_noise_scale=augment_feature_noise_scale,
             num_workers=num_workers,
             left_context=left_context,
             right_context=right_context,
@@ -470,6 +482,10 @@ def _grid_point_worker(args: dict) -> dict:
         augment_jitter=args["augment_jitter"],
         augment_scale_min=args["augment_scale_min"],
         augment_scale_max=args["augment_scale_max"],
+        augment_time_mask_bases=args.get("augment_time_mask_bases", 0),
+        augment_time_mask_count=args.get("augment_time_mask_count", 1),
+        augment_shift_max_bases=args.get("augment_shift_max_bases", 0),
+        augment_feature_noise_scale=args.get("augment_feature_noise_scale", 0.0),
         num_workers=args["num_workers"],
         balance_groups=args.get("balance_groups", False),
         motif=args.get("motif"),
@@ -633,6 +649,10 @@ def run_grid_search(config: GridSearchConfig) -> Path:
                 "augment_jitter": config.augment_jitter,
                 "augment_scale_min": config.augment_scale_min,
                 "augment_scale_max": config.augment_scale_max,
+                "augment_time_mask_bases": config.augment_time_mask_bases,
+                "augment_time_mask_count": config.augment_time_mask_count,
+                "augment_shift_max_bases": config.augment_shift_max_bases,
+                "augment_feature_noise_scale": config.augment_feature_noise_scale,
                 "num_workers": config.num_workers,
                 "balance_groups": config.balance_groups,
                 "oversample_minority": config.oversample_minority,

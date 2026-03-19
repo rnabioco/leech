@@ -7,9 +7,13 @@ Defines reusable decorator groups for options shared across multiple commands.
 import rich_click as click
 
 from leech.constants import (
+    DEFAULT_AUGMENT_FEATURE_NOISE_SCALE,
     DEFAULT_AUGMENT_JITTER,
     DEFAULT_AUGMENT_SCALE_MAX,
     DEFAULT_AUGMENT_SCALE_MIN,
+    DEFAULT_AUGMENT_SHIFT_MAX_BASES,
+    DEFAULT_AUGMENT_TIME_MASK_BASES,
+    DEFAULT_AUGMENT_TIME_MASK_COUNT,
     DEFAULT_BATCH_SIZE,
     DEFAULT_DEVICE,
     DEFAULT_EPOCHS,
@@ -69,6 +73,30 @@ def training_hyperparams(f):
     and data augmentation options.
     """
     # Applied in reverse order so --help display matches the original ordering.
+    f = click.option(
+        "--augment-feature-noise-scale",
+        type=float,
+        default=DEFAULT_AUGMENT_FEATURE_NOISE_SCALE,
+        help="Per-channel Gaussian noise scale for features (0 = disabled)",
+    )(f)
+    f = click.option(
+        "--augment-shift-max-bases",
+        type=float,
+        default=DEFAULT_AUGMENT_SHIFT_MAX_BASES,
+        help="Max cross-layer shift in bases; float for sub-base resolution (0 = disabled)",
+    )(f)
+    f = click.option(
+        "--augment-time-mask-count",
+        type=int,
+        default=DEFAULT_AUGMENT_TIME_MASK_COUNT,
+        help="Number of time masks to apply (default: 1)",
+    )(f)
+    f = click.option(
+        "--augment-time-mask-bases",
+        type=int,
+        default=DEFAULT_AUGMENT_TIME_MASK_BASES,
+        help="Max width in bases for time masking (0 = disabled)",
+    )(f)
     f = click.option(
         "--augment-scale-max",
         type=float,

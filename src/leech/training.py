@@ -906,6 +906,10 @@ def train_model(
     augment_jitter: float = 0.0,
     augment_scale_min: float = 1.0,
     augment_scale_max: float = 1.0,
+    augment_time_mask_bases: int = 0,
+    augment_time_mask_count: int = 1,
+    augment_shift_max_bases: float = 0.0,
+    augment_feature_noise_scale: float = 0.0,
     resume_from: Path | None = None,
     num_workers: int = 0,
     motif: str | None = None,
@@ -1057,6 +1061,10 @@ def train_model(
         right_context=right_context,
         confound_map=confound_map,
         cl_regression=cl_regression,
+        time_mask_bases=augment_time_mask_bases,
+        time_mask_count=augment_time_mask_count,
+        shift_max_bases=augment_shift_max_bases,
+        feature_noise_scale=augment_feature_noise_scale,
     )
 
     val_dataset = None
@@ -1368,6 +1376,10 @@ def train_model(
         "augment_jitter": augment_jitter,
         "augment_scale_min": augment_scale_min,
         "augment_scale_max": augment_scale_max,
+        "augment_time_mask_bases": augment_time_mask_bases,
+        "augment_time_mask_count": augment_time_mask_count,
+        "augment_shift_max_bases": augment_shift_max_bases,
+        "augment_feature_noise_scale": augment_feature_noise_scale,
         "balance_groups": balance_groups,
         "label_map": label_map,
         "adversarial_lambda": adversarial_lambda,

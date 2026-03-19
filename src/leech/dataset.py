@@ -86,6 +86,10 @@ class LeechDataset(Dataset):
         right_context: int | None = None,
         confound_map: dict[int, int] | None = None,
         cl_regression: bool = False,
+        time_mask_bases: int = 0,
+        time_mask_count: int = 1,
+        shift_max_bases: float = 0.0,
+        feature_noise_scale: float = 0.0,
     ):
         """
         Initialize dataset.
@@ -113,6 +117,13 @@ class LeechDataset(Dataset):
                 Labels not found in the map get ``-1`` (ignored by CE loss).
             cl_regression: When True, include ``cl_target`` in each batch
                 (cl_value / 255.0 in [0,1]; sentinel -1.0 for missing).
+            time_mask_bases: Max width in bases for time masking (0 = disabled).
+                Zeros out contiguous blocks across signal, features, and sequence.
+            time_mask_count: Number of time masks to apply per sample.
+            shift_max_bases: Max cross-layer shift in bases (0 = disabled).
+                Simulates motif anchor offset, applied consistently to all branches.
+            feature_noise_scale: Per-channel Gaussian noise multiplier (0 = disabled).
+                Noise std = feature_noise_scale * per-channel empirical std.
         """
         self.chunk_path = chunk_path
         self.signal_len = signal_len
@@ -124,6 +135,10 @@ class LeechDataset(Dataset):
         self.signal_kmer_context = signal_kmer_context
         self.left_context = left_context
         self.right_context = right_context
+        self._time_mask_bases = time_mask_bases
+        self._time_mask_count = time_mask_count
+        self._shift_max_bases = shift_max_bases
+        self._feature_noise_scale = feature_noise_scale
 
         # Use pre-loaded chunks or load from file
         if chunks is not None:
@@ -231,6 +246,19 @@ class LeechDataset(Dataset):
             logger.warning("Signal shapes differ, falling back to list access: %s", e)
             self._signals_tensor = None
 
+        # Precompute per-channel feature stds for feature noise augmentation
+        self._feature_stds: torch.Tensor | None = None
+        if self._feature_noise_scale > 0 and self._needs_features and self._features:
+            try:
+                feat_stack = torch.stack(self._features)  # (N, C, K)
+                self._feature_stds = feat_stack.std(dim=0)  # (C, K)
+            except RuntimeError:
+                logger.warning("Feature shapes differ, feature noise disabled")
+                self._feature_noise_scale = 0.0
+
+        # Approx samples per base for cross-layer shift/mask
+        self._samples_per_base = signal_len / max(kmer_len, 1)
+
         logger.debug(
             f"Pre-tensorized {len(self.chunks)} chunks "
             f"({len(self._encoded_seqs)} sequences encoded, encoding={self._effective_seq_encoding})"
@@ -328,6 +356,95 @@ class LeechDataset(Dataset):
             signal = signal * scale
         return signal
 
+    def _apply_shift(
+        self,
+        signal: torch.Tensor,
+        features: torch.Tensor,
+        sequence: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Apply cross-layer shift (simulates motif anchor offset).
+
+        Shifts all branches consistently. The shift is drawn as a continuous
+        float in [-shift_max_bases, +shift_max_bases], allowing sub-base
+        resolution. Signal is shifted in sample space; features and sequence
+        are shifted by the nearest integer base.
+        """
+        base_shift = torch.empty(1).uniform_(-self._shift_max_bases, self._shift_max_bases).item()
+        if abs(base_shift) < 1e-6:
+            return signal, features, sequence
+
+        # Shift signal (sample-level, fractional)
+        sample_shift = int(round(base_shift * self._samples_per_base))
+        if sample_shift != 0 and signal.numel() > 0:
+            signal = torch.roll(signal, shifts=sample_shift, dims=-1)
+            if sample_shift > 0:
+                signal[..., :sample_shift] = 0.0
+            else:
+                signal[..., sample_shift:] = 0.0
+
+        # Integer base shift for features and sequence
+        int_base_shift = int(round(base_shift))
+        if int_base_shift != 0:
+            # Shift features (base-level)
+            if features.numel() > 0 and features.shape[-1] > 0:
+                features = torch.roll(features, shifts=int_base_shift, dims=-1)
+                if int_base_shift > 0:
+                    features[..., :int_base_shift] = 0.0
+                else:
+                    features[..., int_base_shift:] = 0.0
+
+            # Shift sequence (base-level)
+            if sequence.numel() > 0 and sequence.shape[-1] > 0:
+                sequence = torch.roll(sequence, shifts=int_base_shift, dims=-1)
+                if int_base_shift > 0:
+                    sequence[..., :int_base_shift] = 0.0
+                else:
+                    sequence[..., int_base_shift:] = 0.0
+
+        return signal, features, sequence
+
+    def _apply_time_mask(
+        self,
+        signal: torch.Tensor,
+        features: torch.Tensor,
+        sequence: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Apply time masking: zero contiguous blocks across all branches.
+
+        Mask widths are in base units. Signal is masked at the corresponding
+        sample-level range using the approximate samples_per_base ratio.
+        """
+        kmer_len = sequence.shape[-1] if sequence.numel() > 0 else self.kmer_len
+
+        for _ in range(self._time_mask_count):
+            width = torch.randint(1, self._time_mask_bases + 1, (1,)).item()
+            start = torch.randint(0, max(1, kmer_len - width + 1), (1,)).item()
+            end = min(start + width, kmer_len)
+
+            # Mask features (base-level)
+            if features.numel() > 0 and features.shape[-1] > 0:
+                features[..., start:end] = 0.0
+
+            # Mask sequence (base-level)
+            if sequence.numel() > 0 and sequence.shape[-1] > 0:
+                sequence[..., start:end] = 0.0
+
+            # Mask signal (sample-level)
+            if signal.numel() > 0:
+                sig_start = int(round(start * self._samples_per_base))
+                sig_end = int(round(end * self._samples_per_base))
+                sig_end = min(sig_end, signal.shape[-1])
+                signal[..., sig_start:sig_end] = 0.0
+
+        return signal, features, sequence
+
+    def _apply_feature_noise(self, features: torch.Tensor) -> torch.Tensor:
+        """Apply per-channel Gaussian noise scaled by empirical channel std."""
+        if self._feature_stds is not None:
+            noise = torch.randn_like(features) * self._feature_stds * self._feature_noise_scale
+            features = features + noise
+        return features
+
     @staticmethod
     def _encode_sequence(sequence: str) -> torch.Tensor:
         """Vectorized one-hot encoding of a DNA sequence.
@@ -404,16 +521,49 @@ class LeechDataset(Dataset):
         else:
             signal_tensor = self._signals[idx]
 
-        # Apply augmentation if configured (creates new tensor, doesn't modify stored data)
-        if self.augmentation is not None:
-            signal_tensor = self._apply_augmentation(signal_tensor.clone())
-
         # Pre-encoded sequence lookup
         sequence_tensor = self._encoded_seqs[idx]
         if self._effective_seq_encoding == "base_onehot":
             sequence = self.chunks[idx]["sequence"]
             if len(sequence) != self.kmer_len:
                 raise ValueError(f"Expected k-mer length {self.kmer_len}, got {len(sequence)}")
+
+        # Pre-computed features lookup
+        features_tensor = self._features[idx] if self._needs_features else torch.empty(0)
+
+        # Augmentation pipeline (training only — augmentation dict is None for val/test)
+        needs_cross_layer = self._shift_max_bases > 0 or self._time_mask_bases > 0
+        needs_any_aug = (
+            self.augmentation is not None or needs_cross_layer or self._feature_noise_scale > 0
+        )
+
+        if needs_any_aug:
+            # Clone to avoid mutating stored tensors
+            signal_tensor = signal_tensor.clone()
+            if needs_cross_layer or self._feature_noise_scale > 0:
+                if self._needs_features:
+                    features_tensor = features_tensor.clone()
+                sequence_tensor = sequence_tensor.clone()
+
+            # 1. Cross-layer shift
+            if self._shift_max_bases > 0:
+                signal_tensor, features_tensor, sequence_tensor = self._apply_shift(
+                    signal_tensor, features_tensor, sequence_tensor
+                )
+
+            # 2. Cross-layer time mask
+            if self._time_mask_bases > 0:
+                signal_tensor, features_tensor, sequence_tensor = self._apply_time_mask(
+                    signal_tensor, features_tensor, sequence_tensor
+                )
+
+            # 3. Signal jitter + scale (existing y-axis augmentation)
+            if self.augmentation is not None:
+                signal_tensor = self._apply_augmentation(signal_tensor)
+
+            # 4. Feature noise
+            if self._feature_noise_scale > 0 and self._needs_features:
+                features_tensor = self._apply_feature_noise(features_tensor)
 
         # Pre-computed label lookup
         label = self._labels[idx]
@@ -424,9 +574,9 @@ class LeechDataset(Dataset):
             "label": label,
         }
 
-        # Include pre-computed features for models that require them
+        # Include features for models that require them
         if self._needs_features:
-            result["features"] = self._features[idx]
+            result["features"] = features_tensor
 
         # Include confound label for adversarial training
         if self._has_confound:
