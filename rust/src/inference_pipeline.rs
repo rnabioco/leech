@@ -1258,20 +1258,13 @@ pub fn extract_inference_chunks<'py>(
         pyo3::exceptions::PyIOError::new_err(format!("Failed to open POD5: {e}"))
     })?;
 
-    let mut to_extract: Vec<(String, Vec<u64>)> = Vec::with_capacity(target_uuids.len());
-    for read_result in reader.reads().map_err(|e| {
-        pyo3::exceptions::PyIOError::new_err(format!("Failed to iterate reads: {e}"))
-    })? {
-        let read = read_result.map_err(|e| {
-            pyo3::exceptions::PyIOError::new_err(format!("Failed to parse read: {e}"))
-        })?;
-        if target_uuids.contains(&read.read_id) {
-            to_extract.push((read.read_id.to_string(), read.signal_rows));
-            if to_extract.len() == target_uuids.len() {
-                break;
-            }
-        }
-    }
+    let matched_reads = reader.reads_by_ids(&target_uuids).map_err(|e| {
+        pyo3::exceptions::PyIOError::new_err(format!("Failed to look up reads: {e}"))
+    })?;
+    let to_extract: Vec<(String, Vec<u64>)> = matched_reads
+        .into_iter()
+        .map(|r| (r.read_id.to_string(), r.signal_rows))
+        .collect();
 
     let bulk_signals = reader.get_signal_bulk(&to_extract).map_err(|e| {
         pyo3::exceptions::PyIOError::new_err(format!("Signal extraction failed: {e}"))
