@@ -1007,6 +1007,10 @@ def run_inference(
             _cl_head.eval()
             logger.info(f"CL regression head loaded (repr_dim={repr_dim})")
 
+    # Enable TF32 matmul for better performance on Ampere+ GPUs.
+    if device.startswith("cuda"):
+        torch.set_float32_matmul_precision("high")
+
     # torch.compile the model for faster inference (CUDA graph + kernel fusion).
     # Skip when repr capture hooks are active — CUDA graphs don't replay hooks.
     _has_repr_hook = (
