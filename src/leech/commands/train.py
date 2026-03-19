@@ -204,11 +204,11 @@ def handle_train(
     table.add_column("Value", justify="right", style="green")
 
     if "val_acc" in history and history["val_acc"]:
-        table.add_row("Best Validation Accuracy", f"{history['val_acc'][-1]:.4f}")
+        table.add_row("Best Validation Accuracy", f"{max(history['val_acc']):.4f}")
     if "val_loss" in history and history["val_loss"]:
         table.add_row("Final Validation Loss", f"{history['val_loss'][-1]:.4f}")
     if "val_f1" in history and history["val_f1"]:
-        table.add_row("Best Validation F1", f"{history['val_f1'][-1]:.4f}")
+        table.add_row("Best Validation F1", f"{max(history['val_f1']):.4f}")
 
     table.add_row("Model saved to", str(output_dir))
 
