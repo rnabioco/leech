@@ -16,10 +16,12 @@ try:
     from leech_core import extract_chunks_from_preloaded as _rs_extract_chunks_from_preloaded
     from leech_core import extract_inference_chunks as _rs_extract_inference_chunks
     from leech_core import extract_levels as _rs_extract_levels
+    from leech_core import extract_training_chunks_batch as _rs_extract_training_chunks_batch
     from leech_core import preload_pod5_signals as _rs_preload_pod5_signals
     from leech_core import read_pod5_batch as _rs_read_pod5_batch
     from leech_core import rough_rescale as _rs_rough_rescale
     from leech_core import seq_banded_dp as _rs_seq_banded_dp
+    from leech_core import TrainingBatchResult as _RsTrainingBatchResult
 
     HAS_RUST = True
     logger.debug("Rust acceleration available (leech_core)")
@@ -30,11 +32,13 @@ except ImportError:
     _rs_extract_chunks_from_preloaded = None
     _rs_extract_inference_chunks = None
     _rs_extract_levels = None
+    _rs_extract_training_chunks_batch = None
     _rs_preload_pod5_signals = None
     _rs_read_pod5_batch = None
     _rs_test_process_read = None
     _rs_rough_rescale = None
     _rs_seq_banded_dp = None
+    _RsTrainingBatchResult = None
     logger.debug("Rust acceleration not available, using pure Python fallbacks")
 
 
@@ -52,6 +56,7 @@ def check_rust() -> None:
             "extract_chunks_from_preloaded",
             "extract_inference_chunks",
             "extract_levels",
+            "extract_training_chunks_batch",
             "preload_pod5_signals",
             "read_pod5_batch",
             "rough_rescale",

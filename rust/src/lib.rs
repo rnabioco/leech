@@ -1,10 +1,13 @@
 use pyo3::prelude::*;
 
+mod core_pipeline;
 mod encoding;
 mod inference_pipeline;
+mod motif_search;
 mod pod5_io;
 mod signal_refine;
 mod signal_stats;
+mod training_pipeline;
 
 #[pymodule]
 fn leech_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -22,5 +25,10 @@ fn leech_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m
     )?)?;
     m.add_function(wrap_pyfunction!(inference_pipeline::_test_process_read, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        training_pipeline::extract_training_chunks_batch,
+        m
+    )?)?;
+    m.add_class::<training_pipeline::TrainingBatchResult>()?;
     Ok(())
 }
