@@ -27,10 +27,10 @@ jobs:
         run: uv pip install --system ruff nbqa
 
       - name: Run ruff format check
-        run: ruff format --check --exclude notebooks/ .
+        run: ruff format --check --exclude notebooks/ --exclude vulture_whitelist.py .
 
       - name: Run ruff lint
-        run: ruff check --exclude notebooks/ .
+        run: ruff check --exclude notebooks/ --exclude vulture_whitelist.py .
 
       - name: Run ruff lint on notebooks
         run: nbqa ruff notebooks/
