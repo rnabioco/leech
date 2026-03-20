@@ -800,23 +800,77 @@ def merge_and_kfold_split_multiclass(
         label_overrides[chunk_path] = (label_to_int[label], label)
         source_group_overrides[chunk_path] = _source_group_from_path(chunk_path)
 
-    # Merge arrays per fold
+    # Load all input files once into RAM to avoid re-reading per fold
+    cached_inputs: list[tuple[Path, dict[str, np.ndarray], np.ndarray]] = []
+    for chunk_path in input_paths:
+        with np.load(chunk_path, allow_pickle=True) as data:
+            cached = {key: data[key] for key in data.keys()}
+        read_ids_str = np.array([str(r) for r in cached["read_ids"]])
+        cached_inputs.append((chunk_path, cached, read_ids_str))
+
+    # Merge arrays per fold using cached data
     folds_stats: list[dict[str, Any]] = []
     n_total = 0
     for i in range(k_fold):
         fold_dir = output_dir / f"fold_{i}"
+        split_names = ["train", "val", "test"]
+        accumulators: dict[str, dict[str, list[np.ndarray]]] = {s: {} for s in split_names}
 
-        counts = _merge_arrays_by_split(
-            input_paths=input_paths,
-            split_read_ids=fold_read_assignments[i],
-            output_paths={
-                "train": fold_dir / "train.npz",
-                "val": fold_dir / "val.npz",
-                "test": fold_dir / "test.npz",
-            },
-            label_overrides=label_overrides,
-            source_group_overrides=source_group_overrides,
-        )
+        for chunk_path, cached, read_ids_str in cached_inputs:
+            masks = {
+                sname: np.array([r in rid_set for r in read_ids_str], dtype=bool)
+                for sname, rid_set in fold_read_assignments[i].items()
+            }
+            array_keys = [k for k in cached if not k.startswith("_")]
+
+            for sname in split_names:
+                mask = masks[sname]
+                if not mask.any():
+                    continue
+                count = int(mask.sum())
+                for key in array_keys:
+                    sliced = cached[key][mask]
+
+                    # Apply label overrides
+                    if label_overrides is not None and chunk_path in label_overrides:
+                        lint, lstr = label_overrides[chunk_path]
+                        if key == "labels_int":
+                            sliced = np.full(sliced.shape, lint, dtype=sliced.dtype)
+                        elif key == "labels":
+                            sliced = np.array([lstr] * count, dtype=str)
+
+                    # Apply source_group overrides
+                    if source_group_overrides is not None and chunk_path in source_group_overrides:
+                        if key == "source_groups":
+                            sg = source_group_overrides[chunk_path]
+                            sliced = np.array([sg] * count, dtype=str)
+
+                    accumulators[sname].setdefault(key, []).append(sliced)
+
+        # Concatenate and save
+        counts: dict[str, int] = {}
+        output_paths = {
+            "train": fold_dir / "train.npz",
+            "val": fold_dir / "val.npz",
+            "test": fold_dir / "test.npz",
+        }
+        for sname in split_names:
+            acc = accumulators[sname]
+            if not acc:
+                counts[sname] = 0
+                continue
+
+            save_kwargs: dict[str, np.ndarray] = {}
+            for key, arr_list in acc.items():
+                save_kwargs[key] = np.concatenate(arr_list)
+
+            n_chunks = len(save_kwargs.get("read_ids", np.array([])))
+            counts[sname] = n_chunks
+
+            out_path = output_paths[sname]
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            np.savez(out_path, **save_kwargs)
+            logger.info(f"Saved {n_chunks} {sname} chunks to {out_path}")
 
         fold_total = sum(counts.values())
         if i == 0:
@@ -827,13 +881,11 @@ def merge_and_kfold_split_multiclass(
                 "n_train": counts["train"],
                 "n_val": counts["val"],
                 "n_test": counts["test"],
-                "output_files": {
-                    "train": fold_dir / "train.npz",
-                    "val": fold_dir / "val.npz",
-                    "test": fold_dir / "test.npz",
-                },
+                "output_files": output_paths,
             }
         )
+
+    del cached_inputs
 
     return {
         "k_fold": k_fold,
