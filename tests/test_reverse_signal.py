@@ -113,7 +113,7 @@ class TestIterBamWithPod5ReverseSignal:
 
         with (
             patch("leech.preparation.reader.POD5Reader", return_value=mock_pod5_reader),
-            patch("leech.preparation.reader.iter_bam_alignments", return_value=iter([aln])),
+            patch("leech.preparation.reader.iter_bam_batches", return_value=iter([[aln]])),
         ):
             from leech.preparation.reader import iter_bam_with_pod5
 
