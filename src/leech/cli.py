@@ -1012,6 +1012,56 @@ def export(model_dir, output):
 
 @model.command()
 @click.option(
+    "--spec",
+    required=True,
+    type=click.Path(exists=True, path_type=Path),
+    help="YAML release spec file",
+)
+@click.option("--dry-run", is_flag=True, default=False, help="Preview without publishing")
+@click.option(
+    "--overwrite", is_flag=True, default=False, help="Delete existing release with same tag first"
+)
+@click.option("--repo", type=str, default=None, help="GitHub repo (owner/repo). Default: origin")
+def release(spec, dry_run, overwrite, repo):
+    """Publish a model bundle to GitHub Releases."""
+    from leech.commands.release_model import handle_release
+
+    handle_release(spec_path=spec, dry_run=dry_run, overwrite=overwrite, repo=repo)
+
+
+@model.command("list")
+@click.option("--repo", type=str, default=None, help="GitHub repo (owner/repo). Default: origin")
+@click.option("--limit", type=int, default=30, help="Maximum releases to show")
+def list_models(repo, limit):
+    """Browse available model releases on GitHub."""
+    from leech.commands.release_model import handle_list
+
+    handle_list(repo=repo, limit=limit)
+
+
+@model.command()
+@click.option("--name", type=str, default=None, help="Model release name (e.g., ivc-pairwise-v1)")
+@click.option("--version", "model_version", type=str, default=None, help="Model version")
+@click.option(
+    "--tag", type=str, default=None, help="Full release tag (alternative to name+version)"
+)
+@click.option(
+    "--output-dir",
+    "-o",
+    type=click.Path(path_type=Path),
+    default=Path("."),
+    help="Directory to download into (default: current dir)",
+)
+@click.option("--repo", type=str, default=None, help="GitHub repo (owner/repo). Default: origin")
+def fetch(name, model_version, tag, output_dir, repo):
+    """Download a model bundle from GitHub Releases."""
+    from leech.commands.release_model import handle_fetch
+
+    handle_fetch(name=name, version=model_version, tag=tag, output_dir=output_dir, repo=repo)
+
+
+@model.command()
+@click.option(
     "--train-data",
     required=True,
     type=click.Path(exists=True, path_type=Path),
