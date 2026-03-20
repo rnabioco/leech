@@ -244,6 +244,12 @@ class LeechRead:
         }
         if signal_residual_chunk is not None:
             chunk_dict["signal_residual"] = signal_residual_chunk
+        # Store the focus base position within the signal chunk so that
+        # downstream consumers (dataset.py) can crop asymmetrically without
+        # assuming the focus is at center.  The focus is always at
+        # signal_context[0] samples from the left edge, regardless of
+        # boundary zero-padding.
+        chunk_dict["focus_signal_pos"] = signal_context[0]
         return chunk_dict
 
 

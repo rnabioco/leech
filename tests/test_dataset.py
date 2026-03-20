@@ -494,5 +494,149 @@ class TestAugmentation:
         assert torch.equal(item1["signal"], item2["signal"])
 
 
+class TestAsymmetricFocusPosition:
+    """Test that asymmetric signal_context correctly places the focus base."""
+
+    @staticmethod
+    def _make_chunks(signal_len: int, focus_signal_pos: int | None, n: int = 4):
+        """Create synthetic chunks with a known signal pattern.
+
+        The signal is filled with a linear ramp so that the exact crop window
+        can be verified by checking the first/last values of the output.
+        """
+        import numpy as np
+
+        chunks = []
+        kmer_len = 11
+        for i in range(n):
+            signal = np.arange(signal_len, dtype=np.float32)  # ramp 0..signal_len-1
+            seq_to_sig = np.linspace(0, signal_len, kmer_len + 7, dtype=np.int64)
+            chunk = {
+                "signal": signal,
+                "sequence": "A" * kmer_len,
+                "dwell": np.ones(kmer_len, dtype=np.float32) * 10,
+                "features": np.random.randn(5, kmer_len).astype(np.float32),
+                "label": "pos",
+                "label_int": i % 2,
+                "read_id": f"read_{i}",
+                "base_idx": 5,
+                "feature_start": -5,
+                "feature_end": 5,
+                "source_group": "test",
+                "cl_value": None,
+                "seq_to_sig_map": seq_to_sig,
+                "sequence_with_kmer_context": "A" * (kmer_len + 8),
+            }
+            if focus_signal_pos is not None:
+                chunk["focus_signal_pos"] = focus_signal_pos
+            chunks.append(chunk)
+        return chunks
+
+    def test_symmetric_no_focus_field(self):
+        """Without focus_signal_pos, crop assumes center (backward compat)."""
+        # Symmetric: 400-wide signal, left=90, right=90 → crop [110:290]
+        chunks = self._make_chunks(signal_len=400, focus_signal_pos=None)
+        ds = LeechDataset(
+            chunks=chunks,
+            signal_len=180,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding="base_onehot",
+            left_context=90,
+            right_context=90,
+        )
+        sig = ds[0]["signal"]
+        assert sig.shape[-1] == 180
+        # Focus at center (200), crop [200-90 : 200+90] = [110:290]
+        assert sig[0].item() == 110.0
+        assert sig[-1].item() == 289.0
+
+    def test_asymmetric_with_focus_field(self):
+        """With focus_signal_pos=90, crop uses stored position."""
+        # Asymmetric prepare [90, 450] → 540-wide signal, focus at 90
+        chunks = self._make_chunks(signal_len=540, focus_signal_pos=90)
+        ds = LeechDataset(
+            chunks=chunks,
+            signal_len=490,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding="base_onehot",
+            left_context=90,
+            right_context=400,
+        )
+        sig = ds[0]["signal"]
+        assert sig.shape[-1] == 490
+        # Focus at 90, crop [90-90 : 90+400] = [0:490]
+        assert sig[0].item() == 0.0
+        assert sig[-1].item() == 489.0
+
+    def test_asymmetric_without_focus_field_is_wrong(self):
+        """Demonstrate the old bug: without focus_signal_pos on asymmetric data,
+        center-assumption crops the wrong region."""
+        # Same 540-wide signal but NO focus_signal_pos → falls back to center (270)
+        chunks = self._make_chunks(signal_len=540, focus_signal_pos=None)
+        ds = LeechDataset(
+            chunks=chunks,
+            signal_len=490,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding="base_onehot",
+            left_context=90,
+            right_context=400,
+        )
+        sig = ds[0]["signal"]
+        # Center fallback: crop [270-90 : 270+400] = [180:670]
+        # Signal is only 540 wide, so [180:540] + 130 zeros
+        assert sig[0].item() == 180.0  # WRONG: should be 0.0
+        # Last non-zero should be 539 (end of signal), rest zero-padded
+        assert sig[359].item() == 539.0
+        assert sig[360].item() == 0.0  # zero-padded past signal end
+
+    def test_focus_field_roundtrips_through_serialization(self, tmp_path):
+        """Test that focus_signal_pos survives save→load."""
+        from leech.chunking.serialization import load_chunks, save_chunks
+
+        chunks = self._make_chunks(signal_len=540, focus_signal_pos=90)
+        npz_path = tmp_path / "test.npz"
+        save_chunks(chunks, npz_path)
+        loaded = load_chunks(npz_path)
+
+        assert loaded[0]["focus_signal_pos"] == 90
+        assert loaded[-1]["focus_signal_pos"] == 90
+
+    def test_focus_field_absent_in_old_data(self, tmp_path):
+        """Test backward compat: old NPZ files without focus_signal_pos."""
+        from leech.chunking.serialization import load_chunks, save_chunks
+
+        chunks = self._make_chunks(signal_len=400, focus_signal_pos=None)
+        # Remove the field before saving (simulate old data)
+        for c in chunks:
+            c.pop("focus_signal_pos", None)
+        npz_path = tmp_path / "old.npz"
+        save_chunks(chunks, npz_path)
+        loaded = load_chunks(npz_path)
+
+        assert "focus_signal_pos" not in loaded[0]
+
+    def test_extractor_stores_focus_signal_pos(self, sample_leech_read):
+        """Test that the chunk extractor stores focus_signal_pos."""
+        chunk = sample_leech_read.get_chunk(
+            base_idx=10,
+            signal_context=(90, 450),
+            kmer_context=5,
+        )
+        assert chunk is not None
+        assert chunk["focus_signal_pos"] == 90
+
+        # Symmetric context should also store it
+        chunk_sym = sample_leech_read.get_chunk(
+            base_idx=10,
+            signal_context=(200, 200),
+            kmer_context=5,
+        )
+        assert chunk_sym is not None
+        assert chunk_sym["focus_signal_pos"] == 200
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

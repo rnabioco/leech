@@ -61,7 +61,9 @@ def save_chunks(chunks: list[dict], output_path: Path, *, compressed: bool = Tru
     source_groups = []
     signal_residuals = []
     cl_values = []
+    focus_signal_pos_list = []
     has_signal_residual = "signal_residual" in chunks[0]
+    has_focus_signal_pos = "focus_signal_pos" in chunks[0]
 
     for chunk in chunks:
         signals.append(chunk["signal"])
@@ -82,6 +84,8 @@ def save_chunks(chunks: list[dict], output_path: Path, *, compressed: bool = Tru
         cl_values.append(cl_val if cl_val is not None else -1)
         if has_signal_residual:
             signal_residuals.append(chunk["signal_residual"])
+        if has_focus_signal_pos:
+            focus_signal_pos_list.append(chunk["focus_signal_pos"])
         # Signal-level kmer encoding fields (may be None for old chunks)
         s2s = chunk.get("seq_to_sig_map")
         seq_ctx = chunk.get("sequence_with_kmer_context")
@@ -120,6 +124,9 @@ def save_chunks(chunks: list[dict], output_path: Path, *, compressed: bool = Tru
         "sequences_with_kmer_context": sequences_with_kmer_context_arr,
         "cl_values": cl_values_arr,
     }
+
+    if has_focus_signal_pos:
+        save_kwargs["focus_signal_pos"] = np.array(focus_signal_pos_list, dtype=np.int64)
 
     # Signals: try stacking into 2D float32 (all chunks should be same length)
     sig_shapes = {s.shape for s in signals}
@@ -232,6 +239,11 @@ def load_chunks(input_path: Path) -> list[dict]:
         if has_cl_values:
             cl_values_loaded = data["cl_values"]
 
+        # Focus signal position (backward compatible — absent in old symmetric data)
+        has_focus_signal_pos = "focus_signal_pos" in data
+        if has_focus_signal_pos:
+            focus_signal_pos_loaded = data["focus_signal_pos"]
+
         n_chunks = len(labels_arr)
         chunks = []
 
@@ -268,6 +280,8 @@ def load_chunks(input_path: Path) -> list[dict]:
                 chunk["cl_value"] = cl_val if cl_val >= 0 else None
             else:
                 chunk["cl_value"] = None
+            if has_focus_signal_pos:
+                chunk["focus_signal_pos"] = int(focus_signal_pos_loaded[i])
 
             chunks.append(chunk)
 

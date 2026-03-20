@@ -216,7 +216,11 @@ class LeechDataset(Dataset):
             signal_residual = chunk.get("signal_residual")
             if signal_residual is not None and signal_residual.dtype != np.float32:
                 signal_residual = signal_residual.astype(np.float32)
-            self._signals.append(self._prepare_signal(signal, signal_residual))
+            self._signals.append(
+                self._prepare_signal(
+                    signal, signal_residual, focus_signal_pos=chunk.get("focus_signal_pos")
+                )
+            )
 
             # Pre-tensorize features: apply dwell_offset slicing once
             if self._needs_features:
@@ -265,11 +269,16 @@ class LeechDataset(Dataset):
         )
 
     def _prepare_signal(
-        self, signal: np.ndarray, signal_residual: np.ndarray | None = None
+        self,
+        signal: np.ndarray,
+        signal_residual: np.ndarray | None = None,
+        focus_signal_pos: int | None = None,
     ) -> torch.Tensor:
         """Pad/crop signal (and optional residual) to target length. Called once during __init__."""
         if self.left_context is not None and self.right_context is not None:
-            focus_pos = len(signal) // 2
+            # Use stored focus position when available (asymmetric prepare);
+            # fall back to center for old symmetric data.
+            focus_pos = focus_signal_pos if focus_signal_pos is not None else len(signal) // 2
             start = focus_pos - self.left_context
             end = focus_pos + self.right_context
             if start < 0 or end > len(signal):
@@ -491,7 +500,10 @@ class LeechDataset(Dataset):
         # _prepare_signal crops to [focus - left_context, focus + right_context],
         # the signal_kmer encoder needs coordinates relative to the cropped window.
         if left_context is not None and right_context is not None:
-            focus_pos = seq_to_sig[-1] // 2  # focus is at center of stored chunk
+            # Use stored focus position when available (asymmetric prepare);
+            # fall back to center for old symmetric data.
+            stored_focus = chunk.get("focus_signal_pos")
+            focus_pos = stored_focus if stored_focus is not None else seq_to_sig[-1] // 2
             crop_start = focus_pos - left_context
             seq_to_sig = seq_to_sig - crop_start
             seq_to_sig = np.clip(seq_to_sig, 0, signal_len)
