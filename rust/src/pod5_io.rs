@@ -2,50 +2,19 @@
 //!
 //! Replaces Python pod5 library's `DatasetReader.reads()` with escapepod's
 //! memory-mapped reader and bulk signal extraction for ~25-43x faster I/O.
+//! Uses `.p5i` sidecar index for O(n) lookup when available; falls back to
+//! linear scan otherwise.
 
 use std::collections::{HashMap, HashSet};
 
 use numpy::{IntoPyArray, PyArray1};
 use pyo3::prelude::*;
 
-/// Iterate reads, filter by UUID, and collect (read_id, signal_rows) pairs.
-/// Includes calibration data when `with_cal` is true.
-fn collect_matching_reads(
-    reader: &escapepod::Reader,
-    target_uuids: &HashSet<escapepod::Uuid>,
-) -> Result<
-    (
-        Vec<(String, Vec<u64>)>,
-        HashMap<String, (f32, f32)>,
-    ),
-    String,
-> {
-    let n = target_uuids.len();
-    let mut to_extract: Vec<(String, Vec<u64>)> = Vec::with_capacity(n);
-    let mut calibrations: HashMap<String, (f32, f32)> = HashMap::with_capacity(n);
-
-    for read_result in reader
-        .reads()
-        .map_err(|e| format!("Failed to iterate reads: {e}"))?
-    {
-        let read = read_result.map_err(|e| format!("Failed to parse read: {e}"))?;
-        if target_uuids.contains(&read.read_id) {
-            let rid = read.read_id.to_string();
-            calibrations.insert(rid.clone(), (read.calibration_offset, read.calibration_scale));
-            to_extract.push((rid, read.signal_rows));
-            if to_extract.len() == n {
-                break; // Early termination — all targets found
-            }
-        }
-    }
-
-    Ok((to_extract, calibrations))
-}
-
 /// Read raw DAC signals for a batch of reads from a POD5 file.
 ///
-/// Opens the file once, scans for matching read IDs, and bulk-extracts
-/// all signals via escapepod's LRU-cached signal decompression.
+/// Opens the file once, looks up matching read IDs (using `.p5i` index
+/// when available), and bulk-extracts all signals via escapepod's
+/// LRU-cached signal decompression.
 ///
 /// Returns a dict mapping `read_id` → `(signal_i16, cal_offset, cal_scale)`.
 #[pyfunction]
@@ -63,10 +32,18 @@ pub fn read_pod5_batch<'py>(
         pyo3::exceptions::PyIOError::new_err(format!("Failed to open POD5 {pod5_path}: {e}"))
     })?;
 
-    let (to_extract, calibrations) =
-        collect_matching_reads(&reader, &target_uuids).map_err(|e| {
-            pyo3::exceptions::PyIOError::new_err(e)
-        })?;
+    // Use reads_by_ids which auto-detects .p5i index for fast lookup
+    let matched_reads = reader.reads_by_ids(&target_uuids).map_err(|e| {
+        pyo3::exceptions::PyIOError::new_err(format!("Failed to look up reads: {e}"))
+    })?;
+
+    let mut to_extract: Vec<(String, Vec<u64>)> = Vec::with_capacity(matched_reads.len());
+    let mut calibrations: HashMap<String, (f32, f32)> = HashMap::with_capacity(matched_reads.len());
+    for read in matched_reads {
+        let rid = read.read_id.to_string();
+        calibrations.insert(rid.clone(), (read.calibration_offset, read.calibration_scale));
+        to_extract.push((rid, read.signal_rows));
+    }
 
     // Bulk extract all signals (batched decompression, much faster than per-read)
     let signals = reader.get_signal_bulk(&to_extract).map_err(|e| {

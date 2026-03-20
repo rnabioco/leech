@@ -1327,8 +1327,8 @@ def ablation(model, test_data, output_dir, device, no_plot):
 @click.option(
     "--read-batch-size",
     type=int,
-    default=200_000,
-    help="Reads per mega-batch for memory-bounded streaming (default: 200000)",
+    default=10_000,
+    help="Reads per mega-batch for memory-bounded streaming (default: 10000). Smaller values reduce peak memory and GPU idle time during POD5 preload.",
 )
 @click.option(
     "--backend",
@@ -1337,10 +1337,10 @@ def ablation(model, test_data, output_dir, device, no_plot):
     help='Extraction backend: "auto" (default, Rust if available), "rust" (force Rust, error if unavailable), "python" (force Python). Useful for comparing outputs between paths.',
 )
 @click.option(
-    "--read-batch-size",
-    type=int,
-    default=200_000,
-    help="Reads per mega-batch for memory-bounded streaming (default: 200000). Reduces peak memory for large BAMs.",
+    "--no-compile",
+    is_flag=True,
+    default=False,
+    help="Disable torch.compile (skip CUDA graph compilation overhead). Faster startup for small inference runs.",
 )
 def predict(
     model,
@@ -1367,6 +1367,7 @@ def predict(
     aggregation,
     read_batch_size,
     backend,
+    no_compile,
 ):
     """Run inference on new data to generate predictions."""
     import warnings
@@ -1405,6 +1406,7 @@ def predict(
         aggregation=aggregation,
         read_batch_size=read_batch_size,
         backend=backend,
+        no_compile=no_compile,
     )
 
 

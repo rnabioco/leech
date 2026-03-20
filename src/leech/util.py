@@ -613,17 +613,19 @@ def create_multiclass_bundle(
 def load_model_from_multiclass_bundle(
     bundle_path: Path,
     device: str = "cuda",
+    bundle_data: dict | None = None,
 ) -> tuple[nn.Module, dict]:
     """Load the multiclass model from a bundle file.
 
     Args:
         bundle_path: Path to multiclass bundle .pt file
         device: Device to load model on
+        bundle_data: Pre-loaded bundle dict (avoids double torch.load)
 
     Returns:
         Tuple of (model, config_dict) with label_map/num_out merged into config
     """
-    bundle = torch.load(bundle_path, map_location="cpu", weights_only=False)
+    bundle = bundle_data or torch.load(bundle_path, map_location="cpu", weights_only=False)
     config = bundle["config"]
     metadata = bundle["metadata"]
     model_data = bundle["model"]

@@ -58,17 +58,32 @@ MAX_POINTS_FOR_THEIL_SEN = 1000
 
 def load_kmer_table(table_path: Path) -> tuple[dict[str, float], int]:
     """
-    Load kmer level table from TSV file.
+    Load kmer level table from TSV file, with pickle caching for fast reload.
+
+    On first load, parses the TSV/gzip source and writes a `.pkl` cache file
+    alongside it. Subsequent loads use the pickle (~10x faster than gzip TSV).
 
     Expected format: tab-separated with columns 'kmer' and 'level_mean'
     (or first two columns if no header).
 
     Args:
-        table_path: Path to kmer level table (e.g., rna004_9mer_levels.txt)
+        table_path: Path to kmer level table (e.g., rna004_9mer_levels.txt.gz)
 
     Returns:
         Tuple of (kmer_to_level dict, kmer_length)
     """
+    import pickle
+
+    # Check for pickle cache (same path with .pkl extension appended)
+    cache_path = Path(str(table_path) + ".pkl")
+    if cache_path.exists() and cache_path.stat().st_mtime >= table_path.stat().st_mtime:
+        with open(cache_path, "rb") as f:
+            kmer_to_level, kmer_len = pickle.load(f)
+        logger.info(
+            f"Loaded {len(kmer_to_level)} kmer levels (k={kmer_len}) from cache {cache_path}"
+        )
+        return kmer_to_level, kmer_len
+
     kmer_to_level: dict[str, float] = {}
     kmer_len = 0
 
@@ -96,6 +111,14 @@ def load_kmer_table(table_path: Path) -> tuple[dict[str, float], int]:
             kmer_len = len(kmer)
 
     logger.info(f"Loaded {len(kmer_to_level)} kmer levels (k={kmer_len}) from {table_path}")
+
+    # Write pickle cache for next time
+    try:
+        with open(cache_path, "wb") as f:
+            pickle.dump((kmer_to_level, kmer_len), f, protocol=pickle.HIGHEST_PROTOCOL)
+    except OSError:
+        pass  # read-only filesystem, skip caching
+
     return kmer_to_level, kmer_len
 
 

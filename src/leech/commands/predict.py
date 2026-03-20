@@ -56,8 +56,9 @@ def handle_predict(
     aggregation: str = "naive",
     min_confidence: int = 0,
     min_margin: int = 0,
-    read_batch_size: int = 200_000,
+    read_batch_size: int = 10_000,
     backend: str = "auto",
+    no_compile: bool = False,
 ) -> None:
     """
     Handle the predict command logic.
@@ -94,13 +95,14 @@ def handle_predict(
     reverse_signal = not no_reverse_signal
 
     if bundle_path and run_all:
-        # Check if multiclass bundle — route to run_inference (single model)
-        bundle_meta = torch.load(bundle_path, map_location="cpu", weights_only=False).get(
-            "metadata", {}
-        )
+        # Load bundle once, check type, then pass pre-loaded data to avoid double torch.load
+        bundle_data = torch.load(bundle_path, map_location="cpu", weights_only=False)
+        bundle_meta = bundle_data.get("metadata", {})
         if bundle_meta.get("comparison_type") == "multiclass":
             logger.info(f"Running multiclass inference with bundle: {bundle_path}")
-            loaded_model, mc_config = load_model_from_multiclass_bundle(bundle_path, device=device)
+            loaded_model, mc_config = load_model_from_multiclass_bundle(
+                bundle_path, device=device, bundle_data=bundle_data
+            )
             run_inference(
                 model_and_config=(loaded_model, mc_config),
                 pod5_path=pod5,
@@ -121,6 +123,7 @@ def handle_predict(
                 min_margin=min_margin,
                 read_batch_size=read_batch_size,
                 backend=backend,
+                no_compile=no_compile,
             )
         else:
             # Multi-model inference: run all models in bundle
@@ -185,6 +188,7 @@ def handle_predict(
             min_margin=min_margin,
             read_batch_size=read_batch_size,
             backend=backend,
+            no_compile=no_compile,
         )
 
     console.print("[bold green]Inference complete![/bold green]")

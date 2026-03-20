@@ -734,8 +734,9 @@ def run_inference(
     raw: bool = False,
     min_confidence: int = 0,
     min_margin: int = 0,
-    read_batch_size: int = 200_000,
+    read_batch_size: int = 10_000,
     backend: str = "auto",
+    no_compile: bool = False,
 ) -> None:
     """
     Run inference on POD5 and BAM files.
@@ -1011,24 +1012,7 @@ def run_inference(
     if device.startswith("cuda"):
         torch.set_float32_matmul_precision("high")
 
-    # torch.compile the model for faster inference (CUDA graph + kernel fusion).
-    # Skip when repr capture hooks are active — CUDA graphs don't replay hooks.
-    _has_repr_hook = (
-        isinstance(model_wrapper, ModelInferenceWrapper) and model_wrapper._repr_hook is not None
-    )
-    if (
-        isinstance(model_wrapper, ModelInferenceWrapper)
-        and device.startswith("cuda")
-        and hasattr(torch, "compile")
-        and not _has_repr_hook
-    ):
-        try:
-            model_wrapper.model = torch.compile(model_wrapper.model, mode="reduce-overhead")
-            logger.info("torch.compile enabled (mode=reduce-overhead)")
-        except Exception as e:
-            logger.warning(f"torch.compile failed, using eager mode: {e}")
-    elif _has_repr_hook:
-        logger.info("torch.compile skipped (repr capture hooks incompatible with CUDA graphs)")
+    # torch.compile decision deferred until after BAM read count is known (see below)
 
     # Skip feature computation when model doesn't need them (big speedup)
     # But always compute when signal_in_channels > 1 (needed for kmer residual)
@@ -1069,6 +1053,34 @@ def run_inference(
         f"of {read_batch_size}"
     )
     mega_batch_idx = 0
+
+    # torch.compile the model for faster inference (CUDA graph + kernel fusion).
+    # Auto-skip for small runs (<5000 reads) where compilation overhead (~15-30s)
+    # outweighs the speedup. Also skip when repr capture hooks are active or
+    # when --no-compile is set.
+    _COMPILE_THRESHOLD = 5000
+    _has_repr_hook = (
+        isinstance(model_wrapper, ModelInferenceWrapper) and model_wrapper._repr_hook is not None
+    )
+    if no_compile:
+        logger.info("torch.compile disabled (--no-compile)")
+    elif n_total_reads < _COMPILE_THRESHOLD:
+        logger.info(
+            f"torch.compile auto-skipped ({n_total_reads} reads < {_COMPILE_THRESHOLD} threshold)"
+        )
+    elif (
+        isinstance(model_wrapper, ModelInferenceWrapper)
+        and device.startswith("cuda")
+        and hasattr(torch, "compile")
+        and not _has_repr_hook
+    ):
+        try:
+            model_wrapper.model = torch.compile(model_wrapper.model, mode="reduce-overhead")
+            logger.info("torch.compile enabled (mode=reduce-overhead)")
+        except Exception as e:
+            logger.warning(f"torch.compile failed, using eager mode: {e}")
+    elif _has_repr_hook:
+        logger.info("torch.compile skipped (repr capture hooks incompatible with CUDA graphs)")
 
     if num_workers > 0:
         # ---- Parallel path (mega-batched) ----
@@ -1308,11 +1320,15 @@ def run_inference(
         # (banded DP, signal stats, kmer encoding).
         import os
 
-        # Respect SLURM allocation; fall back to system CPU count
-        _avail_cpus = int(os.environ.get("SLURM_CPUS_PER_TASK", 0)) or os.cpu_count() or 4
+        _MAX_THREADS = 8  # sensible cap to avoid oversubscription on shared nodes
+
+        # Respect SLURM allocation; fall back to system CPU count, capped
+        _avail_cpus = int(os.environ.get("SLURM_CPUS_PER_TASK", 0)) or min(
+            os.cpu_count() or 4, _MAX_THREADS
+        )
         n_extract = max(1, _avail_cpus - 2)  # reserve for main + GPU
 
-        # Limit Rust rayon thread pool to match SLURM allocation.
+        # Limit Rust rayon thread pool to match allocation.
         # Without this, rayon defaults to ALL system CPUs (e.g., 63 on a 64-core node),
         # causing massive oversubscription when multiple jobs share a node.
         if "RAYON_NUM_THREADS" not in os.environ:
@@ -1679,6 +1695,10 @@ def run_inference(
         if _has_prefetch:
             _prefetch_exec = ThreadPoolExecutor(max_workers=1)
 
+        import time as _time
+
+        _t_total_start = _time.perf_counter()
+
         with Progress() as progress:
             task = progress.add_task("[cyan]Running inference...", total=None)
 
@@ -1814,6 +1834,12 @@ def run_inference(
                         ),
                     )
 
+        _t_total = _time.perf_counter() - _t_total_start
+        logger.debug(
+            f"Inference wall time: {_t_total:.1f}s "
+            f"({total_reads} reads, {total_predictions} predictions)"
+        )
+
         _extract_pool.shutdown(wait=False)
         _gpu_executor.shutdown(wait=False)
         _wait_for_bam_write()  # Ensure final BAM write completes before close
@@ -1930,7 +1956,7 @@ def run_bundle_inference(
     reference_fasta: Path | None = None,
     batch_size: int = 512,
     num_workers: int = 0,
-    read_batch_size: int = 200_000,
+    read_batch_size: int = 10_000,
     backend: str = "auto",
 ) -> None:
     """
