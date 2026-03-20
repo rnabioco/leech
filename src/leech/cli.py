@@ -213,6 +213,13 @@ def data():
     default=2,
     help="Signal map refinement iterations: -1=rescale only (no DP), 0=one round of banded DP, >0=N rounds with rescaling",
 )
+@click.option(
+    "--signal-context",
+    nargs=2,
+    type=int,
+    default=None,
+    help="Asymmetric signal context window as LEFT RIGHT (raw samples). E.g., --signal-context 90 450. Default: symmetric (200, 200).",
+)
 def prepare(
     pod5,
     bam,
@@ -242,6 +249,7 @@ def prepare(
     refine_signal_map,
     kmer_table,
     scale_iters,
+    signal_context,
 ):
     """Prepare training data from POD5 and BAM files."""
     from leech.commands import handle_prepare
@@ -289,6 +297,7 @@ def prepare(
         refine_signal_map=refine_signal_map,
         kmer_table=kmer_table,
         scale_iters=scale_iters,
+        signal_context=signal_context,
     )
 
 

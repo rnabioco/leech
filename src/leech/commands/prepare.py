@@ -47,6 +47,7 @@ def handle_prepare(
     refine_signal_map: bool = True,
     kmer_table: Path | None = None,
     scale_iters: int = 2,
+    signal_context: tuple[int, int] | None = None,
 ) -> dict[str, Any]:
     """
     Handle the prepare command logic.
@@ -75,6 +76,7 @@ def handle_prepare(
     """
     from leech.chunking import save_chunks
     from leech.configs import ChunkConfig, LabelConfig, MotifConfig, PrepareConfig, SignalConfig
+    from leech.constants import DEFAULT_SIGNAL_CONTEXT
     from leech.io import get_reference_sequences
     from leech.preparation import prepare_training_data_parallel, prepare_training_data_with_split
     from leech.splitting import split_chunks_by_read
@@ -130,6 +132,7 @@ def handle_prepare(
             base_justify=base_justify,
             feature_start=feature_start,
             feature_end=feature_end,
+            signal_context=tuple(signal_context) if signal_context else DEFAULT_SIGNAL_CONTEXT,
         ),
         labeling=LabelConfig(
             label=label,
