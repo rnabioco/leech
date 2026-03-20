@@ -1191,12 +1191,21 @@ def train_model(
 
     val_loader = None
     if val_dataset is not None:
-        # No need to drop last for validation since model is in eval mode
+        # Validation __getitem__ is trivially fast (no augmentation, pre-tensorized
+        # lookups only), so workers add memory overhead without benefit.  Dropping
+        # val workers halves the total process count and avoids OOM-triggered
+        # segfaults on large multiclass datasets.
+        val_loader_kwargs: dict = {
+            "collate_fn": collate_fn,
+            "num_workers": 0,
+        }
+        if device != "cpu":
+            val_loader_kwargs["pin_memory"] = True
         val_loader = DataLoader(
             val_dataset,
             batch_size=batch_size,
             shuffle=False,
-            **loader_kwargs,
+            **val_loader_kwargs,
         )
 
     # Determine num_features and signal_channels from first batch
