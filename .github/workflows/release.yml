@@ -23,9 +23,11 @@ jobs:
             target: aarch64-unknown-linux-gnu
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          token: ${{ secrets.ESCAPEPOD_PAT }}
+
+      - name: Checkout private submodules
+        run: |
+          git config --global url."https://x-access-token:${{ secrets.ESCAPEPOD_PAT }}@github.com/".insteadOf "https://github.com/"
+          git submodule update --init --recursive
 
       - uses: actions/setup-python@v5
         with:
@@ -50,9 +52,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          token: ${{ secrets.ESCAPEPOD_PAT }}
+
+      - name: Checkout private submodules
+        run: |
+          git config --global url."https://x-access-token:${{ secrets.ESCAPEPOD_PAT }}@github.com/".insteadOf "https://github.com/"
+          git submodule update --init --recursive
 
       - name: Build sdist
         uses: PyO3/maturin-action@v1
