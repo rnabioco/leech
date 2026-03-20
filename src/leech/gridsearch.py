@@ -17,11 +17,9 @@ from pathlib import Path
 import numpy as np
 from rich.table import Table
 
-from leech.chunking import extract_training_chunks, load_chunks, save_chunks
+from leech.chunking import load_chunks
 from leech.cli_config import make_console
-from leech.configs import ChunkConfig, LabelConfig, MotifConfig, SignalConfig
 from leech.models.inference_wrapper import ModelInferenceWrapper
-from leech.preparation import iter_bam_with_pod5
 from leech.training import train_model
 
 logger = logging.getLogger("leech.gridsearch")
@@ -190,65 +188,6 @@ class GridSearchConfig:
     confound: str | None = None
     cl_regression: bool = False
     cl_lambda: float = 1.0
-
-
-def prepare_chunks_with_context(
-    bam_path: Path,
-    pod5_path: Path,
-    output_path: Path,
-    left_context: int,
-    right_context: int,
-    kmer_context: int = 5,
-    motif: str | None = None,
-    motif_offset: int = 0,
-    label: str | None = None,
-    label_int: int = 0,
-    min_mapq: int = 10,
-    base_justify: str = "center",
-    reverse_signal: bool = True,
-) -> None:
-    """
-    Prepare training chunks with specific signal context.
-
-    Args:
-        bam_path: Path to BAM file
-        pod5_path: Path to POD5 file
-        output_path: Output path for chunks
-        left_context: Left signal context (samples)
-        right_context: Right signal context (samples)
-        kmer_context: K-mer context for sequence
-        motif: Optional motif for filtering
-        motif_offset: Offset within motif
-        label: String label for chunks (e.g., 'charged', 'uncharged')
-        label_int: Numeric label for chunks (0 or 1)
-        min_mapq: Minimum mapping quality
-        reverse_signal: Reverse raw signal for RNA (POD5 3'→5' vs basecaller 5'→3')
-    """
-    signal_config = SignalConfig(reverse_signal=reverse_signal)
-    motif_config = MotifConfig(motif=motif, motif_offset=motif_offset)
-    chunk_config = ChunkConfig(
-        signal_context=(left_context, right_context),
-        kmer_context=kmer_context,
-        base_justify=base_justify,
-    )
-    labeling = LabelConfig(label=label, label_int=label_int)
-
-    chunks = []
-
-    for read in iter_bam_with_pod5(
-        bam_path, pod5_path, signal_config=signal_config, min_mapq=min_mapq
-    ):
-        read_chunks = extract_training_chunks(
-            read,
-            motif_config=motif_config,
-            chunk_config=chunk_config,
-            labeling=labeling,
-        )
-        chunks.extend(read_chunks)
-
-    # Save
-    save_chunks(chunks, output_path)
-    logger.info(f"Prepared {len(chunks)} chunks with context ({left_context}, {right_context})")
 
 
 def run_grid_point(

@@ -33,6 +33,7 @@ from leech.io.reference import (
     get_reference_sequences,
     load_reference_fasta,
 )
+from leech.io.tsv_writer import TsvPredictionWriter
 
 __all__ = [
     # BAM reading
@@ -59,4 +60,6 @@ __all__ = [
     "get_motif_searcher",
     "find_motif_in_sequence",
     "map_reference_to_query_coords",
+    # TSV writer
+    "TsvPredictionWriter",
 ]

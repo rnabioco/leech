@@ -295,7 +295,7 @@ class BAMReader:
         self._bam = pysam.AlignmentFile(str(self.bam_path), "rb")
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, _exc_type, _exc_val, _exc_tb):
         """Close BAM file."""
         if self._bam is not None:
             self._bam.close()
@@ -341,37 +341,3 @@ class BAMReader:
             ValueError: If required tags missing
         """
         return extract_move_table(aln)
-
-    def get_header(self) -> pysam.AlignmentHeader:
-        """
-        Get BAM header.
-
-        Returns:
-            BAM header
-
-        Raises:
-            RuntimeError: If reader not opened (use as context manager)
-        """
-        if self._bam is None:
-            raise RuntimeError("BAMReader must be used as a context manager")
-
-        return self._bam.header
-
-    def count_alignments(self) -> int:
-        """
-        Count filtered alignments in BAM.
-
-        Returns:
-            Number of alignments passing filters
-
-        Raises:
-            RuntimeError: If reader not opened (use as context manager)
-        """
-        if self._bam is None:
-            raise RuntimeError("BAMReader must be used as a context manager")
-
-        count = sum(1 for _ in self.iter_alignments())
-        # Re-open to reset iterator
-        self._bam.close()
-        self._bam = pysam.AlignmentFile(str(self.bam_path), "rb")
-        return count

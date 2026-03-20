@@ -189,18 +189,6 @@ class ReferenceManager:
 
         return self._sequences[ref_name]
 
-    def get_all_sequences(self) -> dict[str, str]:
-        """
-        Get all reference sequences.
-
-        Returns:
-            Dictionary mapping reference names to sequences
-        """
-        if self._sequences is None:
-            self.load()
-
-        return self._sequences if self._sequences is not None else {}
-
     def has_reference(self, ref_name: str) -> bool:
         """
         Check if reference exists.

@@ -1,5 +1,5 @@
 """
-leech: Learning Enhanced Aminoacylation Classification from Hanopore signals
+leech: Learning Enhanced Electrical Classifiers from Hanopore signals
 
 A Python library for training deep learning models on nanopore signal data to
 detect RNA modifications, specifically designed for aa-tRNA-seq experiments.
@@ -74,7 +74,12 @@ def __getattr__(name: str):
     if name == "__version__":
         global _version
         if _version is None:
-            _version = f"0.1.0-alpha+{_get_git_revision()}"
+            try:
+                from importlib.metadata import version
+
+                _version = version("leech")
+            except Exception:
+                _version = f"0.0.0+{_get_git_revision()}"
         return _version
     if name in _LAZY_IMPORTS:
         import importlib

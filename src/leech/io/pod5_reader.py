@@ -6,7 +6,6 @@ with support for batched reading to improve I/O performance.
 """
 
 import logging
-from collections.abc import Iterator
 from pathlib import Path
 
 import numpy as np
@@ -139,7 +138,7 @@ class POD5Reader:
         self._reader = DatasetReader(self.pod5_path)
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, _exc_type, _exc_val, _exc_tb):
         """Close POD5 file."""
         # DatasetReader handles cleanup via its own context manager
         self._reader = None
@@ -211,53 +210,3 @@ class POD5Reader:
             return signal, metadata
 
         raise ValueError(f"Read {read_id} not found in {self.pod5_path}")
-
-    def get_signals_batch(self, read_ids: list[str]) -> dict[str, tuple[np.ndarray, dict]]:
-        """
-        Get signals for multiple reads in a batch.
-
-        Args:
-            read_ids: List of read identifiers
-
-        Returns:
-            Dictionary mapping read_id to (signal, metadata) tuples
-
-        Raises:
-            RuntimeError: If reader not opened (use as context manager)
-        """
-        if self._reader is None:
-            raise RuntimeError("POD5Reader must be used as a context manager")
-
-        results = {}
-
-        for read in self._reader.reads(read_ids):
-            read_id = str(read.read_id)
-            signal = read.signal
-            metadata = _extract_pod5_metadata(read)
-            results[read_id] = (signal, metadata)
-
-        return results
-
-    def iter_all_reads(self) -> Iterator[tuple[str, np.ndarray, dict]]:
-        """
-        Iterate over all reads in POD5 file.
-
-        Yields:
-            Tuples of (read_id, signal, metadata)
-
-        Raises:
-            RuntimeError: If reader not opened (use as context manager)
-
-        Examples:
-            >>> with POD5Reader(Path("reads.pod5")) as reader:
-            ...     for read_id, signal, meta in reader.iter_all_reads():
-            ...         print(f"{read_id}: {len(signal)} samples")
-        """
-        if self._reader is None:
-            raise RuntimeError("POD5Reader must be used as a context manager")
-
-        for read in self._reader.reads():
-            read_id = str(read.read_id)
-            signal = read.signal
-            metadata = _extract_pod5_metadata(read)
-            yield read_id, signal, metadata

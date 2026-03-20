@@ -59,6 +59,7 @@ def handle_predict(
     read_batch_size: int = 10_000,
     backend: str = "auto",
     no_compile: bool = False,
+    output_format: str = "bam",
 ) -> None:
     """
     Handle the predict command logic.
@@ -124,8 +125,14 @@ def handle_predict(
                 read_batch_size=read_batch_size,
                 backend=backend,
                 no_compile=no_compile,
+                output_format=output_format,
             )
         else:
+            if output_format == "tsv":
+                raise click.UsageError(
+                    "TSV output is only supported for multiclass bundles. "
+                    "Use .bam extension for pairwise/one-vs-all bundles."
+                )
             # Multi-model inference: run all models in bundle
             logger.info(f"Running multi-model inference with bundle: {bundle_path}")
             run_bundle_inference(
@@ -151,6 +158,11 @@ def handle_predict(
                 backend=backend,
             )
     else:
+        if output_format == "tsv":
+            raise click.UsageError(
+                "TSV output is only supported for multiclass bundles (--bundle --all). "
+                "Use .bam extension for single-model inference."
+            )
         # Single-model inference (auto-detects leech vs Remora)
         if bundle_path and pair:
             loaded_model, config = load_model_from_bundle(bundle_path, pair, device=device)

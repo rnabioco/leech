@@ -8,7 +8,6 @@ from typing import Any
 
 import rich_click as click
 from rich.console import Console
-from rich.panel import Panel
 
 
 def make_console(**kwargs: Any) -> Console:
@@ -18,22 +17,7 @@ def make_console(**kwargs: Any) -> Console:
     return Console(**kwargs)
 
 
-# ASCII Logo
-LOGO = """
-   ___
-  (O O)    LEECH
-  <VVV>    Learning Enhanced Electrical
-   |||     Classifiers from Hanopore signals
-   |||
-    V
-"""
-
 console = make_console()
-
-
-def display_logo():
-    """Display the ASCII logo in a panel."""
-    console.print(Panel(LOGO, border_style="cyan", padding=(0, 2)))
 
 
 def configure_rich_click():

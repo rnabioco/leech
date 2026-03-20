@@ -234,26 +234,6 @@ def _extract_remora_metadata(model_path: Path) -> dict:
     return raw
 
 
-def _is_leech_export(path: Path) -> bool:
-    """Check if a .pt file is a leech export (torch.export or TorchScript with leech_meta.txt)."""
-    # Try torch.export format first (format_version 3+)
-    try:
-        extra = {"leech_meta.txt": ""}
-        torch.export.load(str(path), extra_files=extra)
-        if extra.get("leech_meta.txt", ""):
-            return True
-    except Exception as e:
-        logger.debug("Not torch.export format: %s", e)
-    # Fall back to legacy TorchScript format
-    try:
-        extra = {"leech_meta.txt": ""}
-        torch.jit.load(str(path), map_location="cpu", _extra_files=extra)
-        return bool(extra.get("leech_meta.txt", ""))
-    except Exception as e:
-        logger.debug("Not TorchScript format: %s", e)
-        return False
-
-
 def load_model_auto(
     model_path: Path, device: str = "cpu"
 ) -> tuple[ModelInferenceWrapper | TracedModelWrapper | RemoraModelWrapper, dict]:
@@ -2557,37 +2537,3 @@ def run_bundle_inference(
 
     logger.info(f"Bundle inference complete: {n_reads} reads, {len(pairs)} models")
     logger.info(f"Output written to: {output_path}")
-
-
-def load_predictions_from_bam(bam_path: Path) -> dict:
-    """
-    Load predictions from a BAM file with modification tags.
-
-    Args:
-        bam_path: Path to BAM file with predictions
-
-    Returns:
-        Dictionary mapping read_id -> list of (position, probability) tuples
-    """
-    predictions: dict[str, list[tuple]] = {}
-
-    with pysam.AlignmentFile(str(bam_path), "rb") as bam:
-        for aln in bam:
-            if aln.has_tag("MP") and aln.has_tag("ML"):
-                positions_raw = aln.get_tag("MP")
-                ml_scores_raw = aln.get_tag("ML")
-
-                # Ensure we have array types
-                if not isinstance(positions_raw, (list, np.ndarray)):
-                    continue
-                if not isinstance(ml_scores_raw, (list, np.ndarray)):
-                    continue
-
-                # Convert ML scores back to probabilities
-                probs = [float(score) / 255.0 for score in ml_scores_raw]
-
-                read_name = aln.query_name
-                if read_name is not None:
-                    predictions[read_name] = list(zip(positions_raw, probs, strict=False))
-
-    return predictions

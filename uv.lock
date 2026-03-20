@@ -936,7 +936,7 @@ wheels = [
 
 [[package]]
 name = "leech"
-version = "0.3.0"
+version = "0.3.1"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
@@ -958,12 +958,12 @@ dev = [
     { name = "pytest-xdist" },
     { name = "ruff" },
     { name = "ty" },
+    { name = "vulture" },
 ]
 notebook = [
     { name = "great-tables" },
     { name = "plotnine" },
     { name = "polars" },
-    { name = "seaborn" },
     { name = "statsmodels" },
     { name = "tabulate" },
 ]
@@ -1008,7 +1008,6 @@ requires-dist = [
     { name = "rich-click", specifier = ">=1.7.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.3.0" },
     { name = "scikit-learn", specifier = ">=1.5.0" },
-    { name = "seaborn", marker = "extra == 'notebook'", specifier = ">=0.13.0" },
     { name = "snakefmt", marker = "extra == 'pipeline'", specifier = ">=0.10.3" },
     { name = "snakemake", marker = "extra == 'pipeline'", specifier = ">=9.0.0" },
     { name = "snakemake-executor-plugin-lsf", marker = "extra == 'pipeline'", specifier = ">=0.2.5" },
@@ -1017,6 +1016,7 @@ requires-dist = [
     { name = "tabulate", marker = "extra == 'notebook'", specifier = ">=0.9.0" },
     { name = "torch", specifier = ">=2.5.0" },
     { name = "ty", marker = "extra == 'dev'", specifier = ">=0.0.1a10" },
+    { name = "vulture", marker = "extra == 'dev'", specifier = ">=2.15" },
 ]
 provides-extras = ["rust", "dev", "pipeline", "notebook"]
 
@@ -2483,20 +2483,6 @@ wheels = [
 ]
 
 [[package]]
-name = "seaborn"
-version = "0.13.2"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "matplotlib" },
-    { name = "numpy" },
-    { name = "pandas" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/86/59/a451d7420a77ab0b98f7affa3a1d78a313d2f7281a57afb1a34bae8ab412/seaborn-0.13.2.tar.gz", hash = "sha256:93e60a40988f4d65e9f4885df477e2fdaff6b73a9ded434c1ab356dd57eefff7", size = 1457696, upload-time = "2024-01-25T13:21:52.551Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/83/11/00d3c3dfc25ad54e731d91449895a79e4bf2384dc3ac01809010ba88f6d5/seaborn-0.13.2-py3-none-any.whl", hash = "sha256:636f8336facf092165e27924f223d3c62ca560b1f2bb5dff7ab7fad265361987", size = 294914, upload-time = "2024-01-25T13:21:49.598Z" },
-]
-
-[[package]]
 name = "setuptools"
 version = "82.0.1"
 source = { registry = "https://pypi.org/simple" }
@@ -3009,6 +2995,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/22/43/feb5016ab64d83f5a9cd0baa3da1f62c17a42764f44375fa59dbd576f6a0/vbz_h5py_plugin-1.0.1.tar.gz", hash = "sha256:c784458bb0aad6303474cb2f10956179116b35555803fd1154eb4ef362519341", size = 1441103, upload-time = "2022-11-10T11:53:22.603Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d2/dd/eab7a9cac698afd8d4d469d703303390a88570ace01da358088459a6a48d/vbz_h5py_plugin-1.0.1-py3-none-any.whl", hash = "sha256:7b8f9bf250a3c072e36bb8a84beb035468bba0536e11a9086649188f075589b1", size = 1446187, upload-time = "2022-11-10T11:53:19.893Z" },
+]
+
+[[package]]
+name = "vulture"
+version = "2.15"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/59/c6/4f147b621b4c0899eb1770f98113334bb706ebd251ac2be979316b1985fa/vulture-2.15.tar.gz", hash = "sha256:f9d8b4ce29c69950d323f21dceab4a4d6c694403dffbed7713c4691057e561fe", size = 52438, upload-time = "2026-03-04T21:41:39.096Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1c/f3/07cf122e145bc6df976030e9935123124c3fcb5044cf407b5e71e85821b4/vulture-2.15-py3-none-any.whl", hash = "sha256:a3d8ebef918694326620eb128fa783486c8d285b23381c2b457d864ac056ef8d", size = 26895, upload-time = "2026-03-04T21:41:39.878Z" },
 ]
 
 [[package]]

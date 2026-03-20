@@ -12,10 +12,6 @@ REQUIRED_BAM_TAGS = ["mv", "ns"]
 DEFAULT_SIGNAL_CONTEXT = (225, 225)  # (left, right) signal samples around focus base
 DEFAULT_KMER_CONTEXT = 5  # Number of bases on each side of focus base
 DEFAULT_DWELL_MARGIN = 15  # Extra bases on each side for dwell_offset tuning (symmetric fallback)
-DEFAULT_DWELL_MARGIN_LEFT = (
-    3  # Extra bases toward tRNA body (keep small to avoid isoacceptor confounds)
-)
-DEFAULT_DWELL_MARGIN_RIGHT = 15  # Extra bases toward 3' adaptor (safe: constant sequence)
 
 # Model architecture defaults
 DEFAULT_CONV_CHANNELS = [4, 16, 256]  # Channel sizes for conv layers
@@ -55,7 +51,6 @@ KMER_RESIDUAL_FEATURES = [
 DEFAULT_BATCH_SIZE = 128
 DEFAULT_LEARNING_RATE = 0.001
 DEFAULT_EPOCHS = 50
-DEFAULT_NUM_WORKERS = 2  # DataLoader num_workers
 
 # Advanced training defaults
 DEFAULT_WEIGHT_DECAY = 0.0
@@ -107,13 +102,7 @@ def generate_random_seed() -> int:
 
 
 # Sequence encoding defaults
-DEFAULT_SEQ_ENCODING = "signal_kmer"  # "signal_kmer" or "base_onehot"
 DEFAULT_SIGNAL_KMER_CONTEXT = (4, 4)  # Kmer context for signal-level kmer encoding
-
-# Inference defaults
-DEFAULT_MIN_MAPQ = 0  # Minimum mapping quality for inference
-DEFAULT_MOTIF = "CCAGGC"  # Default motif for tRNA 3' end
-DEFAULT_MOTIF_OFFSET = 2  # Default offset within motif (0-indexed, focuses on A in CCA)
 
 # Normalization methods
 NORMALIZATION_METHODS = ["median_mad", "zscore", "quantile", "pa_scaling"]
@@ -132,4 +121,3 @@ LOSS_TYPES = ["bce", "focal", "cross_entropy"]
 
 # Remora model defaults
 DEFAULT_REMORA_SIZE = 64
-DEFAULT_REMORA_NUM_OUT = 2

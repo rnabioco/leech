@@ -266,8 +266,6 @@ def prepare(
                 "--refine-signal-map requires --kmer-table (bundled table not found)"
             )
 
-    # display_logo()
-
     handle_prepare(
         pod5=pod5,
         bam=bam,
@@ -1391,6 +1389,20 @@ def predict(
         )
         anchor = "reference"
 
+    # Detect output format from file extension
+    output_name = str(output).lower()
+    if output_name.endswith(".tsv.gz") or output_name.endswith(".tsv"):
+        output_format = "tsv"
+    elif output_name.endswith(".bam"):
+        output_format = "bam"
+    else:
+        import rich_click as click
+
+        raise click.UsageError(
+            f"Cannot determine output format from extension: {output}. "
+            "Use .bam for BAM output or .tsv / .tsv.gz for TSV output."
+        )
+
     handle_predict(
         model=model,
         bundle_path=bundle_path,
@@ -1416,6 +1428,7 @@ def predict(
         read_batch_size=read_batch_size,
         backend=backend,
         no_compile=no_compile,
+        output_format=output_format,
     )
 
 

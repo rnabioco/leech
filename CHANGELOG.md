@@ -5,7 +5,73 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.1] - 2026-03-20
+
+### Added
+
+- TSV prediction output (`TsvPredictionWriter`) as alternative to BAM tag output for multiclass models
+- escapepod-rs integration for ~10x faster Rust-accelerated inference via POD5 batch reads
+- Multiclass temperature scaling calibration with ECE improvement gating
+- Adversarial training with gradient reversal layer and confound maps for discriminator base debiasing
+- CL regression head for multi-task charging level prediction
+- Cross-layer augmentation: time masking, cross-layer shift, per-channel feature noise
+- Mega-batch streaming inference with double-buffered GPU pipeline
+- `--signal-context` CLI option for `leech data prepare` to set asymmetric signal windows
+- `--min-confidence` and `--min-margin` thresholds for `leech predict`
+- `--oversample-minority` flag for class imbalance handling
+- Auto-read `anchor` and `reference_fasta` from model config at predict time
+- `am` (margin) BAM tag in predict output
+- `enable_repr_capture()` for `ModelInferenceWrapper` internal activations
+- Centralized Rich console with wide fallback for SLURM batch jobs
+- TCNDwellResidualGN and TCNDwellResidualLN model variants (22 total architectures)
+- Label smoothing and cosine annealing scheduler options
+- `py.typed` PEP 561 marker for type checker support
+- vulture dead code detection in dev tooling
+
+### Changed
+
+- K-fold merge now caches input files in RAM for faster processing
+- Array-level merge without zlib compression for merge step
+- Disable DataLoader workers for validation to reduce memory usage
+- Checkpoint multiclass models on `val_f1` instead of `val_acc`
+- Development status upgraded from Alpha to Beta
+- Version string now uses `importlib.metadata` with git hash fallback
+- Removed seaborn from notebook extras (plotnine-only policy)
+- Bumped leech_core to v0.3.0 and Rust edition 2024
+
+### Fixed
+
+- Store `focus_signal_pos` in chunks for asymmetric `signal_context`
+- Enable TF32 matmul precision in inference path
+- Training summary reports actual best `val_acc`/F1 instead of last epoch
+- Use `tolist()` for multiclass `pos_weight` serialization in config
+- Handle k-fold directories in multiclass bundle discovery
+- `label_map.json` lookup for k-fold adversarial training
+- Use `reads_by_ids()` for O(1) indexed POD5 lookup instead of full scan
+- Gate multiclass temperature scaling on ECE improvement
+- Route multiclass through parallel inference path
+- FASTA index race condition under parallel SLURM jobs
+- Label smoothing no longer alters labels used for metrics
+- Propagate `pa_mean`, `pa_stdev`, `skip_motif_indels`, and refiner params through config chain
+- Align signal map refinement `scale_iters` between prepare and inference
+- Auto-read `base_justify` from model config in single-model inference
+- Use reference-based motif search in inference
+- Signal kmer coordinate adjustment and `reference_fasta` plumbing
+- Default `skip_motif_indels` to `False` everywhere
+
+### Performance
+
+- Prefetch pipeline with rayon contention fix in inference
+- Sub-batch extraction with async BAM writes for GPU pipelining
+- Multi-threaded extraction in sequential inference path
+- Optimized inference pipeline for fast prediction
+
+### Removed
+
+- Dead code: `config.py` (replaced by `configs.py`), `calibrate_model_temperature()`, `_is_leech_export()`, `load_predictions_from_bam()`, `prepare_chunks_with_context()`, `extract_disc_bases_from_fasta()`, `handle_branch_contribution()`, `display_logo()`
+- Unused constants: `DEFAULT_DWELL_MARGIN_LEFT/RIGHT`, `DEFAULT_NUM_WORKERS`, `DEFAULT_SEQ_ENCODING`, `DEFAULT_MIN_MAPQ`, `DEFAULT_MOTIF`, `DEFAULT_MOTIF_OFFSET`, `DEFAULT_REMORA_NUM_OUT`
+- Unused Rust accel imports: `_rs_test_process_read`, `_rs_extract_levels`, `_rs_rough_rescale`
+- Unused IO methods: `BAMReader.get_header()`, `BAMReader.count_alignments()`, `POD5Reader.get_signals_batch()`, `POD5Reader.iter_all_reads()`, `ReferenceManager.get_all_sequences()`
 
 ## [0.3.0] - 2026-03-14
 

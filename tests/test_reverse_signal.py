@@ -430,16 +430,6 @@ class TestOrchestratorThreading:
         assert "reverse_signal" in sig.parameters
         assert sig.parameters["reverse_signal"].default is True
 
-    def test_prepare_chunks_with_context_accepts_reverse_signal(self):
-        """Grid search prepare_chunks_with_context should accept reverse_signal."""
-        import inspect
-
-        from leech.gridsearch import prepare_chunks_with_context
-
-        sig = inspect.signature(prepare_chunks_with_context)
-        assert "reverse_signal" in sig.parameters
-        assert sig.parameters["reverse_signal"].default is True
-
     def test_handle_prepare_accepts_reverse_signal(self):
         """handle_prepare should accept reverse_signal kwarg."""
         import inspect

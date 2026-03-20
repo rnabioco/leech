@@ -278,11 +278,13 @@ src/leech/           # Main package source
 │   ├── optimize.py  # Grid search optimization handler
 │   ├── predict.py   # Inference/predict handler
 │   └── analyze.py   # Analysis command handlers (importance, ablation)
+├── confounds.py     # Confound mappings for adversarial training
 ├── io/              # Input/output operations
 │   ├── bam_reader.py    # BAM file reading
 │   ├── pod5_reader.py   # POD5 signal reading
 │   ├── motif_search.py  # Motif searching in sequences
-│   └── reference.py     # Reference sequence handling
+│   ├── reference.py     # Reference sequence handling
+│   └── tsv_writer.py   # TSV prediction output writer
 ├── preparation/     # Data preparation orchestration
 │   ├── orchestrator.py  # Main preparation logic
 │   ├── parallel.py      # Parallel processing
@@ -304,7 +306,7 @@ src/leech/           # Main package source
 ├── calibration.py   # Post-hoc Platt scaling for model calibration
 ├── signal_refine.py # Signal map refinement via kmer level tables
 ├── _rust_accel.py   # Rust acceleration wrapper for vectorized operations
-├── config.py        # Configuration management
+├── configs.py       # Dataclass-based configuration management
 ├── constants.py     # Project-wide constants and defaults
 ├── logging_config.py  # Logging setup
 └── models/          # Model architectures
@@ -405,21 +407,26 @@ The workflow is designed to integrate with the leech CLI commands and supports b
 
 ## Current Status
 
-The codebase is feature-complete (v0.2.0):
+The codebase is feature-complete (v0.3.1):
 - ✓ Feature extraction with dwell offset tuning and signal map refinement
-- ✓ 14 model architectures: 8 base + BN/Attention variants for ConvLSTM models
+- ✓ 22 model architectures: ConvLSTM (Base/Dwell × BN/GN/LN/Attn), TCN (Dwell/DwellGN/DwellLN/DwellResidual/DwellResidualGN/DwellResidualLN), Transformer, ResNet, ConvOnly
 - ✓ CLI organized into 4 command groups: `data` (prepare, merge), `model` (train, optimize, bundle, bundle-info, calibrate, export), `eval` (test, compare, importance, ablation), `predict`
-- ✓ Training with focal loss, mixup augmentation, cosine annealing, gradient clipping
+- ✓ Training with focal loss, mixup augmentation, cosine annealing, gradient clipping, adversarial training, CL regression
 - ✓ Grid search with range syntax, parallel execution, dwell offset tuning
 - ✓ Model bundling for multi-model pairwise deployment
 - ✓ Inference engine with leech and Remora model auto-detection
 - ✓ Parallel data preparation and parallel inference
 - ✓ Reference-anchored mode matching Remora convention
-- ✓ Rust acceleration for vectorized operations
+- ✓ Rust acceleration via escapepod-rs for 10x faster inference
 - ✓ Snakemake workflow for production pipelines
-- ✓ Platt scaling for post-hoc model calibration
+- ✓ Platt scaling and multiclass temperature scaling for model calibration
 - ✓ Balance-groups sampling for equal source group contribution
 - ✓ K-fold cross-validation with read-level stratification
 - ✓ TorchScript export for standalone model deployment
+- ✓ TSV prediction output for downstream analysis
+- ✓ `--signal-context` CLI option for asymmetric signal windows
+- ✓ `--min-confidence` / `--min-margin` predict thresholds
+- ✓ Cross-layer augmentation (time mask, shift, feature noise)
+- ✓ Auto-read anchor and reference_fasta from model config at predict time
 
 All core functionality is implemented and ready for use.
