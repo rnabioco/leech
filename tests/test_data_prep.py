@@ -867,5 +867,165 @@ class TestCIGARMapping:
         assert result == (5, 6)
 
 
+class TestSaveChunksUncompressed:
+    """Test save_chunks with compressed=False."""
+
+    def test_uncompressed_round_trip(self, sample_chunks, tmp_path):
+        """Test that uncompressed save/load round-trips correctly."""
+        output_file = tmp_path / "uncompressed.npz"
+
+        save_chunks(sample_chunks, output_file, compressed=False)
+        assert output_file.exists()
+
+        loaded = load_chunks(output_file)
+        assert len(loaded) == len(sample_chunks)
+
+        # Verify values match
+        for orig, loaded_chunk in zip(sample_chunks, loaded, strict=True):
+            np.testing.assert_array_almost_equal(orig["signal"], loaded_chunk["signal"])
+            assert orig["sequence"] == loaded_chunk["sequence"]
+            assert orig["read_id"] == loaded_chunk["read_id"]
+
+    def test_uncompressed_larger_file(self, sample_chunks, tmp_path):
+        """Test that uncompressed files are >= compressed files."""
+        compressed_file = tmp_path / "compressed.npz"
+        uncompressed_file = tmp_path / "uncompressed.npz"
+
+        save_chunks(sample_chunks, compressed_file, compressed=True)
+        save_chunks(sample_chunks, uncompressed_file, compressed=False)
+
+        assert uncompressed_file.stat().st_size >= compressed_file.stat().st_size
+
+
+class TestMergeArraysBySplit:
+    """Test _merge_arrays_by_split helper."""
+
+    def _make_chunk_file(self, tmp_path, name, chunks):
+        """Helper to save chunks to a file."""
+        path = tmp_path / f"{name}.npz"
+        save_chunks(chunks, path)
+        return path
+
+    def _make_chunks(self, read_prefix, label, n_reads=10, chunks_per_read=3):
+        """Helper to create test chunks."""
+        chunks = []
+        for r in range(n_reads):
+            for c in range(chunks_per_read):
+                chunks.append(
+                    {
+                        "read_id": f"{read_prefix}_read_{r:03d}",
+                        "signal": np.random.randn(400).astype(np.float32),
+                        "sequence": "ACGT" * 3,
+                        "dwell": np.random.randn(11).astype(np.float32),
+                        "features": np.random.randn(3, 11).astype(np.float32),
+                        "label": label,
+                        "label_int": 0,
+                        "base_idx": c,
+                        "feature_start": -5,
+                        "feature_end": 5,
+                        "source_group": "",
+                    }
+                )
+        return chunks
+
+    def test_basic_merge(self, tmp_path):
+        """Test basic array-level merge without overrides."""
+        from leech.splitting.splitter import _merge_arrays_by_split
+
+        chunks_a = self._make_chunks("a", "Ala", n_reads=10)
+        chunks_b = self._make_chunks("b", "Gly", n_reads=10)
+
+        path_a = self._make_chunk_file(tmp_path, "ala", chunks_a)
+        path_b = self._make_chunk_file(tmp_path, "gly", chunks_b)
+
+        # Collect all read IDs and split
+        all_reads = sorted({c["read_id"] for c in chunks_a + chunks_b})
+        n = len(all_reads)
+        train_ids = set(all_reads[: int(n * 0.7)])
+        val_ids = set(all_reads[int(n * 0.7) : int(n * 0.85)])
+        test_ids = set(all_reads[int(n * 0.85) :])
+
+        out_dir = tmp_path / "out"
+        out_dir.mkdir()
+
+        counts = _merge_arrays_by_split(
+            input_paths=[path_a, path_b],
+            split_read_ids={"train": train_ids, "val": val_ids, "test": test_ids},
+            output_paths={
+                "train": out_dir / "train.npz",
+                "val": out_dir / "val.npz",
+                "test": out_dir / "test.npz",
+            },
+        )
+
+        total = counts["train"] + counts["val"] + counts["test"]
+        assert total == len(chunks_a) + len(chunks_b)
+
+        # Verify output files are loadable
+        loaded_train = load_chunks(out_dir / "train.npz")
+        assert len(loaded_train) == counts["train"]
+
+    def test_label_overrides(self, tmp_path):
+        """Test that label_overrides correctly relabels arrays."""
+        from leech.splitting.splitter import _merge_arrays_by_split
+
+        chunks_a = self._make_chunks("a", "Ala", n_reads=5)
+        chunks_b = self._make_chunks("b", "Gly", n_reads=5)
+
+        path_a = self._make_chunk_file(tmp_path, "ala", chunks_a)
+        path_b = self._make_chunk_file(tmp_path, "gly", chunks_b)
+
+        all_reads = sorted({c["read_id"] for c in chunks_a + chunks_b})
+        train_ids = set(all_reads)  # Put all in train for simplicity
+
+        out_dir = tmp_path / "out"
+        out_dir.mkdir()
+
+        _merge_arrays_by_split(
+            input_paths=[path_a, path_b],
+            split_read_ids={"train": train_ids},
+            output_paths={"train": out_dir / "train.npz"},
+            label_overrides={
+                path_a: (0, "Ala"),
+                path_b: (1, "Gly"),
+            },
+        )
+
+        # Load and check labels
+        loaded = load_chunks(out_dir / "train.npz")
+        labels_int = {c["label_int"] for c in loaded}
+        assert 0 in labels_int
+        assert 1 in labels_int
+
+        # Check that Ala chunks got label_int=0 and Gly got label_int=1
+        for c in loaded:
+            if "a_read" in c["read_id"]:
+                assert c["label_int"] == 0
+            elif "b_read" in c["read_id"]:
+                assert c["label_int"] == 1
+
+    def test_source_group_overrides(self, tmp_path):
+        """Test that source_group_overrides correctly sets source groups."""
+        from leech.splitting.splitter import _merge_arrays_by_split
+
+        chunks_a = self._make_chunks("a", "Ala", n_reads=5)
+        path_a = self._make_chunk_file(tmp_path, "ala", chunks_a)
+
+        all_reads = {c["read_id"] for c in chunks_a}
+        out_dir = tmp_path / "out"
+        out_dir.mkdir()
+
+        _merge_arrays_by_split(
+            input_paths=[path_a],
+            split_read_ids={"train": all_reads},
+            output_paths={"train": out_dir / "train.npz"},
+            source_group_overrides={path_a: "my_source"},
+        )
+
+        loaded = load_chunks(out_dir / "train.npz")
+        for c in loaded:
+            assert c["source_group"] == "my_source"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

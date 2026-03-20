@@ -13,13 +13,15 @@ import numpy as np
 logger = logging.getLogger("leech.chunking.serialization")
 
 
-def save_chunks(chunks: list[dict], output_path: Path) -> None:
+def save_chunks(chunks: list[dict], output_path: Path, *, compressed: bool = True) -> None:
     """
-    Save training chunks to compressed numpy format.
+    Save training chunks to numpy format.
 
     Args:
         chunks: List of chunk dictionaries from extract_training_chunks
         output_path: Output file path (.npz)
+        compressed: If True (default), use np.savez_compressed (zlib);
+            if False, use np.savez for faster writes at larger file size.
 
     Raises:
         ValueError: If chunks list is empty
@@ -149,7 +151,10 @@ def save_chunks(chunks: list[dict], output_path: Path) -> None:
         save_kwargs["features"] = np.array(features, dtype=object)
 
     # Save
-    np.savez_compressed(output_path, **save_kwargs)
+    if compressed:
+        np.savez_compressed(output_path, **save_kwargs)
+    else:
+        np.savez(output_path, **save_kwargs)
 
     logger.info(f"Saved {len(chunks)} chunks to {output_path}")
 
