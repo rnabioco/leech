@@ -77,6 +77,7 @@ class PrepareConfig:
     motif: MotifConfig = field(default_factory=MotifConfig)
     chunk: ChunkConfig = field(default_factory=ChunkConfig)
     labeling: LabelConfig = field(default_factory=LabelConfig)
+    reference_fasta: Path | None = None
 
     def to_dict(self) -> dict:
         """Serialize to a JSON-safe dict (excludes non-serializable fields)."""
@@ -101,6 +102,7 @@ class PrepareConfig:
             "signal_context": list(self.chunk.signal_context),
             "kmer_context": self.chunk.kmer_context,
             "label": self.labeling.label,
+            "reference_fasta": str(self.reference_fasta) if self.reference_fasta else None,
         }
 
 

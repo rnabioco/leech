@@ -737,6 +737,7 @@ def run_inference(
     read_batch_size: int = 10_000,
     backend: str = "auto",
     no_compile: bool = False,
+    output_format: str = "bam",
 ) -> None:
     """
     Run inference on POD5 and BAM files.
@@ -773,6 +774,8 @@ def run_inference(
         read_batch_size: Reads per mega-batch for memory-bounded streaming (default 50K).
             Each mega-batch loads BAM alignments + POD5 signals, runs inference,
             writes predictions, then frees memory. Set to 0 to disable (load all).
+        output_format: "bam" for BAM output with tags, "tsv" for gzipped TSV.
+            TSV mode requires a multiclass model.
     """
     # Apply backend override to signal_refine module
     logger.info(f"Extraction backend: {backend}")
@@ -951,6 +954,22 @@ def run_inference(
     )
     logger.info(f"base_justify: {base_justify}")
 
+    anchor = _check_config_consistency("anchor", anchor, config.get("anchor"), "reference")
+    logger.info(f"anchor: {anchor}")
+
+    if reference_fasta is None:
+        cfg_ref = config.get("reference_fasta")
+        if cfg_ref is not None:
+            cfg_path = Path(cfg_ref)
+            if cfg_path.exists():
+                reference_fasta = cfg_path
+                logger.info(f"reference_fasta from config: {reference_fasta}")
+            else:
+                logger.warning(
+                    f"reference_fasta from config ({cfg_ref}) not found; "
+                    f"pass --reference-fasta explicitly"
+                )
+
     logger.info(f"Signal length: {signal_len}, K-mer length: {kmer_len}")
     if is_multiclass:
         logger.info(f"Multi-class model: num_out={num_out}")
@@ -981,9 +1000,30 @@ def run_inference(
                     logger.info(f"Using pa_scaling normalization (sm={pa_mean}, sd={pa_stdev})")
                 break
 
-    # Create output BAM
+    # Create output writer (BAM or TSV)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    bam_out = pysam.AlignmentFile(str(output_path), "wb", template=bam_in)
+    tsv_writer = None
+    bam_out = None
+    if output_format == "tsv":
+        if not is_multiclass:
+            raise RuntimeError(
+                "TSV output is only supported for multiclass models. "
+                "Use .bam extension for binary models."
+            )
+        from leech.io.tsv_writer import TsvPredictionWriter
+
+        _has_cl = (
+            config.get("cl_regression", False)
+            and config.get("cl_regression_head_state_dict") is not None
+        )
+        if int_to_label:
+            _tsv_class_names = [int_to_label[i] for i in range(num_out)]
+        else:
+            _tsv_class_names = [str(i) for i in range(num_out)]
+        tsv_writer = TsvPredictionWriter(output_path, _tsv_class_names, _has_cl)
+        logger.info(f"TSV output: {output_path} ({len(_tsv_class_names)} classes)")
+    else:
+        bam_out = pysam.AlignmentFile(str(output_path), "wb", template=bam_in)
     bam_in.close()
 
     total_reads = 0
@@ -1155,8 +1195,9 @@ def run_inference(
                     )
 
                     if not read_infos:
-                        for aln in aln_batch:
-                            bam_out.write(aln)
+                        if bam_out is not None:
+                            for aln in aln_batch:
+                                bam_out.write(aln)
                         total_reads += len(aln_batch)
                         continue
 
@@ -1206,17 +1247,20 @@ def run_inference(
                             )
 
                     # Write this mega-batch's predictions
-                    batch_preds = _write_mega_batch_predictions(
-                        aln_batch,
-                        pending,
-                        bam_out,
-                        is_multiclass,
-                        int_to_label,
-                        class_names_str,
-                        raw,
-                        min_confidence,
-                        min_margin,
-                    )
+                    if tsv_writer is not None:
+                        batch_preds = tsv_writer.write_predictions(aln_batch, pending, int_to_label)
+                    else:
+                        batch_preds = _write_mega_batch_predictions(
+                            aln_batch,
+                            pending,
+                            bam_out,
+                            is_multiclass,
+                            int_to_label,
+                            class_names_str,
+                            raw,
+                            min_confidence,
+                            min_margin,
+                        )
                     total_reads += len(aln_batch)
                     total_predictions += batch_preds
                     mega_batch_idx += 1
@@ -1669,19 +1713,27 @@ def run_inference(
             write_pending = pending
             pending = {}
             batch_preds = len(write_pending)
-            # Submit BAM write to background thread
-            _bam_write_future = _bam_write_executor.submit(
-                _write_mega_batch_predictions,
-                aln_batch_to_write,
-                write_pending,
-                bam_out,
-                is_multiclass,
-                int_to_label,
-                class_names_str,
-                raw,
-                min_confidence,
-                min_margin,
-            )
+            # Submit write to background thread
+            if tsv_writer is not None:
+                _bam_write_future = _bam_write_executor.submit(
+                    tsv_writer.write_predictions,
+                    aln_batch_to_write,
+                    write_pending,
+                    int_to_label,
+                )
+            else:
+                _bam_write_future = _bam_write_executor.submit(
+                    _write_mega_batch_predictions,
+                    aln_batch_to_write,
+                    write_pending,
+                    bam_out,
+                    is_multiclass,
+                    int_to_label,
+                    class_names_str,
+                    raw,
+                    min_confidence,
+                    min_margin,
+                )
             total_reads += len(aln_batch_to_write)
             total_predictions += batch_preds
             mega_batch_idx += 1
@@ -1847,7 +1899,10 @@ def run_inference(
         if _has_prefetch:
             _prefetch_exec.shutdown(wait=False)
 
-    bam_out.close()
+    if tsv_writer is not None:
+        tsv_writer.close()
+    if bam_out is not None:
+        bam_out.close()
 
     logger.info("Inference complete!")
     logger.info(f"Reads processed: {total_reads}")
@@ -2022,6 +2077,22 @@ def run_bundle_inference(
         "base-justify", base_justify, config.get("base_justify"), "center"
     )
     logger.info(f"base_justify: {base_justify}")
+
+    anchor = _check_config_consistency("anchor", anchor, config.get("anchor"), "reference")
+    logger.info(f"anchor: {anchor}")
+
+    if reference_fasta is None:
+        cfg_ref = config.get("reference_fasta")
+        if cfg_ref is not None:
+            cfg_path = Path(cfg_ref)
+            if cfg_path.exists():
+                reference_fasta = cfg_path
+                logger.info(f"reference_fasta from config: {reference_fasta}")
+            else:
+                logger.warning(
+                    f"reference_fasta from config ({cfg_ref}) not found; "
+                    f"pass --reference-fasta explicitly"
+                )
 
     # Use asymmetric context if available, otherwise fall back to symmetric
     left_ctx = config.get("left_context")

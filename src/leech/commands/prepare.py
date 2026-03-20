@@ -138,6 +138,7 @@ def handle_prepare(
             label=label,
             label_int=None,  # Will be assigned during merge-and-split
         ),
+        reference_fasta=reference_fasta,
     )
 
     # Write preparation config sidecar for downstream provenance

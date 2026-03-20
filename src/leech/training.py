@@ -1397,6 +1397,7 @@ def train_model(
         "cl_regression": cl_regression,
         "cl_lambda": cl_lambda,
         # Preparation metadata (from prepare_config.json sidecar)
+        "reference_fasta": prepare_metadata.get("reference_fasta"),
         "anchor": prepare_metadata.get("anchor", "reference"),
         "signal_norm": prepare_metadata.get("signal_norm", "median_mad"),
         "reverse_signal": prepare_metadata.get("reverse_signal", True),
