@@ -38,10 +38,12 @@ pub fn read_pod5_batch<'py>(
     })?;
 
     let mut to_extract: Vec<(String, Vec<u64>)> = Vec::with_capacity(matched_reads.len());
-    let mut calibrations: HashMap<String, (f32, f32)> = HashMap::with_capacity(matched_reads.len());
-    for read in matched_reads {
+    let mut calibrations: Vec<(f32, f32)> = Vec::with_capacity(matched_reads.len());
+    let mut rid_to_idx: HashMap<String, usize> = HashMap::with_capacity(matched_reads.len());
+    for (idx, read) in matched_reads.into_iter().enumerate() {
         let rid = read.read_id.to_string();
-        calibrations.insert(rid.clone(), (read.calibration_offset, read.calibration_scale));
+        rid_to_idx.insert(rid.clone(), idx);
+        calibrations.push((read.calibration_offset, read.calibration_scale));
         to_extract.push((rid, read.signal_rows));
     }
 
@@ -52,7 +54,11 @@ pub fn read_pod5_batch<'py>(
 
     let mut results = HashMap::with_capacity(signals.len());
     for (rid, signal) in signals {
-        let (cal_offset, cal_scale) = calibrations.get(&rid).copied().unwrap_or((0.0, 1.0));
+        let (cal_offset, cal_scale) = rid_to_idx
+            .get(&rid)
+            .and_then(|&idx| calibrations.get(idx))
+            .copied()
+            .unwrap_or((0.0, 1.0));
         let arr = signal.into_pyarray(py).unbind();
         results.insert(rid, (arr, cal_offset, cal_scale));
     }

@@ -125,10 +125,13 @@ fn normalize_median_mad(signal: &[f32]) -> Vec<f32> {
     if signal.is_empty() {
         return vec![];
     }
-    let mut sorted = signal.to_vec();
-    let med = median_f32(&mut sorted);
-    let mut deviations: Vec<f32> = signal.iter().map(|&x| (x - med).abs()).collect();
-    let mad = median_f32(&mut deviations);
+    let mut buf = signal.to_vec();
+    let med = median_f32(&mut buf);
+    // Reuse buf for MAD computation (overwrite with absolute deviations)
+    for (v, &s) in buf.iter_mut().zip(signal.iter()) {
+        *v = (s - med).abs();
+    }
+    let mad = median_f32(&mut buf);
     let scale = mad * 1.4826;
     if scale < 1e-10 {
         return signal.iter().map(|&x| x - med).collect();
@@ -227,28 +230,25 @@ fn compute_sig_band(bps: &[i32], levels: &[f64], bhw: i32) -> (Vec<i32>, Vec<i32
     let seq_len = levels.len();
     let sig_len = (bps[seq_len] - bps[0]) as usize;
 
-    // Build seq_indices: for each signal position, which base it belongs to
-    let mut seq_indices = Vec::with_capacity(sig_len);
-    for base in 0..seq_len {
-        let dwell = (bps[base + 1] - bps[base]) as usize;
-        for _ in 0..dwell {
-            seq_indices.push(base as i32);
-        }
-    }
-
     let mut band_lo = vec![0i32; sig_len];
     let mut band_hi = vec![0i32; sig_len];
-    for s in 0..sig_len {
-        band_lo[s] = (seq_indices[s] - bhw).max(0);
-        band_hi[s] = (seq_indices[s] + bhw + 1).min(seq_len as i32);
-    }
 
-    // Handle NaN levels: route through NaN regions
+    // Running pointer to determine base index for each signal position,
+    // avoiding a full Vec<i32> allocation of length sig_len.
+    let mut base = 0usize;
+    let mut base_end = (bps[1] - bps[0]) as usize;
     for s in 0..sig_len {
-        let base = seq_indices[s] as usize;
+        while base + 1 < seq_len && s >= base_end {
+            base += 1;
+            base_end += (bps[base + 1] - bps[base]) as usize;
+        }
+        let b = base as i32;
+        band_lo[s] = (b - bhw).max(0);
+        band_hi[s] = (b + bhw + 1).min(seq_len as i32);
+        // Handle NaN levels: route through NaN regions
         if base < levels.len() && levels[base].is_nan() {
-            band_lo[s] = seq_indices[s];
-            band_hi[s] = seq_indices[s] + 1;
+            band_lo[s] = b;
+            band_hi[s] = b + 1;
         }
     }
 
@@ -447,7 +447,7 @@ fn theil_sen_rescale(
     }
 
     // Subsample for Theil-Sen if too many
-    let max_pts = 1000;
+    let max_pts = 200;
     if filt_means.len() > max_pts {
         // Deterministic subsample (every nth)
         let step = filt_means.len() / max_pts;
@@ -672,23 +672,11 @@ fn compute_dwell_features(dwells: &[f32]) -> Vec<Vec<f32>> {
 // ---------------------------------------------------------------------------
 
 fn compute_kmer_residual_features(
-    signal: &[f32],
-    sig_map: &[i64],
+    observed_means: &[f32],
     expected_levels: &[f64],
-    num_bases: usize,
 ) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
-    let mut observed_mean = vec![0.0f32; num_bases];
-    for i in 0..num_bases {
-        let start = sig_map[i].max(0) as usize;
-        let end = sig_map[i + 1].max(0) as usize;
-        if end > start && end <= signal.len() {
-            let sum: f32 = signal[start..end].iter().sum();
-            observed_mean[i] = sum / (end - start) as f32;
-        }
-    }
-
     let kmer_expected: Vec<f32> = expected_levels.iter().map(|&v| v as f32).collect();
-    let kmer_residual: Vec<f32> = observed_mean.iter().zip(kmer_expected.iter()).map(|(&o, &e)| o - e).collect();
+    let kmer_residual: Vec<f32> = observed_means.iter().zip(kmer_expected.iter()).map(|(&o, &e)| o - e).collect();
     let kmer_residual_abs: Vec<f32> = kmer_residual.iter().map(|&r| r.abs()).collect();
 
     (kmer_expected, kmer_residual, kmer_residual_abs)
@@ -805,7 +793,7 @@ fn process_one_read(
 
     let mut norm_signal = normalize_median_mad(&trimmed_f32);
 
-    // Reference anchoring
+    // Reference anchoring (move query_to_sig instead of cloning when possible)
     let (mut seq_to_sig, use_sequence) = if cfg.use_reference {
         if let (Some(cigar), Some(rseq)) = (cigar_ops, ref_seq) {
             let ref_to_sig = compute_ref_to_signal(&query_to_sig, cigar);
@@ -821,10 +809,10 @@ fn process_one_read(
             let shifted: Vec<i64> = ref_to_sig.iter().map(|&v| v - sig_start as i64).collect();
             (shifted, rseq.to_string())
         } else {
-            (query_to_sig.clone(), sequence.to_string())
+            (query_to_sig, sequence.to_string())
         }
     } else {
-        (query_to_sig.clone(), sequence.to_string())
+        (query_to_sig, sequence.to_string())
     };
 
     let num_bases = seq_to_sig.len().saturating_sub(1);
@@ -860,12 +848,15 @@ fn process_one_read(
     let features_data: Option<Vec<Vec<f32>>> = if cfg.compute_features {
         let (means, medians, stds, ranges) = compute_per_base_stats(&norm_signal, &seq_to_sig);
         let mut feats = compute_dwell_features(&dwells);
+        // Compute kmer residual features before moving means into feats
+        let kmer_residuals = expected_levels_f64.as_ref().map(|levels| {
+            compute_kmer_residual_features(&means, levels)
+        });
         feats.push(means);
         feats.push(medians);
         feats.push(stds);
         feats.push(ranges);
-        if let Some(ref levels) = expected_levels_f64 {
-            let (ke, kr, kra) = compute_kmer_residual_features(&norm_signal, &seq_to_sig, levels, num_bases);
+        if let Some((ke, kr, kra)) = kmer_residuals {
             feats.push(ke);
             feats.push(kr);
             feats.push(kra);
@@ -1155,7 +1146,6 @@ fn _process_and_convert<'py>(
     reverse_signal = true,
     feature_start = None,
     feature_end = None,
-    dwell_offset = 0,
     anchor = "basecall",
     cigar_tuples = None,
     reference_sequences = None,
@@ -1169,7 +1159,7 @@ fn _process_and_convert<'py>(
     refine_scale_iters = 2,
     signal_in_channels = 1,
 ))]
-#[allow(clippy::too_many_arguments, unused_variables)]
+#[allow(clippy::too_many_arguments)]
 pub fn extract_inference_chunks<'py>(
     py: Python<'py>,
     pod5_path: &str,
@@ -1188,7 +1178,6 @@ pub fn extract_inference_chunks<'py>(
     reverse_signal: bool,
     feature_start: Option<i64>,
     feature_end: Option<i64>,
-    dwell_offset: i64,
     anchor: &str,
     cigar_tuples: Option<Vec<Vec<(u32, u32)>>>,
     reference_sequences: Option<Vec<Option<String>>>,
@@ -1314,7 +1303,6 @@ pub fn extract_inference_chunks<'py>(
     reverse_signal = true,
     feature_start = None,
     feature_end = None,
-    dwell_offset = 0,
     anchor = "basecall",
     cigar_tuples = None,
     reference_sequences = None,
@@ -1328,7 +1316,7 @@ pub fn extract_inference_chunks<'py>(
     refine_scale_iters = 2,
     signal_in_channels = 1,
 ))]
-#[allow(clippy::too_many_arguments, unused_variables)]
+#[allow(clippy::too_many_arguments)]
 pub fn extract_chunks_from_preloaded<'py>(
     py: Python<'py>,
     preloaded: &PreloadedSignals,
@@ -1347,7 +1335,6 @@ pub fn extract_chunks_from_preloaded<'py>(
     reverse_signal: bool,
     feature_start: Option<i64>,
     feature_end: Option<i64>,
-    dwell_offset: i64,
     anchor: &str,
     cigar_tuples: Option<Vec<Vec<(u32, u32)>>>,
     reference_sequences: Option<Vec<Option<String>>>,

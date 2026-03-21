@@ -70,6 +70,7 @@ fn banded_forward_vit_step(
 }
 
 /// Viterbi forward step with short-dwell penalty for one base.
+/// `scratch_scores` and `scratch_tb` are pre-allocated buffers to avoid per-call allocation.
 fn banded_forward_dwell_penalty_step(
     curr_scores: &mut [f32],
     curr_tb: &mut [i32],
@@ -78,22 +79,28 @@ fn banded_forward_dwell_penalty_step(
     curr_signal: &[f32],
     band_start_diff: i32,
     dwell_penalty: &[f32],
+    scratch_scores: &mut Vec<f32>,
+    scratch_tb: &mut Vec<i32>,
 ) {
     let n_curr = curr_scores.len();
     let n_prev = prev_scores.len();
     let n_pen = dwell_penalty.len();
 
-    // Compute unpenalized scores for dwells >= penalty length
-    let mut unpen_scores = vec![0.0f32; n_curr];
-    let mut unpen_tb = vec![0i32; n_curr];
+    // Reuse pre-allocated scratch buffers for unpenalized scores
+    scratch_scores.clear();
+    scratch_scores.resize(n_curr, 0.0f32);
+    scratch_tb.clear();
+    scratch_tb.resize(n_curr, 0i32);
     banded_forward_vit_step(
-        &mut unpen_scores,
-        &mut unpen_tb,
+        scratch_scores,
+        scratch_tb,
         prev_scores,
         curr_level,
         curr_signal,
         band_start_diff,
     );
+    let unpen_scores = &*scratch_scores;
+    let unpen_tb = &*scratch_tb;
 
     for bp in 0..n_curr {
         // Past end of prev band by more than penalty range: forced stay
@@ -170,6 +177,11 @@ pub(crate) fn seq_banded_dp_inner(
     let mut prev_scores = vec![f32::MAX; first_bw];
     prev_scores[0] = 0.0;
 
+    // Pre-allocate scratch buffers for dwell penalty step (reused across all bases)
+    let max_bw = (0..seq_len).map(|i| (band_hi[i] - band_lo[i]) as usize).max().unwrap_or(0);
+    let mut scratch_scores = Vec::with_capacity(max_bw);
+    let mut scratch_tb = Vec::with_capacity(max_bw);
+
     if use_dwell_pen {
         banded_forward_dwell_penalty_step(
             &mut all_scores[..first_bw],
@@ -179,6 +191,8 @@ pub(crate) fn seq_banded_dp_inner(
             &signal[..first_bw],
             1,
             sd_pen,
+            &mut scratch_scores,
+            &mut scratch_tb,
         );
     } else {
         banded_forward_vit_step(
@@ -202,22 +216,23 @@ pub(crate) fn seq_banded_dp_inner(
         let curr_offset = base_offsets[base_idx] as usize;
         let band_start_diff = curr_band_st - prev_band_st;
 
-        let prev_sc: Vec<f32> = all_scores[prev_offset..prev_offset + prev_bw].to_vec();
         let sig_slice = &signal[curr_band_st as usize..curr_band_en as usize];
 
-        let (cs, ct) = {
-            let scores_slice = &mut all_scores[curr_offset..curr_offset + curr_bw];
-            let tb_slice = &mut traceback[curr_offset..curr_offset + curr_bw];
-            (scores_slice, tb_slice)
-        };
+        // Split to get immutable prev and mutable curr without copying.
+        // prev_offset < curr_offset since base_offsets is monotonically increasing.
+        let (left, right) = all_scores.split_at_mut(curr_offset);
+        let prev_sc = &left[prev_offset..prev_offset + prev_bw];
+        let cs = &mut right[..curr_bw];
+        let ct = &mut traceback[curr_offset..curr_offset + curr_bw];
 
         if use_dwell_pen {
             banded_forward_dwell_penalty_step(
-                cs, ct, &prev_sc, levels[base_idx], sig_slice, band_start_diff, sd_pen,
+                cs, ct, prev_sc, levels[base_idx], sig_slice, band_start_diff, sd_pen,
+                &mut scratch_scores, &mut scratch_tb,
             );
         } else {
             banded_forward_vit_step(
-                cs, ct, &prev_sc, levels[base_idx], sig_slice, band_start_diff,
+                cs, ct, prev_sc, levels[base_idx], sig_slice, band_start_diff,
             );
         }
 

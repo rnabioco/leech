@@ -10,24 +10,30 @@ import logging
 logger = logging.getLogger("leech._rust_accel")
 
 try:
+    from leech_core import _test_process_read as _rs_test_process_read
     from leech_core import compute_signal_stats as _rs_compute_signal_stats
     from leech_core import encode_signal_kmer as _rs_encode_signal_kmer
     from leech_core import extract_chunks_from_preloaded as _rs_extract_chunks_from_preloaded
     from leech_core import extract_inference_chunks as _rs_extract_inference_chunks
+    from leech_core import extract_levels as _rs_extract_levels
     from leech_core import preload_pod5_signals as _rs_preload_pod5_signals
     from leech_core import read_pod5_batch as _rs_read_pod5_batch
+    from leech_core import rough_rescale as _rs_rough_rescale
     from leech_core import seq_banded_dp as _rs_seq_banded_dp
 
     HAS_RUST = True
     logger.debug("Rust acceleration available (leech_core)")
 except ImportError:
     HAS_RUST = False
+    _rs_test_process_read = None
     _rs_compute_signal_stats = None
     _rs_encode_signal_kmer = None
     _rs_extract_chunks_from_preloaded = None
     _rs_extract_inference_chunks = None
+    _rs_extract_levels = None
     _rs_preload_pod5_signals = None
     _rs_read_pod5_batch = None
+    _rs_rough_rescale = None
     _rs_seq_banded_dp = None
     logger.debug("Rust acceleration not available, using pure Python fallbacks")
 

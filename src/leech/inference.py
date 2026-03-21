@@ -1521,7 +1521,6 @@ def run_inference(
             "reverse_signal": reverse_signal,
             "feature_start": _feature_start,
             "feature_end": _feature_end,
-            "dwell_offset": dwell_offset,
             "anchor": anchor,
             "seq_encoding": seq_encoding,
             "signal_kmer_context": signal_kmer_context if seq_encoding == "signal_kmer" else None,

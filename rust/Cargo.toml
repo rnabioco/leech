@@ -12,3 +12,8 @@ pyo3 = { version = "0.28", features = ["extension-module"] }
 numpy = "0.28"
 escapepod = { path = "../escapepod-rs/escapepod" }
 rayon = "1"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+opt-level = 3
