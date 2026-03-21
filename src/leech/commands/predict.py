@@ -60,6 +60,7 @@ def handle_predict(
     backend: str = "auto",
     no_compile: bool = False,
     output_format: str = "bam",
+    copy_tags: list[str] | None = None,
 ) -> None:
     """
     Handle the predict command logic.
@@ -126,6 +127,7 @@ def handle_predict(
                 backend=backend,
                 no_compile=no_compile,
                 output_format=output_format,
+                copy_tags=copy_tags,
             )
         else:
             if output_format == "tsv":

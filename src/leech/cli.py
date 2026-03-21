@@ -1349,6 +1349,12 @@ def ablation(model, test_data, output_dir, device, no_plot):
     default=False,
     help="Disable torch.compile (skip CUDA graph compilation overhead). Faster startup for small inference runs.",
 )
+@click.option(
+    "--copy-tags",
+    type=str,
+    default=None,
+    help='Comma-separated BAM tags to copy to TSV output (e.g., "CL,RG"). Ignored for BAM output.',
+)
 def predict(
     model,
     bundle_path,
@@ -1375,6 +1381,7 @@ def predict(
     read_batch_size,
     backend,
     no_compile,
+    copy_tags,
 ):
     """Run inference on new data to generate predictions."""
     import warnings
@@ -1388,6 +1395,9 @@ def predict(
             stacklevel=2,
         )
         anchor = "reference"
+
+    # Parse --copy-tags into a list
+    parsed_copy_tags = [t.strip() for t in copy_tags.split(",") if t.strip()] if copy_tags else None
 
     # Detect output format from file extension
     output_name = str(output).lower()
@@ -1429,6 +1439,7 @@ def predict(
         backend=backend,
         no_compile=no_compile,
         output_format=output_format,
+        copy_tags=parsed_copy_tags,
     )
 
 

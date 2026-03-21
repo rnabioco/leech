@@ -24,10 +24,17 @@ class TsvPredictionWriter:
         Whether a CL regression head is present.
     """
 
-    def __init__(self, output_path: Path, class_names: list[str], has_cl: bool) -> None:
+    def __init__(
+        self,
+        output_path: Path,
+        class_names: list[str],
+        has_cl: bool,
+        copy_tags: list[str] | None = None,
+    ) -> None:
         self.output_path = output_path
         self.class_names = class_names
         self.has_cl = has_cl
+        self.copy_tags = copy_tags or []
 
         if str(output_path).endswith(".gz"):
             self._fh = gzip.open(output_path, "wt")
@@ -39,6 +46,8 @@ class TsvPredictionWriter:
         cols = ["read_name", "ref_name", *prob_cols, "predicted_aa", "confidence", "margin"]
         if has_cl:
             cols.append("predicted_cl")
+        for tag in self.copy_tags:
+            cols.append(f"tag_{tag}")
         self._fh.write("\t".join(cols) + "\n")
 
     def write_predictions(
@@ -93,6 +102,12 @@ class TsvPredictionWriter:
             ]
             if self.has_cl:
                 parts.append(f"{cl_pred:.6f}" if cl_pred is not None else "")
+
+            for tag in self.copy_tags:
+                if aln.has_tag(tag):
+                    parts.append(str(aln.get_tag(tag)))
+                else:
+                    parts.append("")
 
             self._fh.write("\t".join(parts) + "\n")
             n_written += 1

@@ -718,6 +718,7 @@ def run_inference(
     backend: str = "auto",
     no_compile: bool = False,
     output_format: str = "bam",
+    copy_tags: list[str] | None = None,
 ) -> None:
     """
     Run inference on POD5 and BAM files.
@@ -1000,7 +1001,7 @@ def run_inference(
             _tsv_class_names = [int_to_label[i] for i in range(num_out)]
         else:
             _tsv_class_names = [str(i) for i in range(num_out)]
-        tsv_writer = TsvPredictionWriter(output_path, _tsv_class_names, _has_cl)
+        tsv_writer = TsvPredictionWriter(output_path, _tsv_class_names, _has_cl, copy_tags=copy_tags)
         logger.info(f"TSV output: {output_path} ({len(_tsv_class_names)} classes)")
     else:
         bam_out = pysam.AlignmentFile(str(output_path), "wb", template=bam_in)
