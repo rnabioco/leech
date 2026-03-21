@@ -61,6 +61,7 @@ def handle_optimize(
     confound: str | None = None,
     cl_regression: bool = False,
     cl_lambda: float = 1.0,
+    signal_mode: str = "both",
 ) -> Path:
     """
     Handle the optimize command logic.
@@ -169,6 +170,7 @@ def handle_optimize(
         confound=confound,
         cl_regression=cl_regression,
         cl_lambda=cl_lambda,
+        signal_mode=signal_mode,
     )
 
     # Run grid search

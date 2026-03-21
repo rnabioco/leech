@@ -69,6 +69,7 @@ def evaluate_model(
     seq_encoding = config.get("seq_encoding", "signal_kmer")
     dwell_offset = config.get("dwell_offset", 0)
     signal_kmer_context = tuple(config.get("signal_kmer_context", (4, 4)))
+    signal_mode = config.get("signal_mode", "both")
 
     # GPU optimizations (forward-pass only, no training stability concerns)
     if device != "cpu":
@@ -102,6 +103,7 @@ def evaluate_model(
         right_context=right_context,
         seq_encoding=seq_encoding,
         signal_kmer_context=signal_kmer_context,
+        signal_mode=signal_mode,
     )
 
     loader_kwargs: dict = {"num_workers": 0}

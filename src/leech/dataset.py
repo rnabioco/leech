@@ -86,6 +86,7 @@ class LeechDataset(Dataset):
         right_context: int | None = None,
         confound_map: dict[int, int] | None = None,
         cl_regression: bool = False,
+        signal_mode: str = "both",
         time_mask_bases: int = 0,
         time_mask_count: int = 1,
         shift_max_bases: float = 0.0,
@@ -180,9 +181,13 @@ class LeechDataset(Dataset):
                 )
                 self._effective_seq_encoding = "base_onehot"
 
-        # Detect signal_residual channel
+        # Detect signal_residual channel and apply signal_mode
+        self._signal_mode = signal_mode
         self._has_signal_residual = self.chunks[0].get("signal_residual") is not None
-        self.signal_channels = 2 if self._has_signal_residual else 1
+        if signal_mode == "both" and self._has_signal_residual:
+            self.signal_channels = 2
+        else:
+            self.signal_channels = 1
 
         # Detect multi-class: if any label_int > 1, use long dtype for CrossEntropyLoss
         max_label = max(c["label_int"] for c in self.chunks)
@@ -310,9 +315,11 @@ class LeechDataset(Dataset):
                 signal_residual = signal_residual[start : start + self.signal_len]
 
         if signal_residual is not None:
-            # Stack into (2, signal_len) for 2-channel signal input
-            stacked = np.stack([signal, signal_residual], axis=0)
-            return torch.from_numpy(np.ascontiguousarray(stacked))
+            if self._signal_mode == "both":
+                stacked = np.stack([signal, signal_residual], axis=0)
+                return torch.from_numpy(np.ascontiguousarray(stacked))
+            elif self._signal_mode == "residual":
+                return torch.from_numpy(np.ascontiguousarray(signal_residual))
         return torch.from_numpy(np.ascontiguousarray(signal))
 
     def _prepare_features(self, chunk: dict) -> torch.Tensor:
@@ -355,14 +362,39 @@ class LeechDataset(Dataset):
             return torch.zeros(1, self.kmer_len, dtype=torch.float32)
 
     def _apply_augmentation(self, signal: torch.Tensor) -> torch.Tensor:
-        """Apply signal augmentation (jitter and/or scaling)."""
+        """Apply signal augmentation (jitter and/or scaling).
+
+        Both jitter_std and scale_range can be either scalar (uniform across
+        channels) or dict for per-channel control::
+
+            {"signal": 0.02, "signal_residual": 0.001}
+
+        Per-channel dicts only apply to 2-channel (dim=2) input; for 1-channel
+        input the scalar path is used regardless.
+        """
         jitter_std = self.augmentation.get("jitter_std", 0.0)
-        if jitter_std > 0:
-            signal = signal + torch.randn_like(signal) * jitter_std
+        if jitter_std:
+            if isinstance(jitter_std, dict) and signal.dim() == 2:
+                noise = torch.zeros_like(signal)
+                if jitter_std.get("signal", 0.0) > 0:
+                    noise[0] = torch.randn(signal.shape[1]) * jitter_std["signal"]
+                if jitter_std.get("signal_residual", 0.0) > 0:
+                    noise[1] = torch.randn(signal.shape[1]) * jitter_std["signal_residual"]
+                signal = signal + noise
+            elif isinstance(jitter_std, (int, float)) and jitter_std > 0:
+                signal = signal + torch.randn_like(signal) * jitter_std
+
         scale_range = self.augmentation.get("scale_range", (1.0, 1.0))
-        if scale_range != (1.0, 1.0):
-            scale = torch.empty(1).uniform_(scale_range[0], scale_range[1]).item()
-            signal = signal * scale
+        if scale_range and scale_range != (1.0, 1.0):
+            if isinstance(scale_range, dict) and signal.dim() == 2:
+                for ch_idx, ch_name in enumerate(["signal", "signal_residual"]):
+                    ch_range = scale_range.get(ch_name, (1.0, 1.0))
+                    if ch_range != (1.0, 1.0):
+                        s = torch.empty(1).uniform_(ch_range[0], ch_range[1]).item()
+                        signal[ch_idx] = signal[ch_idx] * s
+            else:
+                scale = torch.empty(1).uniform_(scale_range[0], scale_range[1]).item()
+                signal = signal * scale
         return signal
 
     def _apply_shift(

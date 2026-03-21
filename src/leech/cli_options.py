@@ -40,6 +40,38 @@ def get_model_choices() -> list[str]:
     return sorted(MODEL_REGISTRY.keys())
 
 
+class FloatOrDict(click.ParamType):
+    """Click type that accepts a plain float or ``key=val,key=val`` per-channel dict.
+
+    Examples::
+
+        0.02                                    → 0.02
+        signal=0.02,signal_residual=0.001       → {"signal": 0.02, "signal_residual": 0.001}
+    """
+
+    name = "FLOAT_OR_DICT"
+
+    def convert(self, value, param, ctx):
+        if isinstance(value, (int, float, dict)):
+            return value
+        try:
+            return float(value)
+        except ValueError:
+            pass
+        # Parse key=val,key=val
+        try:
+            result = {}
+            for part in value.split(","):
+                k, v = part.strip().split("=", 1)
+                result[k.strip()] = float(v.strip())
+            return result
+        except (ValueError, AttributeError):
+            self.fail(f"'{value}' is not a float or key=value,... dict", param, ctx)
+
+
+FLOAT_OR_DICT = FloatOrDict()
+
+
 class LazyChoice(click.Choice):
     """A click.Choice that defers resolving its choices until first access.
 
@@ -111,9 +143,10 @@ def training_hyperparams(f):
     )(f)
     f = click.option(
         "--augment-jitter",
-        type=float,
+        type=FLOAT_OR_DICT,
         default=DEFAULT_AUGMENT_JITTER,
-        help="Signal jitter noise std dev for data augmentation (0 = disabled)",
+        help="Signal jitter noise std dev (0 = disabled). "
+        "Per-channel: signal=0.02,signal_residual=0.001",
     )(f)
     f = click.option(
         "--mixed-precision/--no-mixed-precision",

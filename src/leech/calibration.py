@@ -188,6 +188,7 @@ def calibrate_model(
         kmer_len=kmer_len,
         seq_encoding=seq_encoding,
         signal_kmer_context=signal_kmer_context,
+        signal_mode=config.get("signal_mode", "both"),
     )
     val_loader = DataLoader(
         val_dataset,
@@ -552,6 +553,7 @@ def calibrate_model_multiclass(
         kmer_len=kmer_len,
         seq_encoding=seq_encoding,
         signal_kmer_context=signal_kmer_context,
+        signal_mode=config.get("signal_mode", "both"),
     )
     val_loader = DataLoader(
         val_dataset,

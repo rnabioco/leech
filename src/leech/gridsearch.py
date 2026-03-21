@@ -188,6 +188,7 @@ class GridSearchConfig:
     confound: str | None = None
     cl_regression: bool = False
     cl_lambda: float = 1.0
+    signal_mode: str = "both"
 
 
 def run_grid_point(
@@ -236,6 +237,7 @@ def run_grid_point(
     confound: str | None = None,
     cl_regression: bool = False,
     cl_lambda: float = 1.0,
+    signal_mode: str = "both",
 ) -> dict:
     """
     Train model for a single grid point.
@@ -325,6 +327,7 @@ def run_grid_point(
             confound=confound,
             cl_regression=cl_regression,
             cl_lambda=cl_lambda,
+            signal_mode=signal_mode,
         )
 
         train_time = time.time() - start_time
@@ -435,6 +438,7 @@ def _grid_point_worker(args: dict) -> dict:
         confound=args.get("confound"),
         cl_regression=args.get("cl_regression", False),
         cl_lambda=args.get("cl_lambda", 1.0),
+        signal_mode=args.get("signal_mode", "both"),
     )
     # Free CUDA memory between grid points to prevent accumulation
     if args.get("device", "cpu") != "cpu":
@@ -603,6 +607,7 @@ def run_grid_search(config: GridSearchConfig) -> Path:
                 "confound": config.confound,
                 "cl_regression": config.cl_regression,
                 "cl_lambda": config.cl_lambda,
+                "signal_mode": config.signal_mode,
             }
         )
 

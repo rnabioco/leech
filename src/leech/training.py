@@ -929,6 +929,7 @@ def train_model(
     confound: str | None = None,
     cl_regression: bool = False,
     cl_lambda: float = 1.0,
+    signal_mode: str = "both",
     **model_kwargs: Any,
 ) -> dict[str, Any]:
     """
@@ -1006,12 +1007,24 @@ def train_model(
     # Extract dwell_offset from model_kwargs (grid search param, not model init param)
     dwell_offset = model_kwargs.pop("dwell_offset", 0)
 
-    # Build augmentation config for training dataset
+    # Build augmentation config for training dataset.
+    # Per-channel dicts (e.g. {"signal": 0.02, "signal_residual": 0.001})
+    # can be provided via --model-config JSON; CLI flags give uniform scalars.
     augmentation = None
-    if augment_jitter > 0 or (augment_scale_min, augment_scale_max) != (1.0, 1.0):
+    jitter_cfg = model_kwargs.pop("augment_jitter", augment_jitter)
+    scale_cfg = model_kwargs.pop("augment_scale_range", (augment_scale_min, augment_scale_max))
+
+    has_jitter = (isinstance(jitter_cfg, dict) and any(v > 0 for v in jitter_cfg.values())) or (
+        isinstance(jitter_cfg, (int, float)) and jitter_cfg > 0
+    )
+    has_scale = isinstance(scale_cfg, dict) or (
+        isinstance(scale_cfg, (list, tuple)) and tuple(scale_cfg) != (1.0, 1.0)
+    )
+
+    if has_jitter or has_scale:
         augmentation = {
-            "jitter_std": augment_jitter,
-            "scale_range": (augment_scale_min, augment_scale_max),
+            "jitter_std": jitter_cfg,
+            "scale_range": scale_cfg,
         }
         logger.info(f"Signal augmentation enabled: {augmentation}")
 
@@ -1062,6 +1075,7 @@ def train_model(
         right_context=right_context,
         confound_map=confound_map,
         cl_regression=cl_regression,
+        signal_mode=signal_mode,
         time_mask_bases=augment_time_mask_bases,
         time_mask_count=augment_time_mask_count,
         shift_max_bases=augment_shift_max_bases,
@@ -1083,6 +1097,7 @@ def train_model(
             right_context=right_context,
             confound_map=confound_map,
             cl_regression=cl_regression,
+            signal_mode=signal_mode,
         )
 
     # Create data loaders
@@ -1278,6 +1293,8 @@ def train_model(
         "TCNDwellResidual",
         "TCNDwellResidualGN",
         "TCNDwellResidualLN",
+        "TCNDwellSplitResidual",
+        "TCNDwellSplitResidualLN",
     }
     if model_name in num_out_models:
         model_init_kwargs["num_out"] = num_out
@@ -1383,9 +1400,10 @@ def train_model(
         "focal_gamma": focal_gamma,
         "mixed_precision": mixed_precision,
         "label_smoothing": label_smoothing,
-        "augment_jitter": augment_jitter,
+        "augment_jitter": jitter_cfg,
         "augment_scale_min": augment_scale_min,
         "augment_scale_max": augment_scale_max,
+        "augment_scale_range": scale_cfg if isinstance(scale_cfg, dict) else None,
         "augment_time_mask_bases": augment_time_mask_bases,
         "augment_time_mask_count": augment_time_mask_count,
         "augment_shift_max_bases": augment_shift_max_bases,
@@ -1397,6 +1415,7 @@ def train_model(
         "confound": confound,
         "cl_regression": cl_regression,
         "cl_lambda": cl_lambda,
+        "signal_mode": signal_mode,
         # Preparation metadata (from prepare_config.json sidecar)
         "reference_fasta": prepare_metadata.get("reference_fasta"),
         "anchor": prepare_metadata.get("anchor", "reference"),

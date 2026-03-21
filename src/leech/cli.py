@@ -510,6 +510,12 @@ def merge(input_chunks, output_dir, train_split, val_split, seed, k_fold, compar
     default=1.0,
     help="Weight for CL regression loss (default: 1.0). Combined loss = main + cl_lambda * cl_loss.",
 )
+@click.option(
+    "--signal-mode",
+    type=click.Choice(["both", "residual", "signal"]),
+    default="both",
+    help="Signal input: 'both' (raw+residual, 2ch), 'residual' (1ch), 'signal' (1ch).",
+)
 def train(
     train_data,
     val_data,
@@ -555,6 +561,7 @@ def train(
     confound,
     cl_regression,
     cl_lambda,
+    signal_mode,
 ):
     """Train a model on prepared data."""
     from leech.commands.train import handle_train
@@ -604,6 +611,7 @@ def train(
         confound=confound,
         cl_regression=cl_regression,
         cl_lambda=cl_lambda,
+        signal_mode=signal_mode,
     )
 
 
@@ -888,6 +896,12 @@ def export(model_dir, output):
     default=1.0,
     help="Weight for CL regression loss (default: 1.0).",
 )
+@click.option(
+    "--signal-mode",
+    type=click.Choice(["both", "residual", "signal"]),
+    default="both",
+    help="Signal input: 'both' (raw+residual, 2ch), 'residual' (1ch), 'signal' (1ch).",
+)
 def optimize(
     train_data,
     val_data,
@@ -933,6 +947,7 @@ def optimize(
     confound,
     cl_regression,
     cl_lambda,
+    signal_mode,
 ):
     """Optimize model hyperparameters using grid search over chunk contexts."""
     from leech.commands.optimize import handle_optimize
@@ -982,6 +997,7 @@ def optimize(
         confound=confound,
         cl_regression=cl_regression,
         cl_lambda=cl_lambda,
+        signal_mode=signal_mode,
     )
 
 

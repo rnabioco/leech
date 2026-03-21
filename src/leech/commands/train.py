@@ -61,6 +61,7 @@ def handle_train(
     confound: str | None = None,
     cl_regression: bool = False,
     cl_lambda: float = 1.0,
+    signal_mode: str = "both",
     **model_kwargs: Any,
 ) -> dict[str, Any]:
     """
@@ -157,6 +158,7 @@ def handle_train(
         "confound",
         "cl_regression",
         "cl_lambda",
+        "signal_mode",
     }
     for key in _explicit_keys:
         extra_kwargs.pop(key, None)
@@ -205,6 +207,7 @@ def handle_train(
         confound=confound,
         cl_regression=cl_regression,
         cl_lambda=cl_lambda,
+        signal_mode=signal_mode,
         **extra_kwargs,
     )
 
