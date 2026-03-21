@@ -1722,11 +1722,8 @@ def run_inference(
                 f"wrote {batch_preds} predictions for {len(aln_batch_to_write)} reads"
             )
 
-        # Prefetch pipeline state
-        _prefetch_prev = None  # (future, rs_meta, aln_batch) or None
-        if _has_prefetch:
-            _prefetch_exec = ThreadPoolExecutor(max_workers=1)
-
+        import queue as _queue
+        import threading as _threading
         import time as _time
 
         _t_total_start = _time.perf_counter()
@@ -1739,145 +1736,242 @@ def run_inference(
             # and completely unused on the Rust extraction paths.
             _pod5_ctx = nullcontext() if _use_rust_extraction else POD5Reader(pod5_path)
             with _pod5_ctx as pod5_reader:
-                for aln_batch in iter_bam_batches(
-                    bam_path, batch_size=read_batch_size, min_mapq=min_mapq
-                ):
-                    if _has_prefetch:
-                        # ---- Prefetch Rust pipeline ----
-                        # Process PREVIOUS batch first (no prefetch running,
-                        # rayon is free for extraction)
-                        if _prefetch_prev is not None:
-                            p_future, p_meta, p_aln = _prefetch_prev
-                            preloaded = p_future.result()
-                            p_rids = p_meta[0]
-                            logger.info(
-                                f"Mega-batch: {len(p_aln)} alignments, "
-                                f"{len(p_rids)} for Rust extraction"
-                            )
-                            if p_rids:
-                                chunks = _extract_chunks_from_preloaded(preloaded, p_meta)
-                                _consume_rust_chunks(chunks)
-                            _finalize_mega_batch(p_aln)
-                            progress.update(
-                                task,
-                                advance=0,
-                                description=(
-                                    f"[cyan]Processed {total_reads} reads "
-                                    f"({total_predictions} predictions)..."
-                                ),
-                            )
+                if _has_prefetch:
+                    # ---- Queue-based extraction pipeline ----
+                    # A producer thread handles BAM reading, metadata collection,
+                    # POD5 prefetch, and Rust extraction. It pushes (aln_batch, chunks)
+                    # to a bounded queue. The main thread consumes from the queue,
+                    # runs GPU inference, and writes results.
+                    #
+                    # Benefits over the previous prefetch pipeline:
+                    # - Consumer (GPU + finalize) runs concurrently with producer
+                    # - Metadata for batch N+1 overlaps with extraction of batch N
+                    # - No synchronization gap between mega-batches
+                    assert _rs_preload_pod5_signals is not None
+                    assert _rs_extract_chunks_from_preloaded is not None
 
-                        # Submit prefetch for current batch AFTER extraction done.
-                        # Overlaps with async BAM write + next loop iteration's
-                        # BAM read/metadata collection — not with rayon extraction.
-                        rs_meta = _collect_bam_metadata(aln_batch)
-                        assert _rs_preload_pod5_signals is not None
-                        cur_future = _prefetch_exec.submit(
-                            _rs_preload_pod5_signals, str(pod5_path), rs_meta[0]
-                        )
-                        _prefetch_prev = (cur_future, rs_meta, aln_batch)
-                        continue
+                    _SENTINEL = object()
+                    _extraction_queue: _queue.Queue = _queue.Queue(maxsize=2)
+                    _producer_error: BaseException | None = None
 
-                    if _use_rust_extraction:
-                        # ---- Rust monolithic hot path (no prefetch fallback) ----
-                        rs_meta = _collect_bam_metadata(aln_batch)
-                        rs_read_ids = rs_meta[0]
+                    def _extraction_producer():
+                        """Background thread: reads BAM → metadata → prefetch → extract → queue."""
+                        nonlocal _producer_error
+                        try:
+                            _meta_exec = ThreadPoolExecutor(max_workers=1)
+                            _prefetch_exec = ThreadPoolExecutor(max_workers=1)
 
-                        logger.info(
-                            f"Mega-batch: {len(aln_batch)} alignments, "
-                            f"{len(rs_read_ids)} for Rust extraction"
-                        )
+                            # Pipeline state for overlapping metadata and prefetch
+                            _prev = None  # (prefetch_future, rs_meta, aln_batch) or None
+                            _meta_future = None
 
-                        if rs_read_ids:
-                            assert _rs_extract_inference_chunks is not None
-                            chunks = _rs_extract_inference_chunks(
-                                str(pod5_path),
-                                read_ids=rs_read_ids,
-                                sequences=rs_meta[1],
-                                mv_strides=rs_meta[2],
-                                mv_arrays=rs_meta[3],
-                                num_samples_list=rs_meta[4],
-                                trim_offsets=rs_meta[5],
-                                motif_positions=rs_meta[6],
-                                cigar_tuples=rs_meta[7] if anchor == "reference" else None,
-                                reference_sequences=rs_meta[8] if anchor == "reference" else None,
-                                **_rs_kwargs,
-                            )
-                            _consume_rust_chunks(chunks)
-                    else:
-                        # ---- Python extraction path ----
-                        batch_read_ids = [
-                            aln.query_name
-                            for aln in aln_batch
-                            if aln.query_name is not None and aln.query_sequence is not None
-                        ]
-                        if batch_read_ids:
-                            pod5_reader.preload(batch_read_ids)
+                            for aln_batch in iter_bam_batches(
+                                bam_path, batch_size=read_batch_size, min_mapq=min_mapq
+                            ):
+                                if _prev is not None:
+                                    p_future, p_meta, p_aln = _prev
+                                    preloaded = p_future.result()
+                                    p_rids = p_meta[0]
 
-                        logger.info(
-                            f"Mega-batch: {len(aln_batch)} alignments, "
-                            f"{len(batch_read_ids)} preloaded from POD5"
-                        )
+                                    # Overlap: start metadata for CURRENT batch
+                                    # while extracting PREVIOUS (Rust releases GIL)
+                                    _meta_future = _meta_exec.submit(
+                                        _collect_bam_metadata, aln_batch
+                                    )
 
-                        # Parallel extraction → GPU batching
-                        for chunks in _extract_pool.map(_extract_one_read, aln_batch):
-                            for sig, seq_arr, feat, meta in chunks:
-                                if not _shape_validated:
-                                    validate_inference_shapes(sig, feat, config)
-                                    _shape_validated = True
+                                    chunk_list: list = []
+                                    if p_rids:
+                                        for chunk in _extract_chunks_from_preloaded(
+                                            preloaded, p_meta
+                                        ):
+                                            chunk_list.append(chunk)
 
-                                batch_signals.append(sig)
-                                batch_seqs.append(seq_arr)
-                                batch_feats.append(feat)
-                                batch_meta.append(meta)
+                                    # Push to queue (blocks if queue full — backpressure)
+                                    _extraction_queue.put(
+                                        (p_aln, chunk_list, len(p_rids))
+                                    )
 
-                                if len(batch_signals) >= batch_size:
-                                    _flush_batch()
+                                    # Get metadata result (should be done by now)
+                                    rs_meta = _meta_future.result()
+                                else:
+                                    # First batch — no previous, collect metadata sync
+                                    rs_meta = _collect_bam_metadata(aln_batch)
 
-                    _finalize_mega_batch(aln_batch)
+                                # Submit prefetch for current batch (overlaps with
+                                # consumer processing + next BAM read)
+                                cur_future = _prefetch_exec.submit(
+                                    _rs_preload_pod5_signals,
+                                    str(pod5_path),
+                                    rs_meta[0],
+                                )
+                                _prev = (cur_future, rs_meta, aln_batch)
 
-                    progress.update(
-                        task,
-                        advance=0,
-                        description=(
-                            f"[cyan]Processed {total_reads} reads "
-                            f"({total_predictions} predictions)..."
-                        ),
+                            # Process final batch
+                            if _prev is not None:
+                                p_future, p_meta, p_aln = _prev
+                                preloaded = p_future.result()
+                                p_rids = p_meta[0]
+                                chunk_list = []
+                                if p_rids:
+                                    for chunk in _extract_chunks_from_preloaded(
+                                        preloaded, p_meta
+                                    ):
+                                        chunk_list.append(chunk)
+                                _extraction_queue.put(
+                                    (p_aln, chunk_list, len(p_rids))
+                                )
+
+                            _meta_exec.shutdown(wait=True)
+                            _prefetch_exec.shutdown(wait=True)
+                        except BaseException as exc:
+                            _producer_error = exc
+                        finally:
+                            _extraction_queue.put(_SENTINEL)
+
+                    _producer_thread = _threading.Thread(
+                        target=_extraction_producer, daemon=True
                     )
-
-                # Process final prefetch batch after loop ends
-                if _prefetch_prev is not None:
-                    p_future, p_meta, p_aln = _prefetch_prev
-                    preloaded = p_future.result()
-                    p_rids = p_meta[0]
+                    _producer_thread.start()
                     logger.info(
-                        f"Mega-batch: {len(p_aln)} alignments, {len(p_rids)} for Rust extraction"
+                        "Queue-based extraction pipeline started (producer thread)"
                     )
-                    if p_rids:
-                        chunks = _extract_chunks_from_preloaded(preloaded, p_meta)
-                        _consume_rust_chunks(chunks)
-                    _finalize_mega_batch(p_aln)
-                    progress.update(
-                        task,
-                        advance=0,
-                        description=(
-                            f"[cyan]Processed {total_reads} reads "
-                            f"({total_predictions} predictions)..."
-                        ),
-                    )
+
+                    # Consumer loop: pull from queue → GPU → finalize
+                    while True:
+                        item = _extraction_queue.get()
+                        if item is _SENTINEL:
+                            break
+                        aln_batch, chunk_list, n_rids = item
+                        _t_mb_start = _time.perf_counter()
+
+                        logger.info(
+                            f"Mega-batch: {len(aln_batch)} alignments, "
+                            f"{n_rids} for Rust extraction"
+                        )
+
+                        if chunk_list:
+                            _consume_rust_chunks(iter(chunk_list))
+                        _t_consume = _time.perf_counter()
+
+                        _finalize_mega_batch(aln_batch)
+                        _t_finalize = _time.perf_counter()
+
+                        logger.debug(
+                            f"  Timing: consume+gpu={_t_consume - _t_mb_start:.2f}s "
+                            f"finalize={_t_finalize - _t_consume:.2f}s"
+                        )
+                        progress.update(
+                            task,
+                            advance=0,
+                            description=(
+                                f"[cyan]Processed {total_reads} reads "
+                                f"({total_predictions} predictions)..."
+                            ),
+                        )
+
+                    _producer_thread.join()
+                    if _producer_error is not None:
+                        raise RuntimeError(
+                            "Extraction producer thread failed"
+                        ) from _producer_error
+
+                else:
+                    # ---- Non-prefetch fallback paths ----
+                    for aln_batch in iter_bam_batches(
+                        bam_path, batch_size=read_batch_size, min_mapq=min_mapq
+                    ):
+                        if _use_rust_extraction:
+                            # ---- Rust monolithic hot path (no prefetch) ----
+                            _t_mb_start = _time.perf_counter()
+                            rs_meta = _collect_bam_metadata(aln_batch)
+                            _t_meta = _time.perf_counter()
+                            rs_read_ids = rs_meta[0]
+
+                            logger.info(
+                                f"Mega-batch: {len(aln_batch)} alignments, "
+                                f"{len(rs_read_ids)} for Rust extraction"
+                            )
+
+                            if rs_read_ids:
+                                assert _rs_extract_inference_chunks is not None
+                                chunks = _rs_extract_inference_chunks(
+                                    str(pod5_path),
+                                    read_ids=rs_read_ids,
+                                    sequences=rs_meta[1],
+                                    mv_strides=rs_meta[2],
+                                    mv_arrays=rs_meta[3],
+                                    num_samples_list=rs_meta[4],
+                                    trim_offsets=rs_meta[5],
+                                    motif_positions=rs_meta[6],
+                                    cigar_tuples=(
+                                        rs_meta[7] if anchor == "reference" else None
+                                    ),
+                                    reference_sequences=(
+                                        rs_meta[8] if anchor == "reference" else None
+                                    ),
+                                    **_rs_kwargs,
+                                )
+                                _consume_rust_chunks(chunks)
+                            _t_extract = _time.perf_counter()
+                            logger.debug(
+                                f"  Timing: metadata={_t_meta - _t_mb_start:.2f}s "
+                                f"extract+gpu={_t_extract - _t_meta:.2f}s"
+                            )
+                        else:
+                            # ---- Python extraction path ----
+                            batch_read_ids = [
+                                aln.query_name
+                                for aln in aln_batch
+                                if aln.query_name is not None
+                                and aln.query_sequence is not None
+                            ]
+                            if batch_read_ids:
+                                pod5_reader.preload(batch_read_ids)
+
+                            logger.info(
+                                f"Mega-batch: {len(aln_batch)} alignments, "
+                                f"{len(batch_read_ids)} preloaded from POD5"
+                            )
+
+                            # Parallel extraction → GPU batching
+                            for chunks in _extract_pool.map(
+                                _extract_one_read, aln_batch
+                            ):
+                                for sig, seq_arr, feat, meta in chunks:
+                                    if not _shape_validated:
+                                        validate_inference_shapes(sig, feat, config)
+                                        _shape_validated = True
+
+                                    batch_signals.append(sig)
+                                    batch_seqs.append(seq_arr)
+                                    batch_feats.append(feat)
+                                    batch_meta.append(meta)
+
+                                    if len(batch_signals) >= batch_size:
+                                        _flush_batch()
+
+                        _finalize_mega_batch(aln_batch)
+
+                        progress.update(
+                            task,
+                            advance=0,
+                            description=(
+                                f"[cyan]Processed {total_reads} reads "
+                                f"({total_predictions} predictions)..."
+                            ),
+                        )
 
         _t_total = _time.perf_counter() - _t_total_start
-        logger.debug(
+        logger.info(
             f"Inference wall time: {_t_total:.1f}s "
-            f"({total_reads} reads, {total_predictions} predictions)"
+            f"({total_reads} reads, {total_predictions} predictions, "
+            f"{total_reads / _t_total:.0f} reads/s)"
         )
 
         _extract_pool.shutdown(wait=False)
         _gpu_executor.shutdown(wait=False)
         _wait_for_bam_write()  # Ensure final BAM write completes before close
         _bam_write_executor.shutdown(wait=False)
-        if _has_prefetch:
-            _prefetch_exec.shutdown(wait=False)
 
     if tsv_writer is not None:
         tsv_writer.close()
