@@ -22,6 +22,7 @@ from rich.progress import (
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 from torch.utils.data import DataLoader, WeightedRandomSampler
 
+import leech
 from leech.cli_config import make_console
 from leech.dataset import LeechDataset, collate_fn
 from leech.losses import AdversarialHead, FocalBCEWithLogitsLoss, RegressionHead
@@ -1410,6 +1411,9 @@ def train_model(
         "refine_half_bandwidth": prepare_metadata.get("refine_half_bandwidth", 5),
         "refine_do_rough_rescale": prepare_metadata.get("refine_do_rough_rescale", True),
         "refine_kmer_center_idx": prepare_metadata.get("refine_kmer_center_idx", -1),
+        # Provenance
+        "leech_version": leech.__version__,
+        "git_commit": leech._get_git_revision(),
         **model_kwargs,
     }
 

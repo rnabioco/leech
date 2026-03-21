@@ -14,6 +14,7 @@ import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
+import leech
 import numpy as np
 import torch
 import torch.nn as nn
@@ -491,6 +492,8 @@ def create_bundle(
             "num_models": len(models_dict),
             "pairs": pairs,
             "created_at": datetime.now(UTC).isoformat(),
+            "leech_version": leech.__version__,
+            "git_commit": leech._get_git_revision(),
         },
         "config": ref_arch_config,
         "models": models_dict,
@@ -585,6 +588,8 @@ def create_multiclass_bundle(
             "label_map": label_map,
             "pairs": sorted(label_map.keys()),
             "created_at": datetime.now(UTC).isoformat(),
+            "leech_version": leech.__version__,
+            "git_commit": leech._get_git_revision(),
             "cl_regression": full_config.get("cl_regression", False),
         },
         "config": arch_config,
@@ -743,6 +748,8 @@ def create_torchscript_bundle(
             "num_models": len(models_dict),
             "pairs": pairs,
             "created_at": datetime.now(UTC).isoformat(),
+            "leech_version": leech.__version__,
+            "git_commit": leech._get_git_revision(),
             "torchscript": True,
             "requires_features": requires_features,
         },
@@ -906,6 +913,8 @@ def create_vmap_bundle(
             "num_models": len(pairs),
             "pairs": pairs,
             "created_at": datetime.now(UTC).isoformat(),
+            "leech_version": leech.__version__,
+            "git_commit": leech._get_git_revision(),
             "vmap": True,
             "requires_features": requires_features,
         },

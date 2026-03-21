@@ -430,3 +430,7 @@ The codebase is feature-complete (v0.3.1):
 - ✓ Auto-read anchor and reference_fasta from model config at predict time
 
 All core functionality is implemented and ready for use.
+
+## Git Conventions
+
+- Do not add `Co-Authored-By` lines to commit messages.
