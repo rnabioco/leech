@@ -146,11 +146,13 @@ def calibrate_model(
     signal_kmer_context = tuple(config.get("signal_kmer_context", (4, 4)))
 
     # Build model init kwargs
-    model_kwargs = {
+    signal_in_channels = config.get("signal_in_channels", 1)
+    model_kwargs: dict = {
         "signal_len": signal_len,
         "kmer_len": kmer_len,
         "seq_encoding": seq_encoding,
         "signal_kmer_context": signal_kmer_context,
+        "signal_in_channels": signal_in_channels,
     }
     no_feature_models = {
         "ConvLSTMBase",
@@ -495,11 +497,13 @@ def calibrate_model_multiclass(
     signal_kmer_context = tuple(config.get("signal_kmer_context", (4, 4)))
 
     # Build model init kwargs
+    signal_in_channels = config.get("signal_in_channels", 1)
     model_kwargs: dict = {
         "signal_len": signal_len,
         "kmer_len": kmer_len,
         "seq_encoding": seq_encoding,
         "signal_kmer_context": signal_kmer_context,
+        "signal_in_channels": signal_in_channels,
     }
     no_feature_models = {
         "ConvLSTMBase",
