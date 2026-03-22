@@ -26,7 +26,7 @@ import leech
 from leech.cli_config import make_console
 from leech.dataset import LeechDataset, collate_fn
 from leech.losses import AdversarialHead, FocalBCEWithLogitsLoss, RegressionHead
-from leech.models import get_model
+from leech.models import get_model, model_accepts_param
 from leech.models.inference_wrapper import ModelInferenceWrapper
 
 logger = logging.getLogger("leech.training")
@@ -1266,37 +1266,13 @@ def train_model(
         "signal_kmer_context": signal_kmer_context,
         **model_kwargs,
     }
-    # Models without a feature branch don't take num_features
-    no_feature_models = {
-        "ConvLSTMBase",
-        "ConvLSTMBaseBN",
-        "ConvLSTMBaseAttn",
-        "ConvLSTMBaseBNAttn",
-        "ConvLSTMRemoraBase",
-    }
-    if model_name not in no_feature_models:
+    if model_accepts_param(model_name, "num_features"):
         model_init_kwargs["num_features"] = num_features
 
     # All models accept signal_in_channels for multi-channel signal input
     model_init_kwargs["signal_in_channels"] = signal_in_channels
 
-    # Only pass num_out to models whose __init__ accepts it
-    num_out_models = {
-        "ConvLSTMDwell",
-        "ConvLSTMDwellBN",
-        "ConvLSTMDwellBNAttn",
-        "ConvLSTMRemora",
-        "ConvLSTMRemoraBase",
-        "TCNDwell",
-        "TCNDwellGN",
-        "TCNDwellLN",
-        "TCNDwellResidual",
-        "TCNDwellResidualGN",
-        "TCNDwellResidualLN",
-        "TCNDwellSplitResidual",
-        "TCNDwellSplitResidualLN",
-    }
-    if model_name in num_out_models:
+    if model_accepts_param(model_name, "num_out"):
         model_init_kwargs["num_out"] = num_out
 
     model = get_model(model_name, **model_init_kwargs)

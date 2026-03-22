@@ -25,7 +25,7 @@ from torch.utils.data import DataLoader
 
 from leech.chunking import load_chunks
 from leech.dataset import LeechDataset, collate_fn
-from leech.models import get_model
+from leech.models import get_model, model_accepts_param
 from leech.models.inference_wrapper import ModelInferenceWrapper
 
 logger = logging.getLogger("leech.calibration")
@@ -154,14 +154,7 @@ def calibrate_model(
         "signal_kmer_context": signal_kmer_context,
         "signal_in_channels": signal_in_channels,
     }
-    no_feature_models = {
-        "ConvLSTMBase",
-        "ConvLSTMBaseBN",
-        "ConvLSTMBaseAttn",
-        "ConvLSTMBaseBNAttn",
-        "ConvLSTMRemoraBase",
-    }
-    if model_name not in no_feature_models and "num_features" in config:
+    if model_accepts_param(model_name, "num_features") and "num_features" in config:
         model_kwargs["num_features"] = config["num_features"]
 
     model = get_model(model_name, **model_kwargs)
@@ -505,30 +498,9 @@ def calibrate_model_multiclass(
         "signal_kmer_context": signal_kmer_context,
         "signal_in_channels": signal_in_channels,
     }
-    no_feature_models = {
-        "ConvLSTMBase",
-        "ConvLSTMBaseBN",
-        "ConvLSTMBaseAttn",
-        "ConvLSTMBaseBNAttn",
-        "ConvLSTMRemoraBase",
-    }
-    if model_name not in no_feature_models and "num_features" in config:
+    if model_accepts_param(model_name, "num_features") and "num_features" in config:
         model_kwargs["num_features"] = config["num_features"]
-
-    num_out_models = {
-        "ConvLSTMDwell",
-        "ConvLSTMDwellBN",
-        "ConvLSTMDwellBNAttn",
-        "ConvLSTMRemora",
-        "ConvLSTMRemoraBase",
-        "TCNDwell",
-        "TCNDwellGN",
-        "TCNDwellLN",
-        "TCNDwellResidual",
-        "TCNDwellResidualGN",
-        "TCNDwellResidualLN",
-    }
-    if model_name in num_out_models:
+    if model_accepts_param(model_name, "num_out"):
         model_kwargs["num_out"] = num_out
 
     model = get_model(model_name, **model_kwargs)
