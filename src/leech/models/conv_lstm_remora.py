@@ -137,6 +137,7 @@ class ConvLSTMRemoraBase(BaseModel):
         seq_encoding: str = "signal_kmer",
         signal_kmer_context: tuple[int, int] = (4, 4),
         signal_in_channels: int = 1,
+        **kwargs,
     ):
         super().__init__()
         self.signal_len = signal_len

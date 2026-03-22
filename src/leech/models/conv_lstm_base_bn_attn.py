@@ -49,6 +49,7 @@ class ConvLSTMBaseBNAttn(BaseModel):
         seq_encoding: str = "base_onehot",
         signal_kmer_context: tuple[int, int] = DEFAULT_SIGNAL_KMER_CONTEXT,
         signal_in_channels: int = 1,
+        **kwargs,
     ):
         super().__init__()
 

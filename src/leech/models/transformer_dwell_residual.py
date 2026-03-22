@@ -60,6 +60,7 @@ class TransformerDwellResidual(BaseModel):
         seq_encoding: str = "base_onehot",
         signal_kmer_context: tuple[int, int] = DEFAULT_SIGNAL_KMER_CONTEXT,
         signal_in_channels: int = 2,
+        **kwargs,
     ):
         super().__init__()
 

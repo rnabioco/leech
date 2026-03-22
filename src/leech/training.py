@@ -26,7 +26,7 @@ import leech
 from leech.cli_config import make_console
 from leech.dataset import LeechDataset, collate_fn
 from leech.losses import AdversarialHead, FocalBCEWithLogitsLoss, RegressionHead
-from leech.models import get_model, model_accepts_param
+from leech.models import get_model
 from leech.models.inference_wrapper import ModelInferenceWrapper
 
 logger = logging.getLogger("leech.training")
@@ -1266,14 +1266,12 @@ def train_model(
         "signal_kmer_context": signal_kmer_context,
         **model_kwargs,
     }
-    if model_accepts_param(model_name, "num_features"):
-        model_init_kwargs["num_features"] = num_features
+    model_init_kwargs["num_features"] = num_features
 
     # All models accept signal_in_channels for multi-channel signal input
     model_init_kwargs["signal_in_channels"] = signal_in_channels
 
-    if model_accepts_param(model_name, "num_out"):
-        model_init_kwargs["num_out"] = num_out
+    model_init_kwargs["num_out"] = num_out
 
     model = get_model(model_name, **model_init_kwargs)
 

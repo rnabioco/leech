@@ -1001,7 +1001,9 @@ def run_inference(
             _tsv_class_names = [int_to_label[i] for i in range(num_out)]
         else:
             _tsv_class_names = [str(i) for i in range(num_out)]
-        tsv_writer = TsvPredictionWriter(output_path, _tsv_class_names, _has_cl, copy_tags=copy_tags)
+        tsv_writer = TsvPredictionWriter(
+            output_path, _tsv_class_names, _has_cl, copy_tags=copy_tags
+        )
         logger.info(f"TSV output: {output_path} ({len(_tsv_class_names)} classes)")
     else:
         bam_out = pysam.AlignmentFile(str(output_path), "wb", template=bam_in)
@@ -1787,9 +1789,7 @@ def run_inference(
                                             chunk_list.append(chunk)
 
                                     # Push to queue (blocks if queue full — backpressure)
-                                    _extraction_queue.put(
-                                        (p_aln, chunk_list, len(p_rids))
-                                    )
+                                    _extraction_queue.put((p_aln, chunk_list, len(p_rids)))
 
                                     # Get metadata result (should be done by now)
                                     rs_meta = _meta_future.result()
@@ -1813,13 +1813,9 @@ def run_inference(
                                 p_rids = p_meta[0]
                                 chunk_list = []
                                 if p_rids:
-                                    for chunk in _extract_chunks_from_preloaded(
-                                        preloaded, p_meta
-                                    ):
+                                    for chunk in _extract_chunks_from_preloaded(preloaded, p_meta):
                                         chunk_list.append(chunk)
-                                _extraction_queue.put(
-                                    (p_aln, chunk_list, len(p_rids))
-                                )
+                                _extraction_queue.put((p_aln, chunk_list, len(p_rids)))
 
                             _meta_exec.shutdown(wait=True)
                             _prefetch_exec.shutdown(wait=True)
@@ -1828,13 +1824,9 @@ def run_inference(
                         finally:
                             _extraction_queue.put(_SENTINEL)
 
-                    _producer_thread = _threading.Thread(
-                        target=_extraction_producer, daemon=True
-                    )
+                    _producer_thread = _threading.Thread(target=_extraction_producer, daemon=True)
                     _producer_thread.start()
-                    logger.info(
-                        "Queue-based extraction pipeline started (producer thread)"
-                    )
+                    logger.info("Queue-based extraction pipeline started (producer thread)")
 
                     # Consumer loop: pull from queue → GPU → finalize
                     while True:
@@ -1845,8 +1837,7 @@ def run_inference(
                         _t_mb_start = _time.perf_counter()
 
                         logger.info(
-                            f"Mega-batch: {len(aln_batch)} alignments, "
-                            f"{n_rids} for Rust extraction"
+                            f"Mega-batch: {len(aln_batch)} alignments, {n_rids} for Rust extraction"
                         )
 
                         if chunk_list:
@@ -1871,9 +1862,7 @@ def run_inference(
 
                     _producer_thread.join()
                     if _producer_error is not None:
-                        raise RuntimeError(
-                            "Extraction producer thread failed"
-                        ) from _producer_error
+                        raise RuntimeError("Extraction producer thread failed") from _producer_error
 
                 else:
                     # ---- Non-prefetch fallback paths ----
@@ -1903,9 +1892,7 @@ def run_inference(
                                     num_samples_list=rs_meta[4],
                                     trim_offsets=rs_meta[5],
                                     motif_positions=rs_meta[6],
-                                    cigar_tuples=(
-                                        rs_meta[7] if anchor == "reference" else None
-                                    ),
+                                    cigar_tuples=(rs_meta[7] if anchor == "reference" else None),
                                     reference_sequences=(
                                         rs_meta[8] if anchor == "reference" else None
                                     ),
@@ -1922,8 +1909,7 @@ def run_inference(
                             batch_read_ids = [
                                 aln.query_name
                                 for aln in aln_batch
-                                if aln.query_name is not None
-                                and aln.query_sequence is not None
+                                if aln.query_name is not None and aln.query_sequence is not None
                             ]
                             if batch_read_ids:
                                 pod5_reader.preload(batch_read_ids)
@@ -1934,9 +1920,7 @@ def run_inference(
                             )
 
                             # Parallel extraction → GPU batching
-                            for chunks in _extract_pool.map(
-                                _extract_one_read, aln_batch
-                            ):
+                            for chunks in _extract_pool.map(_extract_one_read, aln_batch):
                                 for sig, seq_arr, feat, meta in chunks:
                                     if not _shape_validated:
                                         validate_inference_shapes(sig, feat, config)

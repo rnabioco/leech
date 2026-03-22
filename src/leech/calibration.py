@@ -25,7 +25,7 @@ from torch.utils.data import DataLoader
 
 from leech.chunking import load_chunks
 from leech.dataset import LeechDataset, collate_fn
-from leech.models import get_model, model_accepts_param
+from leech.models import get_model
 from leech.models.inference_wrapper import ModelInferenceWrapper
 
 logger = logging.getLogger("leech.calibration")
@@ -154,7 +154,7 @@ def calibrate_model(
         "signal_kmer_context": signal_kmer_context,
         "signal_in_channels": signal_in_channels,
     }
-    if model_accepts_param(model_name, "num_features") and "num_features" in config:
+    if "num_features" in config:
         model_kwargs["num_features"] = config["num_features"]
 
     model = get_model(model_name, **model_kwargs)
@@ -498,10 +498,9 @@ def calibrate_model_multiclass(
         "signal_kmer_context": signal_kmer_context,
         "signal_in_channels": signal_in_channels,
     }
-    if model_accepts_param(model_name, "num_features") and "num_features" in config:
+    if "num_features" in config:
         model_kwargs["num_features"] = config["num_features"]
-    if model_accepts_param(model_name, "num_out"):
-        model_kwargs["num_out"] = num_out
+    model_kwargs["num_out"] = num_out
 
     model = get_model(model_name, **model_kwargs)
 

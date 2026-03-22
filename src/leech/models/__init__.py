@@ -82,7 +82,6 @@ __all__ = [
     "ModelInferenceWrapper",
     "TracedModelWrapper",
     "RemoraModelWrapper",
-    "model_accepts_param",
 ]
 
 
@@ -113,15 +112,6 @@ MODEL_REGISTRY = {
     "TCNDwellSplitResidualLN": TCNDwellSplitResidualLN,
     "ResNetDwell": ResNetDwell,
 }
-
-
-def model_accepts_param(model_name: str, param: str) -> bool:
-    """Check if a registered model's ``__init__`` accepts *param*."""
-    import inspect
-
-    cls = MODEL_REGISTRY[model_name]
-    sig = inspect.signature(cls.__init__)
-    return param in sig.parameters
 
 
 def get_model(model_name: str, **kwargs: Any) -> nn.Module:

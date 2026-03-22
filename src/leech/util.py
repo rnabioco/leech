@@ -14,7 +14,6 @@ import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
-import leech
 import numpy as np
 import torch
 import torch.nn as nn
@@ -29,6 +28,7 @@ from sklearn.metrics import (
     roc_auc_score,
 )
 
+import leech
 from leech.cli_config import make_console
 from leech.constants import generate_random_seed
 from leech.models import MODEL_REGISTRY, get_model
