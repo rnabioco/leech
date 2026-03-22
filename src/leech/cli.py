@@ -356,7 +356,15 @@ def model():
     default=None,
     help="TSV file with comparison specifications (4 columns: meta_label1, label_set1, meta_label2, label_set2). When provided, input-chunks should be directories.",
 )
-def merge(input_chunks, output_dir, train_split, val_split, seed, k_fold, comparison_spec):
+@click.option(
+    "--split-by",
+    type=str,
+    default=None,
+    help="NPZ field name to split by group instead of by read (e.g., 'reference_names'). All reads sharing a group value are assigned to the same split.",
+)
+def merge(
+    input_chunks, output_dir, train_split, val_split, seed, k_fold, comparison_spec, split_by
+):
     """Merge multiple chunk files and split at read level to prevent data leakage.
 
     This command implements the correct workflow for multi-sample datasets:
@@ -378,6 +386,9 @@ def merge(input_chunks, output_dir, train_split, val_split, seed, k_fold, compar
 
         # 5-fold cross-validation
         leech data merge -i Ala=ala.npz -i Gly=gly.npz -o kfold/ --k-fold 5
+
+        # Split by isodecoder (group-level split)
+        leech data merge -i Ala=ala.npz -i Gly=gly.npz -o merged/ --split-by reference_names
     """
     if k_fold > 1:
         from leech.commands import handle_merge_and_split_kfold
@@ -398,6 +409,7 @@ def merge(input_chunks, output_dir, train_split, val_split, seed, k_fold, compar
             val_split=val_split,
             seed=seed,
             comparison_spec=comparison_spec,
+            split_by=split_by,
         )
 
 

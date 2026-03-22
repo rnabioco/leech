@@ -33,6 +33,89 @@ def _source_group_from_path(chunk_path: Path) -> str:
     return parent_name
 
 
+def _split_by_group(
+    read_to_group: dict[str, str],
+    read_to_label: dict[str, str],
+    train_frac: float = 0.7,
+    val_frac: float = 0.15,
+) -> tuple[set[str], set[str], set[str]]:
+    """Assign reads to splits at the group level, stratified per label.
+
+    For each label, its unique groups are shuffled and divided into train/val/test.
+    Labels with only 1 group go entirely to train.  Labels with 2 groups get one
+    in train and one in test (no val).  Labels with 3+ groups use the requested
+    fractions.
+
+    Returns:
+        (train_read_ids, val_read_ids, test_read_ids)
+    """
+    from collections import defaultdict
+
+    # Build label -> set of groups
+    label_groups: dict[str, set[str]] = defaultdict(set)
+    for rid, grp in read_to_group.items():
+        label = read_to_label[rid]
+        label_groups[label].add(grp)
+
+    # Build group -> set of read IDs
+    group_reads: dict[str, set[str]] = defaultdict(set)
+    for rid, grp in read_to_group.items():
+        group_reads[grp].add(rid)
+
+    # Assign groups to splits per label
+    group_to_split: dict[str, str] = {}
+    for label in sorted(label_groups):
+        groups = sorted(label_groups[label])
+        random.shuffle(groups)
+        n = len(groups)
+
+        if n == 1:
+            # Single group: train only
+            for g in groups:
+                group_to_split[g] = "train"
+            logger.info(f"  {label}: 1 group -> train only")
+        elif n == 2:
+            # Two groups: one train, one test
+            group_to_split[groups[0]] = "train"
+            group_to_split[groups[1]] = "test"
+            logger.info(f"  {label}: 2 groups -> train={groups[0]}, test={groups[1]}")
+        else:
+            # 3+ groups: split by fraction
+            n_train = max(1, int(n * train_frac))
+            n_val = max(1, int(n * val_frac))
+            # Ensure at least 1 in test
+            if n_train + n_val >= n:
+                n_val = max(1, n - n_train - 1)
+            for g in groups[:n_train]:
+                group_to_split[g] = "train"
+            for g in groups[n_train : n_train + n_val]:
+                group_to_split[g] = "val"
+            for g in groups[n_train + n_val :]:
+                group_to_split[g] = "test"
+            train_g = groups[:n_train]
+            val_g = groups[n_train : n_train + n_val]
+            test_g = groups[n_train + n_val :]
+            logger.info(f"  {label}: {n} groups -> train={train_g}, val={val_g}, test={test_g}")
+
+    # Map reads to splits
+    train_ids: set[str] = set()
+    val_ids: set[str] = set()
+    test_ids: set[str] = set()
+    for grp, split in group_to_split.items():
+        rids = group_reads[grp]
+        if split == "train":
+            train_ids.update(rids)
+        elif split == "val":
+            val_ids.update(rids)
+        else:
+            test_ids.update(rids)
+
+    logger.info(
+        f"Group-level split: {len(train_ids)} train, {len(val_ids)} val, {len(test_ids)} test reads"
+    )
+    return train_ids, val_ids, test_ids
+
+
 def _merge_arrays_by_split(
     input_paths: list[Path],
     split_read_ids: dict[str, set[str]],
@@ -621,6 +704,7 @@ def merge_and_split_multiclass(
     train_frac: float = 0.7,
     val_frac: float = 0.15,
     seed: int | None = None,
+    split_by: str | None = None,
 ) -> dict[str, Any]:
     """Merge N chunk files into a multi-class dataset with label_int 0..N-1.
 
@@ -634,6 +718,10 @@ def merge_and_split_multiclass(
         train_frac: Training fraction.
         val_frac: Validation fraction.
         seed: Random seed.
+        split_by: Optional NPZ field name (e.g., ``"reference_names"``) to split
+            by group instead of by read.  All reads sharing a group value are
+            assigned to the same split.  Groups are allocated per-label so that
+            each label with ≥2 groups has at least one group in test.
 
     Returns:
         Statistics dict with n_total, n_train, n_val, n_test, label_map.
@@ -658,13 +746,28 @@ def merge_and_split_multiclass(
     with open(label_map_path, "w") as f:
         json.dump(label_to_int, f, indent=2)
 
-    # First pass: collect read IDs
+    # First pass: collect read IDs (and group values if split_by is set)
     logger.info("Pass 1: Collecting read IDs")
     all_read_ids: set[str] = set()
-    for chunk_path in input_paths:
+    # read_id -> group value mapping (only used when split_by is set)
+    read_to_group: dict[str, str] = {}
+    # read_id -> label mapping (for per-label group assignment)
+    read_to_label: dict[str, str] = {}
+    for chunk_path, label in zip(input_paths, labels, strict=True):
         with np.load(chunk_path, allow_pickle=True) as data:
             read_ids = data["read_ids"]
             all_read_ids.update(str(rid) for rid in read_ids)
+            if split_by is not None:
+                if split_by not in data:
+                    raise ValueError(
+                        f"--split-by field '{split_by}' not found in {chunk_path}. "
+                        f"Available fields: {list(data.keys())}"
+                    )
+                group_vals = data[split_by]
+                for rid, gv in zip(read_ids, group_vals, strict=True):
+                    rid_str = str(rid)
+                    read_to_group[rid_str] = str(gv)
+                    read_to_label[rid_str] = label
 
     logger.info(f"Total unique reads: {len(all_read_ids)}")
 
@@ -672,16 +775,25 @@ def merge_and_split_multiclass(
     if seed is not None:
         random.seed(seed)
 
-    read_ids_list = list(all_read_ids)
-    random.shuffle(read_ids_list)
+    if split_by is not None:
+        # Group-level split: assign entire groups to splits, stratified per label
+        train_read_ids, val_read_ids, test_read_ids = _split_by_group(
+            read_to_group=read_to_group,
+            read_to_label=read_to_label,
+            train_frac=train_frac,
+            val_frac=val_frac,
+        )
+    else:
+        read_ids_list = list(all_read_ids)
+        random.shuffle(read_ids_list)
 
-    n_reads = len(read_ids_list)
-    n_train = int(n_reads * train_frac)
-    n_val = int(n_reads * val_frac)
+        n_reads = len(read_ids_list)
+        n_train = int(n_reads * train_frac)
+        n_val = int(n_reads * val_frac)
 
-    train_read_ids = set(read_ids_list[:n_train])
-    val_read_ids = set(read_ids_list[n_train : n_train + n_val])
-    test_read_ids = set(read_ids_list[n_train + n_val :])
+        train_read_ids = set(read_ids_list[:n_train])
+        val_read_ids = set(read_ids_list[n_train : n_train + n_val])
+        test_read_ids = set(read_ids_list[n_train + n_val :])
 
     # Second pass: array-level merge with label overrides
     logger.info("Pass 2: Merging arrays with label overrides")

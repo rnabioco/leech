@@ -304,6 +304,7 @@ def extract_training_chunks(
 
     # Extract chunks
     cl_value = leech_read.metadata.get("cl_value")
+    reference_name = leech_read.metadata.get("reference_name", "")
     for base_idx in focus_bases:
         chunk = leech_read.get_chunk(base_idx, config=chunk_config)
         if chunk is not None:
@@ -314,6 +315,8 @@ def extract_training_chunks(
             chunk["label"] = labeling.label
             # Add charging level (may be None)
             chunk["cl_value"] = cl_value
+            # Add alignment reference name (e.g., tRNA isodecoder identity)
+            chunk["reference_name"] = reference_name
             chunks.append(chunk)
 
     return chunks

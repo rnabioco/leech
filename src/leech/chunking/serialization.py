@@ -59,6 +59,7 @@ def save_chunks(chunks: list[dict], output_path: Path, *, compressed: bool = Tru
     feature_starts = []
     feature_ends = []
     source_groups = []
+    reference_names = []
     signal_residuals = []
     cl_values = []
     focus_signal_pos_list = []
@@ -79,6 +80,7 @@ def save_chunks(chunks: list[dict], output_path: Path, *, compressed: bool = Tru
         feature_starts.append(chunk.get("feature_start", -5))
         feature_ends.append(chunk.get("feature_end", 5))
         source_groups.append(chunk.get("source_group", ""))
+        reference_names.append(chunk.get("reference_name", ""))
         # Charging level: sentinel -1 for missing
         cl_val = chunk.get("cl_value")
         cl_values.append(cl_val if cl_val is not None else -1)
@@ -102,6 +104,7 @@ def save_chunks(chunks: list[dict], output_path: Path, *, compressed: bool = Tru
     feature_starts_arr = np.array(feature_starts, dtype=np.int64)
     feature_ends_arr = np.array(feature_ends, dtype=np.int64)
     source_groups_arr = np.array(source_groups, dtype=str)
+    reference_names_arr = np.array(reference_names, dtype=str)
     sequences_with_kmer_context_arr = np.array(sequences_with_kmer_context, dtype=str)
     # seq_to_sig_maps are variable length (depend on read dwell times), keep as object
     seq_to_sig_maps_arr = np.array(seq_to_sig_maps, dtype=object)
@@ -120,6 +123,7 @@ def save_chunks(chunks: list[dict], output_path: Path, *, compressed: bool = Tru
         "feature_starts": feature_starts_arr,
         "feature_ends": feature_ends_arr,
         "source_groups": source_groups_arr,
+        "reference_names": reference_names_arr,
         "seq_to_sig_maps": seq_to_sig_maps_arr,
         "sequences_with_kmer_context": sequences_with_kmer_context_arr,
         "cl_values": cl_values_arr,
@@ -234,6 +238,11 @@ def load_chunks(input_path: Path) -> list[dict]:
         if has_source_groups:
             source_groups = data["source_groups"]
 
+        # Reference name (e.g., tRNA isodecoder identity; backward compatible)
+        has_reference_names = "reference_names" in data
+        if has_reference_names:
+            reference_names_loaded = data["reference_names"]
+
         # Charging level (backward compatible)
         has_cl_values = "cl_values" in data
         if has_cl_values:
@@ -275,6 +284,9 @@ def load_chunks(input_path: Path) -> list[dict]:
             if has_source_groups:
                 sg = str(source_groups[i])
                 chunk["source_group"] = sg if sg else None
+            if has_reference_names:
+                rn = str(reference_names_loaded[i])
+                chunk["reference_name"] = rn if rn else ""
             if has_cl_values:
                 cl_val = int(cl_values_loaded[i])
                 chunk["cl_value"] = cl_val if cl_val >= 0 else None

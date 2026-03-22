@@ -78,6 +78,7 @@ def handle_merge_and_split(
     val_split: float = 0.15,
     seed: int | None = DEFAULT_SEED,
     comparison_spec: Path | None = None,
+    split_by: str | None = None,
 ) -> dict[str, Any]:
     """
     Handle the merge-and-split command logic.
@@ -89,6 +90,7 @@ def handle_merge_and_split(
         val_split: Fraction of reads for validation
         seed: Random seed for reproducibility
         comparison_spec: Optional TSV file with comparison specifications
+        split_by: Optional NPZ field name to split by group instead of by read
 
     Returns:
         Dictionary with merge and split statistics
@@ -143,6 +145,7 @@ def handle_merge_and_split(
             train_frac=train_split,
             val_frac=val_split,
             seed=seed,
+            split_by=split_by,
         )
         _display_single_comparison_results(result)
         console.print("[bold green]Multi-class merge and split complete![/bold green]")
