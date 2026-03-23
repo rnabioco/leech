@@ -876,8 +876,8 @@ def _create_pairwise_bundle(tmp_path, pair_names):
     """Create a pairwise bundle with randomly initialized models."""
     import json
 
-    from leech.models import get_model
     from leech.bundling import create_bundle
+    from leech.models import get_model
 
     model_dirs = {}
     config = {
@@ -902,8 +902,8 @@ def _create_pairwise_bundle(tmp_path, pair_names):
 
 def _run_multiclass_inference(tmp_path, class_names, *, raw=False, min_confidence=0, min_margin=0):
     """Run multiclass inference on tRNA fixtures and return output reads."""
-    from leech.inference import run_inference
     from leech.bundling import load_model_from_multiclass_bundle
+    from leech.inference import run_inference
 
     bundle_path = _create_multiclass_bundle(tmp_path, class_names)
     model, config = load_model_from_multiclass_bundle(bundle_path, device="cpu")
@@ -1000,8 +1000,8 @@ class TestRunInferenceTagsIntegration:
 
     def test_unc_ac_is_inverted(self, tmp_path):
         """When unc, ac reports 1-max_prob (distance from decision boundary)."""
-        from leech.inference import run_inference
         from leech.bundling import load_model_from_multiclass_bundle
+        from leech.inference import run_inference
 
         # Use ONE bundle for both runs so same model weights → same predictions
         bundle_path = _create_multiclass_bundle(tmp_path, self.CLASS_NAMES)

@@ -10,7 +10,6 @@ import numpy as np
 import pytest
 import torch
 
-from leech.models import get_model
 from leech.bundling import (
     create_bundle,
     create_torchscript_bundle,
@@ -29,6 +28,7 @@ from leech.model_export import (
     trace_model,
 )
 from leech.model_loading import load_model_from_checkpoint
+from leech.models import get_model
 
 
 class TestComputeMetrics:
