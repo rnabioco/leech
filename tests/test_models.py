@@ -471,7 +471,7 @@ class TestModelComparisons:
     @pytest.mark.slow
     def test_all_models_exportable(self):
         """Test that a complex model can be exported with torch.export."""
-        from leech.util import export_model
+        from leech.model_export import export_model
 
         config = {
             "signal_len": 100,

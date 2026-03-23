@@ -69,7 +69,7 @@ def handle_bundle(
     Returns:
         Path to created bundle file
     """
-    from leech.util import (
+    from leech.bundling import (
         create_bundle,
         create_multiclass_bundle,
         create_torchscript_bundle,
@@ -194,7 +194,7 @@ def handle_bundle_info(bundle: Path) -> dict[str, Any]:
     Returns:
         Bundle metadata dictionary
     """
-    from leech.util import list_bundle_models
+    from leech.bundling import list_bundle_models
 
     metadata = list_bundle_models(bundle)
 
@@ -248,7 +248,7 @@ def handle_export(model_dir: Path, output: Path) -> Path:
     Returns:
         Path to exported file
     """
-    from leech.util import export_single_model
+    from leech.model_export import export_single_model
 
     output_path = export_single_model(model_dir, output)
     size_mb = output_path.stat().st_size / (1024 * 1024)

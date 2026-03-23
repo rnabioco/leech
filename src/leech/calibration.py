@@ -165,7 +165,7 @@ def calibrate_model(
     state_dict = checkpoint["model_state_dict"]
     state_dict = {k.removeprefix("_orig_mod."): v for k, v in state_dict.items()}
 
-    from leech.util import _migrate_state_dict_keys
+    from leech.model_loading import _migrate_state_dict_keys
 
     state_dict = _migrate_state_dict_keys(state_dict)
     model.load_state_dict(state_dict)
@@ -510,7 +510,7 @@ def calibrate_model_multiclass(
     state_dict = checkpoint["model_state_dict"]
     state_dict = {k.removeprefix("_orig_mod."): v for k, v in state_dict.items()}
 
-    from leech.util import _migrate_state_dict_keys
+    from leech.model_loading import _migrate_state_dict_keys
 
     state_dict = _migrate_state_dict_keys(state_dict)
     model.load_state_dict(state_dict)

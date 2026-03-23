@@ -11,24 +11,24 @@ import pytest
 import torch
 
 from leech.models import get_model
-from leech.util import (
-    compute_metrics,
+from leech.bundling import (
     create_bundle,
     create_torchscript_bundle,
     create_vmap_bundle,
+    list_bundle_models,
+    load_model_from_bundle,
+)
+from leech.metrics import compute_metrics, print_metrics, save_metrics
+from leech.model_export import (
     deserialize_exported_model,
     deserialize_traced_model,
     export_model,
     export_single_model,
-    list_bundle_models,
-    load_model_from_bundle,
-    load_model_from_checkpoint,
-    print_metrics,
-    save_metrics,
     serialize_exported_model,
     serialize_traced_model,
     trace_model,
 )
+from leech.model_loading import load_model_from_checkpoint
 
 
 class TestComputeMetrics:
@@ -1356,7 +1356,7 @@ class TestVmapInferenceIntegration:
 
     def _run_vmap_inference(self, bundle_path, signal, sequence, features):
         """Run inference the vmap way: stack_module_state + vmap."""
-        from leech.util import _instantiate_model
+        from leech.model_loading import _instantiate_model
 
         bundle = torch.load(bundle_path, map_location="cpu", weights_only=False)
         config = bundle["config"]
@@ -1485,7 +1485,7 @@ class TestVmapInferenceIntegration:
         bundle_path = tmp_path / "vmap_stream.pt"
         create_vmap_bundle(model_dirs, bundle_path, "pairwise", "1.0.0")
 
-        from leech.util import _instantiate_model
+        from leech.model_loading import _instantiate_model
 
         bundle = torch.load(bundle_path, map_location="cpu", weights_only=False)
         config = bundle["config"]

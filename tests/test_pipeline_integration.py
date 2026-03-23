@@ -349,7 +349,7 @@ class TestPredict:
         import pysam
 
         from leech.inference import run_inference
-        from leech.util import load_model_from_checkpoint
+        from leech.model_loading import load_model_from_checkpoint
 
         model_dir = _train_multiclass_model(merged_data, tmp_path / "pred_mc")
         model, config = load_model_from_checkpoint(model_dir, device="cpu")
@@ -389,7 +389,7 @@ class TestPredict:
         import pysam
 
         from leech.inference import run_inference
-        from leech.util import load_model_from_checkpoint
+        from leech.model_loading import load_model_from_checkpoint
 
         model_dir = _train_binary_model(merged_data, tmp_path / "pred_bin")
         model, config = load_model_from_checkpoint(model_dir, device="cpu")
@@ -420,7 +420,7 @@ class TestPredict:
         import pysam
 
         from leech.inference import run_inference
-        from leech.util import load_model_from_checkpoint
+        from leech.model_loading import load_model_from_checkpoint
 
         model_dir = _train_multiclass_model(merged_data, tmp_path / "pred_conf")
         model, config = load_model_from_checkpoint(model_dir, device="cpu")

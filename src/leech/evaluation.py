@@ -21,8 +21,9 @@ from sklearn.metrics import (
 from torch.utils.data import DataLoader
 
 from leech.dataset import LeechDataset, collate_fn
+from leech.metrics import compute_metrics, print_metrics, save_metrics
+from leech.model_loading import load_model_from_checkpoint
 from leech.models.inference_wrapper import ModelInferenceWrapper
-from leech.util import compute_metrics, load_model_from_checkpoint, print_metrics, save_metrics
 
 logger = logging.getLogger("leech.evaluation")
 

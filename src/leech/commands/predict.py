@@ -89,8 +89,8 @@ def handle_predict(
     """
     import torch
 
+    from leech.bundling import load_model_from_bundle, load_model_from_multiclass_bundle
     from leech.inference import run_bundle_inference, run_inference
-    from leech.util import load_model_from_bundle, load_model_from_multiclass_bundle
 
     validate_predict_args(model, bundle_path, pair, run_all)
 

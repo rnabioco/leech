@@ -129,7 +129,7 @@ def prepare_training_data_with_split(
     Returns:
         Dictionary with statistics
     """
-    from leech.util import setup_random_seed
+    from leech.model_loading import setup_random_seed
 
     output_dir.mkdir(parents=True, exist_ok=True)
 

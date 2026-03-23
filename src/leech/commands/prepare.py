@@ -78,9 +78,9 @@ def handle_prepare(
     from leech.configs import ChunkConfig, LabelConfig, MotifConfig, PrepareConfig, SignalConfig
     from leech.constants import DEFAULT_SIGNAL_CONTEXT
     from leech.io import get_reference_sequences
+    from leech.model_loading import setup_random_seed
     from leech.preparation import prepare_training_data_parallel, prepare_training_data_with_split
     from leech.splitting import split_chunks_by_read
-    from leech.util import setup_random_seed
 
     logger.info(f"Preparing data from {pod5} and {bam}")
     logger.info(f"Motif reference mode: {motif_reference}")
