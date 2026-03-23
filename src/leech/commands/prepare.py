@@ -47,6 +47,7 @@ def handle_prepare(
     refine_signal_map: bool = True,
     kmer_table: Path | None = None,
     scale_iters: int = 2,
+    rough_rescale: bool = True,
     signal_context: tuple[int, int] | None = None,
 ) -> dict[str, Any]:
     """
@@ -95,7 +96,9 @@ def handle_prepare(
             from leech.data import get_kmer_table
 
             kmer_table = get_kmer_table()
-        signal_refiner = SigMapRefiner.from_table(kmer_table, scale_iters=scale_iters)
+        signal_refiner = SigMapRefiner.from_table(
+            kmer_table, scale_iters=scale_iters, do_rough_rescale=rough_rescale
+        )
         logger.info(f"Signal map refinement enabled with kmer table: {kmer_table}")
     if workers > 1:
         logger.info(f"Parallel mode: {workers} workers, {chunk_size} reads per batch")

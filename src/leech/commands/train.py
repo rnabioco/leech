@@ -62,6 +62,7 @@ def handle_train(
     cl_regression: bool = False,
     cl_lambda: float = 1.0,
     signal_mode: str = "both",
+    dwell_template_table: str | None = None,
     **model_kwargs: Any,
 ) -> dict[str, Any]:
     """
@@ -159,6 +160,7 @@ def handle_train(
         "cl_regression",
         "cl_lambda",
         "signal_mode",
+        "dwell_template_table",
     }
     for key in _explicit_keys:
         extra_kwargs.pop(key, None)
@@ -208,6 +210,7 @@ def handle_train(
         cl_regression=cl_regression,
         cl_lambda=cl_lambda,
         signal_mode=signal_mode,
+        dwell_template_table=dwell_template_table,
         **extra_kwargs,
     )
 

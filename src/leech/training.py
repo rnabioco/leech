@@ -1006,6 +1006,7 @@ def train_model(
 
     # Extract dwell_offset from model_kwargs (grid search param, not model init param)
     dwell_offset = model_kwargs.pop("dwell_offset", 0)
+    dwell_template_table = model_kwargs.pop("dwell_template_table", None)
 
     # Build augmentation config for training dataset.
     # Per-channel dicts (e.g. {"signal": 0.02, "signal_residual": 0.001})
@@ -1080,6 +1081,7 @@ def train_model(
         time_mask_count=augment_time_mask_count,
         shift_max_bases=augment_shift_max_bases,
         feature_noise_scale=augment_feature_noise_scale,
+        dwell_template_table=dwell_template_table,
     )
 
     val_dataset = None
@@ -1098,6 +1100,7 @@ def train_model(
             confound_map=confound_map,
             cl_regression=cl_regression,
             signal_mode=signal_mode,
+            dwell_template_table=dwell_template_table,
         )
 
     # Create data loaders
@@ -1390,6 +1393,7 @@ def train_model(
         "cl_regression": cl_regression,
         "cl_lambda": cl_lambda,
         "signal_mode": signal_mode,
+        "dwell_template_table": str(dwell_template_table) if dwell_template_table else None,
         # Preparation metadata (from prepare_config.json sidecar)
         "reference_fasta": prepare_metadata.get("reference_fasta"),
         "anchor": prepare_metadata.get("anchor", "reference"),

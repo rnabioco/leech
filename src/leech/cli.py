@@ -214,6 +214,12 @@ def data():
     help="Signal map refinement iterations: -1=rescale only (no DP), 0=one round of banded DP, >0=N rounds with rescaling",
 )
 @click.option(
+    "--rough-rescale/--no-rough-rescale",
+    default=True,
+    help="Rough-rescale signal to match kmer table before refinement. "
+    "Disable when using an experiment-specific table already in native scale.",
+)
+@click.option(
     "--signal-context",
     nargs=2,
     type=int,
@@ -249,6 +255,7 @@ def prepare(
     refine_signal_map,
     kmer_table,
     scale_iters,
+    rough_rescale,
     signal_context,
 ):
     """Prepare training data from POD5 and BAM files."""
@@ -295,6 +302,7 @@ def prepare(
         refine_signal_map=refine_signal_map,
         kmer_table=kmer_table,
         scale_iters=scale_iters,
+        rough_rescale=rough_rescale,
         signal_context=signal_context,
     )
 
@@ -528,6 +536,12 @@ def merge(
     default="both",
     help="Signal input: 'both' (raw+residual, 2ch), 'residual' (1ch), 'signal' (1ch).",
 )
+@click.option(
+    "--dwell-template-table",
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
+    help="TSV with per-AA per-position expected dwell for 20-channel template features.",
+)
 def train(
     train_data,
     val_data,
@@ -574,6 +588,7 @@ def train(
     cl_regression,
     cl_lambda,
     signal_mode,
+    dwell_template_table,
 ):
     """Train a model on prepared data."""
     from leech.commands.train import handle_train
@@ -624,6 +639,7 @@ def train(
         cl_regression=cl_regression,
         cl_lambda=cl_lambda,
         signal_mode=signal_mode,
+        dwell_template_table=dwell_template_table,
     )
 
 
