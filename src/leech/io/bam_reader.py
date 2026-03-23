@@ -258,6 +258,44 @@ def collect_read_infos(
     return read_infos
 
 
+def iter_read_info_batches(
+    bam_path: Path,
+    batch_size: int = 5000,
+    min_mapq: int = 0,
+    require_tags: list[str] | None = None,
+) -> Iterator[list[ReadInfo]]:
+    """
+    Yield batches of ReadInfo objects from a BAM file.
+
+    Streaming alternative to collect_read_infos() that allows overlapping
+    BAM reading with downstream processing.
+
+    Args:
+        bam_path: Path to BAM file
+        batch_size: Number of reads per batch
+        min_mapq: Minimum mapping quality
+        require_tags: List of required BAM tags (default: ["mv", "ns"])
+
+    Yields:
+        Lists of ReadInfo objects, each up to batch_size long
+    """
+    if require_tags is None:
+        require_tags = REQUIRED_BAM_TAGS
+
+    batch: list[ReadInfo] = []
+    for aln in iter_bam_alignments(bam_path, min_mapq=min_mapq, require_tags=require_tags):
+        try:
+            batch.append(ReadInfo(aln))
+        except Exception as e:
+            logger.warning(f"Skipping read {aln.query_name}: {e}")
+            continue
+        if len(batch) >= batch_size:
+            yield batch
+            batch = []
+    if batch:
+        yield batch
+
+
 class BAMReader:
     """
     Context manager for efficient BAM reading.

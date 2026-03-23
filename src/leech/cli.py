@@ -137,6 +137,12 @@ def data():
     help="Extract chunks without splitting (for later merge-then-split workflow)",
 )
 @click.option(
+    "--no-compress",
+    is_flag=True,
+    default=False,
+    help="Save uncompressed NPZ (faster writes, larger files). Useful for intermediate outputs that will be merged later.",
+)
+@click.option(
     "--workers",
     type=int,
     default=8,
@@ -242,6 +248,7 @@ def prepare(
     val_split,
     seed,
     no_split,
+    no_compress,
     workers,
     chunk_size,
     base_justify,
@@ -289,6 +296,7 @@ def prepare(
         val_split=val_split,
         seed=seed,
         no_split=no_split,
+        compress=not no_compress,
         workers=workers,
         chunk_size=chunk_size,
         base_justify=base_justify,

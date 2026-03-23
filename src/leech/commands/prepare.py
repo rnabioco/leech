@@ -34,6 +34,7 @@ def handle_prepare(
     val_split: float = 0.15,
     seed: int | None = DEFAULT_SEED,
     no_split: bool = False,
+    compress: bool = True,
     workers: int = 8,
     chunk_size: int = 100,
     base_justify: str = "center",
@@ -187,7 +188,7 @@ def handle_prepare(
 
         if no_split:
             all_file = output_dir / "all.npz"
-            save_chunks(chunks, all_file)
+            save_chunks(chunks, all_file, compressed=compress)
             logger.info(f"Saved all chunks to {all_file}")
             result = {
                 "n_chunks": len(chunks),
@@ -202,17 +203,17 @@ def handle_prepare(
 
             if train_chunks:
                 train_file = output_dir / "train.npz"
-                save_chunks(train_chunks, train_file)
+                save_chunks(train_chunks, train_file, compressed=compress)
                 logger.info(f"Saved {len(train_chunks)} train chunks to {train_file}")
 
             if val_chunks:
                 val_file = output_dir / "val.npz"
-                save_chunks(val_chunks, val_file)
+                save_chunks(val_chunks, val_file, compressed=compress)
                 logger.info(f"Saved {len(val_chunks)} val chunks to {val_file}")
 
             if test_chunks:
                 test_file = output_dir / "test.npz"
-                save_chunks(test_chunks, test_file)
+                save_chunks(test_chunks, test_file, compressed=compress)
                 logger.info(f"Saved {len(test_chunks)} test chunks to {test_file}")
 
             result = {

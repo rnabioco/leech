@@ -16,7 +16,8 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn
 
 from leech.chunking import extract_training_chunks
 from leech.configs import PrepareConfig
-from leech.io import ReadInfo, collect_read_infos, get_motif_searcher
+from leech.io import ReadInfo, get_motif_searcher, iter_read_info_batches
+from leech.io.bam_reader import count_bam_reads
 from leech.io.pod5_reader import _extract_pod5_metadata
 from leech.preparation.reader import build_leech_read
 
@@ -132,6 +133,9 @@ def prepare_training_data_parallel(
     """
     Prepare training data from BAM and POD5 files using multiprocessing.
 
+    Streams BAM reads in mega-batches so worker processing overlaps with
+    BAM iteration rather than waiting for the entire BAM to be read first.
+
     Args:
         bam_path: Path to BAM file with alignments
         config: Preparation configuration
@@ -144,11 +148,74 @@ def prepare_training_data_parallel(
     """
     logger.info(f"Starting parallel data preparation with {num_workers} workers")
 
-    # First pass: collect read info from BAM (lightweight, sequential)
-    logger.info("Pass 1: Collecting read info from BAM...")
-    read_infos = collect_read_infos(bam_path, min_mapq=min_mapq)
-    total_reads = len(read_infos)
-    logger.info(f"Found {total_reads} reads to process")
+    # Estimate total reads from BAM index for progress bar (O(1), may be None)
+    try:
+        estimated_reads = count_bam_reads(bam_path)
+        estimated_batches = max(1, estimated_reads // chunk_size)
+        logger.info(f"BAM index reports ~{estimated_reads} mapped reads")
+    except Exception:
+        estimated_reads = None
+        estimated_batches = None
+
+    all_chunks: list[dict[str, np.ndarray | str | int | None]] = []
+    total_reads = 0
+    batches_submitted = 0
+    batches_completed = 0
+
+    use_progress_bar = sys.stdout.isatty()
+
+    # Stream BAM reads in worker-sized batches and feed them lazily to
+    # imap_unordered. The pool pulls batches from the generator as workers
+    # become free, so BAM iteration overlaps with chunk extraction.
+    logger.info("Streaming BAM reads and processing in parallel...")
+
+    def _worker_arg_stream():
+        nonlocal total_reads, batches_submitted
+        for read_batch in iter_read_info_batches(
+            bam_path, batch_size=chunk_size, min_mapq=min_mapq
+        ):
+            total_reads += len(read_batch)
+            batches_submitted += 1
+            yield (read_batch, config)
+
+    with mp.Pool(processes=num_workers) as pool:
+        if use_progress_bar:
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TaskProgressColumn(),
+                TextColumn("[cyan]{task.fields[chunks_extracted]} chunks extracted"),
+            ) as progress:
+                task = progress.add_task(
+                    "Processing reads",
+                    total=estimated_batches,
+                    chunks_extracted=0,
+                )
+
+                for chunk_results in pool.imap_unordered(
+                    _process_read_chunk_worker, _worker_arg_stream()
+                ):
+                    all_chunks.extend(chunk_results)
+                    batches_completed += 1
+                    progress.update(
+                        task, completed=batches_completed, chunks_extracted=len(all_chunks)
+                    )
+
+                # Fix total if estimate was off
+                progress.update(task, total=batches_completed, completed=batches_completed)
+        else:
+            log_interval = max(1, (estimated_batches or 50) // 20)
+            for chunk_results in pool.imap_unordered(
+                _process_read_chunk_worker, _worker_arg_stream()
+            ):
+                all_chunks.extend(chunk_results)
+                batches_completed += 1
+                if batches_completed % log_interval == 0:
+                    logger.info(
+                        f"Progress: {batches_completed} batches, "
+                        f"{total_reads} reads | {len(all_chunks)} chunks extracted"
+                    )
 
     if total_reads == 0:
         return [], {
@@ -157,49 +224,6 @@ def prepare_training_data_parallel(
             "reads_without_motif": 0,
             "total_chunks": 0,
         }
-
-    # Split read_infos into chunks for workers
-    read_chunks = [read_infos[i : i + chunk_size] for i in range(0, len(read_infos), chunk_size)]
-    logger.info(f"Split into {len(read_chunks)} chunks of up to {chunk_size} reads each")
-
-    # Prepare worker arguments
-    worker_args = [(chunk, config) for chunk in read_chunks]
-
-    # Second pass: parallel processing with progress bar
-    logger.info("Pass 2: Processing reads in parallel...")
-    all_chunks = []
-
-    use_progress_bar = sys.stdout.isatty()
-
-    if use_progress_bar:
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TaskProgressColumn(),
-            TextColumn("[cyan]{task.fields[chunks_extracted]} chunks extracted"),
-        ) as progress:
-            task = progress.add_task(
-                "Processing chunks", total=len(read_chunks), chunks_extracted=0
-            )
-
-            with mp.Pool(processes=num_workers) as pool:
-                for chunk_results in pool.imap_unordered(_process_read_chunk_worker, worker_args):
-                    all_chunks.extend(chunk_results)
-                    progress.update(task, advance=1, chunks_extracted=len(all_chunks))
-    else:
-        log_interval = max(1, len(read_chunks) // 20)
-        with mp.Pool(processes=num_workers) as pool:
-            for i, chunk_results in enumerate(
-                pool.imap_unordered(_process_read_chunk_worker, worker_args), 1
-            ):
-                all_chunks.extend(chunk_results)
-                if i % log_interval == 0 or i == len(read_chunks):
-                    pct = (i / len(read_chunks)) * 100
-                    logger.info(
-                        f"Progress: {i}/{len(read_chunks)} batches ({pct:.1f}%) | "
-                        f"{len(all_chunks)} chunks extracted"
-                    )
 
     stats = {
         "total_reads": total_reads,
