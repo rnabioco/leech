@@ -10,7 +10,7 @@ from pathlib import Path
 
 import numpy as np
 import pysam
-from pod5 import DatasetReader
+from escapepod import Reader
 
 from leech.features import (
     MoveTable,
@@ -61,13 +61,11 @@ def collect_bam_data(bam_path, max_reads=2000):
 
 
 def python_pod5_read(read_ids, pod5_path):
-    """Pure Python pod5 library batch read (NO Rust fallback)."""
-    cache = {}
-    with DatasetReader(pod5_path) as reader:
-        for read in reader.reads(read_ids):
-            rid = str(read.read_id)
-            cache[rid] = read.signal
-    return cache
+    """Escapepod Python batch read (NO leech_core fallback)."""
+    reader = Reader(str(pod5_path))
+    reads = reader.get_reads(read_ids)
+    signals = reader.get_signals(reads)
+    return dict(signals)
 
 
 def rust_pod5_read(read_ids, pod5_path):
@@ -83,15 +81,11 @@ def rust_pod5_read(read_ids, pod5_path):
 
 
 def python_full_pipeline(reads, pod5_path, reverse=True):
-    """Full Python extraction: Python pod5 + numpy pipeline."""
+    """Full Python extraction: escapepod + numpy pipeline."""
     read_ids = [r["read_id"] for r in reads]
 
-    # POD5 read via pure Python
-    pod5_cache = {}
-    with DatasetReader(pod5_path) as reader:
-        for read in reader.reads(read_ids):
-            rid = str(read.read_id)
-            pod5_cache[rid] = read.signal
+    # POD5 read via escapepod
+    pod5_cache = python_pod5_read(read_ids, pod5_path)
 
     results = []
     for r in reads:

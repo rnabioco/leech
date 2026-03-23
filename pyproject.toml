@@ -24,7 +24,7 @@ dependencies = [
   "click>=8.1.0",
   "numpy>=2.0.0",
   "nvitop>=1.6.1",
-  "pod5>=0.3.0",
+  "escapepod",
   "pysam>=0.22.0",
   "rich>=13.0.0",
   "rich-click>=1.7.0",
@@ -92,10 +92,11 @@ testpaths = ["tests"]
 markers = ["slow: slow tests (torch.export, bundles) — run with --slow"]
 
 [tool.uv.workspace]
-members = ["rust"]
+members = ["rust", "escapepod-rs/escapepod-python"]
 
 [tool.uv.sources]
 leech-core = { workspace = true }
+escapepod = { workspace = true }
 
 [tool.ruff]
 line-length = 100

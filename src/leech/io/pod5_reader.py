@@ -3,36 +3,38 @@ POD5 file reading utilities with batched access support.
 
 Provides efficient reading of nanopore signal data from POD5 files,
 with support for batched reading to improve I/O performance.
+Uses escapepod-rs Python bindings for fast Rust-based POD5 access.
 """
 
 import logging
 from pathlib import Path
 
 import numpy as np
-from pod5 import DatasetReader
+from escapepod import Reader
 
 logger = logging.getLogger("leech.io.pod5_reader")
 
 
-def _extract_pod5_metadata(read) -> dict:
+def _extract_pod5_metadata(read, run_infos: list) -> dict:
     """
-    Extract standard metadata dict from a pod5 read object.
+    Extract standard metadata dict from an escapepod ReadData object.
 
     Args:
-        read: A pod5 read object (from DatasetReader.reads())
+        read: An escapepod ReadData object
+        run_infos: List of RunInfo objects from reader.run_infos()
 
     Returns:
         Dictionary with read_id, channel, well, pore_type,
         calibration_offset, calibration_scale, and sample_rate.
     """
     return {
-        "read_id": str(read.read_id),
-        "channel": read.pore.channel,
-        "well": read.pore.well,
-        "pore_type": read.pore.pore_type,
-        "calibration_offset": read.calibration.offset,
-        "calibration_scale": read.calibration.scale,
-        "sample_rate": read.run_info.sample_rate,
+        "read_id": read.read_id,
+        "channel": read.channel,
+        "well": read.well,
+        "pore_type": read.pore_type,
+        "calibration_offset": read.calibration_offset,
+        "calibration_scale": read.calibration_scale,
+        "sample_rate": run_infos[read.run_info_index].sample_rate,
     }
 
 
@@ -55,13 +57,12 @@ def read_pod5_signal(pod5_path: Path, read_id: str) -> tuple[np.ndarray, dict]:
         >>> print(f"Signal length: {len(signal)}")
         >>> print(f"Sample rate: {meta['sample_rate']}")
     """
-    with DatasetReader(pod5_path) as reader:
-        for read in reader.reads([read_id]):
-            signal = read.signal
-            metadata = _extract_pod5_metadata(read)
-            return signal, metadata
-
-    raise ValueError(f"Read {read_id} not found in {pod5_path}")
+    reader = Reader(str(pod5_path))
+    run_infos = reader.run_infos()
+    read_data = reader.get_read(read_id)
+    signal = reader.get_signal(read_data)
+    metadata = _extract_pod5_metadata(read_data, run_infos)
+    return signal, metadata
 
 
 def read_pod5_signals_batch(
@@ -71,7 +72,7 @@ def read_pod5_signals_batch(
     Read multiple signals from POD5 file in a single batch.
 
     This is more efficient than reading one-by-one for large batches,
-    as it opens the POD5 file once and reads all requested signals.
+    as it uses parallel VBZ decompression via rayon.
 
     Args:
         pod5_path: Path to POD5 file
@@ -87,14 +88,18 @@ def read_pod5_signals_batch(
         >>> for read_id, (signal, meta) in signals.items():
         ...     print(f"{read_id}: {len(signal)} samples")
     """
-    results = {}
+    reader = Reader(str(pod5_path))
+    run_infos = reader.run_infos()
+    reads = reader.get_reads(read_ids)
+    signals_list = reader.get_signals(reads)
+    sig_by_id = dict(signals_list)
 
-    with DatasetReader(pod5_path) as reader:
-        for read in reader.reads(read_ids):
-            read_id = str(read.read_id)
-            signal = read.signal
-            metadata = _extract_pod5_metadata(read)
-            results[read_id] = (signal, metadata)
+    results = {}
+    for read_data in reads:
+        rid = read_data.read_id
+        signal = sig_by_id.get(rid)
+        if signal is not None:
+            results[rid] = (signal, _extract_pod5_metadata(read_data, run_infos))
 
     # Log if any reads were not found
     missing = set(read_ids) - set(results.keys())
@@ -131,25 +136,28 @@ class POD5Reader:
         self.batch_size = batch_size
         self.backend = backend
         self._reader = None
+        self._run_infos = None
         self._cache: dict[str, tuple[np.ndarray, dict]] = {}
 
     def __enter__(self):
         """Open POD5 file."""
-        self._reader = DatasetReader(self.pod5_path)
+        self._reader = Reader(str(self.pod5_path))
+        self._run_infos = self._reader.run_infos()
         return self
 
     def __exit__(self, _exc_type, _exc_val, _exc_tb):
         """Close POD5 file."""
-        # DatasetReader handles cleanup via its own context manager
         self._reader = None
+        self._run_infos = None
         self._cache.clear()
 
     def preload(self, read_ids: list[str]) -> None:
         """
         Pre-load signals for a batch of reads into the internal cache.
 
-        When Rust acceleration is available, uses escapepod-rs for ~25-43x
-        faster signal decompression. Falls back to Python pod5 library.
+        When Rust acceleration (leech_core) is available, uses its
+        read_pod5_batch for slightly lower overhead. Otherwise uses
+        escapepod.Reader.get_signals() for parallel VBZ decompression.
 
         Args:
             read_ids: List of read identifiers to preload
@@ -173,9 +181,17 @@ class POD5Reader:
                     },
                 )
         else:
-            for read in self._reader.reads(read_ids):
-                rid = str(read.read_id)
-                self._cache[rid] = (read.signal, _extract_pod5_metadata(read))
+            reads = self._reader.get_reads(read_ids)
+            signals_list = self._reader.get_signals(reads)
+            sig_by_id = dict(signals_list)
+            for read_data in reads:
+                rid = read_data.read_id
+                signal = sig_by_id.get(rid)
+                if signal is not None:
+                    self._cache[rid] = (
+                        signal,
+                        _extract_pod5_metadata(read_data, self._run_infos),
+                    )
 
         loaded = len(self._cache)
         missing = len(read_ids) - loaded
@@ -204,9 +220,7 @@ class POD5Reader:
         if cached is not None:
             return cached
 
-        for read in self._reader.reads([read_id]):
-            signal = read.signal
-            metadata = _extract_pod5_metadata(read)
-            return signal, metadata
-
-        raise ValueError(f"Read {read_id} not found in {self.pod5_path}")
+        read_data = self._reader.get_read(read_id)
+        signal = self._reader.get_signal(read_data)
+        metadata = _extract_pod5_metadata(read_data, self._run_infos)
+        return signal, metadata

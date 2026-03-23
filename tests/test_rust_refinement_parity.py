@@ -60,7 +60,7 @@ TRNA_REF = FIXTURES / "trna_reference.fa"
 
 def _load_real_reads(max_reads: int = 5):
     """Load real reads from fixture data."""
-    from pod5 import DatasetReader
+    from escapepod import Reader
 
     reads = []
     with pysam.AlignmentFile(str(TRNA_BAM), "rb") as bam:
@@ -87,13 +87,15 @@ def _load_real_reads(max_reads: int = 5):
 
     # Fetch signals
     rids = [r["read_id"] for r in reads]
-    with DatasetReader(TRNA_POD5) as pod5:
-        for read in pod5.reads(rids):
-            rid = str(read.read_id)
-            for r in reads:
-                if r["read_id"] == rid:
-                    r["raw_signal"] = read.signal
-                    break
+    pod5 = Reader(str(TRNA_POD5))
+    read_datas = pod5.get_reads(rids)
+    for read_data in read_datas:
+        rid = read_data.read_id
+        signal = pod5.get_signal(read_data)
+        for r in reads:
+            if r["read_id"] == rid:
+                r["raw_signal"] = signal
+                break
 
     return [r for r in reads if "raw_signal" in r]
 

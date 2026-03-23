@@ -44,7 +44,7 @@ def _inference_worker(
     Returns:
         List of (read_id, base_idx, signal, encoded_sequence, features_or_none) tuples
     """
-    from pod5 import DatasetReader
+    from escapepod import Reader
 
     from leech.io.pod5_reader import _extract_pod5_metadata
     from leech.preparation.reader import build_leech_read
@@ -58,138 +58,144 @@ def _inference_worker(
     read_info_by_id = {ri.read_id: ri for ri in read_infos}
     pod5_cache: dict[str, tuple] = {}  # read_id -> (signal, metadata)
 
-    with DatasetReader(config.pod5_path) as pod5_reader:
-        for read in pod5_reader.reads(list(read_info_by_id.keys())):
-            rid = str(read.read_id)
-            pod5_cache[rid] = (read.signal, _extract_pod5_metadata(read))
+    reader = Reader(str(config.pod5_path))
+    run_infos = reader.run_infos()
+    reads = reader.get_reads(list(read_info_by_id.keys()))
+    signals_list = reader.get_signals(reads)
+    sig_by_id = dict(signals_list)
+    for read_data in reads:
+        rid = read_data.read_id
+        signal = sig_by_id.get(rid)
+        if signal is not None:
+            pod5_cache[rid] = (signal, _extract_pod5_metadata(read_data, run_infos))
 
-        for read_info in read_infos:
-            try:
-                cached = pod5_cache.get(read_info.read_id)
-                if cached is None:
-                    continue
-                raw_signal, pod5_metadata = cached
+    for read_info in read_infos:
+        try:
+            cached = pod5_cache.get(read_info.read_id)
+            if cached is None:
+                continue
+            raw_signal, pod5_metadata = cached
 
-                # Build SignalConfig with compute_features override
-                sig_cfg = SignalConfig(
-                    reverse_signal=config.signal.reverse_signal,
+            # Build SignalConfig with compute_features override
+            sig_cfg = SignalConfig(
+                reverse_signal=config.signal.reverse_signal,
+                anchor=config.signal.anchor,
+                norm_method=config.signal.norm_method,
+                pa_mean=config.signal.pa_mean,
+                pa_stdev=config.signal.pa_stdev,
+                refine_signal_map=config.signal.refine_signal_map,
+                signal_refiner=config.signal.signal_refiner,
+                compute_features=config.requires_features or config.signal_in_channels > 1,
+            )
+
+            leech_read = build_leech_read(
+                read_id=read_info.read_id,
+                sequence=read_info.sequence,
+                raw_signal=raw_signal,
+                move_table=read_info.to_move_table(),
+                signal_config=sig_cfg,
+                reference_sequence=read_info.reference_sequence,
+                cigar_tuples=read_info.cigar_tuples,
+                cal_offset=pod5_metadata.get("calibration_offset"),
+                cal_scale=pod5_metadata.get("calibration_scale"),
+            )
+
+            # Find motif positions
+            if config.motif.motif is not None:
+                searcher = get_motif_searcher(
+                    mode="fasta" if config.motif.reference_sequences else "bam",
+                    reference_sequences=config.motif.reference_sequences,
+                    skip_indels=config.motif.skip_motif_indels,
                     anchor=config.signal.anchor,
-                    norm_method=config.signal.norm_method,
-                    pa_mean=config.signal.pa_mean,
-                    pa_stdev=config.signal.pa_stdev,
-                    refine_signal_map=config.signal.refine_signal_map,
-                    signal_refiner=config.signal.signal_refiner,
-                    compute_features=config.requires_features or config.signal_in_channels > 1,
                 )
-
-                leech_read = build_leech_read(
-                    read_id=read_info.read_id,
-                    sequence=read_info.sequence,
-                    raw_signal=raw_signal,
-                    move_table=read_info.to_move_table(),
-                    signal_config=sig_cfg,
-                    reference_sequence=read_info.reference_sequence,
-                    cigar_tuples=read_info.cigar_tuples,
-                    cal_offset=pod5_metadata.get("calibration_offset"),
-                    cal_scale=pod5_metadata.get("calibration_scale"),
-                )
-
-                # Find motif positions
-                if config.motif.motif is not None:
-                    searcher = get_motif_searcher(
-                        mode="fasta" if config.motif.reference_sequences else "bam",
-                        reference_sequences=config.motif.reference_sequences,
-                        skip_indels=config.motif.skip_motif_indels,
-                        anchor=config.signal.anchor,
+                aln = read_info.to_mock_alignment()
+                positions = [
+                    pos + config.motif.motif_offset
+                    for pos in searcher.find_motif_positions(
+                        read_info.read_id, read_info.sequence, aln, config.motif.motif
                     )
-                    aln = read_info.to_mock_alignment()
-                    positions = [
-                        pos + config.motif.motif_offset
-                        for pos in searcher.find_motif_positions(
-                            read_info.read_id, read_info.sequence, aln, config.motif.motif
-                        )
-                    ]
-                else:
-                    kmer_context = config.chunk.kmer_context
-                    positions = list(range(kmer_context, leech_read.num_bases - kmer_context))
+                ]
+            else:
+                kmer_context = config.chunk.kmer_context
+                positions = list(range(kmer_context, leech_read.num_bases - kmer_context))
 
-                for base_idx in positions:
-                    chunk = leech_read.get_chunk(base_idx, config=config.chunk)
-                    if chunk is None:
-                        continue
+            for base_idx in positions:
+                chunk = leech_read.get_chunk(base_idx, config=config.chunk)
+                if chunk is None:
+                    continue
 
-                    # Signal (with optional kmer residual channel)
-                    sig = chunk["signal"].astype(np.float32)
-                    sig_residual = chunk.get("signal_residual")
-                    if len(sig) < config.signal_len:
-                        sig = np.pad(sig, (0, config.signal_len - len(sig)), mode="constant")
-                        if sig_residual is not None:
-                            sig_residual = np.pad(
-                                sig_residual.astype(np.float32),
-                                (0, config.signal_len - len(sig_residual)),
-                                mode="constant",
-                            )
-                    elif len(sig) > config.signal_len:
-                        start = (len(sig) - config.signal_len) // 2
-                        sig = sig[start : start + config.signal_len]
-                        if sig_residual is not None:
-                            sig_residual = sig_residual.astype(np.float32)[
-                                start : start + config.signal_len
-                            ]
+                # Signal (with optional kmer residual channel)
+                sig = chunk["signal"].astype(np.float32)
+                sig_residual = chunk.get("signal_residual")
+                if len(sig) < config.signal_len:
+                    sig = np.pad(sig, (0, config.signal_len - len(sig)), mode="constant")
                     if sig_residual is not None:
-                        sig_residual = sig_residual.astype(np.float32)
-                        sig = np.stack([sig, sig_residual], axis=0)  # (2, signal_len)
+                        sig_residual = np.pad(
+                            sig_residual.astype(np.float32),
+                            (0, config.signal_len - len(sig_residual)),
+                            mode="constant",
+                        )
+                elif len(sig) > config.signal_len:
+                    start = (len(sig) - config.signal_len) // 2
+                    sig = sig[start : start + config.signal_len]
+                    if sig_residual is not None:
+                        sig_residual = sig_residual.astype(np.float32)[
+                            start : start + config.signal_len
+                        ]
+                if sig_residual is not None:
+                    sig_residual = sig_residual.astype(np.float32)
+                    sig = np.stack([sig, sig_residual], axis=0)  # (2, signal_len)
 
-                    # Sequence encoding
-                    if config.seq_encoding == "signal_kmer":
-                        seq_ctx = chunk.get("sequence_with_kmer_context")
-                        seq_to_sig = chunk.get("seq_to_sig_map")
-                        if seq_ctx is not None and seq_to_sig is not None:
-                            seq_ints = sequence_to_int(seq_ctx)
-                            enc_seq = encode_signal_kmer(
-                                seq_ints,
-                                seq_to_sig,
-                                config.signal_len,
-                                tuple(config.signal_kmer_context),
-                            )
-                        else:
-                            from leech.preparation.encoding import encode_kmer as _enc
-
-                            enc_seq = _enc(chunk["sequence"]).numpy()
+                # Sequence encoding
+                if config.seq_encoding == "signal_kmer":
+                    seq_ctx = chunk.get("sequence_with_kmer_context")
+                    seq_to_sig = chunk.get("seq_to_sig_map")
+                    if seq_ctx is not None and seq_to_sig is not None:
+                        seq_ints = sequence_to_int(seq_ctx)
+                        enc_seq = encode_signal_kmer(
+                            seq_ints,
+                            seq_to_sig,
+                            config.signal_len,
+                            tuple(config.signal_kmer_context),
+                        )
                     else:
                         from leech.preparation.encoding import encode_kmer as _enc
 
                         enc_seq = _enc(chunk["sequence"]).numpy()
+                else:
+                    from leech.preparation.encoding import encode_kmer as _enc
 
-                    # Features
-                    feat = None
-                    if config.requires_features:
-                        feat_arr = chunk["features"]
-                        if feat_arr.size > 0:
-                            feat_arr = feat_arr.astype(np.float32)
-                            if config.wide_features:
-                                pass
-                            elif feat_arr.shape[1] > config.kmer_len:
-                                kmer_ctx = config.kmer_len // 2
-                                fs = int(chunk.get("feature_start", -kmer_ctx))
-                                s = (-kmer_ctx - fs) + config.dwell_offset
-                                feat_arr = feat_arr[:, s : s + config.kmer_len]
-                            feat = feat_arr
+                    enc_seq = _enc(chunk["sequence"]).numpy()
 
-                    if not _shape_validated:
-                        # config is InferenceConfig dataclass; build dict for validator
-                        _cfg_dict = {
-                            "signal_in_channels": config.signal_in_channels,
-                            "signal_len": config.signal_len,
-                        }
-                        validate_inference_shapes(sig, feat, _cfg_dict)
-                        _shape_validated = True
+                # Features
+                feat = None
+                if config.requires_features:
+                    feat_arr = chunk["features"]
+                    if feat_arr.size > 0:
+                        feat_arr = feat_arr.astype(np.float32)
+                        if config.wide_features:
+                            pass
+                        elif feat_arr.shape[1] > config.kmer_len:
+                            kmer_ctx = config.kmer_len // 2
+                            fs = int(chunk.get("feature_start", -kmer_ctx))
+                            s = (-kmer_ctx - fs) + config.dwell_offset
+                            feat_arr = feat_arr[:, s : s + config.kmer_len]
+                        feat = feat_arr
 
-                    results.append((read_info.read_id, base_idx, sig, enc_seq, feat))
+                if not _shape_validated:
+                    # config is InferenceConfig dataclass; build dict for validator
+                    _cfg_dict = {
+                        "signal_in_channels": config.signal_in_channels,
+                        "signal_len": config.signal_len,
+                    }
+                    validate_inference_shapes(sig, feat, _cfg_dict)
+                    _shape_validated = True
 
-            except Exception as e:
-                logger.warning(f"Worker: skipping read {read_info.read_id}: {e}")
-                continue
+                results.append((read_info.read_id, base_idx, sig, enc_seq, feat))
+
+        except Exception as e:
+            logger.warning(f"Worker: skipping read {read_info.read_id}: {e}")
+            continue
 
     return results
 
@@ -1112,7 +1118,7 @@ def run_inference(
                 rs_refs,
             )
 
-        _SUB_BATCH_SIZE = 25_000  # Sub-batch Rust extraction for continuous GPU feeding
+        _SUB_BATCH_SIZE = 50_000  # Sub-batch Rust extraction for continuous GPU feeding
 
         def _extract_chunks_from_preloaded(preloaded, rs_meta):
             """Yield chunks in sub-batches for continuous GPU feeding.

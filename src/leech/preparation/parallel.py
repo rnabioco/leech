@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
-from pod5 import DatasetReader
+from escapepod import Reader
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 
 from leech.chunking import extract_training_chunks
@@ -54,64 +54,70 @@ def _process_read_chunk_worker(
     read_info_by_id = {ri.read_id: ri for ri in read_infos}
     pod5_cache: dict[str, tuple] = {}  # read_id -> (signal, metadata)
 
-    with DatasetReader(config.pod5_path) as pod5_reader:
-        for read in pod5_reader.reads(list(read_info_by_id.keys())):
-            rid = str(read.read_id)
-            pod5_cache[rid] = (read.signal, _extract_pod5_metadata(read))
+    reader = Reader(str(config.pod5_path))
+    run_infos = reader.run_infos()
+    reads = reader.get_reads(list(read_info_by_id.keys()))
+    signals_list = reader.get_signals(reads)
+    sig_by_id = dict(signals_list)
+    for read_data in reads:
+        rid = read_data.read_id
+        signal = sig_by_id.get(rid)
+        if signal is not None:
+            pod5_cache[rid] = (signal, _extract_pod5_metadata(read_data, run_infos))
 
-        for read_info in read_infos:
-            try:
-                cached = pod5_cache.get(read_info.read_id)
-                if cached is None:
-                    continue
-                raw_signal, pod5_metadata = cached
-
-                # Build metadata
-                metadata = {
-                    **pod5_metadata,
-                    "mapping_quality": read_info.mapping_quality,
-                    "reference_name": read_info.reference_name,
-                    "reference_start": read_info.reference_start,
-                    "reference_end": read_info.reference_end,
-                    "is_reverse": read_info.is_reverse,
-                    "cl_value": getattr(read_info, "cl_value", None),
-                }
-
-                # For reference-based motif search, add mock alignment
-                if (
-                    config.motif.motif_reference == "fasta"
-                    and config.motif.reference_sequences is not None
-                ):
-                    metadata["alignment"] = read_info.to_mock_alignment()
-
-                # Build LeechRead via shared helper
-                leech_read = build_leech_read(
-                    read_id=read_info.read_id,
-                    sequence=read_info.sequence,
-                    raw_signal=raw_signal,
-                    move_table=read_info.to_move_table(),
-                    signal_config=config.signal,
-                    metadata=metadata,
-                    reference_sequence=read_info.reference_sequence,
-                    cigar_tuples=read_info.cigar_tuples,
-                    cal_offset=pod5_metadata.get("calibration_offset"),
-                    cal_scale=pod5_metadata.get("calibration_scale"),
-                )
-
-                # Extract training chunks
-                read_chunks = extract_training_chunks(
-                    leech_read,
-                    motif_config=config.motif,
-                    chunk_config=config.chunk,
-                    labeling=config.labeling,
-                    motif_searcher=motif_searcher,
-                )
-
-                all_chunks.extend(read_chunks)
-
-            except Exception as e:
-                logger.warning(f"Worker failed to process read {read_info.read_id}: {e}")
+    for read_info in read_infos:
+        try:
+            cached = pod5_cache.get(read_info.read_id)
+            if cached is None:
                 continue
+            raw_signal, pod5_metadata = cached
+
+            # Build metadata
+            metadata = {
+                **pod5_metadata,
+                "mapping_quality": read_info.mapping_quality,
+                "reference_name": read_info.reference_name,
+                "reference_start": read_info.reference_start,
+                "reference_end": read_info.reference_end,
+                "is_reverse": read_info.is_reverse,
+                "cl_value": getattr(read_info, "cl_value", None),
+            }
+
+            # For reference-based motif search, add mock alignment
+            if (
+                config.motif.motif_reference == "fasta"
+                and config.motif.reference_sequences is not None
+            ):
+                metadata["alignment"] = read_info.to_mock_alignment()
+
+            # Build LeechRead via shared helper
+            leech_read = build_leech_read(
+                read_id=read_info.read_id,
+                sequence=read_info.sequence,
+                raw_signal=raw_signal,
+                move_table=read_info.to_move_table(),
+                signal_config=config.signal,
+                metadata=metadata,
+                reference_sequence=read_info.reference_sequence,
+                cigar_tuples=read_info.cigar_tuples,
+                cal_offset=pod5_metadata.get("calibration_offset"),
+                cal_scale=pod5_metadata.get("calibration_scale"),
+            )
+
+            # Extract training chunks
+            read_chunks = extract_training_chunks(
+                leech_read,
+                motif_config=config.motif,
+                chunk_config=config.chunk,
+                labeling=config.labeling,
+                motif_searcher=motif_searcher,
+            )
+
+            all_chunks.extend(read_chunks)
+
+        except Exception as e:
+            logger.warning(f"Worker failed to process read {read_info.read_id}: {e}")
+            continue
 
     return all_chunks
 

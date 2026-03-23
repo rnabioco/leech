@@ -321,24 +321,27 @@ class TestParallelWorkerReverseSignal:
         )
         read_info.to_move_table.return_value = mt
 
-        # Mock POD5 read object
-        mock_pod5_read = MagicMock()
-        mock_pod5_read.signal = raw_signal.copy()
-        mock_pod5_read.read_id = "test_read"
-        mock_pod5_read.pore.channel = 1
-        mock_pod5_read.pore.well = 1
-        mock_pod5_read.pore.pore_type = "not_set"
-        mock_pod5_read.calibration.offset = 0.0
-        mock_pod5_read.calibration.scale = 1.0
-        mock_pod5_read.run_info.sample_rate = 4000
+        # Mock escapepod ReadData object
+        mock_read_data = MagicMock()
+        mock_read_data.read_id = "test_read"
+        mock_read_data.channel = 1
+        mock_read_data.well = 1
+        mock_read_data.pore_type = "not_set"
+        mock_read_data.calibration_offset = 0.0
+        mock_read_data.calibration_scale = 1.0
+        mock_read_data.run_info_index = 0
 
-        # Mock DatasetReader
-        mock_dataset_reader = MagicMock()
-        mock_dataset_reader.__enter__ = MagicMock(return_value=mock_dataset_reader)
-        mock_dataset_reader.__exit__ = MagicMock(return_value=False)
-        mock_dataset_reader.reads.return_value = iter([mock_pod5_read])
+        # Mock RunInfo
+        mock_run_info = MagicMock()
+        mock_run_info.sample_rate = 4000
 
-        with patch("leech.preparation.parallel.DatasetReader", return_value=mock_dataset_reader):
+        # Mock escapepod Reader
+        mock_reader = MagicMock()
+        mock_reader.run_infos.return_value = [mock_run_info]
+        mock_reader.get_reads.return_value = [mock_read_data]
+        mock_reader.get_signals.return_value = [("test_read", raw_signal.copy())]
+
+        with patch("leech.preparation.parallel.Reader", return_value=mock_reader):
             from leech.preparation.parallel import _process_read_chunk_worker
 
             # Build PrepareConfig with reverse_signal=True
@@ -356,8 +359,7 @@ class TestParallelWorkerReverseSignal:
             chunks_reversed = _process_read_chunk_worker(([read_info], config_rev))
 
             # Reset mock for second call
-            mock_pod5_read.signal = raw_signal.copy()
-            mock_dataset_reader.reads.return_value = iter([mock_pod5_read])
+            mock_reader.get_signals.return_value = [("test_read", raw_signal.copy())]
 
             # Build PrepareConfig with reverse_signal=False
             config_no_rev = PrepareConfig(
