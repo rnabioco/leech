@@ -16,6 +16,7 @@ try:
     from leech_core import extract_chunks_from_preloaded as _rs_extract_chunks_from_preloaded
     from leech_core import extract_inference_chunks as _rs_extract_inference_chunks
     from leech_core import extract_levels as _rs_extract_levels
+    from leech_core import extract_training_chunks as _rs_extract_training_chunks
     from leech_core import preload_pod5_signals as _rs_preload_pod5_signals
     from leech_core import read_pod5_batch as _rs_read_pod5_batch
     from leech_core import rough_rescale as _rs_rough_rescale
@@ -30,6 +31,7 @@ except ImportError:
     _rs_encode_signal_kmer = None
     _rs_extract_chunks_from_preloaded = None
     _rs_extract_inference_chunks = None
+    _rs_extract_training_chunks = None
     _rs_extract_levels = None
     _rs_preload_pod5_signals = None
     _rs_read_pod5_batch = None
@@ -51,6 +53,7 @@ def check_rust() -> None:
             "encode_signal_kmer",
             "extract_chunks_from_preloaded",
             "extract_inference_chunks",
+            "extract_training_chunks",
             "preload_pod5_signals",
             "read_pod5_batch",
             "seq_banded_dp",

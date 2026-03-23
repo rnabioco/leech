@@ -3,6 +3,11 @@ Parallel data preparation using multiprocessing.
 
 This module provides parallel processing capabilities for extracting
 training chunks from large datasets using multiple worker processes.
+
+When leech_core Rust acceleration is available, uses a single-call Rust
+pipeline (POD5 I/O + normalize + anchor + refine + features + chunk
+extraction) with rayon parallelism. Falls back to Python multiprocessing
+workers otherwise.
 """
 
 import logging
@@ -14,10 +19,12 @@ import numpy as np
 from escapepod import Reader
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 
+from leech._rust_accel import HAS_RUST, _rs_extract_training_chunks
 from leech.chunking import extract_training_chunks
 from leech.configs import PrepareConfig
 from leech.io import ReadInfo, get_motif_searcher, iter_read_info_batches
 from leech.io.bam_reader import count_bam_reads
+from leech.io.motif_search import MotifSearcher
 from leech.io.pod5_reader import _extract_pod5_metadata
 from leech.preparation.reader import build_leech_read
 
@@ -123,6 +130,167 @@ def _process_read_chunk_worker(
     return all_chunks
 
 
+# ---------------------------------------------------------------------------
+# Rust-accelerated batch preparation
+# ---------------------------------------------------------------------------
+
+
+def _find_motif_positions(
+    read_info: ReadInfo,
+    motif_searcher: MotifSearcher | None,
+    config: PrepareConfig,
+) -> list[int]:
+    """Find motif positions for a single read, returning focus base indices."""
+    if motif_searcher is None:
+        # All bases mode (skip edges)
+        num_bases = len(read_info.sequence)
+        return list(range(5, max(5, num_bases - 5)))
+
+    alignment = None
+    if (
+        config.motif.motif_reference == "fasta"
+        and config.motif.reference_sequences is not None
+    ):
+        alignment = read_info.to_mock_alignment()
+
+    positions = motif_searcher.find_motif_positions(
+        read_id=read_info.read_id,
+        sequence=read_info.sequence,
+        alignment=alignment,
+        motif=config.motif.motif,
+    )
+    return [p + config.motif.motif_offset for p in positions]
+
+
+def _prepare_batch_rust(
+    read_infos: list[ReadInfo],
+    config: PrepareConfig,
+    motif_searcher: MotifSearcher | None,
+) -> list[dict[str, np.ndarray | str | int | None]]:
+    """
+    Process a batch of reads using the Rust pipeline.
+
+    Collects BAM metadata, finds motif positions in Python, then delegates
+    all signal processing + chunk extraction to Rust (rayon-parallel, GIL
+    released).  Attaches Python-side labels/metadata to the returned chunks.
+    """
+    # Collect per-read BAM metadata arrays for the Rust call
+    read_ids: list[str] = []
+    sequences: list[str] = []
+    mv_strides: list[int] = []
+    mv_arrays: list[list[int]] = []
+    num_samples_list: list[int] = []
+    trim_offsets: list[int] = []
+    motif_positions: list[list[int]] = []
+    cigar_tuples: list[list[tuple[int, int]]] | None = None
+    reference_sequences: list[str | None] | None = None
+
+    if config.signal.anchor == "reference":
+        cigar_tuples = []
+        reference_sequences = []
+
+    # Per-read metadata for label attachment after Rust extraction
+    read_meta: dict[str, dict] = {}
+
+    for ri in read_infos:
+        mt = ri.to_move_table()
+        positions = _find_motif_positions(ri, motif_searcher, config)
+        if not positions:
+            continue
+
+        read_ids.append(ri.read_id)
+        sequences.append(ri.sequence)
+        mv_strides.append(mt.stride)
+        mv_arrays.append(mt.moves.tolist())
+        num_samples_list.append(mt.num_samples)
+        trim_offsets.append(mt.trim_offset)
+        motif_positions.append(positions)
+
+        if cigar_tuples is not None:
+            cigar_tuples.append(ri.cigar_tuples or [])
+        if reference_sequences is not None:
+            reference_sequences.append(ri.reference_sequence)
+
+        read_meta[ri.read_id] = {
+            "reference_name": ri.reference_name or "",
+            "cl_value": getattr(ri, "cl_value", None),
+        }
+
+    if not read_ids:
+        return []
+
+    # Resolve signal context
+    from leech.constants import DEFAULT_SIGNAL_CONTEXT
+
+    sig_ctx = config.chunk.signal_context or DEFAULT_SIGNAL_CONTEXT
+    signal_len = sig_ctx[0] + sig_ctx[1]
+
+    # Resolve kmer table for signal refinement
+    kmer_table_dict: dict[str, float] | None = None
+    kmer_len = 9
+    kmer_center_idx = -1
+    if config.signal.refine_signal_map and config.signal.signal_refiner is not None:
+        refiner = config.signal.signal_refiner
+        kmer_table_dict = refiner.kmer_to_level
+        kmer_len = refiner.kmer_len
+        kmer_center_idx = getattr(refiner, "kmer_center_idx", -1)
+
+    # Call Rust: POD5 I/O + normalize + anchor + refine + features + chunk extraction
+    rust_chunks = _rs_extract_training_chunks(
+        pod5_path=str(config.pod5_path),
+        read_ids=read_ids,
+        sequences=sequences,
+        mv_strides=mv_strides,
+        mv_arrays=mv_arrays,
+        num_samples_list=num_samples_list,
+        trim_offsets=trim_offsets,
+        signal_context_left=sig_ctx[0],
+        signal_context_right=sig_ctx[1],
+        kmer_context=config.chunk.kmer_context,
+        motif_positions=motif_positions,
+        signal_len=signal_len,
+        compute_features=config.signal.compute_features,
+        reverse_signal=config.signal.reverse_signal,
+        feature_start=config.chunk.feature_start,
+        feature_end=config.chunk.feature_end,
+        anchor=config.signal.anchor,
+        cigar_tuples=cigar_tuples,
+        reference_sequences=reference_sequences,
+        refine_signal_map=config.signal.refine_signal_map,
+        kmer_table=kmer_table_dict,
+        kmer_len=kmer_len,
+        kmer_center_idx=kmer_center_idx,
+        refine_half_bandwidth=config.signal.refine_half_bandwidth,
+        refine_scale_iters=config.signal.refine_scale_iters,
+        signal_in_channels=2 if (config.signal.refine_signal_map and kmer_table_dict) else 1,
+        base_justify=config.chunk.base_justify,
+    )
+
+    # Attach Python-side labels/metadata
+    all_chunks: list[dict] = []
+    for chunk_dict in rust_chunks:
+        rid = chunk_dict["read_id"]
+        meta = read_meta.get(rid, {})
+
+        # Add labeling
+        chunk_dict["label"] = config.labeling.label
+        chunk_dict["label_int"] = config.labeling.label_int
+        chunk_dict["source_group"] = ""
+        chunk_dict["reference_name"] = meta.get("reference_name", "")
+        chunk_dict["cl_value"] = meta.get("cl_value")
+        chunk_dict["feature_start"] = config.chunk.feature_start or -5
+        chunk_dict["feature_end"] = config.chunk.feature_end or 5
+
+        all_chunks.append(chunk_dict)
+
+    return all_chunks
+
+
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
+
+
 def prepare_training_data_parallel(
     bam_path: Path,
     config: PrepareConfig,
@@ -136,6 +304,10 @@ def prepare_training_data_parallel(
     Streams BAM reads in mega-batches so worker processing overlaps with
     BAM iteration rather than waiting for the entire BAM to be read first.
 
+    When leech_core Rust acceleration is available, uses the Rust pipeline
+    for signal processing + chunk extraction (rayon-parallel, GIL released).
+    Falls back to Python multiprocessing workers otherwise.
+
     Args:
         bam_path: Path to BAM file with alignments
         config: Preparation configuration
@@ -146,7 +318,9 @@ def prepare_training_data_parallel(
     Returns:
         Tuple of (chunks, statistics)
     """
-    logger.info(f"Starting parallel data preparation with {num_workers} workers")
+    use_rust = HAS_RUST and _rs_extract_training_chunks is not None
+    backend = "Rust (rayon)" if use_rust else "Python (multiprocessing)"
+    logger.info(f"Starting parallel data preparation with {num_workers} workers [{backend}]")
 
     # Estimate total reads from BAM index for progress bar (O(1), may be None)
     try:
@@ -164,21 +338,22 @@ def prepare_training_data_parallel(
 
     use_progress_bar = sys.stdout.isatty()
 
-    # Stream BAM reads in worker-sized batches and feed them lazily to
-    # imap_unordered. The pool pulls batches from the generator as workers
-    # become free, so BAM iteration overlaps with chunk extraction.
-    logger.info("Streaming BAM reads and processing in parallel...")
+    if use_rust:
+        # Rust path: collect BAM metadata in Python, delegate heavy work to Rust.
+        # Each mega-batch is processed in a single Rust call with rayon parallelism.
+        logger.info("Streaming BAM reads with Rust-accelerated chunk extraction...")
 
-    def _worker_arg_stream():
-        nonlocal total_reads, batches_submitted
-        for read_batch in iter_read_info_batches(
-            bam_path, batch_size=chunk_size, min_mapq=min_mapq
-        ):
-            total_reads += len(read_batch)
-            batches_submitted += 1
-            yield (read_batch, config)
+        # Setup motif searcher (Python-side, needed for position finding)
+        if config.motif.motif is not None:
+            motif_searcher = get_motif_searcher(
+                mode=config.motif.motif_reference,
+                reference_sequences=config.motif.reference_sequences,
+                skip_indels=config.motif.skip_motif_indels,
+                anchor=config.signal.anchor,
+            )
+        else:
+            motif_searcher = None
 
-    with mp.Pool(processes=num_workers) as pool:
         if use_progress_bar:
             with Progress(
                 SpinnerColumn(),
@@ -188,34 +363,98 @@ def prepare_training_data_parallel(
                 TextColumn("[cyan]{task.fields[chunks_extracted]} chunks extracted"),
             ) as progress:
                 task = progress.add_task(
-                    "Processing reads",
+                    "Processing reads (Rust)",
                     total=estimated_batches,
                     chunks_extracted=0,
                 )
 
-                for chunk_results in pool.imap_unordered(
-                    _process_read_chunk_worker, _worker_arg_stream()
+                for read_batch in iter_read_info_batches(
+                    bam_path, batch_size=chunk_size, min_mapq=min_mapq
                 ):
-                    all_chunks.extend(chunk_results)
+                    total_reads += len(read_batch)
                     batches_completed += 1
+                    try:
+                        batch_chunks = _prepare_batch_rust(
+                            read_batch, config, motif_searcher
+                        )
+                        all_chunks.extend(batch_chunks)
+                    except Exception as e:
+                        logger.warning(f"Rust batch failed, skipping: {e}")
                     progress.update(
                         task, completed=batches_completed, chunks_extracted=len(all_chunks)
                     )
 
-                # Fix total if estimate was off
                 progress.update(task, total=batches_completed, completed=batches_completed)
         else:
             log_interval = max(1, (estimated_batches or 50) // 20)
-            for chunk_results in pool.imap_unordered(
-                _process_read_chunk_worker, _worker_arg_stream()
+            for read_batch in iter_read_info_batches(
+                bam_path, batch_size=chunk_size, min_mapq=min_mapq
             ):
-                all_chunks.extend(chunk_results)
+                total_reads += len(read_batch)
                 batches_completed += 1
+                try:
+                    batch_chunks = _prepare_batch_rust(
+                        read_batch, config, motif_searcher
+                    )
+                    all_chunks.extend(batch_chunks)
+                except Exception as e:
+                    logger.warning(f"Rust batch failed, skipping: {e}")
                 if batches_completed % log_interval == 0:
                     logger.info(
                         f"Progress: {batches_completed} batches, "
                         f"{total_reads} reads | {len(all_chunks)} chunks extracted"
                     )
+    else:
+        # Python multiprocessing fallback
+        logger.info("Streaming BAM reads and processing in parallel...")
+
+        def _worker_arg_stream():
+            nonlocal total_reads, batches_submitted
+            for read_batch in iter_read_info_batches(
+                bam_path, batch_size=chunk_size, min_mapq=min_mapq
+            ):
+                total_reads += len(read_batch)
+                batches_submitted += 1
+                yield (read_batch, config)
+
+        with mp.Pool(processes=num_workers) as pool:
+            if use_progress_bar:
+                with Progress(
+                    SpinnerColumn(),
+                    TextColumn("[progress.description]{task.description}"),
+                    BarColumn(),
+                    TaskProgressColumn(),
+                    TextColumn("[cyan]{task.fields[chunks_extracted]} chunks extracted"),
+                ) as progress:
+                    task = progress.add_task(
+                        "Processing reads",
+                        total=estimated_batches,
+                        chunks_extracted=0,
+                    )
+
+                    for chunk_results in pool.imap_unordered(
+                        _process_read_chunk_worker, _worker_arg_stream()
+                    ):
+                        all_chunks.extend(chunk_results)
+                        batches_completed += 1
+                        progress.update(
+                            task, completed=batches_completed, chunks_extracted=len(all_chunks)
+                        )
+
+                    # Fix total if estimate was off
+                    progress.update(task, total=batches_completed, completed=batches_completed)
+            else:
+                log_interval = max(1, (estimated_batches or 50) // 20)
+                for chunk_results in pool.imap_unordered(
+                    _process_read_chunk_worker, _worker_arg_stream()
+                ):
+                    all_chunks.extend(chunk_results)
+                    batches_completed += 1
+                    if batches_completed % log_interval == 0:
+                        logger.info(
+                            f"Progress: {batches_completed} batches, "
+                            f"{total_reads} reads | {len(all_chunks)} chunks extracted"
+                        )
 
     if total_reads == 0:
         return [], {
