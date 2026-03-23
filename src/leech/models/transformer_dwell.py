@@ -263,3 +263,15 @@ class TransformerDwell(BaseModel):
         return logits
 
     # predict_proba() is inherited from BaseModel
+
+
+class TransformerDwellResidual(TransformerDwell):
+    """TransformerDwell with 2-channel signal input (raw + kmer residual).
+
+    Identical to TransformerDwell except signal_in_channels defaults to 2,
+    giving the model direct access to per-sample deviations from expected
+    kmer levels.
+    """
+
+    def __init__(self, *, signal_in_channels: int = 2, **kwargs):
+        super().__init__(signal_in_channels=signal_in_channels, **kwargs)

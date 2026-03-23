@@ -194,3 +194,27 @@ class TCNDwellResidual(BaseModel):
         logits: torch.Tensor = self.classifier(context_vector)
 
         return logits
+
+
+class TCNDwellResidualGN(TCNDwellResidual):
+    """TCNDwellResidual with GroupNorm instead of BatchNorm.
+
+    Inherits all architecture from TCNDwellResidual, overriding only the
+    default norm_type to "groupnorm".
+    """
+
+    def __init__(self, **kwargs):
+        kwargs.setdefault("norm_type", "groupnorm")
+        super().__init__(**kwargs)
+
+
+class TCNDwellResidualLN(TCNDwellResidual):
+    """TCNDwellResidual with LayerNorm instead of BatchNorm.
+
+    Inherits all architecture from TCNDwellResidual, overriding only the
+    default norm_type to "layernorm".
+    """
+
+    def __init__(self, **kwargs):
+        kwargs.setdefault("norm_type", "layernorm")
+        super().__init__(**kwargs)

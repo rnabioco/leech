@@ -28,31 +28,24 @@ from typing import Any
 
 import torch.nn as nn
 
-from leech.models.conv_lstm_base import ConvLSTMBase
-from leech.models.conv_lstm_base_attn import ConvLSTMBaseAttn
-from leech.models.conv_lstm_base_bn import ConvLSTMBaseBN
-from leech.models.conv_lstm_base_bn_attn import ConvLSTMBaseBNAttn
-from leech.models.conv_lstm_dwell import ConvLSTMDwell
-from leech.models.conv_lstm_dwell_attn import ConvLSTMDwellAttn
-from leech.models.conv_lstm_dwell_bn import ConvLSTMDwellBN
-from leech.models.conv_lstm_dwell_bn_attn import ConvLSTMDwellBNAttn
-from leech.models.conv_lstm_dwell_gn_attn import ConvLSTMDwellGNAttn
-from leech.models.conv_lstm_dwell_ln_attn import ConvLSTMDwellLNAttn
+from leech.models.conv_lstm import ConvLSTMBase, ConvLSTMBaseBN, ConvLSTMDwell, ConvLSTMDwellBN
+from leech.models.conv_lstm_attn import (
+    ConvLSTMBaseAttn,
+    ConvLSTMBaseBNAttn,
+    ConvLSTMDwellAttn,
+    ConvLSTMDwellBNAttn,
+    ConvLSTMDwellGNAttn,
+    ConvLSTMDwellLNAttn,
+)
 from leech.models.conv_lstm_remora import ConvLSTMRemora, ConvLSTMRemoraBase
 from leech.models.conv_only import ConvOnly
 from leech.models.inference_wrapper import ModelInferenceWrapper, TracedModelWrapper
 from leech.models.remora_compat import RemoraModelWrapper
 from leech.models.resnet_dwell import ResNetDwell
-from leech.models.tcn_dwell import TCNDwell
-from leech.models.tcn_dwell_gn import TCNDwellGN
-from leech.models.tcn_dwell_ln import TCNDwellLN
-from leech.models.tcn_dwell_residual import TCNDwellResidual
-from leech.models.tcn_dwell_residual_gn import TCNDwellResidualGN
-from leech.models.tcn_dwell_residual_ln import TCNDwellResidualLN
-from leech.models.tcn_dwell_split_residual import TCNDwellSplitResidual
-from leech.models.tcn_dwell_split_residual_ln import TCNDwellSplitResidualLN
-from leech.models.transformer_dwell import TransformerDwell
-from leech.models.transformer_dwell_residual import TransformerDwellResidual
+from leech.models.tcn_dwell import TCNDwell, TCNDwellGN, TCNDwellLN
+from leech.models.tcn_dwell_residual import TCNDwellResidual, TCNDwellResidualGN, TCNDwellResidualLN
+from leech.models.tcn_dwell_split_residual import TCNDwellSplitResidual, TCNDwellSplitResidualLN
+from leech.models.transformer_dwell import TransformerDwell, TransformerDwellResidual
 
 __all__ = [
     "ConvLSTMBase",

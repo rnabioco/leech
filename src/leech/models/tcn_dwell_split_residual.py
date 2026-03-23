@@ -210,3 +210,15 @@ class TCNDwellSplitResidual(BaseModel):
         logits: torch.Tensor = self.classifier(context_vector)
 
         return logits
+
+
+class TCNDwellSplitResidualLN(TCNDwellSplitResidual):
+    """TCNDwellSplitResidual with LayerNorm instead of BatchNorm.
+
+    Inherits all architecture from TCNDwellSplitResidual, overriding only the
+    default norm_type to "layernorm".
+    """
+
+    def __init__(self, **kwargs):
+        kwargs.setdefault("norm_type", "layernorm")
+        super().__init__(**kwargs)
