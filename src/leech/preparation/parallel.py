@@ -147,10 +147,7 @@ def _find_motif_positions(
         return list(range(5, max(5, num_bases - 5)))
 
     alignment = None
-    if (
-        config.motif.motif_reference == "fasta"
-        and config.motif.reference_sequences is not None
-    ):
+    if config.motif.motif_reference == "fasta" and config.motif.reference_sequences is not None:
         alignment = read_info.to_mock_alignment()
 
     positions = motif_searcher.find_motif_positions(
@@ -374,9 +371,7 @@ def prepare_training_data_parallel(
                     total_reads += len(read_batch)
                     batches_completed += 1
                     try:
-                        batch_chunks = _prepare_batch_rust(
-                            read_batch, config, motif_searcher
-                        )
+                        batch_chunks = _prepare_batch_rust(read_batch, config, motif_searcher)
                         all_chunks.extend(batch_chunks)
                     except Exception as e:
                         logger.warning(f"Rust batch failed, skipping: {e}")
@@ -393,9 +388,7 @@ def prepare_training_data_parallel(
                 total_reads += len(read_batch)
                 batches_completed += 1
                 try:
-                    batch_chunks = _prepare_batch_rust(
-                        read_batch, config, motif_searcher
-                    )
+                    batch_chunks = _prepare_batch_rust(read_batch, config, motif_searcher)
                     all_chunks.extend(batch_chunks)
                 except Exception as e:
                     logger.warning(f"Rust batch failed, skipping: {e}")

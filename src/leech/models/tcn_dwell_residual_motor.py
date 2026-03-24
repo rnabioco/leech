@@ -36,9 +36,7 @@ class TCNDwellResidualMotor(TCNDwellResidual):
 
         # Feature branch output channels (find last Conv1d in sequential)
         feat_out_dim = [
-            m.out_channels
-            for m in self.feature_branch.conv_layers
-            if isinstance(m, nn.Conv1d)
+            m.out_channels for m in self.feature_branch.conv_layers if isinstance(m, nn.Conv1d)
         ][-1]  # 256
 
         # Project pooled motor features to a compact representation

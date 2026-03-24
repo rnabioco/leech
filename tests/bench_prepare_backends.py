@@ -186,7 +186,9 @@ def compare_chunks(
         py_sig = np.asarray(pc["signal"], dtype=np.float32)
         rs_sig = np.asarray(rc["signal"], dtype=np.float32)
         if py_sig.shape != rs_sig.shape:
-            diffs.append(f"  Signal shape: Python={py_sig.shape} Rust={rs_sig.shape} ({key[0][:8]}...)")
+            diffs.append(
+                f"  Signal shape: Python={py_sig.shape} Rust={rs_sig.shape} ({key[0][:8]}...)"
+            )
             mismatched += 1
             continue
         if not np.allclose(py_sig, rs_sig, atol=atol, rtol=rtol):
@@ -258,12 +260,17 @@ def compare_npz(
     diffs: list[str] = []
     skip_keys = skip_keys or set()
 
-    with np.load(py_path, allow_pickle=True) as py_data, np.load(rs_path, allow_pickle=True) as rs_data:
+    with (
+        np.load(py_path, allow_pickle=True) as py_data,
+        np.load(rs_path, allow_pickle=True) as rs_data,
+    ):
         py_keys = set(py_data.files)
         rs_keys = set(rs_data.files)
 
         if py_keys != rs_keys:
-            diffs.append(f"Key mismatch: only_python={py_keys - rs_keys}, only_rust={rs_keys - py_keys}")
+            diffs.append(
+                f"Key mismatch: only_python={py_keys - rs_keys}, only_rust={rs_keys - py_keys}"
+            )
             common = py_keys & rs_keys
         else:
             common = py_keys
@@ -281,7 +288,7 @@ def compare_npz(
                 all_match = False
                 continue
 
-            if py_arr.dtype.kind == 'U' or py_arr.dtype == object:
+            if py_arr.dtype.kind == "U" or py_arr.dtype == object:
                 # String or object array — compare elementwise
                 if not np.array_equal(py_arr, rs_arr):
                     n_diff = np.sum(py_arr != rs_arr)
@@ -314,9 +321,9 @@ def _run_comparison(
     config = build_config(POD5, refine=refine)
     label = "refined" if refine else "unrefined"
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"  Mode: {label}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
     # --- Run Python backend ---
     print("Running Python backend...")
@@ -380,9 +387,7 @@ def _run_comparison(
             # - sequences_with_kmer_context: follows from seq_to_sig_maps windowing
             # These only matter for signal_kmer encoding (not base_onehot).
             aux_keys = {"seq_to_sig_maps", "sequences_with_kmer_context"}
-            npz_match, npz_diffs = compare_npz(
-                py_npz, rs_npz, atol=chunk_atol, skip_keys=aux_keys
-            )
+            npz_match, npz_diffs = compare_npz(py_npz, rs_npz, atol=chunk_atol, skip_keys=aux_keys)
             for d in npz_diffs:
                 print(d)
             if npz_match:
@@ -423,18 +428,20 @@ def main():
     # Run both modes (unrefined = correctness proof, refined = speedup benchmark)
     unrefined_pass = True
     if not args.refine_only:
-        unrefined_pass, _, _ = _run_comparison(BAM, refine=False, max_reads=args.reads, chunk_size=args.chunk_size)
+        unrefined_pass, _, _ = _run_comparison(
+            BAM, refine=False, max_reads=args.reads, chunk_size=args.chunk_size
+        )
 
     if not args.no_refine:
         _run_comparison(BAM, refine=True, max_reads=args.reads, chunk_size=args.chunk_size)
 
     # Exit code based on unrefined test (correctness proof)
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     if unrefined_pass:
         print("RESULT: Unrefined parity PASS — core logic is correct")
     else:
         print("RESULT: Unrefined parity FAIL — core logic bug")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     sys.exit(0 if unrefined_pass else 1)
 
 
