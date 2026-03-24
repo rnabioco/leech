@@ -32,13 +32,14 @@ fn median_f32(data: &mut [f32]) -> f32 {
         return 0.0;
     }
     let n = data.len();
+    // Full sort to match numpy.median exactly (numpy sorts internally).
+    // select_nth_unstable is faster but can pick different adjacent elements
+    // for even-length arrays when float32 values are very close, causing
+    // ~1e-7 normalization differences that cascade through refinement.
+    data.sort_unstable_by(F32_CMP);
     let mid = n / 2;
-    data.select_nth_unstable_by(mid, F32_CMP);
     if n % 2 == 0 {
-        let hi = data[mid];
-        // The max of the lower partition is the other median element
-        let lo = data[..mid].iter().copied().fold(f32::NEG_INFINITY, f32::max);
-        (lo + hi) / 2.0
+        (data[mid - 1] + data[mid]) / 2.0
     } else {
         data[mid]
     }
@@ -93,30 +94,6 @@ fn quantile_f32(data: &[f32], q: f32) -> f32 {
     }
 }
 
-/// Piecewise linear interpolation (equivalent to np.interp).
-fn linear_interp(x: &[f64], xp: &[f64], fp: &[f64]) -> Vec<f64> {
-    if xp.is_empty() || fp.is_empty() {
-        return vec![0.0; x.len()];
-    }
-    let n = xp.len();
-    let mut result = Vec::with_capacity(x.len());
-    let mut j = 0usize; // current segment
-    for &xi in x {
-        if xi <= xp[0] {
-            result.push(fp[0]);
-        } else if xi >= xp[n - 1] {
-            result.push(fp[n - 1]);
-        } else {
-            while j < n - 2 && xp[j + 1] < xi {
-                j += 1;
-            }
-            let t = (xi - xp[j]) / (xp[j + 1] - xp[j]);
-            result.push(fp[j] + t * (fp[j + 1] - fp[j]));
-        }
-    }
-    result
-}
-
 // ---------------------------------------------------------------------------
 // Normalization
 // ---------------------------------------------------------------------------
@@ -159,25 +136,45 @@ fn build_seq_to_sig_map(mv_array: &[u8], stride: u32, trim_offset: i64, num_samp
 // CIGAR → reference-to-signal mapping
 // ---------------------------------------------------------------------------
 
-fn make_ref_to_query_mapping(cigar_ops: &[(u32, u32)]) -> Vec<f64> {
+/// Compute reference-to-signal mapping by directly walking the CIGAR.
+///
+/// Avoids the two-step float interpolation (ref→float_query→float_signal)
+/// that caused 1-sample precision differences vs Python's `np.interp`.
+///
+/// Within CIGAR match blocks (M/=/X), ref→query is 1:1 integer, so we do a
+/// direct `query_to_sig[query_pos]` lookup with zero float arithmetic.
+/// For indel-gap positions between match blocks, we interpolate using the
+/// integer knot coordinates (ratio of small ints → exact in f64).
+fn compute_ref_to_signal(query_to_sig: &[i64], cigar_ops: &[(u32, u32)]) -> Vec<i64> {
     const MATCH: [bool; 9] = [true, false, false, false, false, false, false, true, true];
     const REF_CONSUME: [bool; 9] = [true, false, true, true, false, false, false, true, true];
     const QUERY_CONSUME: [bool; 9] = [true, true, false, false, true, false, false, true, true];
 
-    // Strip trailing non-match ops
+    let n_query = query_to_sig.len();
+    if n_query == 0 {
+        return vec![];
+    }
+    let last_query = n_query - 1;
+
+    // Strip trailing non-match ops (remora convention)
     let mut cigar: Vec<(u32, u32)> = cigar_ops.to_vec();
-    while !cigar.is_empty() && !MATCH.get(cigar.last().unwrap().0 as usize).copied().unwrap_or(false) {
+    while !cigar.is_empty()
+        && !MATCH
+            .get(cigar.last().unwrap().0 as usize)
+            .copied()
+            .unwrap_or(false)
+    {
         cigar.pop();
     }
     if cigar.is_empty() {
-        return vec![0.0];
+        return vec![query_to_sig[0]];
     }
 
-    // Compute cumulative ref and query positions, collect match blocks
-    let mut ref_pos = 0u64;
-    let mut query_pos = 0u64;
-    let mut ref_knots = vec![0.0f64];
-    let mut query_knots = vec![0.0f64];
+    // Collect match blocks as (ref_start, ref_end_exclusive, query_start)
+    // and total ref/query lengths.
+    let mut ref_pos: i64 = 0;
+    let mut query_pos: i64 = 0;
+    let mut blocks: Vec<(i64, i64, i64)> = Vec::new();
 
     for &(op, len) in &cigar {
         let op_idx = op as usize;
@@ -186,40 +183,106 @@ fn make_ref_to_query_mapping(cigar_ops: &[(u32, u32)]) -> Vec<f64> {
         let consumes_query = QUERY_CONSUME.get(op_idx).copied().unwrap_or(false);
 
         if is_match && len > 0 {
-            // Knot at start of match block
-            ref_knots.push(ref_pos as f64);
-            query_knots.push(query_pos as f64);
-            // Knot at end-1 of match block
-            ref_knots.push((ref_pos + len as u64 - 1) as f64);
-            query_knots.push((query_pos + len as u64 - 1) as f64);
+            blocks.push((ref_pos, ref_pos + len as i64, query_pos));
         }
-
         if consumes_ref {
-            ref_pos += len as u64;
+            ref_pos += len as i64;
         }
         if consumes_query {
-            query_pos += len as u64;
+            query_pos += len as i64;
         }
     }
 
-    // Final knots
-    ref_knots.push(ref_pos as f64);
-    query_knots.push(query_pos as f64);
+    let ref_len = ref_pos; // total reference length after stripping
+    let total_query = query_pos;
 
-    // Interpolate to get mapping for every ref position
-    let x: Vec<f64> = (0..=ref_pos).map(|i| i as f64).collect();
-    linear_interp(&x, &ref_knots, &query_knots)
-}
+    if blocks.is_empty() {
+        return vec![query_to_sig[0]; (ref_len + 1) as usize];
+    }
 
-fn compute_ref_to_signal(query_to_sig: &[i64], cigar_ops: &[(u32, u32)]) -> Vec<i64> {
-    let ref_to_query = make_ref_to_query_mapping(cigar_ops);
+    // Helper: look up signal position for an exact integer query position
+    let sig_at = |q: i64| -> i64 {
+        let q = q.max(0).min(last_query as i64);
+        query_to_sig[q as usize]
+    };
 
-    // Interpolate float query positions through query_to_sig mapping
-    let xp: Vec<f64> = (0..query_to_sig.len()).map(|i| i as f64).collect();
-    let fp: Vec<f64> = query_to_sig.iter().map(|&v| v as f64).collect();
-    let result_f64 = linear_interp(&ref_to_query, &xp, &fp);
+    // Helper: interpolate signal for a fractional query position.
+    // All inputs are integers → ratio is exact in f64.
+    let sig_interp = |q_num: i64, q_den: i64, q_base: i64| -> i64 {
+        // q_float = q_base + q_num / q_den  (but we keep it as a ratio)
+        let q_float = q_base as f64 + q_num as f64 / q_den as f64;
+        if q_float <= 0.0 {
+            return query_to_sig[0];
+        }
+        if q_float >= last_query as f64 {
+            return query_to_sig[last_query];
+        }
+        let j = q_float.floor() as usize;
+        let frac = q_float - j as f64;
+        let lo = query_to_sig[j] as f64;
+        let hi = query_to_sig[j + 1] as f64;
+        (lo + frac * (hi - lo)).floor() as i64
+    };
 
-    result_f64.iter().map(|&v| v.floor() as i64).collect()
+    let mut result = Vec::with_capacity((ref_len + 1) as usize);
+
+    // Knots for gap interpolation follow the remora convention:
+    // Each match block contributes two knots: (block_ref_start, block_query_start)
+    // and (block_ref_end-1, block_query_end-1).  Between match blocks,
+    // interpolate linearly between the end-1 knot of block A and the start
+    // knot of block B.
+
+    // Gap before first match block: interpolate between (0,0) and first block start
+    let (first_ref, _, first_query) = blocks[0];
+    if first_ref > 0 {
+        // Knots: (0, 0) and (first_ref, first_query)
+        for r in 0..first_ref {
+            // t = r / first_ref, q = t * first_query
+            result.push(sig_interp(r * first_query, first_ref, 0));
+        }
+    }
+
+    for (bi, &(blk_ref_start, blk_ref_end, blk_query_start)) in blocks.iter().enumerate() {
+        // Fill match block: direct integer lookup
+        for r in blk_ref_start..blk_ref_end {
+            let q = blk_query_start + (r - blk_ref_start);
+            result.push(sig_at(q));
+        }
+
+        // Gap after this match block (before next block, or to end)
+        let knot_ref_a = blk_ref_end - 1; // end-1 of this block
+        let knot_query_a = blk_query_start + (blk_ref_end - 1 - blk_ref_start);
+
+        let (knot_ref_b, knot_query_b) = if bi + 1 < blocks.len() {
+            // Next block exists: interpolate to its start
+            let (next_ref, _, next_query) = blocks[bi + 1];
+            (next_ref, next_query)
+        } else {
+            // After last block: interpolate to (ref_len, total_query)
+            (ref_len, total_query)
+        };
+
+        let gap_start = blk_ref_end;
+        let gap_end = knot_ref_b; // exclusive (knot_ref_b itself is the next block start or ref_len)
+
+        if gap_start < gap_end {
+            let ref_span = knot_ref_b - knot_ref_a; // always > 0
+            let query_span = knot_query_b - knot_query_a;
+            for r in gap_start..gap_end {
+                // t = (r - knot_ref_a) / ref_span
+                // q = knot_query_a + t * query_span
+                let dr = r - knot_ref_a;
+                result.push(sig_interp(dr * query_span, ref_span, knot_query_a));
+            }
+        }
+    }
+
+    // Final entry: ref_len maps to total_query
+    result.push(sig_at(total_query));
+
+    // Ensure correct length (ref_len + 1)
+    result.truncate((ref_len + 1) as usize);
+    result
 }
 
 // ---------------------------------------------------------------------------
@@ -1564,6 +1627,16 @@ pub fn _test_process_read<'py>(
     let feat_py = feat_arr.into_pyarray(py).unbind();
 
     Ok((sig_py, map_py, dwell_py, feat_py))
+}
+
+/// Expose compute_ref_to_signal for direct Python↔Rust comparison testing.
+#[pyfunction]
+#[pyo3(signature = (query_to_sig, cigar_ops))]
+pub fn _test_ref_to_signal(
+    query_to_sig: Vec<i64>,
+    cigar_ops: Vec<(u32, u32)>,
+) -> PyResult<Vec<i64>> {
+    Ok(compute_ref_to_signal(&query_to_sig, &cigar_ops))
 }
 
 // ---------------------------------------------------------------------------

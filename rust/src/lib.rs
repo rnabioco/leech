@@ -22,6 +22,7 @@ fn leech_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m
     )?)?;
     m.add_function(wrap_pyfunction!(inference_pipeline::_test_process_read, m)?)?;
+    m.add_function(wrap_pyfunction!(inference_pipeline::_test_ref_to_signal, m)?)?;
     m.add_function(wrap_pyfunction!(
         inference_pipeline::extract_training_chunks,
         m
