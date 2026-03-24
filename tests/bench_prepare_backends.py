@@ -9,13 +9,19 @@ Usage:
     uv run python tests/bench_prepare_backends.py [--reads N]
 """
 
+from __future__ import annotations
+
 import argparse
 import sys
 import tempfile
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from leech.configs import PrepareConfig
 
 # ---------------------------------------------------------------------------
 # Data paths (production tRNA data)
@@ -27,7 +33,7 @@ POD5 = ROOT / "results/production/data/filtered/LeuRS_leu_b3/cognate.pod5"
 REF = ROOT / "2026-aars-in-vitro/results/reference/adapted.fa"
 
 
-def build_config(pod5_path: Path, *, refine: bool = True) -> "PrepareConfig":
+def build_config(pod5_path: Path, *, refine: bool = True) -> PrepareConfig:
     """Build a PrepareConfig matching production settings."""
     from leech.configs import ChunkConfig, LabelConfig, MotifConfig, PrepareConfig, SignalConfig
     from leech.io import get_reference_sequences
@@ -36,8 +42,8 @@ def build_config(pod5_path: Path, *, refine: bool = True) -> "PrepareConfig":
 
     signal_refiner = None
     if refine:
-        from leech.signal_refine import SigMapRefiner
         from leech.data import get_kmer_table
+        from leech.signal_refine import SigMapRefiner
 
         kmer_table = get_kmer_table()
         signal_refiner = SigMapRefiner.from_table(kmer_table, scale_iters=2, do_rough_rescale=True)
@@ -72,25 +78,15 @@ def build_config(pod5_path: Path, *, refine: bool = True) -> "PrepareConfig":
 
 
 def run_python_backend(
-    bam_path: Path, config: "PrepareConfig", chunk_size: int, max_reads: int | None
+    bam_path: Path, config: PrepareConfig, chunk_size: int, max_reads: int | None
 ) -> tuple[list[dict], float]:
     """Run data preparation using the Python multiprocessing backend."""
-    from leech.io import collect_read_infos, get_motif_searcher
+    from leech.io import collect_read_infos
     from leech.preparation.parallel import _process_read_chunk_worker
 
     read_infos = collect_read_infos(bam_path, min_mapq=0)
     if max_reads is not None:
         read_infos = read_infos[:max_reads]
-
-    if config.motif.motif is not None:
-        motif_searcher = get_motif_searcher(
-            mode=config.motif.motif_reference,
-            reference_sequences=config.motif.reference_sequences,
-            skip_indels=config.motif.skip_motif_indels,
-            anchor=config.signal.anchor,
-        )
-    else:
-        motif_searcher = None
 
     # Process in a single batch (no multiprocessing overhead for fair comparison)
     batches = [read_infos[i : i + chunk_size] for i in range(0, len(read_infos), chunk_size)]
@@ -106,11 +102,11 @@ def run_python_backend(
 
 
 def run_rust_backend(
-    bam_path: Path, config: "PrepareConfig", chunk_size: int, max_reads: int | None
+    bam_path: Path, config: PrepareConfig, chunk_size: int, max_reads: int | None
 ) -> tuple[list[dict], float]:
     """Run data preparation using the Rust-accelerated backend."""
     from leech.io import collect_read_infos, get_motif_searcher
-    from leech.preparation.parallel import _find_motif_positions, _prepare_batch_rust
+    from leech.preparation.parallel import _prepare_batch_rust
 
     read_infos = collect_read_infos(bam_path, min_mapq=0)
     if max_reads is not None:
