@@ -22,6 +22,10 @@ from leech.inference.helpers import (
     _check_config_consistency,
     _encode_sequence_for_inference,
     _write_prediction_tags,
+    build_rust_extraction_kwargs,
+    cap_rayon_threads_for_slurm,
+    check_rust_extraction_available,
+    collect_bam_metadata_for_rust,
     validate_inference_shapes,
 )
 from leech.io.bam_reader import ReadInfo, count_bam_reads, iter_bam_batches
@@ -419,11 +423,51 @@ def run_bundle_inference(
     )
     mega_batch_idx = 0
 
+    # ---- Rust monolithic extraction setup ----
+    #
+    # The fast path lives in leech_core (escapepod-rs + rust chunk extractor).
+    # All three helpers (availability check, rayon thread cap, kwargs builder)
+    # are shared with run_inference in single.py via helpers.py.
+    assert motif is not None  # type narrowing for helpers below
+    (
+        _use_rust_extraction,
+        _rs_extract_inference_chunks,
+        _rs_preload_pod5_signals,
+        _rs_extract_chunks_from_preloaded,
+    ) = check_rust_extraction_available(backend)
+    if _use_rust_extraction:
+        logger.info("Using Rust monolithic extraction (escapepod-rs + leech_core)")
+        cap_rayon_threads_for_slurm()
+    elif backend == "python":
+        logger.info("Using Python extraction path (forced via --backend python)")
+    else:
+        logger.info("Using Python extraction path (leech_core unavailable)")
+
+    _rs_kwargs: dict | None = None
+    if _use_rust_extraction:
+        _rs_kwargs = build_rust_extraction_kwargs(
+            signal_context=signal_context,
+            kmer_context=kmer_context,
+            signal_len=signal_len,
+            compute_features=bundle_compute_features,
+            reverse_signal=reverse_signal,
+            feature_start=_feature_start,
+            feature_end=_feature_end,
+            anchor=anchor,
+            seq_encoding=seq_encoding,
+            signal_kmer_context=signal_kmer_context,
+            refine_signal_map=bundle_refine,
+            signal_refiner=bundle_refiner,
+            refine_half_bandwidth=config.get("refine_half_bandwidth", 5),
+            refine_scale_iters=config.get("refine_scale_iters", 2),
+            signal_in_channels=bundle_signal_in_channels,
+        )
+
     # Build InferenceConfig for parallel workers (reused across mega-batches).
     # Only constructed when num_workers > 0 — the serial path uses its own
     # local SignalConfig/ChunkConfig.
     inf_config: InferenceConfig | None = None
-    if num_workers > 0:
+    if num_workers > 0 and not _use_rust_extraction:
         inf_config = InferenceConfig(
             pod5_path=pod5_path,
             signal=SignalConfig(
@@ -461,6 +505,132 @@ def run_bundle_inference(
     with Progress() as progress:
         task = progress.add_task("[cyan]Processing reads...", total=None)
 
+        if _use_rust_extraction:
+            # ---- Rust monolithic hot path ----
+            #
+            # Mirrors run_inference's rust sequential path (single.py:1375-1413):
+            # main thread collects pysam metadata for a mega-batch, rust
+            # consumes the metadata + POD5 path and returns extracted chunks,
+            # main thread batches them into torch tensors and runs the existing
+            # multi-model _flush_batch closure.
+            assert _rs_extract_inference_chunks is not None
+            assert _rs_kwargs is not None
+
+            logger.info("Rust bundle inference: serial mega-batches")
+
+            for aln_batch in iter_bam_batches(
+                bam_path, batch_size=read_batch_size, min_mapq=min_mapq
+            ):
+                read_probs.clear()
+
+                rs_meta = collect_bam_metadata_for_rust(
+                    aln_batch,
+                    motif=motif,
+                    motif_offset=motif_offset,
+                    motif_searcher=motif_searcher,
+                    anchor=anchor,
+                    reference_sequences=reference_sequences,
+                    # Bundle semantics: one chunk per read (matches the serial
+                    # path's positions[0] behavior)
+                    max_positions_per_read=1,
+                )
+                rs_read_ids = rs_meta[0]
+
+                n_reads += len(aln_batch)
+
+                logger.info(
+                    f"Mega-batch: {len(aln_batch)} alignments, "
+                    f"{len(rs_read_ids)} for Rust extraction"
+                )
+
+                if rs_read_ids:
+                    chunks = _rs_extract_inference_chunks(
+                        str(pod5_path),
+                        read_ids=rs_read_ids,
+                        sequences=rs_meta[1],
+                        mv_strides=rs_meta[2],
+                        mv_arrays=rs_meta[3],
+                        num_samples_list=rs_meta[4],
+                        trim_offsets=rs_meta[5],
+                        motif_positions=rs_meta[6],
+                        cigar_tuples=(rs_meta[7] if anchor == "reference" else None),
+                        reference_sequences=(rs_meta[8] if anchor == "reference" else None),
+                        **_rs_kwargs,
+                    )
+
+                    # Consume rust chunks into batch buffers. Rust emits at most
+                    # one chunk per read (we truncated motif positions above),
+                    # so no dedupe is needed.
+                    for sig, seq_arr, feat, read_id, _base_idx in chunks:
+                        if bundle_signal_in_channels > 1 and sig.ndim == 1:
+                            sig = sig.reshape(bundle_signal_in_channels, -1)
+                        if not _shape_validated:
+                            validate_inference_shapes(sig, feat, config)
+                            _shape_validated = True
+
+                        batch_signals.append(torch.from_numpy(sig))
+                        batch_sequences.append(torch.from_numpy(seq_arr))
+                        batch_read_ids.append(read_id)
+                        if needs_features and feat is not None:
+                            batch_features.append(torch.from_numpy(feat))
+
+                        n_chunks += 1
+                        if len(batch_signals) >= batch_size:
+                            _flush_batch()
+
+                # Flush remaining chunks for this mega-batch
+                _flush_batch()
+
+                # -- Aggregate per-read and write BAM for this mega-batch --
+                batch_preds = 0
+                for aln in aln_batch:
+                    prob_vec = read_probs.get(aln.query_name)
+                    if prob_vec is None:
+                        bam_out.write(aln)
+                        continue
+
+                    probs = [float(prob_vec[pair_to_idx[pair]]) for pair in pairs]
+                    predicted_aa, confidence, _ = aggregate_fn(pairs, probs)
+
+                    _write_prediction_tags(
+                        aln,
+                        predicted_aa,
+                        confidence,
+                        pair_names_str,
+                        probs,
+                        raw,
+                        min_confidence,
+                        min_margin,
+                    )
+                    bam_out.write(aln)
+                    n_predicted += 1
+                    batch_preds += 1
+
+                mega_batch_idx += 1
+                logger.info(
+                    f"Mega-batch {mega_batch_idx}/{n_total_mega_batches} "
+                    f"complete: wrote {batch_preds} predictions for "
+                    f"{len(aln_batch)} reads"
+                )
+
+                progress.update(
+                    task,
+                    advance=0,
+                    description=(
+                        f"[cyan]Processed {n_chunks} chunks from "
+                        f"{n_reads} reads ({n_batches_done} batches, "
+                        f"{n_predicted} predicted)..."
+                    ),
+                )
+
+            logger.info(f"Extracted and inferred {n_chunks} chunks from {n_reads} reads")
+            logger.info(f"Predicted {n_predicted} reads")
+            bam_out.close()
+
+            logger.info(f"Bundle inference complete: {n_reads} reads, {len(pairs)} models")
+            logger.info(f"Output written to: {output_path}")
+            return
+
         if num_workers > 0:
             # ---- Parallel path: dispatch chunk extraction to mp.Pool workers ----
             #
@@ -475,7 +645,12 @@ def run_bundle_inference(
             assert inf_config is not None  # constructed above
             logger.info(f"Parallel bundle inference with {num_workers} workers")
 
-            _worker_chunk_size = 100  # reads per worker sub-batch
+            # reads per worker sub-batch. 100 is too small — mp.Pool IPC
+            # overhead dominates with many tiny sub-batches. Large sub-batches
+            # amortize escapepod open + kmer table load + pickling cost across
+            # many reads. Requires read_batch_size >= num_workers * this value
+            # to actually saturate the worker pool within a mega-batch.
+            _worker_chunk_size = 50000
 
             with mp.Pool(processes=num_workers) as pool:
                 for aln_batch in iter_bam_batches(

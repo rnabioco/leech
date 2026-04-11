@@ -480,3 +480,247 @@ def _run_batch(
         if read_id not in pending:
             pending[read_id] = []
         pending[read_id].append((base_idx, float(prob)))
+
+
+# =============================================================================
+# Rust monolithic extraction path — shared between run_inference (single.py)
+# and run_bundle_inference (bundle.py).
+#
+# The functions below let both call sites use the same logic for (a) deciding
+# whether the rust hot path is available, (b) capping rayon threads to the
+# SLURM allocation, (c) building the kwargs dict for leech_core, and (d)
+# collecting pysam alignment metadata into the parallel-list format rust
+# expects. Before this refactor the logic was duplicated across both files.
+# =============================================================================
+
+
+def check_rust_extraction_available(
+    backend: str,
+) -> tuple[bool, object, object, object]:
+    """Decide whether the rust monolithic extraction hot path is usable.
+
+    Args:
+        backend: CLI-provided backend selector ("auto", "rust", or "python").
+
+    Returns:
+        (use_rust, extract_inference_chunks, preload_pod5_signals,
+        extract_chunks_from_preloaded) — the three function handles are None
+        when rust is unavailable.
+
+    Raises:
+        RuntimeError: if ``backend == "rust"`` but ``leech_core`` is not
+        importable.
+    """
+    from leech._rust_accel import (
+        HAS_RUST,
+        _rs_extract_chunks_from_preloaded,
+        _rs_extract_inference_chunks,
+        _rs_preload_pod5_signals,
+    )
+
+    rust_available = HAS_RUST and _rs_extract_inference_chunks is not None
+    if backend == "rust" and not rust_available:
+        raise RuntimeError(
+            "--backend rust requested but leech_core is not installed. "
+            "Build with: cd rust && uv run maturin develop --release"
+        )
+    use_rust = rust_available and backend != "python"
+    return (
+        use_rust,
+        _rs_extract_inference_chunks,
+        _rs_preload_pod5_signals,
+        _rs_extract_chunks_from_preloaded,
+    )
+
+
+def cap_rayon_threads_for_slurm(max_cap: int | None = None) -> int:
+    """Clamp ``RAYON_NUM_THREADS`` to the SLURM allocation.
+
+    Without this, rayon defaults to all visible system CPUs (e.g. 63 on a
+    64-core shared node) and oversubscribes whenever multiple jobs share a
+    node. Idempotent — respects any existing ``RAYON_NUM_THREADS`` value.
+
+    Args:
+        max_cap: Optional upper bound, applied ONLY when ``SLURM_CPUS_PER_TASK``
+            is not set. On a SLURM allocation we always honor the allocation.
+            On a dev machine ``os.cpu_count()`` can be 64+ and we don't want
+            rayon to claim them all — the cap kicks in there.
+
+    Returns:
+        The number of CPUs the caller should reason about (after any cap).
+    """
+    import os
+
+    slurm_cpus = int(os.environ.get("SLURM_CPUS_PER_TASK", 0))
+    if slurm_cpus > 0:
+        avail = slurm_cpus
+    else:
+        avail = os.cpu_count() or 4
+        if max_cap is not None:
+            avail = min(avail, max_cap)
+    if "RAYON_NUM_THREADS" not in os.environ:
+        rayon_threads = max(1, avail - 6)  # reserve headroom for main + GPU I/O
+        os.environ["RAYON_NUM_THREADS"] = str(rayon_threads)
+        logger.info(f"Set RAYON_NUM_THREADS={rayon_threads} (from {avail} available CPUs)")
+    return avail
+
+
+def build_rust_extraction_kwargs(
+    *,
+    signal_context: tuple[int, int],
+    kmer_context: int,
+    signal_len: int,
+    compute_features: bool,
+    reverse_signal: bool,
+    feature_start: int | None,
+    feature_end: int | None,
+    anchor: str,
+    seq_encoding: str,
+    signal_kmer_context: tuple[int, int],
+    refine_signal_map: bool,
+    signal_refiner,
+    refine_half_bandwidth: int,
+    refine_scale_iters: int,
+    signal_in_channels: int,
+) -> dict:
+    """Build the kwargs dict passed to the rust extraction functions.
+
+    Extracts kmer table + kmer length + kmer center from ``signal_refiner``
+    when refinement is enabled; otherwise fills in inert defaults.
+    """
+    kmer_table_dict = None
+    kmer_table_len = 9
+    kmer_table_center = -1
+    if refine_signal_map and signal_refiner is not None:
+        kmer_table_dict = getattr(signal_refiner, "kmer_to_level", None)
+        kmer_table_len = getattr(signal_refiner, "kmer_len", 9)
+        kmer_table_center = getattr(signal_refiner, "center_idx", -1)
+
+    return {
+        "signal_context_left": signal_context[0],
+        "signal_context_right": signal_context[1],
+        "kmer_context": kmer_context,
+        "signal_len": signal_len,
+        "compute_features": compute_features,
+        "reverse_signal": reverse_signal,
+        "feature_start": feature_start,
+        "feature_end": feature_end,
+        "anchor": anchor,
+        "seq_encoding": seq_encoding,
+        "signal_kmer_context": (signal_kmer_context if seq_encoding == "signal_kmer" else None),
+        "refine_signal_map": refine_signal_map,
+        "kmer_table": kmer_table_dict,
+        "kmer_len": kmer_table_len,
+        "kmer_center_idx": kmer_table_center,
+        "refine_half_bandwidth": refine_half_bandwidth,
+        "refine_scale_iters": refine_scale_iters,
+        "signal_in_channels": signal_in_channels,
+    }
+
+
+def collect_bam_metadata_for_rust(
+    aln_batch: list,
+    *,
+    motif: str,
+    motif_offset: int,
+    motif_searcher,
+    anchor: str,
+    reference_sequences: dict[str, str] | None,
+    max_positions_per_read: int | None = None,
+) -> tuple[
+    list[str],
+    list[str],
+    list[int],
+    list[list[int]],
+    list[int],
+    list[int],
+    list[list[int]],
+    list[list[tuple[int, int]]],
+    list[str | None],
+]:
+    """Collect pysam alignment metadata into the parallel-list format expected
+    by ``_rs_extract_inference_chunks`` / ``_rs_preload_pod5_signals``.
+
+    Must be called on the thread that owns ``aln_batch`` — pysam is not
+    thread-safe across iteration.
+
+    Args:
+        aln_batch: Batch of pysam ``AlignedSegment`` objects.
+        motif: Motif to search for in each read's sequence.
+        motif_offset: Offset added to each motif match position.
+        motif_searcher: Configured motif searcher.
+        anchor: "reference" or "basecall".
+        reference_sequences: Per-reference sequence dict; required for
+            ``anchor == "reference"``.
+        max_positions_per_read: Cap on motif positions emitted per read.
+            Bundle inference passes 1 to force one-chunk-per-read.
+
+    Returns:
+        Nine parallel lists: (rids, seqs, strides, moves, num_samples,
+        trim_offsets, motif_positions, cigar_tuples, reference_sequences).
+    """
+    from leech.features import extract_move_table
+
+    rs_rids: list[str] = []
+    rs_seqs: list[str] = []
+    rs_strides: list[int] = []
+    rs_mvs: list[list[int]] = []
+    rs_ns: list[int] = []
+    rs_trims: list[int] = []
+    rs_motifs: list[list[int]] = []
+    rs_cigars: list[list[tuple[int, int]]] = []
+    rs_refs: list[str | None] = []
+
+    for aln in aln_batch:
+        if aln.query_name is None or aln.query_sequence is None:
+            continue
+        try:
+            mt = extract_move_table(aln)
+            positions = [
+                pos + motif_offset
+                for pos in motif_searcher.find_motif_positions(
+                    aln.query_name, aln.query_sequence, aln, motif
+                )
+            ]
+            if not positions:
+                continue
+            if max_positions_per_read is not None:
+                positions = positions[:max_positions_per_read]
+
+            rs_rids.append(aln.query_name)
+            rs_seqs.append(aln.query_sequence)
+            rs_strides.append(mt.stride)
+            rs_mvs.append(mt.moves.tolist())
+            rs_ns.append(mt.num_samples)
+            rs_trims.append(mt.trim_offset)
+            rs_motifs.append(positions)
+
+            ref_seq = None
+            cigar_list: list[tuple[int, int]] = []
+            if anchor == "reference":
+                cigar_list = list(aln.cigartuples) if aln.cigartuples else []
+                if reference_sequences and aln.reference_name in reference_sequences:
+                    full_ref = reference_sequences[aln.reference_name]
+                    ref_seq = full_ref[aln.reference_start : aln.reference_end]
+                else:
+                    try:
+                        ref_seq = aln.get_reference_sequence()
+                    except Exception:
+                        ref_seq = None
+            rs_cigars.append(cigar_list)
+            rs_refs.append(ref_seq)
+        except Exception as e:
+            logger.warning(f"Skipping read {aln.query_name}: {e}")
+            continue
+
+    return (
+        rs_rids,
+        rs_seqs,
+        rs_strides,
+        rs_mvs,
+        rs_ns,
+        rs_trims,
+        rs_motifs,
+        rs_cigars,
+        rs_refs,
+    )

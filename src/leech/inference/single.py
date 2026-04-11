@@ -20,6 +20,10 @@ from leech.inference.helpers import (
     _run_batch,
     _run_batch_multiclass,
     _write_mega_batch_predictions,
+    build_rust_extraction_kwargs,
+    cap_rayon_threads_for_slurm,
+    check_rust_extraction_available,
+    collect_bam_metadata_for_rust,
     load_model_auto,
     validate_inference_shapes,
 )
@@ -849,46 +853,20 @@ def run_inference(
             kmer_context=kmer_context,
         )
 
-        # Number of extraction threads: Rust functions release the GIL,
-        # so threads give real parallelism for the CPU-heavy parts
-        # (banded DP, signal stats, kmer encoding).
-        import os
-
+        # Extraction thread count + rust setup (all three shared with
+        # run_bundle_inference via helpers.py).
         _MAX_THREADS = 8  # sensible cap to avoid oversubscription on shared nodes
-
-        # Respect SLURM allocation; fall back to system CPU count, capped
-        _avail_cpus = int(os.environ.get("SLURM_CPUS_PER_TASK", 0)) or min(
-            os.cpu_count() or 4, _MAX_THREADS
-        )
-        n_extract = max(1, _avail_cpus - 2)  # reserve for main + GPU
-
-        # Limit Rust rayon thread pool to match allocation.
-        # Without this, rayon defaults to ALL system CPUs (e.g., 63 on a 64-core node),
-        # causing massive oversubscription when multiple jobs share a node.
-        if "RAYON_NUM_THREADS" not in os.environ:
-            rayon_threads = max(1, _avail_cpus - 2)
-            os.environ["RAYON_NUM_THREADS"] = str(rayon_threads)
-            logger.info(
-                f"Set RAYON_NUM_THREADS={rayon_threads} (from {_avail_cpus} available CPUs)"
-            )
+        _avail_cpus = cap_rayon_threads_for_slurm(max_cap=_MAX_THREADS)
+        n_extract = max(1, _avail_cpus - 6)  # reserve headroom for main + GPU I/O
 
         logger.info(f"Sequential path with {n_extract} extraction threads, double-buffered GPU")
 
-        # Check if we can use the Rust monolithic extraction hot path
-        from leech._rust_accel import (
-            HAS_RUST,
-            _rs_extract_chunks_from_preloaded,
+        (
+            _use_rust_extraction,
             _rs_extract_inference_chunks,
             _rs_preload_pod5_signals,
-        )
-
-        _rust_available = HAS_RUST and _rs_extract_inference_chunks is not None
-        if backend == "rust" and not _rust_available:
-            raise RuntimeError(
-                "--backend rust requested but leech_core is not installed. "
-                "Build with: cd rust && uv run maturin develop --release"
-            )
-        _use_rust_extraction = _rust_available and backend != "python"
+            _rs_extract_chunks_from_preloaded,
+        ) = check_rust_extraction_available(backend)
         if _use_rust_extraction:
             logger.info("Using Rust monolithic extraction (escapepod-rs + leech_core)")
         else:
@@ -905,15 +883,6 @@ def run_inference(
         )
         if _has_prefetch:
             logger.info("POD5 prefetch pipeline enabled (overlapped I/O)")
-
-        # Kmer table for signal refinement (constant across mega-batches)
-        _kmer_table_dict = None
-        _kmer_table_len = 9
-        _kmer_table_center = -1
-        if _use_rust_extraction and refine_signal_map and signal_refiner is not None:
-            _kmer_table_dict = getattr(signal_refiner, "kmer_to_level", None)
-            _kmer_table_len = getattr(signal_refiner, "kmer_len", 9)
-            _kmer_table_center = getattr(signal_refiner, "center_idx", -1)
 
         def _extract_one_read(
             aln: pysam.AlignedSegment,
@@ -1020,102 +989,35 @@ def run_inference(
 
         _extract_pool = ThreadPoolExecutor(max_workers=n_extract)
 
-        # Shared Rust kwargs (constant across mega-batches)
-        _rs_kwargs = {
-            "signal_context_left": signal_context[0],
-            "signal_context_right": signal_context[1],
-            "kmer_context": kmer_context,
-            "signal_len": signal_len,
-            "compute_features": compute_features,
-            "reverse_signal": reverse_signal,
-            "feature_start": _feature_start,
-            "feature_end": _feature_end,
-            "anchor": anchor,
-            "seq_encoding": seq_encoding,
-            "signal_kmer_context": signal_kmer_context if seq_encoding == "signal_kmer" else None,
-            "refine_signal_map": refine_signal_map,
-            "kmer_table": _kmer_table_dict,
-            "kmer_len": _kmer_table_len,
-            "kmer_center_idx": _kmer_table_center,
-            "refine_half_bandwidth": config.get("refine_half_bandwidth", 5),
-            "refine_scale_iters": config.get("refine_scale_iters", 2),
-            "signal_in_channels": signal_in_channels,
-        }
+        # Shared Rust kwargs + metadata collection (shared with
+        # run_bundle_inference via helpers.py).
+        assert motif is not None  # type narrowing for helpers below
+        _rs_kwargs = build_rust_extraction_kwargs(
+            signal_context=signal_context,
+            kmer_context=kmer_context,
+            signal_len=signal_len,
+            compute_features=compute_features,
+            reverse_signal=reverse_signal,
+            feature_start=_feature_start,
+            feature_end=_feature_end,
+            anchor=anchor,
+            seq_encoding=seq_encoding,
+            signal_kmer_context=signal_kmer_context,
+            refine_signal_map=refine_signal_map,
+            signal_refiner=signal_refiner,
+            refine_half_bandwidth=config.get("refine_half_bandwidth", 5),
+            refine_scale_iters=config.get("refine_scale_iters", 2),
+            signal_in_channels=signal_in_channels,
+        )
 
-        def _collect_bam_metadata(
-            aln_batch: list,
-        ) -> tuple[
-            list[str],
-            list[str],
-            list[int],
-            list[list[int]],
-            list[int],
-            list[int],
-            list[list[int]],
-            list[list[tuple[int, int]]],
-            list[str | None],
-        ]:
-            """Extract BAM metadata for Rust extraction (main thread only)."""
-            rs_rids: list[str] = []
-            rs_seqs: list[str] = []
-            rs_strides: list[int] = []
-            rs_mvs: list[list[int]] = []
-            rs_ns: list[int] = []
-            rs_trims: list[int] = []
-            rs_motifs: list[list[int]] = []
-            rs_cigars: list[list[tuple[int, int]]] = []
-            rs_refs: list[str | None] = []
-
-            assert motif is not None
-            for aln in aln_batch:
-                if aln.query_name is None or aln.query_sequence is None:
-                    continue
-                try:
-                    mt = extract_move_table(aln)
-                    positions = [
-                        pos + motif_offset
-                        for pos in motif_searcher.find_motif_positions(
-                            aln.query_name, aln.query_sequence, aln, motif
-                        )
-                    ]
-                    if not positions:
-                        continue
-                    rs_rids.append(aln.query_name)
-                    rs_seqs.append(aln.query_sequence)
-                    rs_strides.append(mt.stride)
-                    rs_mvs.append(mt.moves.tolist())
-                    rs_ns.append(mt.num_samples)
-                    rs_trims.append(mt.trim_offset)
-                    rs_motifs.append(positions)
-
-                    ref_seq = None
-                    cigar_list: list[tuple[int, int]] = []
-                    if anchor == "reference":
-                        cigar_list = list(aln.cigartuples) if aln.cigartuples else []
-                        if reference_sequences and aln.reference_name in reference_sequences:
-                            full_ref = reference_sequences[aln.reference_name]
-                            ref_seq = full_ref[aln.reference_start : aln.reference_end]
-                        else:
-                            try:
-                                ref_seq = aln.get_reference_sequence()
-                            except Exception:
-                                ref_seq = None
-                    rs_cigars.append(cigar_list)
-                    rs_refs.append(ref_seq)
-                except Exception as e:
-                    logger.warning(f"Skipping read {aln.query_name}: {e}")
-                    continue
-
-            return (
-                rs_rids,
-                rs_seqs,
-                rs_strides,
-                rs_mvs,
-                rs_ns,
-                rs_trims,
-                rs_motifs,
-                rs_cigars,
-                rs_refs,
+        def _collect_bam_metadata(aln_batch: list) -> tuple:
+            return collect_bam_metadata_for_rust(
+                aln_batch,
+                motif=motif,
+                motif_offset=motif_offset,
+                motif_searcher=motif_searcher,
+                anchor=anchor,
+                reference_sequences=reference_sequences,
             )
 
         _SUB_BATCH_SIZE = 50_000  # Sub-batch Rust extraction for continuous GPU feeding
