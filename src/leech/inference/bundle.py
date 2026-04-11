@@ -2,6 +2,7 @@
 
 import logging
 import math
+import multiprocessing as mp
 from pathlib import Path
 
 import numpy as np
@@ -9,7 +10,7 @@ import pysam
 import torch
 from rich.progress import Progress
 
-from leech.configs import ChunkConfig, SignalConfig
+from leech.configs import ChunkConfig, InferenceConfig, MotifConfig, SignalConfig
 from leech.features import extract_move_table
 from leech.inference.aggregation import (
     aggregate_one_vs_all,
@@ -23,7 +24,7 @@ from leech.inference.helpers import (
     _write_prediction_tags,
     validate_inference_shapes,
 )
-from leech.io.bam_reader import count_bam_reads, iter_bam_batches
+from leech.io.bam_reader import ReadInfo, count_bam_reads, iter_bam_batches
 from leech.io.motif_search import get_motif_searcher
 from leech.io.pod5_reader import POD5Reader
 from leech.model_export import deserialize_exported_model, deserialize_traced_model
@@ -418,8 +419,184 @@ def run_bundle_inference(
     )
     mega_batch_idx = 0
 
+    # Build InferenceConfig for parallel workers (reused across mega-batches).
+    # Only constructed when num_workers > 0 — the serial path uses its own
+    # local SignalConfig/ChunkConfig.
+    inf_config: InferenceConfig | None = None
+    if num_workers > 0:
+        inf_config = InferenceConfig(
+            pod5_path=pod5_path,
+            signal=SignalConfig(
+                reverse_signal=reverse_signal,
+                anchor=anchor,
+                norm_method=config.get("signal_norm", "median_mad"),
+                pa_mean=config.get("pa_mean"),
+                pa_stdev=config.get("pa_stdev"),
+                refine_signal_map=bundle_refine,
+                signal_refiner=bundle_refiner,
+            ),
+            motif=MotifConfig(
+                motif=motif,
+                motif_offset=motif_offset,
+                reference_sequences=reference_sequences,
+                skip_motif_indels=config.get("skip_motif_indels", False),
+            ),
+            chunk=ChunkConfig(
+                base_justify=base_justify,
+                feature_start=_feature_start,
+                feature_end=_feature_end,
+                signal_context=signal_context,
+                kmer_context=kmer_context,
+            ),
+            seq_encoding=seq_encoding,
+            signal_kmer_context=signal_kmer_context,
+            signal_len=signal_len,
+            kmer_len=kmer_len,
+            dwell_offset=dwell_offset,
+            wide_features=wide_features,
+            requires_features=needs_features,
+            signal_in_channels=bundle_signal_in_channels,
+        )
+
     with Progress() as progress:
         task = progress.add_task("[cyan]Processing reads...", total=None)
+
+        if num_workers > 0:
+            # ---- Parallel path: dispatch chunk extraction to mp.Pool workers ----
+            #
+            # Each worker opens its own escapepod Reader, extracts chunks for a
+            # sub-batch of ReadInfo objects, and returns (read_id, base_idx, sig,
+            # enc_seq, feat) tuples. The main process collects results, dedupes
+            # to one chunk per read (matching the serial path's positions[0]
+            # behavior), batches, and runs the multi-model GPU forward via the
+            # shared _flush_batch closure.
+            from leech.inference.single import _inference_worker
+
+            assert inf_config is not None  # constructed above
+            logger.info(f"Parallel bundle inference with {num_workers} workers")
+
+            _worker_chunk_size = 100  # reads per worker sub-batch
+
+            with mp.Pool(processes=num_workers) as pool:
+                for aln_batch in iter_bam_batches(
+                    bam_path, batch_size=read_batch_size, min_mapq=min_mapq
+                ):
+                    read_probs.clear()
+
+                    # Build ReadInfo objects (lightweight, picklable) from this
+                    # mega-batch. This is single-threaded but cheap.
+                    read_infos: list[ReadInfo] = []
+                    for aln in aln_batch:
+                        try:
+                            read_infos.append(ReadInfo(aln))
+                        except Exception as e:
+                            logger.warning(f"Skipping read {aln.query_name}: {e}")
+
+                    logger.info(
+                        f"Mega-batch: {len(aln_batch)} alignments, "
+                        f"{len(read_infos)} ReadInfo objects "
+                        f"-> {num_workers} workers"
+                    )
+
+                    n_reads += len(read_infos)
+
+                    if not read_infos:
+                        # Nothing to infer but still write the mega-batch through
+                        for aln in aln_batch:
+                            bam_out.write(aln)
+                        mega_batch_idx += 1
+                        continue
+
+                    # Split into sub-batches and dispatch
+                    worker_batches = [
+                        read_infos[i : i + _worker_chunk_size]
+                        for i in range(0, len(read_infos), _worker_chunk_size)
+                    ]
+                    worker_args = [(wb, inf_config) for wb in worker_batches]
+
+                    # Dedupe: bundle uses only the first chunk per read
+                    seen_in_batch: set[str] = set()
+
+                    for worker_results in pool.imap_unordered(_inference_worker, worker_args):
+                        for (
+                            read_id,
+                            _base_idx,
+                            sig,
+                            enc_seq,
+                            feat,
+                        ) in worker_results:
+                            if read_id in seen_in_batch:
+                                continue
+                            seen_in_batch.add(read_id)
+
+                            signal_t = torch.from_numpy(sig)
+                            seq_t = torch.from_numpy(enc_seq)
+                            batch_signals.append(signal_t)
+                            batch_sequences.append(seq_t)
+                            batch_read_ids.append(read_id)
+                            if needs_features and feat is not None:
+                                batch_features.append(torch.from_numpy(feat))
+
+                            if not _shape_validated:
+                                validate_inference_shapes(sig, feat, config)
+                                _shape_validated = True
+
+                            n_chunks += 1
+                            if len(batch_signals) >= batch_size:
+                                _flush_batch()
+
+                    # Flush remaining chunks for this mega-batch
+                    _flush_batch()
+
+                    # -- Aggregate per-read and write BAM for this mega-batch --
+                    batch_preds = 0
+                    for aln in aln_batch:
+                        prob_vec = read_probs.get(aln.query_name)
+                        if prob_vec is None:
+                            bam_out.write(aln)
+                            continue
+
+                        probs = [float(prob_vec[pair_to_idx[pair]]) for pair in pairs]
+                        predicted_aa, confidence, _ = aggregate_fn(pairs, probs)
+
+                        _write_prediction_tags(
+                            aln,
+                            predicted_aa,
+                            confidence,
+                            pair_names_str,
+                            probs,
+                            raw,
+                            min_confidence,
+                            min_margin,
+                        )
+                        bam_out.write(aln)
+                        n_predicted += 1
+                        batch_preds += 1
+
+                    mega_batch_idx += 1
+                    logger.info(
+                        f"Mega-batch {mega_batch_idx}/{n_total_mega_batches} "
+                        f"complete: wrote {batch_preds} predictions for "
+                        f"{len(aln_batch)} reads"
+                    )
+
+                    progress.update(
+                        task,
+                        advance=0,
+                        description=(
+                            f"[cyan]Processed {n_chunks} chunks from "
+                            f"{n_reads} reads ({n_batches_done} batches, "
+                            f"{n_predicted} predicted)..."
+                        ),
+                    )
+
+            logger.info(f"Extracted and inferred {n_chunks} chunks from {n_reads} reads")
+            logger.info(f"Predicted {n_predicted} reads")
+            bam_out.close()
+
+            logger.info(f"Bundle inference complete: {n_reads} reads, {len(pairs)} models")
+            logger.info(f"Output written to: {output_path}")
+            return
 
         with POD5Reader(pod5_path, backend=backend) as pod5_reader:
             for aln_batch in iter_bam_batches(
