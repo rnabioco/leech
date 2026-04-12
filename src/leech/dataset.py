@@ -65,6 +65,114 @@ FEATURE_MODELS = ModelInferenceWrapper.FEATURE_MODELS
 WIDE_FEATURE_MODELS = ModelInferenceWrapper.WIDE_FEATURE_MODELS
 
 
+# =============================================================================
+# Dwell template helpers — shared between training (LeechDataset.__getitem__)
+# and inference (run_bundle_inference / run_inference chunk consumption).
+#
+# The template append is LABEL-INDEPENDENT: it computes `dwell / expected_dwell
+# [AA_i, pos]` for all 20 AAs per feature position without ever looking at the
+# ground-truth label, so the same routine works verbatim at inference time on
+# models that were trained with templates.
+# =============================================================================
+
+
+def load_dwell_template_table(
+    table_path: Path,
+) -> tuple[np.ndarray, int, list[str]]:
+    """Load per-AA per-position expected dwell from a TSV.
+
+    Args:
+        table_path: Path to TSV with columns ``aa``, ``position``, ``dwell_mean``.
+
+    Returns:
+        (template, template_min_pos, aa_order) where:
+          - template: ndarray of shape (n_aa, n_positions), indexed by
+            ``[aa_idx, pos - template_min_pos]``.
+          - template_min_pos: integer offset such that column 0 corresponds to
+            position ``template_min_pos``.
+          - aa_order: list of amino-acid three-letter codes, sorted
+            alphabetically. Index into this list to interpret the first axis of
+            ``template``.
+    """
+    df = pd.read_csv(table_path, sep="\t")
+    aa_list = sorted(df["aa"].unique())
+    n_aa = len(aa_list)
+    aa_to_idx = {aa: i for i, aa in enumerate(aa_list)}
+
+    min_pos = int(df["position"].min())
+    max_pos = int(df["position"].max())
+
+    # Grand mean dwell at each position (fallback for missing entries)
+    grand_mean = df.groupby("position")["dwell_mean"].mean()
+
+    n_positions = max_pos - min_pos + 1
+    template = np.ones((n_aa, n_positions), dtype=np.float32)
+    for _, row in df.iterrows():
+        ai = aa_to_idx[row["aa"]]
+        pi = int(row["position"]) - min_pos
+        template[ai, pi] = row["dwell_mean"]
+
+    # Fill missing entries with grand mean
+    for pos in range(min_pos, max_pos + 1):
+        pi = pos - min_pos
+        gm = grand_mean.get(pos, 1.0)
+        for ai in range(n_aa):
+            if template[ai, pi] <= 0:
+                template[ai, pi] = gm
+
+    logger.info(
+        f"Loaded dwell template table: {n_aa} AAs, "
+        f"positions {min_pos} to {max_pos} from {table_path}"
+    )
+    return template, min_pos, aa_list
+
+
+def append_dwell_template_channels(
+    features: np.ndarray,
+    *,
+    feat_start: int,
+    dwell_templates: np.ndarray,
+    template_min_pos: int,
+) -> np.ndarray:
+    """Append N_AA dwell ratio channels to a feature array.
+
+    For each of the AAs in ``dwell_templates`` computes
+    ``dwell / expected_dwell[AA_i, pos]`` at each feature position, where
+    raw dwell is expected to be channel 0 of ``features``. Positions not
+    covered by the template use 1.0 (unit ratio, no information).
+
+    Args:
+        features: Base features of shape ``(num_features, feat_width)``.
+        feat_start: Position of column 0 of ``features`` in the same coordinate
+            frame used to build the template (typically a signed offset from
+            the focus base — matches ``chunk["feature_start"]``).
+        dwell_templates: (n_aa, n_template_positions) array from
+            ``load_dwell_template_table``.
+        template_min_pos: ``template_min_pos`` from ``load_dwell_template_table``.
+
+    Returns:
+        Expanded feature array of shape ``(num_features + n_aa, feat_width)``.
+    """
+    raw_dwell = features[0]  # (feat_width,)
+    feat_width = features.shape[1]
+    n_aa = dwell_templates.shape[0]
+    template_channels = np.ones((n_aa, feat_width), dtype=np.float32)
+
+    for fi in range(feat_width):
+        pos = feat_start + fi
+        ti = pos - template_min_pos
+        dwell_val = raw_dwell[fi]
+        if dwell_val <= 0:
+            continue  # no dwell data at this position, leave as 1.0
+        if 0 <= ti < dwell_templates.shape[1]:
+            expected = dwell_templates[:, ti]
+            safe_expected = np.where(expected > 0, expected, 1.0)
+            template_channels[:, fi] = dwell_val / safe_expected
+        # else: outside transit table range, leave as 1.0
+
+    return np.concatenate([features, template_channels], axis=0)
+
+
 class LeechDataset(Dataset):
     """
     PyTorch Dataset for leech training chunks.
@@ -336,80 +444,29 @@ class LeechDataset(Dataset):
         return torch.from_numpy(np.ascontiguousarray(signal))
 
     def _load_dwell_templates(self, table_path: Path) -> None:
-        """Load per-AA per-position expected dwell from TSV.
-
-        Builds a (20, max_pos) array of expected dwell values. Positions
-        not covered by the table use the grand mean across AAs.
-        """
-        df = pd.read_csv(table_path, sep="\t")
-        aa_list = sorted(df["aa"].unique())
-        self._template_aa_order = aa_list
-        n_aa = len(aa_list)
-        aa_to_idx = {aa: i for i, aa in enumerate(aa_list)}
-
-        # Determine position range from the data
-        min_pos = int(df["position"].min())
-        max_pos = int(df["position"].max())
-
-        # Grand mean dwell at each position (fallback for missing entries)
-        grand_mean = df.groupby("position")["dwell_mean"].mean()
-
-        # Build lookup array: (n_aa, n_positions) indexed by [aa_idx, pos - min_pos]
-        n_positions = max_pos - min_pos + 1
-        template = np.ones((n_aa, n_positions), dtype=np.float32)
-        for _, row in df.iterrows():
-            ai = aa_to_idx[row["aa"]]
-            pi = int(row["position"]) - min_pos
-            template[ai, pi] = row["dwell_mean"]
-
-        # Fill missing entries with grand mean
-        for pos in range(min_pos, max_pos + 1):
-            pi = pos - min_pos
-            gm = grand_mean.get(pos, 1.0)
-            for ai in range(n_aa):
-                if template[ai, pi] <= 0:
-                    template[ai, pi] = gm
-
+        """Instance wrapper: load templates via the module-level helper."""
+        template, template_min_pos, aa_order = load_dwell_template_table(table_path)
         self._dwell_templates = template
-        self._template_min_pos = min_pos
-        logger.info(
-            f"Loaded dwell template table: {n_aa} AAs, "
-            f"positions {min_pos} to {max_pos} from {table_path}"
-        )
+        self._template_min_pos = template_min_pos
+        self._template_aa_order = aa_order
 
     def _append_template_channels(self, features: np.ndarray, chunk: dict) -> np.ndarray:
-        """Append 20 dwell ratio channels to feature array.
+        """Instance wrapper: delegate to the module-level helper.
 
-        For each of 20 AAs, computes dwell / expected_dwell[AA_i, pos] at each
-        feature position. Returns expanded features with shape
-        (num_features + 20, feat_width).
+        The label-independent nature of ``append_dwell_template_channels`` means
+        it works at inference time too — it computes ``dwell /
+        expected_dwell[AA_i, pos]`` for all 20 AAs without ever looking at the
+        ground-truth label.
         """
         if self._dwell_templates is None:
             return features
-
-        # Raw dwell is channel 0 in the feature array
-        raw_dwell = features[0]  # (feat_width,)
-        feat_width = features.shape[1]
-
-        # Determine which feature positions map to which transit table positions
         feat_start = int(chunk.get("feature_start", 0))
-        n_aa = len(self._template_aa_order)
-        template_channels = np.ones((n_aa, feat_width), dtype=np.float32)
-
-        for fi in range(feat_width):
-            pos = feat_start + fi
-            ti = pos - self._template_min_pos
-            dwell_val = raw_dwell[fi]
-            if dwell_val <= 0:
-                continue  # no dwell data at this position, leave as 1.0
-            if 0 <= ti < self._dwell_templates.shape[1]:
-                expected = self._dwell_templates[:, ti]  # (n_aa,)
-                # Avoid division by zero
-                safe_expected = np.where(expected > 0, expected, 1.0)
-                template_channels[:, fi] = dwell_val / safe_expected
-            # else: outside transit table range, leave as 1.0
-
-        return np.concatenate([features, template_channels], axis=0)
+        return append_dwell_template_channels(
+            features,
+            feat_start=feat_start,
+            dwell_templates=self._dwell_templates,
+            template_min_pos=self._template_min_pos,
+        )
 
     def _prepare_features(self, chunk: dict) -> torch.Tensor:
         """Apply dwell_offset slicing and tensorize features. Called once during __init__."""

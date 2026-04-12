@@ -303,6 +303,26 @@ def run_bundle_inference(
             f"(signal_in_channels={bundle_signal_in_channels})"
         )
 
+    # Load per-AA dwell templates if the bundle was trained with them. The
+    # model expects `base_features + N_AA` channels, so inference must apply
+    # the same template-append that the training dataset did. This is
+    # label-independent (computes dwell/expected for all AAs), so it works
+    # verbatim at inference time.
+    dwell_templates_arr: np.ndarray | None = None
+    dwell_template_min_pos: int = 0
+    bundle_dwell_template_table = config.get("dwell_template_table") or None
+    if bundle_dwell_template_table:
+        from leech.dataset import load_dwell_template_table
+
+        dwell_templates_arr, dwell_template_min_pos, _ = load_dwell_template_table(
+            Path(bundle_dwell_template_table)
+        )
+        logger.info(
+            f"Dwell template append enabled at inference "
+            f"(+{dwell_templates_arr.shape[0]} channels from "
+            f"{bundle_dwell_template_table})"
+        )
+
     # -- Setup vmap forward for format_version 4, else use sequential wrappers --
     is_vmap = format_version == 4
     vmapped_forward = None
@@ -564,6 +584,25 @@ def run_bundle_inference(
                     for sig, seq_arr, feat, read_id, _base_idx in chunks:
                         if bundle_signal_in_channels > 1 and sig.ndim == 1:
                             sig = sig.reshape(bundle_signal_in_channels, -1)
+
+                        # If the bundle was trained with dwell templates,
+                        # append the N_AA channels here — the model expects
+                        # them. feat_start comes from _feature_start (the
+                        # whole-pipeline setting, identical to training).
+                        if needs_features and feat is not None and dwell_templates_arr is not None:
+                            from leech.dataset import (
+                                append_dwell_template_channels,
+                            )
+
+                            feat = append_dwell_template_channels(
+                                feat,
+                                feat_start=_feature_start
+                                if _feature_start is not None
+                                else -_kmer_context,
+                                dwell_templates=dwell_templates_arr,
+                                template_min_pos=dwell_template_min_pos,
+                            )
+
                         if not _shape_validated:
                             validate_inference_shapes(sig, feat, config)
                             _shape_validated = True
@@ -703,6 +742,24 @@ def run_bundle_inference(
                             if read_id in seen_in_batch:
                                 continue
                             seen_in_batch.add(read_id)
+
+                            if (
+                                needs_features
+                                and feat is not None
+                                and dwell_templates_arr is not None
+                            ):
+                                from leech.dataset import (
+                                    append_dwell_template_channels,
+                                )
+
+                                feat = append_dwell_template_channels(
+                                    feat,
+                                    feat_start=_feature_start
+                                    if _feature_start is not None
+                                    else -_kmer_context,
+                                    dwell_templates=dwell_templates_arr,
+                                    template_min_pos=dwell_template_min_pos,
+                                )
 
                             signal_t = torch.from_numpy(sig)
                             seq_t = torch.from_numpy(enc_seq)
@@ -884,13 +941,27 @@ def run_bundle_inference(
                     if needs_features:
                         features_array = chunk["features"]
                         assert isinstance(features_array, np.ndarray)
+                        features_array = features_array.astype(np.float32)
                         if wide_features:
                             pass
                         elif features_array.size > 0 and features_array.shape[1] > kmer_len:
                             fs = chunk.get("feature_start", -_kmer_context)
-                            feat_start = (-_kmer_context - fs) + dwell_offset
-                            features_array = features_array[:, feat_start : feat_start + kmer_len]
-                        batch_features.append(torch.from_numpy(features_array.astype(np.float32)))
+                            feat_start_slice = (-_kmer_context - fs) + dwell_offset
+                            features_array = features_array[
+                                :, feat_start_slice : feat_start_slice + kmer_len
+                            ]
+                        if dwell_templates_arr is not None:
+                            from leech.dataset import (
+                                append_dwell_template_channels,
+                            )
+
+                            features_array = append_dwell_template_channels(
+                                features_array,
+                                feat_start=int(chunk.get("feature_start", -_kmer_context)),
+                                dwell_templates=dwell_templates_arr,
+                                template_min_pos=dwell_template_min_pos,
+                            )
+                        batch_features.append(torch.from_numpy(features_array))
 
                     if not _shape_validated:
                         _feat_for_check = (

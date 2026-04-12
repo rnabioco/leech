@@ -174,8 +174,12 @@ def calibrate_model(
 
     wrapper = ModelInferenceWrapper(model, model_name)
 
-    # Load validation data
+    # Load validation data. Forward dwell_template_table from training config
+    # so the dataset builds a feature tensor with the same channel count the
+    # model was trained on — otherwise the Conv1d in the feature branch
+    # crashes with "expected N channels, but got M channels".
     val_chunks = load_chunks(val_data_path)
+    dwell_template_table = config.get("dwell_template_table") or None
     val_dataset = LeechDataset(
         chunks=val_chunks,
         model_type=model_name,
@@ -184,6 +188,7 @@ def calibrate_model(
         seq_encoding=seq_encoding,
         signal_kmer_context=signal_kmer_context,
         signal_mode=config.get("signal_mode", "both"),
+        dwell_template_table=dwell_template_table,
     )
     val_loader = DataLoader(
         val_dataset,
@@ -519,8 +524,12 @@ def calibrate_model_multiclass(
 
     wrapper = ModelInferenceWrapper(model, model_name)
 
-    # Load validation data
+    # Load validation data. Forward dwell_template_table from training config
+    # so the dataset builds a feature tensor with the same channel count the
+    # model was trained on — otherwise the Conv1d in the feature branch
+    # crashes with "expected N channels, but got M channels".
     val_chunks = load_chunks(val_data_path)
+    dwell_template_table = config.get("dwell_template_table") or None
     val_dataset = LeechDataset(
         chunks=val_chunks,
         model_type=model_name,
@@ -529,6 +538,7 @@ def calibrate_model_multiclass(
         seq_encoding=seq_encoding,
         signal_kmer_context=signal_kmer_context,
         signal_mode=config.get("signal_mode", "both"),
+        dwell_template_table=dwell_template_table,
     )
     val_loader = DataLoader(
         val_dataset,

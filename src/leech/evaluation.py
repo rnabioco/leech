@@ -92,8 +92,12 @@ def evaluate_model(
     logger.info(f"K-mer length: {kmer_len}")
     logger.info(f"seq_encoding: {seq_encoding}, dwell_offset: {dwell_offset}")
 
-    # Load test dataset
+    # Load test dataset. Forward dwell_template_table from training config so
+    # the feature tensor has the same channel count as training — otherwise
+    # the feature-branch Conv1d crashes with a channel mismatch on models
+    # that were trained with per-AA dwell templates.
     logger.info(f"\nLoading test data from {test_data_path}")
+    dwell_template_table = config.get("dwell_template_table") or None
     test_dataset = LeechDataset(
         test_data_path,
         signal_len=signal_len,
@@ -105,6 +109,7 @@ def evaluate_model(
         seq_encoding=seq_encoding,
         signal_kmer_context=signal_kmer_context,
         signal_mode=signal_mode,
+        dwell_template_table=dwell_template_table,
     )
 
     loader_kwargs: dict = {"num_workers": 0}
