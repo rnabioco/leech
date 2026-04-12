@@ -16,7 +16,7 @@ pub(super) fn median_f32(data: &mut [f32]) -> f32 {
     // ~1e-7 normalization differences that cascade through refinement.
     data.sort_unstable_by(F32_CMP);
     let mid = n / 2;
-    if n % 2 == 0 {
+    if n.is_multiple_of(2) {
         (data[mid - 1] + data[mid]) / 2.0
     } else {
         data[mid]
@@ -30,7 +30,7 @@ pub(super) fn median_f64(data: &mut [f64]) -> f64 {
     let n = data.len();
     let mid = n / 2;
     data.select_nth_unstable_by(mid, F64_CMP);
-    if n % 2 == 0 {
+    if n.is_multiple_of(2) {
         let hi = data[mid];
         let lo = data[..mid].iter().copied().fold(f64::NEG_INFINITY, f64::max);
         (lo + hi) / 2.0

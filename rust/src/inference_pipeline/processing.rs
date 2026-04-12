@@ -77,17 +77,17 @@ pub(super) fn process_read_signal(
 
     // Signal refinement
     let mut expected_levels_f64: Option<Vec<f64>> = None;
-    if cfg.refine_signal_map {
-        if let Some(ref kt) = cfg.kmer_table {
-            refine_signal_map_pipeline(
-                &mut norm_signal, &mut seq_to_sig, &use_sequence,
-                kt, cfg.kmer_len, cfg.kmer_center_idx,
-                cfg.refine_half_bandwidth, cfg.refine_scale_iters,
-            );
-            expected_levels_f64 = Some(extract_levels_inner(
-                &use_sequence, kt, cfg.kmer_len, cfg.kmer_center_idx,
-            ));
-        }
+    if cfg.refine_signal_map
+        && let Some(ref kt) = cfg.kmer_table
+    {
+        refine_signal_map_pipeline(
+            &mut norm_signal, &mut seq_to_sig, &use_sequence,
+            kt, cfg.kmer_len, cfg.kmer_center_idx,
+            cfg.refine_half_bandwidth, cfg.refine_scale_iters,
+        );
+        expected_levels_f64 = Some(extract_levels_inner(
+            &use_sequence, kt, cfg.kmer_len, cfg.kmer_center_idx,
+        ));
     }
 
     let num_bases = seq_to_sig.len().saturating_sub(1);

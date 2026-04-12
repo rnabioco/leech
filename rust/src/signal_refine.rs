@@ -71,6 +71,7 @@ fn banded_forward_vit_step(
 
 /// Viterbi forward step with short-dwell penalty for one base.
 /// `scratch_scores` and `scratch_tb` are pre-allocated buffers to avoid per-call allocation.
+#[allow(clippy::too_many_arguments)]
 fn banded_forward_dwell_penalty_step(
     curr_scores: &mut [f32],
     curr_tb: &mut [i32],

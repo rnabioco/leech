@@ -270,6 +270,7 @@ fn theil_sen_rescale(
 }
 
 /// Full signal refinement pipeline matching SigMapRefiner.refine().
+#[allow(clippy::too_many_arguments)]
 pub(super) fn refine_signal_map_pipeline(
     signal: &mut Vec<f32>,
     seq_to_sig_map: &mut Vec<i64>,
