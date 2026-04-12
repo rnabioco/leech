@@ -10,6 +10,9 @@ use std::collections::{HashMap, HashSet};
 use numpy::{IntoPyArray, PyArray1};
 use pyo3::prelude::*;
 
+/// One read's POD5 result: (signal_i16, calibration_offset, calibration_scale).
+type Pod5ReadResult = (Py<PyArray1<i16>>, f32, f32);
+
 /// Read raw DAC signals for a batch of reads from a POD5 file.
 ///
 /// Opens the file once, looks up matching read IDs (using `.p5i` index
@@ -22,7 +25,7 @@ pub fn read_pod5_batch<'py>(
     py: Python<'py>,
     pod5_path: &str,
     read_ids: Vec<String>,
-) -> PyResult<HashMap<String, (Py<PyArray1<i16>>, f32, f32)>> {
+) -> PyResult<HashMap<String, Pod5ReadResult>> {
     let target_uuids: HashSet<escapepod::Uuid> = read_ids
         .iter()
         .filter_map(|s| escapepod::Uuid::parse_str(s).ok())
