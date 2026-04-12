@@ -1065,8 +1065,6 @@ def train_model(
         # Full tRNA-isoacceptor identity confound. Each unique reference name
         # (e.g. tRNA-Ser-CGA-1-1) becomes a distinct adversarial class,
         # directly penalising the model for encoding ANY tRNA-body information.
-        import numpy as np
-
         from leech.confounds import build_trna_identity_map
 
         _ref_names = None
