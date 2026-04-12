@@ -523,9 +523,9 @@ def merge(
 )
 @click.option(
     "--confound",
-    type=click.Choice(["disc_base"]),
+    type=click.Choice(["disc_base", "trna_id"]),
     default=None,
-    help="Confound to decorrelate via gradient reversal. 'disc_base' = discriminator base at tRNA position 73.",
+    help="Confound to decorrelate via gradient reversal. 'disc_base' = discriminator base at position 73 (4 classes). 'trna_id' = full tRNA isoacceptor identity (N classes, one per unique reference tRNA).",
 )
 @click.option(
     "--cl-regression/--no-cl-regression",
@@ -917,9 +917,9 @@ def export(model_dir, output):
 )
 @click.option(
     "--confound",
-    type=click.Choice(["disc_base"]),
+    type=click.Choice(["disc_base", "trna_id"]),
     default=None,
-    help="Confound to decorrelate via gradient reversal. 'disc_base' = discriminator base at tRNA position 73.",
+    help="Confound to decorrelate via gradient reversal. 'disc_base' = discriminator base at position 73 (4 classes). 'trna_id' = full tRNA isoacceptor identity (N classes, one per unique reference tRNA).",
 )
 @click.option(
     "--cl-regression/--no-cl-regression",

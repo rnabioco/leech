@@ -194,6 +194,7 @@ class LeechDataset(Dataset):
         left_context: int | None = None,
         right_context: int | None = None,
         confound_map: dict[int, int] | None = None,
+        ref_confound_map: dict[str, int] | None = None,
         cl_regression: bool = False,
         signal_mode: str = "both",
         time_mask_bases: int = 0,
@@ -284,7 +285,8 @@ class LeechDataset(Dataset):
         self._features: list[torch.Tensor] = []
         self._needs_features = model_type in FEATURE_MODELS
         self._confound_map = confound_map
-        self._has_confound = confound_map is not None
+        self._ref_confound_map = ref_confound_map
+        self._has_confound = confound_map is not None or ref_confound_map is not None
         self._confound_labels: list[torch.Tensor] = []
         self._cl_regression = cl_regression
         self._cl_targets: list[torch.Tensor] = []
@@ -354,10 +356,16 @@ class LeechDataset(Dataset):
             else:
                 self._features.append(torch.empty(0))
 
-            # Confound label (e.g. discriminator base identity)
+            # Confound label for adversarial training. Two modes:
+            # 1. label-level (disc_base): confound_map maps label_int → class
+            # 2. chunk-level (trna_id): ref_confound_map maps reference_name → class
             if self._has_confound:
-                label_int = chunk["label_int"]
-                confound_class = confound_map.get(label_int, -1)
+                if self._ref_confound_map is not None:
+                    ref_name = chunk.get("reference_name", "")
+                    confound_class = self._ref_confound_map.get(ref_name, -1)
+                else:
+                    label_int = chunk["label_int"]
+                    confound_class = confound_map.get(label_int, -1)
                 self._confound_labels.append(torch.tensor(confound_class, dtype=torch.long))
 
             # CL regression target (cl_value / 255.0; sentinel -1.0 for missing)

@@ -1029,9 +1029,11 @@ def train_model(
         }
         logger.info(f"Signal augmentation enabled: {augmentation}")
 
-    # Build confound map for adversarial training (e.g. discriminator base)
+    # Build confound map for adversarial training
     confound_map: dict[int, int] | None = None
+    ref_confound_map: dict[str, int] | None = None
     adversarial_num_classes = 4  # default: A/C/G/T
+
     if adversarial_lambda > 0 and confound == "disc_base":
         from leech.confounds import (
             NUM_DISC_BASES,
@@ -1039,12 +1041,10 @@ def train_model(
             load_disc_base_map,
         )
 
-        # label_map may not be known yet — try sidecar
         _lm = label_map
         if _lm is None:
             _lm_path = train_data_path.parent / "label_map.json"
             if not _lm_path.exists():
-                # k-fold: data is in fold_N/ subdir, label_map is one level up
                 _lm_path = train_data_path.parent.parent / "label_map.json"
             if _lm_path.exists():
                 with open(_lm_path) as f:
@@ -1058,6 +1058,31 @@ def train_model(
             logger.warning(
                 "adversarial_lambda > 0 with confound='disc_base' but no label_map found; "
                 "adversarial training disabled"
+            )
+            adversarial_lambda = 0.0
+
+    elif adversarial_lambda > 0 and confound == "trna_id":
+        # Full tRNA-isoacceptor identity confound. Each unique reference name
+        # (e.g. tRNA-Ser-CGA-1-1) becomes a distinct adversarial class,
+        # directly penalising the model for encoding ANY tRNA-body information.
+        import numpy as np
+
+        from leech.confounds import build_trna_identity_map
+
+        _ref_names = None
+        if train_chunks is not None:
+            _ref_names = [c.get("reference_name", "") for c in train_chunks]
+        elif train_data_path is not None:
+            _npz = np.load(train_data_path, allow_pickle=True)
+            if "reference_names" in _npz:
+                _ref_names = _npz["reference_names"].tolist()
+        if _ref_names is not None:
+            ref_confound_map, adversarial_num_classes = build_trna_identity_map(_ref_names)
+            logger.info(f"Adversarial confound 'trna_id': {adversarial_num_classes} classes")
+        else:
+            logger.warning(
+                "adversarial_lambda > 0 with confound='trna_id' but no "
+                "reference_names in training data; adversarial training disabled"
             )
             adversarial_lambda = 0.0
 
@@ -1075,6 +1100,7 @@ def train_model(
         left_context=left_context,
         right_context=right_context,
         confound_map=confound_map,
+        ref_confound_map=ref_confound_map,
         cl_regression=cl_regression,
         signal_mode=signal_mode,
         time_mask_bases=augment_time_mask_bases,
@@ -1098,6 +1124,7 @@ def train_model(
             left_context=left_context,
             right_context=right_context,
             confound_map=confound_map,
+            ref_confound_map=ref_confound_map,
             cl_regression=cl_regression,
             signal_mode=signal_mode,
             dwell_template_table=dwell_template_table,
