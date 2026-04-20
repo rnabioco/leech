@@ -26,12 +26,12 @@ pub fn read_pod5_batch<'py>(
     pod5_path: &str,
     read_ids: Vec<String>,
 ) -> PyResult<HashMap<String, Pod5ReadResult>> {
-    let target_uuids: HashSet<escapepod::Uuid> = read_ids
+    let target_uuids: HashSet<escapepod_signal::Uuid> = read_ids
         .iter()
-        .filter_map(|s| escapepod::Uuid::parse_str(s).ok())
+        .filter_map(|s| escapepod_signal::Uuid::parse_str(s).ok())
         .collect();
 
-    let reader = escapepod::Reader::open(pod5_path).map_err(|e| {
+    let reader = escapepod_signal::Reader::open(pod5_path).map_err(|e| {
         pyo3::exceptions::PyIOError::new_err(format!("Failed to open POD5 {pod5_path}: {e}"))
     })?;
 
@@ -102,9 +102,9 @@ pub fn preload_pod5_signals(
     pod5_path: &str,
     read_ids: Vec<String>,
 ) -> PyResult<PreloadedSignals> {
-    let target_uuids: HashSet<escapepod::Uuid> = read_ids
+    let target_uuids: HashSet<escapepod_signal::Uuid> = read_ids
         .iter()
-        .filter_map(|s| escapepod::Uuid::parse_str(s).ok())
+        .filter_map(|s| escapepod_signal::Uuid::parse_str(s).ok())
         .collect();
 
     let pod5_path_owned = pod5_path.to_string();
@@ -112,7 +112,7 @@ pub fn preload_pod5_signals(
     // Release GIL during I/O-heavy POD5 reading so other Python threads
     // (e.g. main thread doing BAM metadata extraction) can proceed.
     let result: Result<HashMap<String, Vec<i16>>, String> = py.detach(move || {
-        let reader = escapepod::Reader::open(&pod5_path_owned)
+        let reader = escapepod_signal::Reader::open(&pod5_path_owned)
             .map_err(|e| format!("Failed to open POD5 {pod5_path_owned}: {e}"))?;
 
         let matched_reads = reader

@@ -416,11 +416,11 @@ pub fn extract_inference_chunks<'py>(
     );
 
     // --- Phase 1: POD5 I/O (scan reads, UUID filter, early termination, bulk extract) ---
-    let target_uuids: HashSet<escapepod::Uuid> = read_ids
+    let target_uuids: HashSet<escapepod_signal::Uuid> = read_ids
         .iter()
-        .filter_map(|s| escapepod::Uuid::parse_str(s).ok())
+        .filter_map(|s| escapepod_signal::Uuid::parse_str(s).ok())
         .collect();
-    let reader = escapepod::Reader::open(pod5_path).map_err(|e| {
+    let reader = escapepod_signal::Reader::open(pod5_path).map_err(|e| {
         pyo3::exceptions::PyIOError::new_err(format!("Failed to open POD5: {e}"))
     })?;
 

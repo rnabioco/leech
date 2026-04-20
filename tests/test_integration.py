@@ -81,7 +81,7 @@ class TestSignalRefineIntegration:
 
     @pytest.mark.slow
     def test_refine_real_data(self):
-        from pod5 import DatasetReader
+        from escapepod import Reader
 
         from leech.io import collect_read_infos
         from leech.preparation.reader import build_leech_read
@@ -94,10 +94,9 @@ class TestSignalRefineIntegration:
         infos = collect_read_infos(BAM_FILE)
         info = infos[0]
 
-        with DatasetReader(POD5_FILE) as reader:
-            for read in reader.reads([info.read_id]):
-                raw_signal = read.signal
-                break
+        reader = Reader(str(POD5_FILE))
+        read_data = reader.get_read(info.read_id)
+        raw_signal = reader.get_signal(read_data)
 
         from leech.configs import SignalConfig
 

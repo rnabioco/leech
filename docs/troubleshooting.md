@@ -51,12 +51,11 @@ with pysam.AlignmentFile('alignments.bam') as bam:
 
 # POD5 read IDs
 uv run python -c "
-from pod5 import DatasetReader
-from pathlib import Path
-with DatasetReader(Path('reads.pod5')) as reader:
-    for i, read in enumerate(reader.reads()):
-        print(read.read_id)
-        if i >= 3: break
+from escapepod import Reader
+reader = Reader('reads.pod5')
+for i, read in enumerate(reader.reads()):
+    print(read.read_id)
+    if i >= 3: break
 "
 ```
 

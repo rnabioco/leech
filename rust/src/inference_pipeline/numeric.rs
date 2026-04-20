@@ -72,20 +72,10 @@ pub(super) fn quantile_f32(data: &[f32], q: f32) -> f32 {
     }
 }
 
+/// Median-MAD normalization with the Gaussian scale factor (1.4826).
+///
+/// Delegates to `escapepod_signal::segmentation::mad_normalize_robust` so
+/// this crate and escapepod-signal share the same implementation.
 pub(super) fn normalize_median_mad(signal: &[f32]) -> Vec<f32> {
-    if signal.is_empty() {
-        return vec![];
-    }
-    let mut buf = signal.to_vec();
-    let med = median_f32(&mut buf);
-    // Reuse buf for MAD computation (overwrite with absolute deviations)
-    for (v, &s) in buf.iter_mut().zip(signal.iter()) {
-        *v = (s - med).abs();
-    }
-    let mad = median_f32(&mut buf);
-    let scale = mad * 1.4826;
-    if scale < 1e-10 {
-        return signal.iter().map(|&x| x - med).collect();
-    }
-    signal.iter().map(|&x| (x - med) / scale).collect()
+    escapepod_signal::segmentation::mad_normalize_robust(signal)
 }
