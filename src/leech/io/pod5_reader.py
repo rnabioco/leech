@@ -15,6 +15,47 @@ from escapepod import Reader
 logger = logging.getLogger("leech.io.pod5_reader")
 
 
+# Process-local cache of opened POD5 readers. Workers keep a file open across
+# many batches instead of re-opening per batch; the OS reclaims the handle on
+# process exit.
+_READER_CACHE: dict[str, tuple[Reader, list]] = {}
+
+
+def get_cached_reader(pod5_path: Path | str) -> tuple[Reader, list]:
+    """Return ``(reader, run_infos)`` for ``pod5_path``, reusing a cached handle."""
+    key = str(pod5_path)
+    cached = _READER_CACHE.get(key)
+    if cached is not None:
+        return cached
+    reader = Reader(key)
+    run_infos = reader.run_infos
+    _READER_CACHE[key] = (reader, run_infos)
+    return reader, run_infos
+
+
+def read_pod5_signals_batch_cached(
+    pod5_path: Path | str, read_ids: list[str]
+) -> dict[str, tuple[np.ndarray, dict]]:
+    """Batch POD5 read using a cached Reader handle.
+
+    Same result as :func:`read_pod5_signals_batch` but avoids re-opening the
+    file on every call, which matters for multiprocessing workers that process
+    many batches.
+    """
+    reader, run_infos = get_cached_reader(pod5_path)
+    reads = reader.get_reads(read_ids)
+    signals_list = reader.get_signals(reads)
+    sig_by_id = dict(signals_list)
+
+    results: dict[str, tuple[np.ndarray, dict]] = {}
+    for read_data in reads:
+        rid = read_data.read_id
+        signal = sig_by_id.get(rid)
+        if signal is not None:
+            results[rid] = (signal, _extract_pod5_metadata(read_data, run_infos))
+    return results
+
+
 def _extract_pod5_metadata(read, run_infos: list) -> dict:
     """
     Extract standard metadata dict from an escapepod ReadData object.
@@ -58,7 +99,7 @@ def read_pod5_signal(pod5_path: Path, read_id: str) -> tuple[np.ndarray, dict]:
         >>> print(f"Sample rate: {meta['sample_rate']}")
     """
     reader = Reader(str(pod5_path))
-    run_infos = reader.run_infos()
+    run_infos = reader.run_infos
     read_data = reader.get_read(read_id)
     signal = reader.get_signal(read_data)
     metadata = _extract_pod5_metadata(read_data, run_infos)
@@ -89,7 +130,7 @@ def read_pod5_signals_batch(
         ...     print(f"{read_id}: {len(signal)} samples")
     """
     reader = Reader(str(pod5_path))
-    run_infos = reader.run_infos()
+    run_infos = reader.run_infos
     reads = reader.get_reads(read_ids)
     signals_list = reader.get_signals(reads)
     sig_by_id = dict(signals_list)
@@ -142,7 +183,7 @@ class POD5Reader:
     def __enter__(self):
         """Open POD5 file."""
         self._reader = Reader(str(self.pod5_path))
-        self._run_infos = self._reader.run_infos()
+        self._run_infos = self._reader.run_infos
         return self
 
     def __exit__(self, _exc_type, _exc_val, _exc_tb):

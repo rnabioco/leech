@@ -20,6 +20,89 @@ from leech.model_loading import (
 logger = logging.getLogger("leech.bundling")
 
 
+def _load_config(model_dir: Path) -> tuple[dict, dict]:
+    """Load ``config.json`` and return ``(full_config, arch_config)``."""
+    config_path = Path(model_dir) / "config.json"
+    if not config_path.exists():
+        raise FileNotFoundError(f"Config file not found: {config_path}")
+    with open(config_path) as f:
+        full_config = json.load(f)
+    return full_config, _architecture_config(full_config)
+
+
+def _load_checkpoint(model_dir: Path) -> dict:
+    """Load ``model_best.pt`` from ``model_dir``."""
+    checkpoint_path = Path(model_dir) / "model_best.pt"
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+    return torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+
+
+def _clean_state_dict(checkpoint: dict) -> dict:
+    """Strip ``_orig_mod.`` prefix from compile and migrate legacy keys."""
+    state_dict = checkpoint["model_state_dict"]
+    state_dict = {k.removeprefix("_orig_mod."): v for k, v in state_dict.items()}
+    return _migrate_state_dict_keys(state_dict)
+
+
+def _load_model_for_bundling(model_dir: Path, arch_config: dict) -> tuple[nn.Module, dict, dict]:
+    """Instantiate a model with migrated state_dict. Returns ``(model, state_dict, checkpoint)``."""
+    checkpoint = _load_checkpoint(model_dir)
+    state_dict = _clean_state_dict(checkpoint)
+    model = _instantiate_model(arch_config)
+    model.load_state_dict(state_dict)
+    return model, state_dict, checkpoint
+
+
+def _reference_arch_config(
+    model_dirs: dict[str, Path],
+) -> tuple[list[str], dict, dict, str]:
+    """Load first model's config as reference. Returns ``(sorted_pairs, ref_full, ref_arch, architecture)``."""
+    if not model_dirs:
+        raise ValueError("model_dirs must not be empty")
+    pairs = sorted(model_dirs.keys())
+    ref_full_config, ref_arch_config = _load_config(model_dirs[pairs[0]])
+    return pairs, ref_full_config, ref_arch_config, ref_full_config["model_name"]
+
+
+def _validate_arch_match(model_dir: Path, pair: str, ref_arch_config: dict) -> dict:
+    """Load pair's config and verify its arch config matches the reference."""
+    pair_full_config, pair_arch_config = _load_config(model_dir)
+    if pair_arch_config != ref_arch_config:
+        raise ValueError(
+            f"Architecture config mismatch for {pair}. "
+            f"Expected {ref_arch_config}, got {pair_arch_config}"
+        )
+    return pair_full_config
+
+
+def _atomic_save(obj: object, output_path: Path) -> Path:
+    """Save ``obj`` to ``output_path`` atomically via a sibling temp file."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(dir=output_path.parent, suffix=".pt.tmp")
+    try:
+        os.close(fd)
+        torch.save(obj, tmp_path)
+        os.rename(tmp_path, output_path)
+    except BaseException:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise
+    return output_path
+
+
+def _bundle_metadata_base(architecture: str, version: str) -> dict:
+    """Common metadata keys shared across every bundle format."""
+    return {
+        "bundle_version": version,
+        "architecture": architecture,
+        "created_at": datetime.now(UTC).isoformat(),
+        "leech_version": leech.__version__,
+        "git_commit": leech._get_git_revision(),
+    }
+
+
 def create_bundle(
     model_dirs: dict[str, Path],
     output_path: Path,
@@ -42,45 +125,13 @@ def create_bundle(
         FileNotFoundError: If config.json or model_best.pt missing in any dir
         ValueError: If architecture configs don't match across models
     """
-    if not model_dirs:
-        raise ValueError("model_dirs must not be empty")
-
-    pairs = sorted(model_dirs.keys())
-
-    # Load first model's config as reference
-    first_dir = model_dirs[pairs[0]]
-    ref_config_path = first_dir / "config.json"
-    if not ref_config_path.exists():
-        raise FileNotFoundError(f"Config file not found: {ref_config_path}")
-    with open(ref_config_path) as f:
-        ref_full_config = json.load(f)
-    ref_arch_config = _architecture_config(ref_full_config)
-
-    architecture = ref_full_config["model_name"]
+    pairs, _, ref_arch_config, architecture = _reference_arch_config(model_dirs)
 
     models_dict: dict[str, dict] = {}
     for pair in pairs:
         model_dir = Path(model_dirs[pair])
-
-        # Validate config matches
-        config_path = model_dir / "config.json"
-        if not config_path.exists():
-            raise FileNotFoundError(f"Config file not found: {config_path}")
-        with open(config_path) as f:
-            pair_config = json.load(f)
-        pair_arch_config = _architecture_config(pair_config)
-
-        if pair_arch_config != ref_arch_config:
-            raise ValueError(
-                f"Architecture config mismatch for {pair}. "
-                f"Expected {ref_arch_config}, got {pair_arch_config}"
-            )
-
-        # Load checkpoint
-        checkpoint_path = model_dir / "model_best.pt"
-        if not checkpoint_path.exists():
-            raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
-        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+        _validate_arch_match(model_dir, pair, ref_arch_config)
+        checkpoint = _load_checkpoint(model_dir)
 
         model_entry = {
             "state_dict": checkpoint["model_state_dict"],
@@ -88,7 +139,6 @@ def create_bundle(
             "best_epoch": checkpoint.get("best_epoch"),
         }
 
-        # Include Platt scaling if calibrated
         platt_path = model_dir / "platt.json"
         if platt_path.exists():
             with open(platt_path) as f:
@@ -104,32 +154,16 @@ def create_bundle(
     bundle = {
         "metadata": {
             "format_version": 1,
-            "bundle_version": version,
-            "architecture": architecture,
+            **_bundle_metadata_base(architecture, version),
             "comparison_type": comparison_type,
             "num_models": len(models_dict),
             "pairs": pairs,
-            "created_at": datetime.now(UTC).isoformat(),
-            "leech_version": leech.__version__,
-            "git_commit": leech._get_git_revision(),
         },
         "config": ref_arch_config,
         "models": models_dict,
     }
 
-    # Atomic save: write to temp file then rename
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(dir=output_path.parent, suffix=".pt.tmp")
-    try:
-        os.close(fd)
-        torch.save(bundle, tmp_path)
-        os.rename(tmp_path, output_path)
-    except BaseException:
-        if os.path.exists(tmp_path):
-            os.unlink(tmp_path)
-        raise
-
+    output_path = _atomic_save(bundle, output_path)
     logger.info(f"Bundle saved to {output_path} ({len(models_dict)} models, version {version})")
     return output_path
 
@@ -150,22 +184,12 @@ def create_multiclass_bundle(
         Path to the saved bundle file
     """
     model_dir = Path(model_dir)
-
-    config_path = model_dir / "config.json"
-    if not config_path.exists():
-        raise FileNotFoundError(f"Config file not found: {config_path}")
-    with open(config_path) as f:
-        full_config = json.load(f)
-
-    arch_config = _architecture_config(full_config)
+    full_config, arch_config = _load_config(model_dir)
     architecture = full_config["model_name"]
     label_map = full_config.get("label_map", {})
     num_classes = full_config.get("num_out", len(label_map))
 
-    checkpoint_path = model_dir / "model_best.pt"
-    if not checkpoint_path.exists():
-        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
-    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    checkpoint = _load_checkpoint(model_dir)
 
     model_entry: dict = {
         "state_dict": checkpoint["model_state_dict"],
@@ -198,35 +222,19 @@ def create_multiclass_bundle(
     bundle = {
         "metadata": {
             "format_version": 1,
-            "bundle_version": version,
-            "architecture": architecture,
+            **_bundle_metadata_base(architecture, version),
             "comparison_type": "multiclass",
             "num_models": 1,
             "num_classes": num_classes,
             "label_map": label_map,
             "pairs": sorted(label_map.keys()),
-            "created_at": datetime.now(UTC).isoformat(),
-            "leech_version": leech.__version__,
-            "git_commit": leech._get_git_revision(),
             "cl_regression": full_config.get("cl_regression", False),
         },
         "config": arch_config,
         "model": model_entry,
     }
 
-    # Atomic save
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(dir=output_path.parent, suffix=".pt.tmp")
-    try:
-        os.close(fd)
-        torch.save(bundle, tmp_path)
-        os.rename(tmp_path, output_path)
-    except BaseException:
-        if os.path.exists(tmp_path):
-            os.unlink(tmp_path)
-        raise
-
+    output_path = _atomic_save(bundle, output_path)
     logger.info(
         f"Multiclass bundle saved to {output_path} ({num_classes} classes, version {version})"
     )
@@ -301,59 +309,18 @@ def create_torchscript_bundle(
     from leech.model_export import export_model, serialize_exported_model
     from leech.models.inference_wrapper import ModelInferenceWrapper
 
-    if not model_dirs:
-        raise ValueError("model_dirs must not be empty")
-
-    pairs = sorted(model_dirs.keys())
-
-    # Load first model's config as reference
-    first_dir = model_dirs[pairs[0]]
-    ref_config_path = first_dir / "config.json"
-    if not ref_config_path.exists():
-        raise FileNotFoundError(f"Config file not found: {ref_config_path}")
-    with open(ref_config_path) as f:
-        ref_full_config = json.load(f)
-    ref_arch_config = _architecture_config(ref_full_config)
-
-    architecture = ref_full_config["model_name"]
+    pairs, _, ref_arch_config, architecture = _reference_arch_config(model_dirs)
     requires_features = architecture in ModelInferenceWrapper.FEATURE_MODELS
 
     models_dict: dict[str, dict] = {}
     for pair in pairs:
         model_dir = Path(model_dirs[pair])
+        _validate_arch_match(model_dir, pair, ref_arch_config)
+        model, _, checkpoint = _load_model_for_bundling(model_dir, ref_arch_config)
 
-        # Validate config matches
-        config_path = model_dir / "config.json"
-        if not config_path.exists():
-            raise FileNotFoundError(f"Config file not found: {config_path}")
-        with open(config_path) as f:
-            pair_config = json.load(f)
-        pair_arch_config = _architecture_config(pair_config)
-
-        if pair_arch_config != ref_arch_config:
-            raise ValueError(
-                f"Architecture config mismatch for {pair}. "
-                f"Expected {ref_arch_config}, got {pair_arch_config}"
-            )
-
-        # Load checkpoint, instantiate, export
-        checkpoint_path = model_dir / "model_best.pt"
-        if not checkpoint_path.exists():
-            raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
-        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-
-        # Strip _orig_mod. prefix added by torch.compile()
-        state_dict = checkpoint["model_state_dict"]
-        state_dict = {k.removeprefix("_orig_mod."): v for k, v in state_dict.items()}
-        state_dict = _migrate_state_dict_keys(state_dict)
-
-        model = _instantiate_model(ref_arch_config)
-        model.load_state_dict(state_dict)
         ep = export_model(model, ref_arch_config)
-        exported_bytes = serialize_exported_model(ep)
-
         models_dict[pair] = {
-            "exported_bytes": exported_bytes,
+            "exported_bytes": serialize_exported_model(ep),
             "best_val_acc": checkpoint.get("best_val_acc"),
             "best_epoch": checkpoint.get("best_epoch"),
         }
@@ -361,14 +328,10 @@ def create_torchscript_bundle(
     bundle = {
         "metadata": {
             "format_version": 3,
-            "bundle_version": version,
-            "architecture": architecture,
+            **_bundle_metadata_base(architecture, version),
             "comparison_type": comparison_type,
             "num_models": len(models_dict),
             "pairs": pairs,
-            "created_at": datetime.now(UTC).isoformat(),
-            "leech_version": leech.__version__,
-            "git_commit": leech._get_git_revision(),
             "torchscript": True,
             "requires_features": requires_features,
         },
@@ -376,19 +339,7 @@ def create_torchscript_bundle(
         "models": models_dict,
     }
 
-    # Atomic save
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(dir=output_path.parent, suffix=".pt.tmp")
-    try:
-        os.close(fd)
-        torch.save(bundle, tmp_path)
-        os.rename(tmp_path, output_path)
-    except BaseException:
-        if os.path.exists(tmp_path):
-            os.unlink(tmp_path)
-        raise
-
+    output_path = _atomic_save(bundle, output_path)
     logger.info(
         f"TorchScript bundle saved to {output_path} ({len(models_dict)} models, version {version})"
     )
@@ -442,24 +393,9 @@ def create_vmap_bundle(
     """
     from leech.models.inference_wrapper import ModelInferenceWrapper
 
-    if not model_dirs:
-        raise ValueError("model_dirs must not be empty")
-
-    pairs = sorted(model_dirs.keys())
-
-    # Load first model's config as reference
-    first_dir = model_dirs[pairs[0]]
-    ref_config_path = first_dir / "config.json"
-    if not ref_config_path.exists():
-        raise FileNotFoundError(f"Config file not found: {ref_config_path}")
-    with open(ref_config_path) as f:
-        ref_full_config = json.load(f)
-    ref_arch_config = _architecture_config(ref_full_config)
-
-    architecture = ref_full_config["model_name"]
+    pairs, _, ref_arch_config, architecture = _reference_arch_config(model_dirs)
     requires_features = architecture in ModelInferenceWrapper.FEATURE_MODELS
 
-    # Validate vmap compatibility
     if architecture in _VMAP_INCOMPATIBLE_ARCHITECTURES:
         raise ValueError(
             f"Architecture '{architecture}' is not vmap-compatible "
@@ -468,45 +404,17 @@ def create_vmap_bundle(
             f"or switch to a TCN variant with GroupNorm/LayerNorm."
         )
 
-    # Instantiate all models and load state dicts
     models_list: list[nn.Module] = []
     platt_a_list: list[float] = []
     platt_b_list: list[float] = []
 
     for pair in pairs:
         model_dir = Path(model_dirs[pair])
-
-        # Validate config matches
-        config_path = model_dir / "config.json"
-        if not config_path.exists():
-            raise FileNotFoundError(f"Config file not found: {config_path}")
-        with open(config_path) as f:
-            pair_config = json.load(f)
-        pair_arch_config = _architecture_config(pair_config)
-
-        if pair_arch_config != ref_arch_config:
-            raise ValueError(
-                f"Architecture config mismatch for {pair}. "
-                f"Expected {ref_arch_config}, got {pair_arch_config}"
-            )
-
-        # Load checkpoint
-        checkpoint_path = model_dir / "model_best.pt"
-        if not checkpoint_path.exists():
-            raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
-        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-
-        # Strip _orig_mod. prefix added by torch.compile()
-        state_dict = checkpoint["model_state_dict"]
-        state_dict = {k.removeprefix("_orig_mod."): v for k, v in state_dict.items()}
-        state_dict = _migrate_state_dict_keys(state_dict)
-
-        model = _instantiate_model(ref_arch_config)
-        model.load_state_dict(state_dict)
+        _validate_arch_match(model_dir, pair, ref_arch_config)
+        model, _, _ = _load_model_for_bundling(model_dir, ref_arch_config)
         model.eval()
         models_list.append(model)
 
-        # Platt scaling
         platt_path = model_dir / "platt.json"
         if platt_path.exists():
             with open(platt_path) as f:
@@ -520,20 +428,15 @@ def create_vmap_bundle(
             platt_a_list.append(1.0)
             platt_b_list.append(0.0)
 
-    # Stack model parameters for vmap
     stacked_params, stacked_buffers = torch.func.stack_module_state(models_list)
 
     bundle = {
         "metadata": {
             "format_version": 4,
-            "bundle_version": version,
-            "architecture": architecture,
+            **_bundle_metadata_base(architecture, version),
             "comparison_type": comparison_type,
             "num_models": len(pairs),
             "pairs": pairs,
-            "created_at": datetime.now(UTC).isoformat(),
-            "leech_version": leech.__version__,
-            "git_commit": leech._get_git_revision(),
             "vmap": True,
             "requires_features": requires_features,
         },
@@ -544,19 +447,7 @@ def create_vmap_bundle(
         "platt_b": torch.tensor(platt_b_list, dtype=torch.float32),
     }
 
-    # Atomic save
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(dir=output_path.parent, suffix=".pt.tmp")
-    try:
-        os.close(fd)
-        torch.save(bundle, tmp_path)
-        os.rename(tmp_path, output_path)
-    except BaseException:
-        if os.path.exists(tmp_path):
-            os.unlink(tmp_path)
-        raise
-
+    output_path = _atomic_save(bundle, output_path)
     logger.info(f"vmap bundle saved to {output_path} ({len(pairs)} models, version {version})")
     return output_path
 

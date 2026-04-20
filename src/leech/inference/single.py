@@ -48,9 +48,7 @@ def _inference_worker(
     Returns:
         List of (read_id, base_idx, signal, encoded_sequence, features_or_none) tuples
     """
-    from escapepod import Reader
-
-    from leech.io.pod5_reader import _extract_pod5_metadata
+    from leech.io.pod5_reader import read_pod5_signals_batch_cached
     from leech.preparation.reader import build_leech_read
 
     read_infos, config = args
@@ -58,20 +56,9 @@ def _inference_worker(
     results: list[tuple[str, int, np.ndarray, np.ndarray, np.ndarray | None]] = []
     _shape_validated = False
 
-    # Batch-read all POD5 signals in one traversal (avoids per-read seeks on large files)
+    # Batch-read all POD5 signals via the process-local reader cache.
     read_info_by_id = {ri.read_id: ri for ri in read_infos}
-    pod5_cache: dict[str, tuple] = {}  # read_id -> (signal, metadata)
-
-    reader = Reader(str(config.pod5_path))
-    run_infos = reader.run_infos()
-    reads = reader.get_reads(list(read_info_by_id.keys()))
-    signals_list = reader.get_signals(reads)
-    sig_by_id = dict(signals_list)
-    for read_data in reads:
-        rid = read_data.read_id
-        signal = sig_by_id.get(rid)
-        if signal is not None:
-            pod5_cache[rid] = (signal, _extract_pod5_metadata(read_data, run_infos))
+    pod5_cache = read_pod5_signals_batch_cached(config.pod5_path, list(read_info_by_id.keys()))
 
     for read_info in read_infos:
         try:

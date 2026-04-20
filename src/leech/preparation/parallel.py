@@ -16,7 +16,6 @@ import sys
 from pathlib import Path
 
 import numpy as np
-from escapepod import Reader
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 
 from leech._rust_accel import HAS_RUST, _rs_extract_training_chunks
@@ -25,7 +24,7 @@ from leech.configs import PrepareConfig
 from leech.io import ReadInfo, get_motif_searcher, iter_read_info_batches
 from leech.io.bam_reader import count_bam_reads
 from leech.io.motif_search import MotifSearcher
-from leech.io.pod5_reader import _extract_pod5_metadata
+from leech.io.pod5_reader import read_pod5_signals_batch_cached
 from leech.preparation.reader import build_leech_read
 
 logger = logging.getLogger("leech.preparation.parallel")
@@ -58,20 +57,9 @@ def _process_read_chunk_worker(
 
     all_chunks: list[dict[str, np.ndarray | str | int | None]] = []
 
-    # Batch-read all POD5 signals in one traversal (avoids per-read seeks on large files)
+    # Batch-read all POD5 signals via the process-local reader cache.
     read_info_by_id = {ri.read_id: ri for ri in read_infos}
-    pod5_cache: dict[str, tuple] = {}  # read_id -> (signal, metadata)
-
-    reader = Reader(str(config.pod5_path))
-    run_infos = reader.run_infos()
-    reads = reader.get_reads(list(read_info_by_id.keys()))
-    signals_list = reader.get_signals(reads)
-    sig_by_id = dict(signals_list)
-    for read_data in reads:
-        rid = read_data.read_id
-        signal = sig_by_id.get(rid)
-        if signal is not None:
-            pod5_cache[rid] = (signal, _extract_pod5_metadata(read_data, run_infos))
+    pod5_cache = read_pod5_signals_batch_cached(config.pod5_path, list(read_info_by_id.keys()))
 
     for read_info in read_infos:
         try:
