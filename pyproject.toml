@@ -1,6 +1,6 @@
 [project]
 name = "leech"
-version = "0.3.1"
+version = "0.3.2"
 description = "Learning Enhanced Electrical Classifiers from Hanopore signals"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -103,7 +103,7 @@ line-length = 100
 target-version = "py312"
 src = ["src"]
 exclude = ["*.ipynb"]
-extend-exclude = ["escapepod-rs"]
+extend-exclude = ["escapepod-rs", "vulture_whitelist.py"]
 
 [tool.ruff.lint]
 select = [

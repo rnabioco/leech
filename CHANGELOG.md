@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] - 2026-04-20
+
+### Added
+
+- `trna_id` adversarial confound for full isoacceptor identity debiasing
+- Rust-accelerated training chunk extraction with rayon parallelism
+- Dwell template features, motor/dwell-attn models, and rough-rescale option
+- `--no-compress` flag and streaming BAM for data preparation
+- `--split-by` for group-level train/test splits
+- `signal_mode`, TCNDwellSplitResidual, and per-channel augmentation
+- `--copy-tags` option to copy BAM tags into TSV predict output
+- leech version and git commit captured in model config and bundles
+- Rust monolithic extraction for bundle inference
+- `leech_core` parallelization via `mp.Pool` workers for bundle inference
+
+### Changed
+
+- Bumped `escapepod-rs` to v0.1.3 (SSSE3 SIMD SVB16, audit-driven hot-path optimizations, dynamic versioning)
+- Replaced `pod5` Python package with `escapepod` bindings for POD5 I/O
+- `escapepod` moved to optional `pod5` extra for pixi compatibility
+- Config.json is now the source of truth for model construction
+- Replaced hardcoded model allowlists with signature introspection
+- Consolidated `models/` from 27 to 13 files
+- Split `util.py` into `model_loading`, `model_export`, `bundling`, `metrics`
+- Split `inference.py` into `inference/` package
+- Split Rust `inference_pipeline.rs` into 8 submodules
+- Queue-based extraction pipeline for improved GPU inference throughput
+
+### Fixed
+
+- Module-level `np` shadowing from local numpy imports
+- `_parse_and_validate_inputs` return type annotation
+- Plumb `dwell_template_table` through calibrate/eval/predict
+- Byte-identical Rust↔Python parity for CIGAR ref-to-signal mapping
+- Pass `signal_in_channels` to model during calibration
+- Resolve remaining clippy warnings in Rust code
+- Excluded `vulture_whitelist.py` from ruff linting
+- CI submodule checkout with `ESCAPEPOD_PAT`; ruff format compliance
+- Benchmark script ruff lint errors
+
 ## [0.3.1] - 2026-03-20
 
 ### Added
