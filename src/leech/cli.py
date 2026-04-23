@@ -653,6 +653,121 @@ def train(
 
 @model.command()
 @click.option(
+    "--train-data",
+    required=True,
+    type=click.Path(exists=True, path_type=Path),
+    help="Training dataset (.npz or JSON chunks config) to benchmark against",
+)
+@click.option(
+    "--model",
+    "model_name",
+    type=LazyChoice(get_model_choices),
+    default="ConvLSTMDwell",
+    help="Model architecture to benchmark",
+)
+@click.option(
+    "--output-dir",
+    "-o",
+    required=True,
+    type=click.Path(path_type=Path),
+    help="Directory to write benchmark.json (and trace.json if --trace)",
+)
+@click.option("--batch-size", type=int, default=128, help="Batch size")
+@click.option("--device", type=click.Choice(["cuda", "cpu"]), default=DEFAULT_DEVICE, help="Device")
+@click.option("--num-steps", type=int, default=100, help="Timed training steps")
+@click.option(
+    "--warmup-steps",
+    type=int,
+    default=10,
+    help="Warmup steps (cuDNN benchmark, torch.compile, prefetch queue)",
+)
+@click.option(
+    "--num-workers",
+    type=int,
+    default=8,
+    help="DataLoader workers (0 disables multiprocessing)",
+)
+@click.option("--prefetch-factor", type=int, default=4, help="DataLoader prefetch_factor")
+@click.option(
+    "--mixed-precision/--no-mixed-precision",
+    default=True,
+    help="Run with torch.amp autocast + GradScaler",
+)
+@click.option(
+    "--non-blocking/--blocking",
+    default=False,
+    help="Use .to(device, non_blocking=True) for H2D transfers",
+)
+@click.option("--signal-len", type=int, default=400, help="Signal length")
+@click.option("--kmer-len", type=int, default=11, help="K-mer length")
+@click.option(
+    "--seq-encoding",
+    type=click.Choice(["base_onehot", "signal_kmer"]),
+    default="signal_kmer",
+    help="Sequence encoding",
+)
+@click.option(
+    "--signal-mode",
+    type=click.Choice(["both", "residual", "signal"]),
+    default="both",
+    help="Signal input channels",
+)
+@click.option(
+    "--trace/--no-trace",
+    default=False,
+    help="Also collect a torch.profiler Chrome trace (saved to output-dir/trace.json)",
+)
+@click.option(
+    "--trace-active-steps",
+    type=int,
+    default=10,
+    help="Number of active steps captured in the torch.profiler trace",
+)
+def benchmark(
+    train_data,
+    model_name,
+    output_dir,
+    batch_size,
+    device,
+    num_steps,
+    warmup_steps,
+    num_workers,
+    prefetch_factor,
+    mixed_precision,
+    non_blocking,
+    signal_len,
+    kmer_len,
+    seq_encoding,
+    signal_mode,
+    trace,
+    trace_active_steps,
+):
+    """Benchmark one training step: per-phase timing + GPU utilization."""
+    from leech.commands.benchmark import handle_benchmark
+
+    handle_benchmark(
+        train_data=train_data,
+        model_name=model_name,
+        output_dir=output_dir,
+        batch_size=batch_size,
+        device=device,
+        num_steps=num_steps,
+        warmup_steps=warmup_steps,
+        num_workers=num_workers,
+        prefetch_factor=prefetch_factor,
+        mixed_precision=mixed_precision,
+        non_blocking=non_blocking,
+        signal_len=signal_len,
+        kmer_len=kmer_len,
+        seq_encoding=seq_encoding,
+        signal_mode=signal_mode,
+        trace=trace,
+        trace_active_steps=trace_active_steps,
+    )
+
+
+@model.command()
+@click.option(
     "--model-dir",
     required=True,
     type=click.Path(exists=True, path_type=Path),
