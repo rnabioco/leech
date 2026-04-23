@@ -512,7 +512,7 @@ wheels = [
 
 [[package]]
 name = "escapepod"
-source = { editable = "escapepod-rs/escapepod-python" }
+source = { editable = "escapepod-rs/crates/escapepod-python" }
 
 [[package]]
 name = "execnet"
@@ -1054,7 +1054,7 @@ docs = [
 [package.metadata]
 requires-dist = [
     { name = "click", specifier = ">=8.1.0" },
-    { name = "escapepod", marker = "extra == 'pod5'", editable = "escapepod-rs/escapepod-python" },
+    { name = "escapepod", marker = "extra == 'pod5'", editable = "escapepod-rs/crates/escapepod-python" },
     { name = "great-tables", marker = "extra == 'notebook'", specifier = ">=0.14.0" },
     { name = "leech-core", marker = "extra == 'rust'", editable = "rust" },
     { name = "nbqa", marker = "extra == 'dev'", specifier = ">=1.7.0" },

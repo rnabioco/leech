@@ -92,7 +92,7 @@ testpaths = ["tests"]
 markers = ["slow: slow tests (torch.export, bundles) — run with --slow"]
 
 [tool.uv.workspace]
-members = ["rust", "escapepod-rs/escapepod-python"]
+members = ["rust", "escapepod-rs/crates/escapepod-python"]
 
 [tool.uv.sources]
 leech-core = { workspace = true }
