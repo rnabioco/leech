@@ -10,7 +10,7 @@ crate-type = ["cdylib"]
 [dependencies]
 pyo3 = { version = "0.28", features = ["extension-module"] }
 numpy = "0.28"
-escapepod-signal = { path = "../escapepod-rs/escapepod-signal" }
+escapepod-signal = { path = "../escapepod-rs/crates/escapepod-signal" }
 rayon = "1"
 
 [profile.release]
