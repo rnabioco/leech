@@ -341,7 +341,11 @@ class TestParallelWorkerReverseSignal:
         mock_reader.get_reads.return_value = [mock_read_data]
         mock_reader.get_signals.return_value = [("test_read", raw_signal.copy())]
 
-        with patch("leech.preparation.parallel.Reader", return_value=mock_reader):
+        # `parallel.py` doesn't import Reader directly — it calls
+        # `read_pod5_signals_batch_cached`, which in turn opens a Reader
+        # inside `leech.io.pod5_reader`. Patching at the module where the
+        # `from escapepod import Reader` lives is the one that intercepts.
+        with patch("leech.io.pod5_reader.Reader", return_value=mock_reader):
             from leech.preparation.parallel import _process_read_chunk_worker
 
             # Build PrepareConfig with reverse_signal=True
