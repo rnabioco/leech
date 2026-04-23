@@ -57,6 +57,15 @@ def _process_read_chunk_worker(
 
     all_chunks: list[dict[str, np.ndarray | str | int | None]] = []
 
+    # Focus-map early-skip: drop reads not in the map BEFORE the POD5
+    # signal fetch and move-table parse. Without this, an 800k-read BAM
+    # pays full POD5 I/O even when the focus map only targets 100k reads —
+    # the saved work per worker is enormous.
+    if config.labeling.focus_map is not None:
+        read_infos = [ri for ri in read_infos if ri.read_id in config.labeling.focus_map]
+        if not read_infos:
+            return all_chunks
+
     # Batch-read all POD5 signals via the process-local reader cache.
     read_info_by_id = {ri.read_id: ri for ri in read_infos}
     pod5_cache = read_pod5_signals_batch_cached(config.pod5_path, list(read_info_by_id.keys()))
@@ -303,7 +312,22 @@ def prepare_training_data_parallel(
     Returns:
         Tuple of (chunks, statistics)
     """
-    use_rust = HAS_RUST and _rs_extract_training_chunks is not None
+    # The Rust-accelerated path (_prepare_batch_rust) bypasses
+    # extract_training_chunks entirely and applies the file-level
+    # labeling.label_int to every chunk. It also passes a single POD5 path
+    # string to Rust, which fails on a directory source with os error 19.
+    # Both are incompatible with LabelConfig.focus_map (per-read labels +
+    # externally-anchored chunks, typically sourced from a directory of
+    # POD5s). Force the Python multiprocessing path in that case — it
+    # honors focus_map via extract_training_chunks and uses
+    # read_pod5_signals_batch_cached, which dispatches across files.
+    _focus_mode = config.labeling.focus_map is not None
+    use_rust = HAS_RUST and _rs_extract_training_chunks is not None and not _focus_mode
+    if _focus_mode and HAS_RUST:
+        logger.info(
+            "focus_map set: bypassing Rust pipeline (no per-read label or "
+            "multi-POD5 support there yet) and using Python workers."
+        )
     backend = "Rust (rayon)" if use_rust else "Python (multiprocessing)"
     logger.info(f"Starting parallel data preparation with {num_workers} workers [{backend}]")
 
