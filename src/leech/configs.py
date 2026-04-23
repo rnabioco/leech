@@ -62,10 +62,27 @@ class ChunkConfig:
 
 @dataclass
 class LabelConfig:
-    """Labels assigned to extracted chunks."""
+    """Labels assigned to extracted chunks.
+
+    Two labeling modes:
+
+    - **File-level (default):** every read in the input POD5/BAM gets the
+      same ``label_int`` / ``label``. This matches leech's historical
+      one-class-per-input-file workflow.
+    - **Per-read (focus_map):** a mapping ``{read_id: (label_int,
+      anchor_sample)}`` selects a subset of reads, assigns each its own
+      label, and anchors extraction at a caller-provided signal-sample
+      offset (e.g. an adapter-region midpoint). Reads not in the map are
+      skipped. Takes precedence over motif search when set — one chunk
+      per read at the anchor position. Intended for downstream pipelines
+      (like the 005 adapter-barcode classifier) where per-read labels
+      come from an external source and chunks are centered on an
+      externally-detected region, not a sequence motif.
+    """
 
     label: str | None = None
     label_int: int | None = None
+    focus_map: dict[str, tuple[int, int]] | None = None
 
 
 @dataclass

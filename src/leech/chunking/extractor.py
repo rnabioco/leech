@@ -275,32 +275,53 @@ def extract_training_chunks(
     """
     chunks: list[dict] = []
 
-    # Set numeric labels for all bases if provided
-    if labeling.label_int is not None:
-        leech_read.labels = np.full(leech_read.num_bases, labeling.label_int, dtype=np.int64)
-
-    # Find focus bases (either all or motif matches)
-    if motif_config.motif is None:
-        # No motif - use all bases (avoiding edges)
-        focus_bases = list(range(5, leech_read.num_bases - 5))
+    # Per-read labeling + externally-anchored chunk: short-circuits both
+    # the motif search and the default single-file label. Used by pipelines
+    # that have already computed a region of interest (e.g. an adapter
+    # region) per read — they pass a {read_id: (label_int, anchor_sample)}
+    # map via LabelConfig.focus_map and get exactly one chunk per kept read
+    # at that sample offset. Reads not in the map are skipped.
+    if labeling.focus_map is not None:
+        entry = labeling.focus_map.get(leech_read.read_id)
+        if entry is None:
+            return chunks
+        focus_label_int, anchor_sample = entry
+        leech_read.labels = np.full(leech_read.num_bases, focus_label_int, dtype=np.int64)
+        # Convert signal-sample anchor to base index via the read's
+        # move-table-derived map. `searchsorted(..., side="right") - 1`
+        # gives the base whose signal window contains the anchor sample.
+        base_idx = int(np.searchsorted(leech_read.seq_to_sig_map, anchor_sample, side="right") - 1)
+        # Respect the same edge guard the all-bases fallback uses below so
+        # chunks always have enough kmer context on both sides.
+        base_idx = int(np.clip(base_idx, 5, leech_read.num_bases - 6))
+        focus_bases = [base_idx]
     else:
-        # Motif-based search
-        if motif_searcher is None:
-            raise ValueError("motif_searcher required when motif is provided")
+        # Set numeric labels for all bases if provided (file-level mode).
+        if labeling.label_int is not None:
+            leech_read.labels = np.full(leech_read.num_bases, labeling.label_int, dtype=np.int64)
 
-        # Get alignment from metadata (may be None for basecalled search)
-        alignment = leech_read.metadata.get("alignment")
+        # Find focus bases (either all or motif matches)
+        if motif_config.motif is None:
+            # No motif - use all bases (avoiding edges)
+            focus_bases = list(range(5, leech_read.num_bases - 5))
+        else:
+            # Motif-based search
+            if motif_searcher is None:
+                raise ValueError("motif_searcher required when motif is provided")
 
-        # Find motif positions using the searcher strategy
-        motif_positions = motif_searcher.find_motif_positions(
-            read_id=leech_read.read_id,
-            sequence=leech_read.sequence,
-            alignment=alignment,
-            motif=motif_config.motif,
-        )
+            # Get alignment from metadata (may be None for basecalled search)
+            alignment = leech_read.metadata.get("alignment")
 
-        # Apply offset to get focus bases
-        focus_bases = [pos + motif_config.motif_offset for pos in motif_positions]
+            # Find motif positions using the searcher strategy
+            motif_positions = motif_searcher.find_motif_positions(
+                read_id=leech_read.read_id,
+                sequence=leech_read.sequence,
+                alignment=alignment,
+                motif=motif_config.motif,
+            )
+
+            # Apply offset to get focus bases
+            focus_bases = [pos + motif_config.motif_offset for pos in motif_positions]
 
     # Extract chunks
     cl_value = leech_read.metadata.get("cl_value")

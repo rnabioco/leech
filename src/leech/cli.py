@@ -232,6 +232,19 @@ def data():
     default=None,
     help="Asymmetric signal context window as LEFT RIGHT (raw samples). E.g., --signal-context 90 450. Default: symmetric (200, 200).",
 )
+@click.option(
+    "--focus-tsv",
+    type=click.Path(exists=True, path_type=Path),
+    default=None,
+    help=(
+        "TSV with columns `read_id`, `label_int`, `anchor_sample` for per-read "
+        "labeling + externally-anchored chunk extraction. When set, only reads "
+        "listed in the TSV are kept; each gets its own numeric label and exactly "
+        "one chunk centered at the given signal-sample offset (via the read's "
+        "move-table). Skips motif search entirely. Intended for pipelines that "
+        "pre-detect a region of interest (e.g. adapter midpoint) per read."
+    ),
+)
 def prepare(
     pod5,
     bam,
@@ -264,6 +277,7 @@ def prepare(
     scale_iters,
     rough_rescale,
     signal_context,
+    focus_tsv,
 ):
     """Prepare training data from POD5 and BAM files."""
     from leech.commands import handle_prepare
@@ -312,6 +326,7 @@ def prepare(
         scale_iters=scale_iters,
         rough_rescale=rough_rescale,
         signal_context=signal_context,
+        focus_tsv=focus_tsv,
     )
 
 

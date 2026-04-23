@@ -5,6 +5,7 @@ This module contains the business logic for preparing training data from
 POD5 and BAM files, including parallel processing, splitting, and result display.
 """
 
+import csv
 import logging
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,31 @@ from leech.constants import DEFAULT_SEED
 
 logger = logging.getLogger("leech.commands.prepare")
 console = make_console()
+
+
+def _load_focus_tsv(path: Path) -> dict[str, tuple[int, int]]:
+    """Load a focus TSV into ``{read_id: (label_int, anchor_sample)}``.
+
+    Required columns (tab-separated, one header row): ``read_id`` (UUID
+    string matching POD5/BAM read IDs), ``label_int`` (0-based class
+    index), ``anchor_sample`` (signal-sample offset to center the chunk
+    on; typically an adapter-region midpoint).
+    """
+    mapping: dict[str, tuple[int, int]] = {}
+    with path.open("r", newline="") as fh:
+        reader = csv.DictReader(fh, delimiter="\t")
+        required = {"read_id", "label_int", "anchor_sample"}
+        missing = required - set(reader.fieldnames or [])
+        if missing:
+            raise ValueError(
+                f"focus TSV {path} missing columns: {sorted(missing)}; expected {sorted(required)}"
+            )
+        for row in reader:
+            read_id = row["read_id"].strip()
+            if not read_id:
+                continue
+            mapping[read_id] = (int(row["label_int"]), int(row["anchor_sample"]))
+    return mapping
 
 
 def handle_prepare(
@@ -50,6 +76,7 @@ def handle_prepare(
     scale_iters: int = 2,
     rough_rescale: bool = True,
     signal_context: tuple[int, int] | None = None,
+    focus_tsv: Path | None = None,
 ) -> dict[str, Any]:
     """
     Handle the prepare command logic.
@@ -106,9 +133,20 @@ def handle_prepare(
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Load reference sequences if using reference-based motif search
+    # Parse the focus TSV (per-read labels + externally-anchored chunks).
+    # Columns: `read_id`, `label_int`, `anchor_sample`. Tab-separated, one
+    # header row. When set, this short-circuits motif search entirely, so
+    # we skip loading reference sequences below.
+    focus_map: dict[str, tuple[int, int]] | None = None
+    if focus_tsv is not None:
+        focus_map = _load_focus_tsv(focus_tsv)
+        logger.info(f"Focus-mode: {len(focus_map)} per-read entries loaded from {focus_tsv}")
+
+    # Load reference sequences if using reference-based motif search.
+    # Focus mode bypasses motif search, so skip this step to avoid
+    # requiring a reference FASTA that isn't needed anyway.
     reference_sequences = None
-    if motif_reference == "fasta":
+    if focus_map is None and motif_reference == "fasta":
         logger.info("Loading reference sequences for reference-based motif search")
         reference_sequences = get_reference_sequences(bam, reference_fasta)
 
@@ -141,6 +179,7 @@ def handle_prepare(
         labeling=LabelConfig(
             label=label,
             label_int=None,  # Will be assigned during merge-and-split
+            focus_map=focus_map,
         ),
         reference_fasta=reference_fasta,
     )
