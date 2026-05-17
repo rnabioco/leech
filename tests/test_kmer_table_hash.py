@@ -16,6 +16,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+import pytest
+
 from leech.configs import (
     ChunkConfig,
     MotifConfig,
@@ -24,6 +26,22 @@ from leech.configs import (
 )
 from leech.data import compute_kmer_table_sha256, get_kmer_table
 from leech.inference.helpers import _warn_if_kmer_table_drifted
+
+
+@pytest.fixture
+def propagating_leech_logger(monkeypatch):
+    """Restore log propagation on the ``leech`` logger for caplog tests.
+
+    ``leech.logging_config.setup_logging()`` disables propagation on the
+    ``leech`` logger so its records don't bubble up to the root handlers in
+    production. That same setting blocks pytest's ``caplog`` (which attaches
+    its handler to the root logger) from seeing records emitted on child
+    loggers like ``leech.inference``. Any earlier test in the suite that
+    runs a CLI command via ``CliRunner`` triggers ``setup_logging`` and
+    locks the propagation flag off process-wide — so the failure only
+    shows up in full-suite runs (CI), not focused local invocations.
+    """
+    monkeypatch.setattr(logging.getLogger("leech"), "propagate", True)
 
 
 def test_compute_kmer_table_sha256_is_deterministic():
@@ -90,7 +108,7 @@ def test_prepare_config_omits_hash_when_path_unset():
     assert d["kmer_table_sha256"] is None
 
 
-def test_warn_if_kmer_table_drifted_no_op_on_match(caplog):
+def test_warn_if_kmer_table_drifted_no_op_on_match(caplog, propagating_leech_logger):
     """Matching hash -> no warning. The warning is reserved for the actual
     drift case so it stays visible when it matters."""
     path = get_kmer_table()
@@ -100,7 +118,7 @@ def test_warn_if_kmer_table_drifted_no_op_on_match(caplog):
     assert not any("does not match" in r.message for r in caplog.records)
 
 
-def test_warn_if_kmer_table_drifted_no_op_on_legacy_config(caplog):
+def test_warn_if_kmer_table_drifted_no_op_on_legacy_config(caplog, propagating_leech_logger):
     """Legacy models (trained before R3) have no sha256 in config -> skip
     the check rather than emitting a noisy warning on every predict run."""
     path = get_kmer_table()
@@ -109,7 +127,7 @@ def test_warn_if_kmer_table_drifted_no_op_on_legacy_config(caplog):
     assert not any("does not match" in r.message for r in caplog.records)
 
 
-def test_warn_if_kmer_table_drifted_fires_on_mismatch(caplog):
+def test_warn_if_kmer_table_drifted_fires_on_mismatch(caplog, propagating_leech_logger):
     """A non-matching stored hash -> warning logged. This is the regression
     guard for the actual silent-drift scenario the field exists to catch."""
     path = get_kmer_table()
