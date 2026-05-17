@@ -169,6 +169,7 @@ def handle_prepare(
             refine_signal_map=refine_signal_map,
             refine_scale_iters=scale_iters,
             signal_refiner=signal_refiner,
+            kmer_table_path=kmer_table if refine_signal_map else None,
         ),
         motif=MotifConfig(
             motif=motif,

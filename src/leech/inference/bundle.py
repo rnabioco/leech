@@ -287,9 +287,11 @@ def run_bundle_inference(
     bundle_refiner = None
     if config.get("refine_signal_map", True) or bundle_signal_in_channels > 1:
         from leech.data import get_kmer_table
+        from leech.inference.helpers import _warn_if_kmer_table_drifted
         from leech.signal_refine import SigMapRefiner
 
         kmer_table_path = get_kmer_table()
+        _warn_if_kmer_table_drifted(config.get("kmer_table_sha256"), kmer_table_path)
         bundle_refiner = SigMapRefiner.from_table(
             kmer_table_path,
             half_bandwidth=config.get("refine_half_bandwidth", 5),

@@ -35,6 +35,10 @@ class SignalConfig:
     refine_do_rough_rescale: bool = True
     refine_kmer_center_idx: int = -1
     signal_refiner: SigMapRefiner | None = None
+    # Path of the kmer level table the refiner was loaded from. Captured
+    # so PrepareConfig.to_dict() can hash it as a provenance fingerprint;
+    # the refiner object itself doesn't track its source path.
+    kmer_table_path: Path | None = None
     compute_features: bool = True
 
 
@@ -104,6 +108,12 @@ class PrepareConfig:
 
     def to_dict(self) -> dict:
         """Serialize to a JSON-safe dict (excludes non-serializable fields)."""
+        kmer_table_sha256: str | None = None
+        if self.signal.refine_signal_map and self.signal.kmer_table_path is not None:
+            from leech.data import compute_kmer_table_sha256
+
+            kmer_table_sha256 = compute_kmer_table_sha256(self.signal.kmer_table_path)
+
         return {
             "anchor": self.signal.anchor,
             "reverse_signal": self.signal.reverse_signal,
@@ -113,6 +123,7 @@ class PrepareConfig:
             "refine_half_bandwidth": self.signal.refine_half_bandwidth,
             "refine_do_rough_rescale": self.signal.refine_do_rough_rescale,
             "refine_kmer_center_idx": self.signal.refine_kmer_center_idx,
+            "kmer_table_sha256": kmer_table_sha256,
             "pa_mean": self.signal.pa_mean,
             "pa_stdev": self.signal.pa_stdev,
             "motif": self.motif.motif,

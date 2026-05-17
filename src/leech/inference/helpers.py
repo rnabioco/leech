@@ -83,6 +83,34 @@ class InferenceConfigError(RuntimeError):
     """Raised when inference input shapes don't match the model's config."""
 
 
+def _warn_if_kmer_table_drifted(config_sha256: str | None, live_table_path: Path) -> None:
+    """Warn when the kmer level table on disk no longer matches the one the
+    model was trained against.
+
+    Models persist the table's SHA256 in their config (added by R3); inference
+    always loads the table via ``leech.data.get_kmer_table()``, which can
+    silently return a different file after a leech upgrade. We warn rather
+    than hard-error because (a) a refresh of the bundled table may be
+    intentional and (b) old models predate the field — config_sha256 is None.
+    """
+    if config_sha256 is None:
+        return
+    from leech.data import compute_kmer_table_sha256
+
+    live_sha256 = compute_kmer_table_sha256(live_table_path)
+    if live_sha256 != config_sha256:
+        logger.warning(
+            "Kmer level table at %s (sha256=%s) does not match the table "
+            "the model was trained against (sha256=%s). Signal-map refinement "
+            "may produce different base boundaries than at training time, "
+            "which can degrade prediction quality. Pin the table version or "
+            "retrain if this is unintentional.",
+            live_table_path,
+            live_sha256[:12],
+            config_sha256[:12],
+        )
+
+
 def _check_config_consistency[T](
     param_name: str,
     cli_value: T,
