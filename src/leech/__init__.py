@@ -49,7 +49,7 @@ def _get_git_revision():
         )
         if result.returncode == 0:
             return result.stdout.strip()
-    except Exception:
+    except (OSError, subprocess.SubprocessError):
         pass
     return "unknown"
 
@@ -74,11 +74,11 @@ def __getattr__(name: str):
     if name == "__version__":
         global _version
         if _version is None:
-            try:
-                from importlib.metadata import version
+            from importlib.metadata import PackageNotFoundError, version
 
+            try:
                 _version = version("leech")
-            except Exception:
+            except PackageNotFoundError:
                 _version = f"0.0.0+{_get_git_revision()}"
         return _version
     if name in _LAZY_IMPORTS:

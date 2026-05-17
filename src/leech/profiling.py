@@ -422,7 +422,7 @@ def run_torch_profiler(
                 sort_by="cuda_time_total" if torch.cuda.is_available() else "cpu_time_total",
                 row_limit=20,
             )
-            logger.info("Profiler top-20 ops:\n%s", table)
+            logger.info(f"Profiler top-20 ops:\n{table}")
         except Exception as e:  # pragma: no cover
             logger.warning(f"key_averages() failed: {e}")
 
@@ -441,6 +441,6 @@ def set_nvidia_smi_env_if_missing() -> None:
     if "nvidia-smi" in os.environ.get("PATH", ""):
         return
     for candidate in ("/usr/bin", "/usr/local/nvidia/bin", "/usr/local/cuda/bin"):
-        if os.path.exists(os.path.join(candidate, "nvidia-smi")):
+        if (Path(candidate) / "nvidia-smi").exists():
             os.environ["PATH"] = os.environ.get("PATH", "") + os.pathsep + candidate
             return

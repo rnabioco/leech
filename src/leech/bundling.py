@@ -80,15 +80,18 @@ def _atomic_save(obj: object, output_path: Path) -> Path:
     """Save ``obj`` to ``output_path`` atomically via a sibling temp file."""
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(dir=output_path.parent, suffix=".pt.tmp")
+    fd, tmp_path_str = tempfile.mkstemp(dir=output_path.parent, suffix=".pt.tmp")
+    tmp_path = Path(tmp_path_str)
+    # BaseException so KeyboardInterrupt/SystemExit also clean up the temp file.
+    success = False
     try:
         os.close(fd)
         torch.save(obj, tmp_path)
-        os.rename(tmp_path, output_path)
-    except BaseException:
-        if os.path.exists(tmp_path):
-            os.unlink(tmp_path)
-        raise
+        tmp_path.replace(output_path)
+        success = True
+    finally:
+        if not success:
+            tmp_path.unlink(missing_ok=True)
     return output_path
 
 
