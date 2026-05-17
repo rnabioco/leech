@@ -84,7 +84,13 @@ def build_leech_read(
         cal_scale=cal_scale,
     )
 
-    # Determine which sequence and mapping to use
+    # Determine which sequence and mapping to use. In ref-anchored mode we
+    # crop ``norm_signal`` to the aligned region (so refinement and feature
+    # extraction only see in-distribution data), but stash the full
+    # pre-crop signal so ``LeechRead.get_chunk`` can recover real samples at
+    # chunk-window edges instead of zero-padding (R4 in the coordinate audit).
+    full_norm_signal: np.ndarray | None = None
+    signal_offset: int = 0
     if (
         signal_config.anchor == "reference"
         and reference_sequence is not None
@@ -94,6 +100,8 @@ def build_leech_read(
 
         sig_start = int(ref_to_sig_map[0])
         sig_end = int(ref_to_sig_map[-1])
+        full_norm_signal = norm_signal
+        signal_offset = sig_start
         norm_signal = norm_signal[sig_start:sig_end]
 
         seq_to_sig_map = ref_to_sig_map - sig_start
@@ -159,6 +167,8 @@ def build_leech_read(
         signal_features=signal_feats,
         signal_residual=sig_residual,
         metadata=meta,
+        full_signal=full_norm_signal,
+        signal_offset=signal_offset,
     )
 
 

@@ -1433,6 +1433,7 @@ def train_model(
         "refine_half_bandwidth": prepare_metadata.get("refine_half_bandwidth", 5),
         "refine_do_rough_rescale": prepare_metadata.get("refine_do_rough_rescale", True),
         "refine_kmer_center_idx": prepare_metadata.get("refine_kmer_center_idx", -1),
+        "recover_softclip_signal": prepare_metadata.get("recover_softclip_signal", False),
         # Provenance
         "leech_version": leech.__version__,
         "git_commit": leech._get_git_revision(),

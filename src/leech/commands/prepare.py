@@ -77,6 +77,7 @@ def handle_prepare(
     rough_rescale: bool = True,
     signal_context: tuple[int, int] | None = None,
     focus_tsv: Path | None = None,
+    recover_softclip_signal: bool = False,
 ) -> dict[str, Any]:
     """
     Handle the prepare command logic.
@@ -130,6 +131,12 @@ def handle_prepare(
         logger.info(f"Signal map refinement enabled with kmer table: {kmer_table}")
     if workers > 1:
         logger.info(f"Parallel mode: {workers} workers, {chunk_size} reads per batch")
+        if recover_softclip_signal:
+            logger.warning(
+                "--recover-softclip-signal is not implemented in the Rust extraction "
+                "path used by --workers > 1. Pass --workers 1 to use it, or chunks "
+                "will be extracted with the default zero-padding at alignment edges."
+            )
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -175,6 +182,7 @@ def handle_prepare(
             feature_start=feature_start,
             feature_end=feature_end,
             signal_context=tuple(signal_context) if signal_context else DEFAULT_SIGNAL_CONTEXT,
+            recover_softclip_signal=recover_softclip_signal,
         ),
         labeling=LabelConfig(
             label=label,

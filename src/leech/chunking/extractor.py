@@ -32,13 +32,21 @@ class LeechRead:
     Attributes:
         read_id: Unique read identifier
         sequence: Basecalled sequence
-        signal: Normalized signal array
+        signal: Normalized signal array (cropped to the aligned region in
+            ref-anchored mode; full trimmed/reversed signal otherwise)
         seq_to_sig_map: Mapping from base indices to signal indices
         dwells: Per-base dwell times
         dwell_features: Dict of dwell-derived features
         signal_features: Dict of signal-level features
         labels: Optional labels for training (e.g., 0=uncharged, 1=charged)
         metadata: Additional metadata (alignment info, etc.)
+        full_signal: When ref-anchored mode crops ``signal`` to the aligned
+            region, the full pre-crop normalized signal is stashed here so
+            ``get_chunk`` can optionally read into soft-clipped/unaligned
+            regions at chunk-window edges. ``None`` when no crop happened.
+        signal_offset: Index of ``signal[0]`` within ``full_signal`` — the
+            translation between cropped (``self.signal``) coordinates and
+            absolute coordinates for ``full_signal``. Zero when not cropped.
     """
 
     def __init__(
@@ -53,6 +61,8 @@ class LeechRead:
         labels: np.ndarray | None = None,
         metadata: dict | None = None,
         signal_residual: np.ndarray | None = None,
+        full_signal: np.ndarray | None = None,
+        signal_offset: int = 0,
     ):
         """Initialize LeechRead."""
         self.read_id = read_id
@@ -65,6 +75,8 @@ class LeechRead:
         self.labels = labels
         self.metadata = metadata if metadata is not None else {}
         self.signal_residual = signal_residual
+        self.full_signal = full_signal
+        self.signal_offset = signal_offset
 
     @property
     def num_bases(self) -> int:
@@ -85,6 +97,7 @@ class LeechRead:
         base_justify: str = "center",
         feature_start: int | None = None,
         feature_end: int | None = None,
+        recover_softclip_signal: bool = False,
     ) -> dict[str, np.ndarray | str | int | None] | None:
         """
         Extract a training chunk centered on a specific base.
@@ -97,6 +110,11 @@ class LeechRead:
             base_justify: "center", "start", or "end"
             feature_start: Signed offset from focus for feature window start.
             feature_end: Signed offset from focus for feature window end (inclusive).
+            recover_softclip_signal: When True and ``full_signal`` is set
+                (ref-anchored mode), fill chunk-window samples that fall
+                outside the aligned region with real soft-clipped signal
+                instead of zeros. Off by default to preserve Remora-compatible
+                behavior — see R4 in the coordinate audit.
 
         Returns:
             Dictionary with 'signal', 'kmer', 'dwell', 'features' arrays,
@@ -109,6 +127,7 @@ class LeechRead:
             base_justify = config.base_justify
             feature_start = config.feature_start
             feature_end = config.feature_end
+            recover_softclip_signal = config.recover_softclip_signal
 
         # Check boundaries: base_idx must be valid for seq_to_sig_map access
         if base_idx < 0 or base_idx >= self.num_bases:
@@ -153,6 +172,41 @@ class LeechRead:
                 signal_chunk[fill_st:fill_en] = self.signal[sig_start:sig_end]
                 if self.signal_residual is not None and signal_residual_chunk is not None:
                     signal_residual_chunk[fill_st:fill_en] = self.signal_residual[sig_start:sig_end]
+
+            # R4: in ref-anchored mode, the cropped self.signal drops
+            # soft-clipped samples that may still exist in self.full_signal.
+            # When the chunk window underflows past the aligned region, copy
+            # those samples in instead of leaving zeros. Restricted to the
+            # primary signal channel — self.signal_residual is only defined
+            # for the refined aligned region, so it stays zero-padded.
+            if recover_softclip_signal and self.full_signal is not None:
+                # signal_chunk[i] corresponds to absolute full_signal index
+                # (i + chunk_sig_start_in_cropped) + self.signal_offset, where
+                # chunk_sig_start_in_cropped is the original sig_start before
+                # the underflow clamping above. Reconstruct it from fill_st.
+                chunk_sig_start_in_cropped = sig_start - fill_st
+                abs_start = chunk_sig_start_in_cropped + self.signal_offset
+                full_len = len(self.full_signal)
+                # Left edge: fill [0, fill_st) from full_signal before the aligned region.
+                if fill_st > 0:
+                    src_st = max(0, abs_start)
+                    src_en = min(full_len, abs_start + fill_st)
+                    if src_en > src_st:
+                        dst_st = src_st - abs_start
+                        dst_en = dst_st + (src_en - src_st)
+                        signal_chunk[dst_st:dst_en] = self.full_signal[src_st:src_en].astype(
+                            np.float32
+                        )
+                # Right edge: fill [fill_en, chunk_len) from full_signal past the aligned region.
+                if fill_en < chunk_len:
+                    src_st = max(0, abs_start + fill_en)
+                    src_en = min(full_len, abs_start + chunk_len)
+                    if src_en > src_st:
+                        dst_st = src_st - abs_start
+                        dst_en = dst_st + (src_en - src_st)
+                        signal_chunk[dst_st:dst_en] = self.full_signal[src_st:src_en].astype(
+                            np.float32
+                        )
         chunk_sig_len = chunk_len
 
         # Extract k-mer sequence context with safe boundary handling

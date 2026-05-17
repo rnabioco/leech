@@ -631,6 +631,7 @@ def run_inference(
                 feature_end=_feature_end,
                 signal_context=signal_context,
                 kmer_context=kmer_context,
+                recover_softclip_signal=config.get("recover_softclip_signal", False),
             ),
             seq_encoding=seq_encoding,
             signal_kmer_context=signal_kmer_context,
@@ -838,6 +839,7 @@ def run_inference(
             feature_end=_feature_end,
             signal_context=signal_context,
             kmer_context=kmer_context,
+            recover_softclip_signal=config.get("recover_softclip_signal", False),
         )
 
         # Extraction thread count + rust setup (all three shared with
