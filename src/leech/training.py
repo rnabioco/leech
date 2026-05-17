@@ -185,7 +185,13 @@ class Trainer:
             all_params += list(self.adversarial_head.parameters())
         if self.cl_regression_head is not None:
             all_params += list(self.cl_regression_head.parameters())
-        self.optimizer = torch.optim.Adam(all_params, lr=learning_rate, weight_decay=weight_decay)
+        # AdamW decouples weight_decay from the gradient (vs. Adam's L2-on-grad).
+        # With Adam, adaptive per-param LRs almost cancel L2 reg for low-grad
+        # params, so weight_decay loses bite as cosine LR decays toward 0. AdamW
+        # applies decay directly to weights and preserves regularization through
+        # the LR schedule. State dict is compatible with Adam checkpoints for
+        # resume — only the step rule changes.
+        self.optimizer = torch.optim.AdamW(all_params, lr=learning_rate, weight_decay=weight_decay)
 
         # Setup loss
         self.loss_type = loss_type
@@ -566,6 +572,9 @@ class Trainer:
         total_cl_loss = 0.0
         all_preds: list[float] = []
         all_labels: list[float] = []
+        # For multiclass: keep full softmax probabilities so we can compute
+        # macro one-vs-rest AUROC (argmax-only preds lose that information).
+        all_probs_mc: list[np.ndarray] = []
 
         with torch.inference_mode():
             for batch in self.val_loader:
@@ -612,7 +621,9 @@ class Trainer:
                 # Track metrics
                 total_loss += loss.item()
                 if self.loss_type == "cross_entropy" and self._num_out > 2:
-                    preds = torch.argmax(logits, dim=-1).cpu().numpy()
+                    probs_mc = torch.softmax(logits, dim=-1).cpu().numpy()
+                    all_probs_mc.append(probs_mc)
+                    preds = probs_mc.argmax(axis=-1)
                     all_preds.extend(preds.flatten())
                 elif self.loss_type == "cross_entropy":
                     probs = torch.softmax(logits, dim=-1)[:, 1].cpu().numpy()
@@ -629,10 +640,30 @@ class Trainer:
         # Compute metrics
         avg_loss = total_loss / len(self.val_loader)
         if self._num_out > 2:
-            # Multi-class: preds are already class indices
+            # Multi-class: preds are class indices; probs are needed for AUROC.
             accuracy = accuracy_score(all_labels, all_preds)
             f1 = f1_score(all_labels, all_preds, average="macro", zero_division=0.0)
-            auc = 0.0  # ROC AUC needs probability estimates per class
+            labels_arr = np.asarray(all_labels)
+            present = np.unique(labels_arr)
+            # Macro one-vs-rest AUROC. Requires >=2 classes present in this
+            # validation set; otherwise undefined and reported as 0.
+            if len(present) > 1 and all_probs_mc:
+                probs_all = np.concatenate(all_probs_mc, axis=0)
+                # Restrict columns to classes that actually appear, otherwise
+                # roc_auc_score raises on absent-class columns.
+                cols = present.astype(int)
+                try:
+                    auc = roc_auc_score(
+                        labels_arr,
+                        probs_all[:, cols],
+                        multi_class="ovr",
+                        average="macro",
+                        labels=cols,
+                    )
+                except ValueError:
+                    auc = 0.0
+            else:
+                auc = 0.0
         else:
             all_preds_binary = (np.array(all_preds) > 0.5).astype(int)
             accuracy = accuracy_score(all_labels, all_preds_binary)
@@ -723,11 +754,25 @@ class Trainer:
 
                     progress.remove_task(val_task)
 
-                    # LR scheduler step (only after warmup)
+                    # LR scheduler step (only after warmup). For reduce_on_plateau
+                    # we step on the *selection metric*, not val_loss, so the
+                    # plateau detection matches what early-stopping and best-
+                    # model checkpointing react to. If val_loss were used while
+                    # selection runs off F1/AUC, LR can drop because loss
+                    # plateaued on easy examples even though the ranking metric
+                    # is still improving — burning the schedule prematurely.
                     if self.scheduler is not None and epoch > self.warmup_epochs:
                         old_lr = self.optimizer.param_groups[0]["lr"]
                         if self.scheduler_type == "reduce_on_plateau":
-                            self.scheduler.step(val_loss)
+                            if self._checkpoint_metric == "val_f1":
+                                plateau_signal = -val_f1
+                            elif self._checkpoint_metric == "val_auc":
+                                plateau_signal = -val_auc
+                            elif self._checkpoint_metric == "val_acc":
+                                plateau_signal = -val_acc
+                            else:
+                                plateau_signal = val_loss
+                            self.scheduler.step(plateau_signal)
                         else:
                             # Epoch-based schedulers (cosine, etc.)
                             self.scheduler.step()
