@@ -58,6 +58,12 @@ class ChunkConfig:
     feature_end: int | None = None
     signal_context: tuple[int, int] = DEFAULT_SIGNAL_CONTEXT
     kmer_context: int = DEFAULT_KMER_CONTEXT
+    # When True and a LeechRead has a stashed full pre-crop signal
+    # (ref-anchored mode), fill chunk samples that extend past the aligned
+    # region with real soft-clipped signal instead of zeros. Default False
+    # preserves the Remora-compatible zero-pad behavior; see R4 in the
+    # coordinate-positioning audit for why it's opt-in.
+    recover_softclip_signal: bool = False
 
 
 @dataclass
@@ -118,6 +124,7 @@ class PrepareConfig:
             "feature_end": self.chunk.feature_end,
             "signal_context": list(self.chunk.signal_context),
             "kmer_context": self.chunk.kmer_context,
+            "recover_softclip_signal": self.chunk.recover_softclip_signal,
             "label": self.labeling.label,
             "reference_fasta": str(self.reference_fasta) if self.reference_fasta else None,
         }

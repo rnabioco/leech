@@ -245,6 +245,16 @@ def data():
         "pre-detect a region of interest (e.g. adapter midpoint) per read."
     ),
 )
+@click.option(
+    "--recover-softclip-signal/--no-recover-softclip-signal",
+    default=False,
+    help=(
+        "In ref-anchored mode, fill chunk samples that extend past the aligned "
+        "region with real soft-clipped signal instead of zeros. Default off "
+        "preserves Remora-compatible behavior. Only effective on the Python "
+        "(sequential / workers=1) prep path — the Rust path ignores this flag."
+    ),
+)
 def prepare(
     pod5,
     bam,
@@ -278,6 +288,7 @@ def prepare(
     rough_rescale,
     signal_context,
     focus_tsv,
+    recover_softclip_signal,
 ):
     """Prepare training data from POD5 and BAM files."""
     from leech.commands import handle_prepare
@@ -327,6 +338,7 @@ def prepare(
         rough_rescale=rough_rescale,
         signal_context=signal_context,
         focus_tsv=focus_tsv,
+        recover_softclip_signal=recover_softclip_signal,
     )
 
 
