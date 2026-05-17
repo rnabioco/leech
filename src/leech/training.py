@@ -129,6 +129,7 @@ class Trainer:
         adversarial_anneal_epochs: int = 0,
         cl_regression: bool = False,
         cl_lambda: float = 1.0,
+        checkpoint_metric: str = "auto",
     ):
         # Wrap model with inference wrapper for unified forward pass
         self.model_wrapper = ModelInferenceWrapper(model, model_type)
@@ -257,10 +258,14 @@ class Trainer:
             self.scaler = torch.amp.GradScaler("cuda")
             logger.info("Mixed precision training enabled")
 
-        # Track best model — multiclass checkpoints on F1 (macro), binary on accuracy
-        self._checkpoint_on_f1 = self._num_out > 2
+        # Track best model — checkpoint criterion is configurable.
+        # "auto" maps to macro-F1 for multiclass and AUROC for binary (immune to
+        # class-imbalance gaming, unlike raw accuracy on one-vs-all heads).
+        self._checkpoint_metric = self._resolve_checkpoint_metric(checkpoint_metric)
+        logger.info(f"Checkpoint criterion: {self._checkpoint_metric}")
         self.best_val_acc = 0.0
         self.best_val_f1 = 0.0
+        self.best_val_auc = 0.0
         self.best_epoch = 0
         self.start_epoch = 1
         self._best_model_state: dict[str, Any] | None = None
@@ -291,6 +296,17 @@ class Trainer:
             else:
                 logger.info(f"Checkpoint not found, starting fresh: {resume_checkpoint}")
 
+    _VALID_CHECKPOINT_METRICS = ("auto", "val_acc", "val_f1", "val_auc")
+
+    def _resolve_checkpoint_metric(self, metric: str) -> str:
+        if metric == "auto":
+            return "val_f1" if self._num_out > 2 else "val_auc"
+        if metric not in self._VALID_CHECKPOINT_METRICS:
+            raise ValueError(
+                f"checkpoint_metric must be one of {self._VALID_CHECKPOINT_METRICS}, got {metric!r}"
+            )
+        return metric
+
     def _resume_from_checkpoint(self, checkpoint_path: Path) -> None:
         """Restore training state from a checkpoint."""
         logger.info(f"Resuming from checkpoint: {checkpoint_path}")
@@ -300,6 +316,7 @@ class Trainer:
         self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         self.best_val_acc = checkpoint.get("best_val_acc", 0.0)
         self.best_val_f1 = checkpoint.get("best_val_f1", 0.0)
+        self.best_val_auc = checkpoint.get("best_val_auc", 0.0)
         self.best_epoch = checkpoint.get("best_epoch", 0)
         self.start_epoch = checkpoint.get("epoch", 0) + 1
 
@@ -723,10 +740,9 @@ class Trainer:
                     current_lr = self.optimizer.param_groups[0]["lr"]
                     if current_lr != self.base_lr:
                         lr_str = f" LR: {current_lr:.6f}"
-                    if self._checkpoint_on_f1:
-                        acc_label, f1_label = "Acc", "F1[*]"
-                    else:
-                        acc_label, f1_label = "Acc[*]", "F1"
+                    acc_label = "Acc[*]" if self._checkpoint_metric == "val_acc" else "Acc"
+                    f1_label = "F1[*]" if self._checkpoint_metric == "val_f1" else "F1"
+                    auc_label = "AUC[*]" if self._checkpoint_metric == "val_auc" else "AUC"
                     adv_str = ""
                     if self.adversarial_head is not None and self.history["train_adv_loss"]:
                         _adv_l = self.history["train_adv_loss"][-1]
@@ -744,18 +760,21 @@ class Trainer:
                         f"[cyan]Epoch {epoch}/{epochs}[/cyan] | "
                         f"Train Loss: {train_loss:.4f} Acc: {train_acc:.4f} | "
                         f"Val Loss: {val_loss:.4f} {acc_label}: {val_acc:.4f} "
-                        f"{f1_label}: {val_f1:.4f} AUC: {val_auc:.4f}"
+                        f"{f1_label}: {val_f1:.4f} {auc_label}: {val_auc:.4f}"
                         f"{lr_str}{adv_str}{cl_str}"
                     )
 
-                    # Save best model — F1 for multiclass, accuracy for binary
-                    if self._checkpoint_on_f1:
+                    # Save best model per configured checkpoint metric
+                    if self._checkpoint_metric == "val_f1":
                         improved = val_f1 > self.best_val_f1
+                    elif self._checkpoint_metric == "val_auc":
+                        improved = val_auc > self.best_val_auc
                     else:
                         improved = val_acc > self.best_val_acc
                     if improved:
                         self.best_val_acc = val_acc
                         self.best_val_f1 = val_f1
+                        self.best_val_auc = val_auc
                         self.best_epoch = epoch
                         self._best_model_state = copy.deepcopy(self.model.state_dict())
                         patience_counter = 0
@@ -764,7 +783,8 @@ class Trainer:
                             self.save_checkpoint("model_best.pt", epoch=epoch)
                             console.print(
                                 f"[bold green]✓ Saved best model "
-                                f"(val_acc: {val_acc:.4f}, val_f1: {val_f1:.4f})[/bold green]"
+                                f"(val_acc: {val_acc:.4f}, val_f1: {val_f1:.4f}, "
+                                f"val_auc: {val_auc:.4f})[/bold green]"
                             )
                     else:
                         patience_counter += 1
@@ -805,6 +825,7 @@ class Trainer:
                 "optimizer_state_dict": self.optimizer.state_dict(),
                 "best_val_acc": self.best_val_acc,
                 "best_val_f1": self.best_val_f1,
+                "best_val_auc": self.best_val_auc,
                 "best_epoch": self.best_epoch,
                 "epoch": self.best_epoch,
                 "scheduler_state_dict": self.scheduler.state_dict() if self.scheduler else None,
@@ -831,6 +852,7 @@ class Trainer:
             "optimizer_state_dict": self.optimizer.state_dict(),
             "best_val_acc": self.best_val_acc,
             "best_val_f1": self.best_val_f1,
+            "best_val_auc": self.best_val_auc,
             "best_epoch": self.best_epoch,
             "epoch": epoch,
             "scheduler_state_dict": self.scheduler.state_dict() if self.scheduler else None,
@@ -857,7 +879,9 @@ class Trainer:
         summary = {
             "best_val_acc": self.best_val_acc,
             "best_val_f1": self.best_val_f1,
+            "best_val_auc": self.best_val_auc,
             "best_epoch": self.best_epoch,
+            "checkpoint_metric": self._checkpoint_metric,
             "final_train_loss": self.history["train_loss"][-1],
             "final_train_acc": self.history["train_acc"][-1],
         }
@@ -930,6 +954,7 @@ def train_model(
     cl_regression: bool = False,
     cl_lambda: float = 1.0,
     signal_mode: str = "both",
+    checkpoint_metric: str = "auto",
     **model_kwargs: Any,
 ) -> dict[str, Any]:
     """
@@ -1418,6 +1443,7 @@ def train_model(
         "cl_regression": cl_regression,
         "cl_lambda": cl_lambda,
         "signal_mode": signal_mode,
+        "checkpoint_metric": checkpoint_metric,
         "dwell_template_table": str(dwell_template_table) if dwell_template_table else None,
         # Preparation metadata (from prepare_config.json sidecar)
         "reference_fasta": prepare_metadata.get("reference_fasta"),
@@ -1470,6 +1496,7 @@ def train_model(
         adversarial_anneal_epochs=adversarial_anneal_epochs,
         cl_regression=cl_regression,
         cl_lambda=cl_lambda,
+        checkpoint_metric=checkpoint_metric,
     )
 
     # Train
