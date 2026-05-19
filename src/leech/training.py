@@ -645,23 +645,31 @@ class Trainer:
             f1 = f1_score(all_labels, all_preds, average="macro", zero_division=0.0)
             labels_arr = np.asarray(all_labels)
             present = np.unique(labels_arr)
-            # Macro one-vs-rest AUROC. Requires >=2 classes present in this
-            # validation set; otherwise undefined and reported as 0.
+            # Macro one-vs-rest AUROC computed per-class. We avoid passing the
+            # sliced probs to roc_auc_score(multi_class="ovr") because sklearn
+            # rejects scores that don't sum to 1.0 across columns — which fires
+            # whenever the val set is missing any of the model's output classes
+            # (silent ValueError → AUC reported as 0.0). Manual OvR sidesteps
+            # the check and lets us skip classes that are degenerate (zero
+            # positives or zero negatives) in this validation set.
             if len(present) > 1 and all_probs_mc:
                 probs_all = np.concatenate(all_probs_mc, axis=0)
-                # Restrict columns to classes that actually appear, otherwise
-                # roc_auc_score raises on absent-class columns.
-                cols = present.astype(int)
-                try:
-                    auc = roc_auc_score(
-                        labels_arr,
-                        probs_all[:, cols],
-                        multi_class="ovr",
-                        average="macro",
-                        labels=cols,
-                    )
-                except ValueError:
-                    auc = 0.0
+                per_class_aucs: list[float] = []
+                for c in present:
+                    c_int = int(c)
+                    if c_int >= probs_all.shape[1]:
+                        continue
+                    y_bin = (labels_arr == c).astype(int)
+                    pos = int(y_bin.sum())
+                    if pos == 0 or pos == len(y_bin):
+                        continue
+                    try:
+                        per_class_aucs.append(
+                            float(roc_auc_score(y_bin, probs_all[:, c_int]))
+                        )
+                    except ValueError as e:
+                        logger.warning(f"AUROC failed for class {c_int}: {e}")
+                auc = float(np.mean(per_class_aucs)) if per_class_aucs else 0.0
             else:
                 auc = 0.0
         else:
