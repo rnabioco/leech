@@ -664,9 +664,7 @@ class Trainer:
                     if pos == 0 or pos == len(y_bin):
                         continue
                     try:
-                        per_class_aucs.append(
-                            float(roc_auc_score(y_bin, probs_all[:, c_int]))
-                        )
+                        per_class_aucs.append(float(roc_auc_score(y_bin, probs_all[:, c_int])))
                     except ValueError as e:
                         logger.warning(f"AUROC failed for class {c_int}: {e}")
                 auc = float(np.mean(per_class_aucs)) if per_class_aucs else 0.0
