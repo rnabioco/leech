@@ -306,9 +306,11 @@ def run_inference(
         # Set up signal map refinement if model specifies it
         if config.get("refine_signal_map", True):
             from leech.data import get_kmer_table
+            from leech.inference.helpers import _warn_if_kmer_table_drifted
             from leech.signal_refine import SigMapRefiner
 
             kmer_table_path = get_kmer_table()
+            _warn_if_kmer_table_drifted(config.get("kmer_table_sha256"), kmer_table_path)
             half_bw = config.get("refine_half_bandwidth", 5)
             do_rescale = config.get("refine_do_rough_rescale", True)
             scale_iters = config.get("refine_scale_iters", -1)
@@ -357,9 +359,11 @@ def run_inference(
         # Signal map refinement for leech models (needed for kmer residual signal channel)
         if config.get("refine_signal_map", True) or config.get("signal_in_channels", 1) > 1:
             from leech.data import get_kmer_table
+            from leech.inference.helpers import _warn_if_kmer_table_drifted
             from leech.signal_refine import SigMapRefiner
 
             kmer_table_path = get_kmer_table()
+            _warn_if_kmer_table_drifted(config.get("kmer_table_sha256"), kmer_table_path)
             half_bw = config.get("refine_half_bandwidth", 5)
             do_rescale = config.get("refine_do_rough_rescale", True)
             scale_iters = config.get("refine_scale_iters", 2)
