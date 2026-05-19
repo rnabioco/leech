@@ -316,17 +316,29 @@ class LeechDataset(Dataset):
         max_label = max(c["label_int"] for c in self.chunks)
         self._multiclass = max_label > 1
 
+        # For signal_kmer encoding, the on-the-fly inputs are ~30 B/chunk
+        # (seq_ints + seq_to_sig_map) vs ~77 KB/chunk for the encoded output
+        # — a >2000x reduction. We stash the compact inputs here and run
+        # `encode_signal_kmer` lazily in __getitem__, where DataLoader workers
+        # parallelize it behind prefetch. base_onehot stays eagerly tensorized
+        # (88 floats/chunk; not worth deferring).
+        self._seq_ints: list[np.ndarray] = []
+        self._seq_to_sig: list[np.ndarray] = []
+
         for chunk in self.chunks:
             if self._effective_seq_encoding == "signal_kmer":
-                self._encoded_seqs.append(
-                    self._encode_signal_kmer(
-                        chunk,
-                        signal_len,
-                        signal_kmer_context,
-                        left_context=self.left_context,
-                        right_context=self.right_context,
-                    )
-                )
+                seq_ctx = chunk["sequence_with_kmer_context"]
+                seq_ints = sequence_to_int(seq_ctx).astype(np.int8)
+                self._seq_ints.append(seq_ints)
+
+                s2s = chunk["seq_to_sig_map"].astype(np.int64, copy=True)
+                if self.left_context is not None and self.right_context is not None:
+                    stored_focus = chunk.get("focus_signal_pos")
+                    focus_pos = stored_focus if stored_focus is not None else int(s2s[-1]) // 2
+                    crop_start = focus_pos - self.left_context
+                    s2s -= crop_start
+                    np.clip(s2s, 0, signal_len, out=s2s)
+                self._seq_to_sig.append(s2s)
             else:
                 # Pre-encode sequence (vectorized, no Python loop)
                 self._encoded_seqs.append(self._encode_sequence(chunk["sequence"]))
@@ -376,30 +388,120 @@ class LeechDataset(Dataset):
                 else:
                     self._cl_targets.append(torch.tensor(-1.0, dtype=torch.float32))
 
-        # Stack into contiguous tensors for cache-friendly access
-        try:
-            self._signals_tensor = torch.stack(self._signals)
-            self._signals = []  # free the list
-        except RuntimeError as e:
-            logger.warning("Signal shapes differ, falling back to list access: %s", e)
-            self._signals_tensor = None
-
-        # Precompute per-channel feature stds for feature noise augmentation
-        self._feature_stds: torch.Tensor | None = None
-        if self._feature_noise_scale > 0 and self._needs_features and self._features:
+        # Stack every per-chunk list into one contiguous tensor. This isn't just
+        # for cache friendliness — it's required for fork-safety. A DataLoader
+        # with num_workers > 0 forks worker processes that COW-inherit the
+        # parent's address space. CPython refcounts live inside each PyObject
+        # header, so a worker iterating a list of N tensors writes to N
+        # separate page-resident headers and faults every page into a private
+        # copy, multiplying peak RSS by (1 + num_workers). A single contiguous
+        # tensor keeps its data buffer outside Python's GC, so the buffer
+        # pages are genuinely shared across the fork.
+        def _try_stack(name: str, items: list[torch.Tensor]) -> torch.Tensor | None:
+            if not items:
+                # Expected when a feature mode isn't active (e.g. signal_kmer
+                # leaves _encoded_seqs empty); the consumer will use a different
+                # tensor instead.
+                return None
             try:
-                feat_stack = torch.stack(self._features)  # (N, C, K)
-                self._feature_stds = feat_stack.std(dim=0)  # (C, K)
-            except RuntimeError:
+                return torch.stack(items)
+            except RuntimeError as e:
+                logger.warning("%s shapes differ, falling back to list access: %s", name, e)
+                return None
+
+        self._signals_tensor = _try_stack("Signal", self._signals)
+        if self._signals_tensor is not None:
+            self._signals = []
+
+        self._encoded_seqs_tensor = _try_stack("Encoded-sequence", self._encoded_seqs)
+        if self._encoded_seqs_tensor is not None:
+            self._encoded_seqs = []
+
+        # Compact signal_kmer inputs — only populated when encoding == signal_kmer.
+        # Stacked into fork-safe int tensors. encode_signal_kmer is then called
+        # lazily per-sample in __getitem__ (workers parallelize behind prefetch).
+        # Chunks have variable basecalled sequence lengths near the motif, so we
+        # pad to the per-array max. Padding values are chosen so the encoder
+        # gracefully ignores them: seq_ints=-1 hits the encoder's `base < 0`
+        # skip; seq_to_sig=signal_len makes its `sig_start < signal_len` check
+        # fail, writing nothing for the padded positions.
+        self._seq_ints_tensor: torch.Tensor | None = None
+        self._seq_to_sig_tensor: torch.Tensor | None = None
+        if self._effective_seq_encoding == "signal_kmer" and self._seq_ints:
+            max_seq_ints_len = max(s.shape[0] for s in self._seq_ints)
+            max_s2s_len = max(s.shape[0] for s in self._seq_to_sig)
+            n = len(self._seq_ints)
+            padded_seq_ints = np.full((n, max_seq_ints_len), -1, dtype=np.int8)
+            padded_s2s = np.full((n, max_s2s_len), signal_len, dtype=np.int64)
+            for i, (si, s2s) in enumerate(zip(self._seq_ints, self._seq_to_sig, strict=True)):
+                padded_seq_ints[i, : si.shape[0]] = si
+                padded_s2s[i, : s2s.shape[0]] = s2s
+            self._seq_ints_tensor = torch.from_numpy(padded_seq_ints)
+            self._seq_to_sig_tensor = torch.from_numpy(padded_s2s)
+            self._seq_ints = []
+            self._seq_to_sig = []
+
+        self._labels_tensor = _try_stack("Label", self._labels)
+        if self._labels_tensor is not None:
+            self._labels = []
+
+        self._features_tensor: torch.Tensor | None = None
+        if self._needs_features:
+            self._features_tensor = _try_stack("Feature", self._features)
+            if self._features_tensor is not None:
+                self._features = []
+
+        self._confound_labels_tensor: torch.Tensor | None = None
+        if self._has_confound:
+            self._confound_labels_tensor = _try_stack("Confound", self._confound_labels)
+            if self._confound_labels_tensor is not None:
+                self._confound_labels = []
+
+        self._cl_targets_tensor: torch.Tensor | None = None
+        if self._cl_regression:
+            self._cl_targets_tensor = _try_stack("CL target", self._cl_targets)
+            if self._cl_targets_tensor is not None:
+                self._cl_targets = []
+
+        # Drop the raw numpy arrays from self.chunks now that everything has
+        # been pre-tensorized. External code (samplers, label tally, feature
+        # window introspection) still reads the small scalar/string fields,
+        # so we keep self.chunks alive but null out the per-chunk arrays.
+        # Without this, each chunk dict keeps a ~50 KB numpy view alive and
+        # the same COW blowup hits during DataLoader fork.
+        for chunk in self.chunks:
+            for key in (
+                "signal",
+                "signal_residual",
+                "dwell",
+                "features",
+                "seq_to_sig_map",
+                "sequence_with_kmer_context",
+            ):
+                if key in chunk:
+                    chunk[key] = None
+
+        # Precompute per-channel feature stds for feature noise augmentation.
+        # Reuse the already-stacked features tensor when available.
+        self._feature_stds: torch.Tensor | None = None
+        if self._feature_noise_scale > 0 and self._needs_features:
+            if self._features_tensor is not None:
+                self._feature_stds = self._features_tensor.std(dim=0)  # (C, K)
+            else:
                 logger.warning("Feature shapes differ, feature noise disabled")
                 self._feature_noise_scale = 0.0
 
         # Approx samples per base for cross-layer shift/mask
         self._samples_per_base = signal_len / max(kmer_len, 1)
 
+        _n_encoded = (
+            self._encoded_seqs_tensor.shape[0]
+            if self._encoded_seqs_tensor is not None
+            else len(self._encoded_seqs)
+        )
         logger.debug(
             f"Pre-tensorized {len(self.chunks)} chunks "
-            f"({len(self._encoded_seqs)} sequences encoded, encoding={self._effective_seq_encoding})"
+            f"({_n_encoded} sequences encoded, encoding={self._effective_seq_encoding})"
         )
 
     def _prepare_signal(
@@ -716,21 +818,41 @@ class LeechDataset(Dataset):
             - features: (num_features, kmer_len) tensor (if model requires features)
             - label: (1,) tensor
         """
-        # Pre-computed signal lookup (padded/cropped once in __init__)
+        # Pre-computed signal lookup (padded/cropped once in __init__).
+        # Tensor path is the fork-safe fast path; list path is a fallback when
+        # per-chunk shapes were inconsistent and torch.stack failed in __init__.
         if self._signals_tensor is not None:
             signal_tensor = self._signals_tensor[idx]
         else:
             signal_tensor = self._signals[idx]
 
-        # Pre-encoded sequence lookup
-        sequence_tensor = self._encoded_seqs[idx]
-        if self._effective_seq_encoding == "base_onehot":
-            sequence = self.chunks[idx]["sequence"]
-            if len(sequence) != self.kmer_len:
-                raise ValueError(f"Expected k-mer length {self.kmer_len}, got {len(sequence)}")
+        if self._effective_seq_encoding == "signal_kmer":
+            # Compute one-hot kmer encoding on the fly from the compact
+            # inputs. The encoded output is (4*kmer_len, signal_len) float32
+            # — ~77 KB per chunk. Materializing 789K of these for a 20-class
+            # run is ~60 GB; we keep memory bounded by deferring.
+            if self._seq_ints_tensor is not None:
+                seq_ints = self._seq_ints_tensor[idx].numpy()
+                seq_to_sig = self._seq_to_sig_tensor[idx].numpy()
+            else:
+                seq_ints = self._seq_ints[idx]
+                seq_to_sig = self._seq_to_sig[idx]
+            enc = encode_signal_kmer(
+                seq_ints, seq_to_sig, self.signal_len, self.signal_kmer_context
+            )
+            sequence_tensor = torch.from_numpy(enc)
+        elif self._encoded_seqs_tensor is not None:
+            sequence_tensor = self._encoded_seqs_tensor[idx]
+        else:
+            sequence_tensor = self._encoded_seqs[idx]
 
-        # Pre-computed features lookup
-        features_tensor = self._features[idx] if self._needs_features else torch.empty(0)
+        if self._needs_features:
+            if self._features_tensor is not None:
+                features_tensor = self._features_tensor[idx]
+            else:
+                features_tensor = self._features[idx]
+        else:
+            features_tensor = torch.empty(0)
 
         # Augmentation pipeline (training only — augmentation dict is None for val/test)
         needs_cross_layer = self._shift_max_bases > 0 or self._time_mask_bases > 0
@@ -766,8 +888,10 @@ class LeechDataset(Dataset):
             if self._feature_noise_scale > 0 and self._needs_features:
                 features_tensor = self._apply_feature_noise(features_tensor)
 
-        # Pre-computed label lookup
-        label = self._labels[idx]
+        if self._labels_tensor is not None:
+            label = self._labels_tensor[idx]
+        else:
+            label = self._labels[idx]
 
         result: dict[str, torch.Tensor] = {
             "signal": signal_tensor,
@@ -781,10 +905,16 @@ class LeechDataset(Dataset):
 
         # Include confound label for adversarial training
         if self._has_confound:
-            result["confound_label"] = self._confound_labels[idx]
+            if self._confound_labels_tensor is not None:
+                result["confound_label"] = self._confound_labels_tensor[idx]
+            else:
+                result["confound_label"] = self._confound_labels[idx]
 
         if self._cl_regression:
-            result["cl_target"] = self._cl_targets[idx]
+            if self._cl_targets_tensor is not None:
+                result["cl_target"] = self._cl_targets_tensor[idx]
+            else:
+                result["cl_target"] = self._cl_targets[idx]
 
         return result
 
