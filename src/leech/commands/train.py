@@ -63,6 +63,7 @@ def handle_train(
     cl_lambda: float = 1.0,
     signal_mode: str = "both",
     dwell_template_table: str | None = None,
+    checkpoint_metric: str = "auto",
     **model_kwargs: Any,
 ) -> dict[str, Any]:
     """
@@ -161,6 +162,7 @@ def handle_train(
         "cl_lambda",
         "signal_mode",
         "dwell_template_table",
+        "checkpoint_metric",
     }
     for key in _explicit_keys:
         extra_kwargs.pop(key, None)
@@ -211,6 +213,7 @@ def handle_train(
         cl_lambda=cl_lambda,
         signal_mode=signal_mode,
         dwell_template_table=dwell_template_table,
+        checkpoint_metric=checkpoint_metric,
         **extra_kwargs,
     )
 

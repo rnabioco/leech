@@ -11,6 +11,7 @@ organism-specific base assignments.
 
 import json
 import logging
+from collections import Counter, defaultdict
 from pathlib import Path
 
 DISC_BASE_TO_INT: dict[str, int] = {"A": 0, "C": 1, "G": 2, "T": 3}
@@ -18,6 +19,103 @@ DISC_BASE_TO_INT: dict[str, int] = {"A": 0, "C": 1, "G": 2, "T": 3}
 NUM_DISC_BASES = 4
 
 logger = logging.getLogger("leech.confounds")
+
+
+def extract_disc_bases_from_fasta(
+    fasta_path: str | Path,
+    motif: str = "CCAGGC",
+) -> dict[str, str]:
+    """Extract per-amino-acid discriminator base from a reference FASTA.
+
+    For each tRNA record, locates ``motif`` (typically CCAGGC: the universal
+    CCA tail + the first 3 nt of the 3' adaptor) and reads the base one
+    position 5' of the motif — the Sprinzl-73 discriminator base.
+
+    When multiple isoacceptors of the same amino acid disagree on the
+    discriminator base (e.g. tRNA-Arg-ACG: A vs. tRNA-Arg-CCG: C), the
+    modal base is chosen and a warning is logged. Adversarial training
+    will still see the per-AA mode; per-isoacceptor disagreement is the
+    motivation for the ``trna_id`` confound mode.
+
+    Args:
+        fasta_path: Path to a FASTA file with headers of the form
+            ``>tRNA-{AminoAcid}-{anticodon}-{copy}-{variant}``.
+        motif: Sequence that anchors the disc_base position. The base
+            immediately upstream of the first occurrence of ``motif`` in
+            each record is the discriminator base.
+
+    Returns:
+        ``{amino_acid: base}`` where ``base`` ∈ ``{"A", "C", "G", "T"}``.
+
+    Raises:
+        ValueError: if the motif is not found in a record, occurs at the
+            start of a record (no upstream base), or yields a non-ACGT
+            discriminator base.
+    """
+    fasta_path = Path(fasta_path)
+    per_aa_bases: dict[str, list[str]] = defaultdict(list)
+    per_aa_records: dict[str, list[str]] = defaultdict(list)
+
+    header: str | None = None
+    seq_parts: list[str] = []
+
+    def _finalize(header: str | None, seq: str) -> None:
+        if header is None:
+            return
+        # Header form: tRNA-{AA}-{anticodon}-...
+        parts = header.split("-")
+        if len(parts) < 2 or parts[0] != "tRNA":
+            raise ValueError(
+                f"Cannot parse amino acid from FASTA header '{header}' (expected 'tRNA-{{AA}}-...')"
+            )
+        aa = parts[1]
+        seq_upper = seq.upper().replace("U", "T")
+        pos = seq_upper.find(motif)
+        if pos < 0:
+            raise ValueError(
+                f"Motif '{motif}' not found in record '{header}' (sequence length {len(seq)})"
+            )
+        if pos == 0:
+            raise ValueError(
+                f"Motif '{motif}' at position 0 in record '{header}' "
+                "leaves no upstream base for the discriminator"
+            )
+        base = seq_upper[pos - 1]
+        if base not in DISC_BASE_TO_INT:
+            raise ValueError(f"Non-ACGT discriminator base '{base}' before motif in '{header}'")
+        per_aa_bases[aa].append(base)
+        per_aa_records[aa].append(header)
+
+    with open(fasta_path) as f:
+        for line in f:
+            line = line.rstrip()
+            if not line:
+                continue
+            if line.startswith(">"):
+                _finalize(header, "".join(seq_parts))
+                header = line[1:].split()[0]  # strip ">" and any trailing comment
+                seq_parts = []
+            else:
+                seq_parts.append(line)
+        _finalize(header, "".join(seq_parts))
+
+    disc_map: dict[str, str] = {}
+    for aa, bases in per_aa_bases.items():
+        counts = Counter(bases)
+        modal_base, modal_count = counts.most_common(1)[0]
+        if len(counts) > 1:
+            logger.warning(
+                "disc_base for %s varies across %d isoacceptors: %s; using mode '%s'. "
+                "Consider --confound trna_id for per-isoacceptor adversarial training.",
+                aa,
+                len(bases),
+                dict(counts),
+                modal_base,
+            )
+        disc_map[aa] = modal_base
+        logger.info("disc_base[%s] = %s (n=%d/%d)", aa, modal_base, modal_count, len(bases))
+
+    return disc_map
 
 
 def load_disc_base_map(data_dir: Path) -> dict[str, str] | None:

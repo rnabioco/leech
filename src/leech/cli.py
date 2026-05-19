@@ -577,6 +577,16 @@ def merge(
     default=None,
     help="TSV with per-AA per-position expected dwell for 20-channel template features.",
 )
+@click.option(
+    "--checkpoint-metric",
+    type=click.Choice(["auto", "val_acc", "val_f1", "val_auc"]),
+    default="auto",
+    help=(
+        "Validation metric used for best-model checkpointing and early stopping. "
+        "'auto' = val_f1 for multiclass, val_auc for binary (recommended; "
+        "val_acc is gameable on imbalanced one-vs-all heads)."
+    ),
+)
 def train(
     train_data,
     val_data,
@@ -624,6 +634,7 @@ def train(
     cl_lambda,
     signal_mode,
     dwell_template_table,
+    checkpoint_metric,
 ):
     """Train a model on prepared data."""
     from leech.commands.train import handle_train
@@ -675,6 +686,7 @@ def train(
         cl_lambda=cl_lambda,
         signal_mode=signal_mode,
         dwell_template_table=dwell_template_table,
+        checkpoint_metric=checkpoint_metric,
     )
 
 
@@ -1080,6 +1092,16 @@ def export(model_dir, output):
     default="both",
     help="Signal input: 'both' (raw+residual, 2ch), 'residual' (1ch), 'signal' (1ch).",
 )
+@click.option(
+    "--selection-metric",
+    type=click.Choice(["auto", "val_acc", "val_f1", "val_auc"]),
+    default="auto",
+    help=(
+        "Metric used to rank grid points and checkpoint the best model. "
+        "'auto' = val_f1 for multiclass, val_auc for binary (recommended; "
+        "val_acc is gameable on imbalanced one-vs-all heads)."
+    ),
+)
 def optimize(
     train_data,
     val_data,
@@ -1126,6 +1148,7 @@ def optimize(
     cl_regression,
     cl_lambda,
     signal_mode,
+    selection_metric,
 ):
     """Optimize model hyperparameters using grid search over chunk contexts."""
     from leech.commands.optimize import handle_optimize
@@ -1176,6 +1199,7 @@ def optimize(
         cl_regression=cl_regression,
         cl_lambda=cl_lambda,
         signal_mode=signal_mode,
+        selection_metric=selection_metric,
     )
 
 

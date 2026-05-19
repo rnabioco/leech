@@ -62,6 +62,7 @@ def handle_optimize(
     cl_regression: bool = False,
     cl_lambda: float = 1.0,
     signal_mode: str = "both",
+    selection_metric: str = "auto",
 ) -> Path:
     """
     Handle the optimize command logic.
@@ -171,6 +172,7 @@ def handle_optimize(
         cl_regression=cl_regression,
         cl_lambda=cl_lambda,
         signal_mode=signal_mode,
+        selection_metric=selection_metric,
     )
 
     # Run grid search
