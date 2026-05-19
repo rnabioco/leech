@@ -369,8 +369,8 @@ class LeechDataset(Dataset):
                 self._features.append(torch.empty(0))
 
             # Confound label for adversarial training. Two modes:
-            # 1. label-level (disc_base): confound_map maps label_int → class
-            # 2. chunk-level (trna_id): ref_confound_map maps reference_name → class
+            # 1. label-level (label_map): confound_map maps label_int → class
+            # 2. chunk-level (ref_map): ref_confound_map maps reference_name → class
             if self._has_confound:
                 if self._ref_confound_map is not None:
                     ref_name = chunk.get("reference_name", "")

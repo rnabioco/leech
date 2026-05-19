@@ -1099,17 +1099,17 @@ def train_model(
         }
         logger.info(f"Signal augmentation enabled: {augmentation}")
 
-    # Build confound map for adversarial training
+    # Build confound map for adversarial training. Two styles:
+    # - label_map: per-class confound, read from label_class_map.json sidecar
+    #   (one class_int per training label, pipeline-defined).
+    # - ref_map:   per-chunk confound, derived from the unique reference_name
+    #   strings in the data (one class_int per unique reference).
     confound_map: dict[int, int] | None = None
     ref_confound_map: dict[str, int] | None = None
-    adversarial_num_classes = 4  # default: A/C/G/T
+    adversarial_num_classes = 0
 
-    if adversarial_lambda > 0 and confound == "disc_base":
-        from leech.confounds import (
-            NUM_DISC_BASES,
-            build_confound_map,
-            load_disc_base_map,
-        )
+    if adversarial_lambda > 0 and confound == "label_map":
+        from leech.confounds import build_label_confound_map, load_label_class_map
 
         _lm = label_map
         if _lm is None:
@@ -1120,22 +1120,27 @@ def train_model(
                 with open(_lm_path) as f:
                     _lm = json.load(f)
         if _lm is not None:
-            _dbm = load_disc_base_map(train_data_path.parent)
-            confound_map = build_confound_map(_lm, disc_base_map=_dbm)
-            adversarial_num_classes = NUM_DISC_BASES
-            logger.info(f"Adversarial confound 'disc_base': {confound_map}")
+            _cm = load_label_class_map(train_data_path.parent)
+            confound_map = build_label_confound_map(_lm, class_map=_cm)
+            if confound_map:
+                adversarial_num_classes = max(confound_map.values()) + 1
+            logger.info(
+                f"Adversarial confound 'label_map': {adversarial_num_classes} classes, "
+                f"map={confound_map}"
+            )
         else:
             logger.warning(
-                "adversarial_lambda > 0 with confound='disc_base' but no label_map found; "
+                "adversarial_lambda > 0 with confound='label_map' but no label_map found; "
                 "adversarial training disabled"
             )
             adversarial_lambda = 0.0
 
-    elif adversarial_lambda > 0 and confound == "trna_id":
-        # Full tRNA-isoacceptor identity confound. Each unique reference name
-        # (e.g. tRNA-Ser-CGA-1-1) becomes a distinct adversarial class,
-        # directly penalising the model for encoding ANY tRNA-body information.
-        from leech.confounds import build_trna_identity_map
+    elif adversarial_lambda > 0 and confound == "ref_map":
+        # Per-chunk reference-string confound. Each unique reference_name
+        # (e.g. tRNA-Ser-CGA-1-1 in the tRNA pipeline) becomes a distinct
+        # adversarial class. Penalises the model for encoding any
+        # per-reference information.
+        from leech.confounds import build_string_id_map
 
         _ref_names = None
         if train_chunks is not None:
@@ -1145,11 +1150,11 @@ def train_model(
             if "reference_names" in _npz:
                 _ref_names = _npz["reference_names"].tolist()
         if _ref_names is not None:
-            ref_confound_map, adversarial_num_classes = build_trna_identity_map(_ref_names)
-            logger.info(f"Adversarial confound 'trna_id': {adversarial_num_classes} classes")
+            ref_confound_map, adversarial_num_classes = build_string_id_map(_ref_names)
+            logger.info(f"Adversarial confound 'ref_map': {adversarial_num_classes} classes")
         else:
             logger.warning(
-                "adversarial_lambda > 0 with confound='trna_id' but no "
+                "adversarial_lambda > 0 with confound='ref_map' but no "
                 "reference_names in training data; adversarial training disabled"
             )
             adversarial_lambda = 0.0

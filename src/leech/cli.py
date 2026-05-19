@@ -523,9 +523,9 @@ def merge(
 )
 @click.option(
     "--confound",
-    type=click.Choice(["disc_base", "trna_id"]),
+    type=click.Choice(["label_map", "ref_map"]),
     default=None,
-    help="Confound to decorrelate via gradient reversal. 'disc_base' = discriminator base at position 73 (4 classes). 'trna_id' = full tRNA isoacceptor identity (N classes, one per unique reference tRNA).",
+    help="Confound to decorrelate via gradient reversal. 'label_map' = read class assignments from label_class_map.json (one class per training label, pipeline-defined). 'ref_map' = derive one class per unique reference_name observed in the data.",
 )
 @click.option(
     "--cl-regression/--no-cl-regression",
@@ -929,9 +929,9 @@ def export(model_dir, output):
 )
 @click.option(
     "--confound",
-    type=click.Choice(["disc_base", "trna_id"]),
+    type=click.Choice(["label_map", "ref_map"]),
     default=None,
-    help="Confound to decorrelate via gradient reversal. 'disc_base' = discriminator base at position 73 (4 classes). 'trna_id' = full tRNA isoacceptor identity (N classes, one per unique reference tRNA).",
+    help="Confound to decorrelate via gradient reversal. 'label_map' = read class assignments from label_class_map.json (one class per training label, pipeline-defined). 'ref_map' = derive one class per unique reference_name observed in the data.",
 )
 @click.option(
     "--cl-regression/--no-cl-regression",
