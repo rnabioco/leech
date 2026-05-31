@@ -24,6 +24,7 @@ dependencies = [
   "click>=8.1.0",
   "numpy>=2.0.0",
   "nvitop>=1.6.1",
+  "polars>=1.0.0",
   "pysam>=0.22.0",
   "rich>=13.0.0",
   "rich-click>=1.7.0",
@@ -54,7 +55,6 @@ pipeline = [
   "snakemake-executor-plugin-slurm>=1.9.2",
 ]
 notebook = [
-  "polars>=1.0.0",
   "plotnine>=0.13.0",
   "great_tables>=0.14.0",
   "statsmodels>=0.14.0",

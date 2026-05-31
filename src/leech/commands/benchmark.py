@@ -90,7 +90,7 @@ def _build_loader_and_model(
             logger.warning(f"torch.compile failed, falling back to eager: {e}")
 
     wrapper = ModelInferenceWrapper(model, model_type=model_name)
-    return loader, model, wrapper, num_out
+    return loader, model, wrapper, num_out  # ty: ignore[invalid-return-type]
 
 
 def _print_report(report) -> None:

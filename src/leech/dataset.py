@@ -37,7 +37,7 @@ import logging
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
+import polars as pl
 import torch
 from torch.utils.data import Dataset
 
@@ -94,8 +94,8 @@ def load_dwell_template_table(
             alphabetically. Index into this list to interpret the first axis of
             ``template``.
     """
-    df = pd.read_csv(table_path, sep="\t")
-    aa_list = sorted(df["aa"].unique())
+    df = pl.read_csv(table_path, separator="\t")
+    aa_list = sorted(df["aa"].unique().to_list())
     n_aa = len(aa_list)
     aa_to_idx = {aa: i for i, aa in enumerate(aa_list)}
 
@@ -103,11 +103,11 @@ def load_dwell_template_table(
     max_pos = int(df["position"].max())
 
     # Grand mean dwell at each position (fallback for missing entries)
-    grand_mean = df.groupby("position")["dwell_mean"].mean()
+    grand_mean = dict(df.group_by("position").agg(pl.col("dwell_mean").mean()).iter_rows())
 
     n_positions = max_pos - min_pos + 1
     template = np.ones((n_aa, n_positions), dtype=np.float32)
-    for _, row in df.iterrows():
+    for row in df.iter_rows(named=True):
         ai = aa_to_idx[row["aa"]]
         pi = int(row["position"]) - min_pos
         template[ai, pi] = row["dwell_mean"]
