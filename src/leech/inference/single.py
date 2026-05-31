@@ -600,7 +600,7 @@ def run_inference(
         and not _has_repr_hook
     ):
         try:
-            model_wrapper.model = torch.compile(model_wrapper.model, mode="reduce-overhead")
+            model_wrapper.model = torch.compile(model_wrapper.model, mode="reduce-overhead")  # ty: ignore[invalid-assignment]
             logger.info("torch.compile enabled (mode=reduce-overhead)")
         except Exception as e:
             logger.warning(f"torch.compile failed, using eager mode: {e}")
