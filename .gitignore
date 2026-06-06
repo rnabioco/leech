@@ -260,3 +260,10 @@ aa-tRNA-seq/
 # alpine-specific stuff
 .nfs*
 ext/
+
+# Claude Code local/transient files (keep agents/ and commands/ tracked)
+.claude/scheduled_tasks.lock
+.claude/scheduled_tasks.lock.*
+.claude/settings.local.json
+.claude/worktrees/
+.claude/plans/
