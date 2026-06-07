@@ -151,6 +151,6 @@ unused-type-ignore-comment = "ignore"
 
 [tool.vulture]
 min_confidence = 80
-paths = ["src/"]
+paths = ["src/", "vulture_whitelist.py"]
 ignore_names = ["test_*", "setUp", "tearDown"]
 ignore_decorators = ["@app.route", "@click.command", "@pytest.fixture"]

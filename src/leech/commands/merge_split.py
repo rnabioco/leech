@@ -8,7 +8,7 @@ and splitting at read level to prevent data leakage.
 import json
 import logging
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import numpy as np
 from rich.table import Table
@@ -144,7 +144,7 @@ def handle_merge_and_split(
         and isinstance(parsed[1], list)
         and isinstance(parsed[1][0], str)
     ):
-        all_files, all_labels = cast(_ParsedMulticlass, parsed)
+        all_files, all_labels = parsed
         logger.info(f"Multi-class mode: {len(set(all_labels))} classes")
         from leech.splitting import merge_and_split_multiclass
 
@@ -161,7 +161,7 @@ def handle_merge_and_split(
         console.print("[bold green]Multi-class merge and split complete![/bold green]")
         return result
 
-    all_files, relabel_tuple, meta_labels = cast(_ParsedPairwise, parsed)
+    all_files, relabel_tuple, meta_labels = parsed
 
     logger.info(
         f"Relabeling for comparison: {meta_labels[0]} = label_int 0, {meta_labels[1]} = label_int 1"
@@ -315,7 +315,7 @@ def handle_merge_and_split_kfold(
         and isinstance(parsed[1], list)
         and isinstance(parsed[1][0], str)
     ):
-        all_files, all_labels = cast(_ParsedMulticlass, parsed)
+        all_files, all_labels = parsed
         logger.info(f"Multi-class {k_fold}-fold mode: {len(set(all_labels))} classes")
         from leech.splitting import merge_and_kfold_split_multiclass
 
@@ -330,7 +330,7 @@ def handle_merge_and_split_kfold(
         console.print("[bold green]Multi-class k-fold merge and split complete![/bold green]")
         return result
 
-    all_files, relabel_tuple, meta_labels = cast(_ParsedPairwise, parsed)
+    all_files, relabel_tuple, meta_labels = parsed
 
     logger.info(
         f"Relabeling for comparison: {meta_labels[0]} = label_int 0, {meta_labels[1]} = label_int 1"

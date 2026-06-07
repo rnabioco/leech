@@ -37,3 +37,8 @@ __exit__  # noqa: vulture
 get_sequence  # noqa: vulture
 reference_names  # noqa: vulture
 get_logger  # noqa: vulture
+
+# Rust helpers imported only by the test suite (vulture scans src/ only)
+_rs_test_process_read  # noqa: vulture
+_rs_extract_levels  # noqa: vulture
+_rs_rough_rescale  # noqa: vulture
