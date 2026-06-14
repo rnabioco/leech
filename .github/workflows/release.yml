@@ -109,12 +109,14 @@ jobs:
 
   # ── sdist (GitHub release only) ─────────────────────────────────────
   #
-  # The sdist references escapepod-signal by relative path into the private
-  # escapepod-rs submodule, which is NOT vendored into the archive — so it
-  # cannot be rebuilt by third parties. It is published as a GitHub release
-  # artifact for provenance only and is deliberately kept OFF PyPI so that
-  # platforms without a prebuilt wheel fail clearly instead of attempting a
-  # doomed source build.
+  # leech_core depends on escapepod-signal as `{ version, path }`: the path
+  # points into the private escapepod-rs submodule, which is NOT vendored into
+  # the sdist, so the archive cannot currently be rebuilt by third parties. It
+  # is published as a GitHub release artifact for provenance only and is kept
+  # OFF PyPI so platforms without a prebuilt wheel fail clearly instead of
+  # attempting a doomed source build. Once escapepod-signal is published to
+  # crates.io, drop the `path` from rust/Cargo.toml and this sdist becomes
+  # buildable anywhere — at which point it can be added to the PyPI upload.
   sdist:
     name: Build sdist
     runs-on: ubuntu-latest

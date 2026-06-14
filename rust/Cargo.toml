@@ -8,7 +8,11 @@ crate-type = ["cdylib"]
 name = "_leech_core"
 
 [dependencies]
-escapepod-signal = { path = "../escapepod-rs/crates/escapepod-signal" }
+# Local dev / CI build from the escapepod-rs submodule via `path`; the
+# `version` is declared so that once escapepod-signal is published to
+# crates.io the `path` can be dropped to build leech_core (and a real PyPI
+# sdist) without the private submodule.
+escapepod-signal = { path = "../escapepod-rs/crates/escapepod-signal", version = "0.5.1" }
 numpy = "0.28"
 pyo3 = { version = "0.28", features = ["extension-module"] }
 rayon = "1"

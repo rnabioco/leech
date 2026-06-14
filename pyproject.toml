@@ -16,7 +16,7 @@ classifiers = [
 ]
 dependencies = [
   "click>=8.1.0",
-  "escapepod",
+  "escapepod>=0.5.1",  # Python POD5 Reader bindings (escapepod-rs); the escpod CLI is a separate artifact
   "numpy>=2.0.0",
   "nvitop>=1.6.1",
   "polars>=1.0.0",
