@@ -7,7 +7,7 @@ Measures per-read time for: normalize → sig_map → dwell → features.
 import time
 
 import numpy as np
-from leech_core import _test_process_read
+from leech._leech_core import _test_process_read
 
 from leech.features import (
     MoveTable,

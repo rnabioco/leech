@@ -26,7 +26,7 @@ from leech.features import (
 
 # Skip if leech_core not built
 try:
-    from leech_core import _test_ref_to_signal
+    from leech._leech_core import _test_ref_to_signal
 
     from leech._rust_accel import _rs_test_process_read
 

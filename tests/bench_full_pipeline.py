@@ -70,7 +70,7 @@ def python_pod5_read(read_ids, pod5_path):
 
 def rust_pod5_read(read_ids, pod5_path):
     """Rust escapepod batch read."""
-    from leech_core import read_pod5_batch
+    from leech._leech_core import read_pod5_batch
 
     return read_pod5_batch(str(pod5_path), read_ids)
 
@@ -121,7 +121,7 @@ def python_full_pipeline(reads, pod5_path, reverse=True):
 
 def rust_full_pipeline(reads, pod5_path, reverse=True):
     """Full Rust extraction: escapepod POD5 + Rust pipeline."""
-    from leech_core import extract_inference_chunks
+    from leech._leech_core import extract_inference_chunks
 
     read_ids = [r["read_id"] for r in reads]
     sequences = [r["sequence"] for r in reads]

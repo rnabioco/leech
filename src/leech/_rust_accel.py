@@ -10,20 +10,20 @@ import logging
 logger = logging.getLogger("leech._rust_accel")
 
 try:
-    from leech_core import _test_process_read as _rs_test_process_read
-    from leech_core import compute_signal_stats as _rs_compute_signal_stats
-    from leech_core import encode_signal_kmer as _rs_encode_signal_kmer
-    from leech_core import extract_chunks_from_preloaded as _rs_extract_chunks_from_preloaded
-    from leech_core import extract_inference_chunks as _rs_extract_inference_chunks
-    from leech_core import extract_levels as _rs_extract_levels
-    from leech_core import extract_training_chunks as _rs_extract_training_chunks
-    from leech_core import preload_pod5_signals as _rs_preload_pod5_signals
-    from leech_core import read_pod5_batch as _rs_read_pod5_batch
-    from leech_core import rough_rescale as _rs_rough_rescale
-    from leech_core import seq_banded_dp as _rs_seq_banded_dp
+    from leech._leech_core import _test_process_read as _rs_test_process_read
+    from leech._leech_core import compute_signal_stats as _rs_compute_signal_stats
+    from leech._leech_core import encode_signal_kmer as _rs_encode_signal_kmer
+    from leech._leech_core import extract_chunks_from_preloaded as _rs_extract_chunks_from_preloaded
+    from leech._leech_core import extract_inference_chunks as _rs_extract_inference_chunks
+    from leech._leech_core import extract_levels as _rs_extract_levels
+    from leech._leech_core import extract_training_chunks as _rs_extract_training_chunks
+    from leech._leech_core import preload_pod5_signals as _rs_preload_pod5_signals
+    from leech._leech_core import read_pod5_batch as _rs_read_pod5_batch
+    from leech._leech_core import rough_rescale as _rs_rough_rescale
+    from leech._leech_core import seq_banded_dp as _rs_seq_banded_dp
 
     HAS_RUST = True
-    logger.debug("Rust acceleration available (leech_core)")
+    logger.debug("Rust acceleration available (leech._leech_core)")
 except ImportError:
     HAS_RUST = False
     _rs_test_process_read = None
@@ -43,9 +43,9 @@ except ImportError:
 def check_rust() -> None:
     """Print Rust acceleration status."""
     if HAS_RUST:
-        import leech_core
+        from leech import _leech_core
 
-        version = getattr(leech_core, "__version__", None)
+        version = getattr(_leech_core, "__version__", None)
         label = f"leech_core {version}" if version else "leech_core"
         print(f"Rust acceleration: enabled ({label})")
         funcs = [
@@ -59,8 +59,13 @@ def check_rust() -> None:
             "seq_banded_dp",
         ]
         for f in funcs:
-            status = "ok" if getattr(leech_core, f, None) is not None else "missing"
+            status = "ok" if getattr(_leech_core, f, None) is not None else "missing"
             print(f"  {f}: {status}")
     else:
         print("Rust acceleration: not available")
-        print("Install with: uv sync --extra rust")
+        print(
+            "The leech_core extension is bundled into the leech wheel; a missing "
+            "extension usually means a source build without the escapepod-rs "
+            "submodule. Reinstall a prebuilt wheel, or build with the submodule "
+            "checked out (`git submodule update --init` then `uv sync`)."
+        )

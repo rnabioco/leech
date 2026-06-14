@@ -6,13 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
 authors = [{ name = "aa-tRNA-seq pipeline team" }]
-keywords = [
-  "aminoacylation",
-  "bioinformatics",
-  "machine-learning",
-  "nanopore",
-  "tRNA"
-]
+keywords = ["aminoacylation", "bioinformatics", "machine-learning", "nanopore", "tRNA"]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Intended Audience :: Science/Research",
@@ -22,6 +16,7 @@ classifiers = [
 ]
 dependencies = [
   "click>=8.1.0",
+  "escapepod",
   "numpy>=2.0.0",
   "nvitop>=1.6.1",
   "polars>=1.0.0",
@@ -33,12 +28,10 @@ dependencies = [
 ]
 
 [project.scripts]
-leech = "leech.cli:main"
 check-rust = "leech._rust_accel:check_rust"
+leech = "leech.cli:main"
 
 [project.optional-dependencies]
-rust = ["leech-core"]
-pod5 = ["escapepod"]
 dev = [
   "pytest>=8.0.0",
   "pytest-cov>=4.1.0",
@@ -48,23 +41,23 @@ dev = [
   "nbqa>=1.7.0",  # Quality assurance for Jupyter notebooks
   "vulture>=2.15",  # Dead code detection
 ]
-pipeline = [
-  "snakefmt>=0.10.3",
-  "snakemake>=9.0.0",
-  "snakemake-executor-plugin-lsf>=0.2.5",
-  "snakemake-executor-plugin-slurm>=1.9.2",
-]
 notebook = [
   "plotnine>=0.13.0",
   "great_tables>=0.14.0",
   "statsmodels>=0.14.0",
   "tabulate>=0.9.0",
 ]
+pipeline = [
+  "snakefmt>=0.10.3",
+  "snakemake>=9.0.0",
+  "snakemake-executor-plugin-lsf>=0.2.5",
+  "snakemake-executor-plugin-slurm>=1.9.2",
+]
 
 [dependency-groups]
 dev = [
-    "maturin>=1.12.6",
-    "pymupdf>=1.27.1",
+  "maturin>=1.12.6",
+  "pymupdf>=1.27.1",
 ]
 docs = [
   "ghp-import",
@@ -74,29 +67,36 @@ docs = [
 ]
 
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["maturin>=1.12.6"]
+build-backend = "maturin"
 
-[tool.hatch.build.targets.wheel]
-packages = ["src/leech"]
-artifacts = ["src/leech/data/*.txt", "src/leech/data/*.txt.gz", "src/leech/py.typed"]
+# leech is a mixed Rust/Python project. maturin compiles the Rust crate in
+# rust/ (the `leech_core` acceleration extension) and bundles it into the leech
+# wheel alongside the pure-Python package in src/leech — a single `uv add leech`
+# (or pip install) gets both. The Rust crate links escapepod-signal from the
+# escapepod-rs submodule at build time, so building from source requires that
+# (private) submodule; published platform wheels carry the compiled extension
+# and need no Rust toolchain or submodule access.
+[tool.maturin]
+features = ["pyo3/extension-module"]
+include = [
+  "src/leech/data/*.txt",
+  "src/leech/data/*.txt.gz",
+  "src/leech/py.typed",
+]
+manifest-path = "rust/Cargo.toml"
+module-name = "leech._leech_core"
+python-source = "src"
 
 [tool.nbqa.addopts]
 ruff = ["--ignore=E402"]
 
 [tool.pytest.ini_options]
 addopts = "-v"
+markers = ["slow: slow tests (torch.export, bundles) — run with --slow"]
 python_files = "test_*.py"
 python_functions = "test_*"
 testpaths = ["tests"]
-markers = ["slow: slow tests (torch.export, bundles) — run with --slow"]
-
-[tool.uv.workspace]
-members = ["rust", "escapepod-rs/crates/escapepod-python"]
-
-[tool.uv.sources]
-leech-core = { workspace = true }
-escapepod = { workspace = true }
 
 [tool.ruff]
 line-length = 100
@@ -148,6 +148,16 @@ missing-argument = "ignore"
 call-non-callable = "ignore"
 # Stale type: ignore comments that newer ty no longer needs
 unused-type-ignore-comment = "ignore"
+
+# For local development, resolve escapepod from the submodule via the uv
+# workspace. On PyPI this source override is ignored and escapepod resolves
+# from its published wheels. leech_core is no longer a separate package — it is
+# compiled into the leech wheel by maturin (see [tool.maturin]).
+[tool.uv.workspace]
+members = ["escapepod-rs/crates/escapepod-python"]
+
+[tool.uv.sources]
+escapepod = { workspace = true }
 
 [tool.vulture]
 min_confidence = 80

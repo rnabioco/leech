@@ -4,16 +4,16 @@ version = "0.3.0"
 edition = "2024"
 
 [lib]
-name = "leech_core"
 crate-type = ["cdylib"]
+name = "_leech_core"
 
 [dependencies]
-pyo3 = { version = "0.28", features = ["extension-module"] }
-numpy = "0.28"
 escapepod-signal = { path = "../escapepod-rs/crates/escapepod-signal" }
+numpy = "0.28"
+pyo3 = { version = "0.28", features = ["extension-module"] }
 rayon = "1"
 
 [profile.release]
+opt-level = 3
 lto = "fat"
 codegen-units = 1
-opt-level = 3

@@ -6,32 +6,30 @@ on:
       - 'v*'
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  # ── Build leech-core (Rust extension) platform wheels ──────────────
-  build-rust-wheels:
-    name: Build leech-core (${{ matrix.target }})
-    runs-on: ${{ matrix.os }}
+  # ── Build bundled leech wheels (Python + leech_core Rust extension) ──
+  #
+  # leech is now a mixed maturin project: each wheel carries the compiled
+  # leech_core extension, so `uv add leech` / `pip install leech` gets the Rust
+  # acceleration with no separate wheel and no Rust toolchain on the user side.
+  # The escapepod-rs submodule is private, so every build job checks it out with
+  # ESCAPEPOD_PAT before maturin compiles escapepod-signal.
+  linux:
+    name: Wheels — linux ${{ matrix.target }}
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
+        target: [x86_64, aarch64]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
-          persist-credentials: false
+          token: ${{ secrets.ESCAPEPOD_PAT }}
+          submodules: recursive
 
-      - name: Checkout private submodules
-        run: |
-          git config --global url."https://x-access-token:${{ secrets.ESCAPEPOD_PAT }}@github.com/".insteadOf "https://github.com/"
-          git submodule update --init --recursive
-
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 
@@ -39,72 +37,149 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
+          # No working-directory: maturin reads [tool.maturin] from the repo
+          # root pyproject.toml and compiles the crate at rust/Cargo.toml.
           args: --release --out dist --find-interpreter
           manylinux: auto
-          working-directory: rust
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
-          name: wheels-rust-${{ matrix.target }}
-          path: rust/dist/*.whl
+          name: wheels-linux-${{ matrix.target }}
+          path: dist/*.whl
 
-  # ── Build leech-core sdist ─────────────────────────────────────────
-  build-rust-sdist:
-    name: Build leech-core sdist
+  macos:
+    name: Wheels — macos ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64
+            runner: macos-14
+          - target: x86_64
+            runner: macos-13
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.ESCAPEPOD_PAT }}
+          submodules: recursive
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: |
+            3.12
+            3.13
+
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist --find-interpreter
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheels-macos-${{ matrix.target }}
+          path: dist/*.whl
+
+  windows:
+    name: Wheels — windows x64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          token: ${{ secrets.ESCAPEPOD_PAT }}
+          submodules: recursive
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: |
+            3.12
+            3.13
+
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          target: x64
+          args: --release --out dist --find-interpreter
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: wheels-windows-x64
+          path: dist/*.whl
+
+  # ── sdist (GitHub release only) ─────────────────────────────────────
+  #
+  # The sdist references escapepod-signal by relative path into the private
+  # escapepod-rs submodule, which is NOT vendored into the archive — so it
+  # cannot be rebuilt by third parties. It is published as a GitHub release
+  # artifact for provenance only and is deliberately kept OFF PyPI so that
+  # platforms without a prebuilt wheel fail clearly instead of attempting a
+  # doomed source build.
+  sdist:
+    name: Build sdist
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
-          persist-credentials: false
-
-      - name: Checkout private submodules
-        run: |
-          git config --global url."https://x-access-token:${{ secrets.ESCAPEPOD_PAT }}@github.com/".insteadOf "https://github.com/"
-          git submodule update --init --recursive
+          token: ${{ secrets.ESCAPEPOD_PAT }}
+          submodules: recursive
 
       - name: Build sdist
         uses: PyO3/maturin-action@v1
         with:
           command: sdist
           args: --out dist
-          working-directory: rust
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
-          name: wheels-rust-sdist
-          path: rust/dist/*.tar.gz
+          name: sdist
+          path: dist/*.tar.gz
 
-  # ── Build leech (pure Python) sdist + wheel ────────────────────────
-  build-python:
-    name: Build leech Python package
+  # ── Publish wheels to PyPI via trusted publishing (OIDC) ────────────
+  #
+  # Requires a PyPI trusted publisher configured for this repo + workflow +
+  # the `pypi` environment, and the `escapepod` dependency already published
+  # to PyPI (it builds from the private submodule in its own repo).
+  publish-pypi:
+    name: Publish to PyPI
     runs-on: ubuntu-latest
+    needs: [linux, macos, windows]
+    environment: pypi
+    permissions:
+      id-token: write
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: astral-sh/setup-uv@v5
-
-      - name: Build sdist and wheel
-        run: uv build --out-dir dist
-
-      - uses: actions/upload-artifact@v4
+      - name: Download wheel artifacts
+        uses: actions/download-artifact@v8
         with:
-          name: wheels-python
-          path: dist/*
+          pattern: wheels-*
+          path: dist
+          merge-multiple: true
+
+      - name: List wheels
+        run: ls -lh dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
 
   # ── Create GitHub Release with all artifacts ───────────────────────
   release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
-    needs: [build-rust-wheels, build-rust-sdist, build-python]
+    needs: [linux, macos, windows, sdist]
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          token: ${{ secrets.ESCAPEPOD_PAT }}
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
-          pattern: wheels-*
+          pattern: '{wheels-*,sdist}'
           path: dist
           merge-multiple: true
 
@@ -159,7 +234,7 @@ jobs:
           fi
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           name: Release ${{ steps.get_version.outputs.tag }}
           body_path: ${{ steps.changelog.outputs.found == 'true' && 'changelog_extract.md' || '' }}
