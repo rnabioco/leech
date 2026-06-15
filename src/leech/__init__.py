@@ -30,6 +30,8 @@ __all__ = [
     "compute_signal_levels",
     "extract_move_table",
     "train_model",
+    "train_signal_classifier",
+    "compute_class_weights_from_labels",
     "evaluate_model",
     "run_inference",
     "load_model_from_checkpoint",
@@ -64,6 +66,8 @@ _LAZY_IMPORTS = {
     "extract_move_table": "leech.features",
     "run_inference": "leech.inference",
     "train_model": "leech.training",
+    "train_signal_classifier": "leech.training",
+    "compute_class_weights_from_labels": "leech.training",
     "load_model_from_checkpoint": "leech.model_loading",
 }
 

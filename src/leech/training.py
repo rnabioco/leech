@@ -108,6 +108,92 @@ def compute_class_weights(dataset: LeechDataset) -> torch.Tensor | None:
     return weights
 
 
+def compute_class_weights_from_labels(
+    labels: "np.ndarray | list[int]", num_classes: int | None = None
+) -> torch.Tensor | None:
+    """Class weights from an integer label array (same scheme as
+    :func:`compute_class_weights`, but without a LeechDataset).
+
+    Binary -> ``pos_weight`` scalar; multiclass -> inverse-sqrt-frequency
+    per-class weights for CrossEntropyLoss.
+    """
+    labels_array = np.asarray(labels)
+    unique, counts = np.unique(labels_array, return_counts=True)
+    if len(unique) < 2:
+        return None
+    if len(unique) == 2 and (num_classes is None or num_classes == 2):
+        label_counts = dict(zip(unique, counts, strict=True))
+        neg, pos = label_counts.get(0, 0), label_counts.get(1, 0)
+        if pos == 0:
+            return None
+        return torch.tensor([neg / pos], dtype=torch.float32)
+    nc = num_classes if num_classes is not None else int(unique.max()) + 1
+    total = counts.sum()
+    weights = torch.ones(nc, dtype=torch.float32)
+    for cls, count in zip(unique, counts, strict=True):
+        weights[int(cls)] = float(np.sqrt(total / (nc * count)))
+    return weights
+
+
+def train_signal_classifier(
+    x_train: "np.ndarray",
+    y_train: "np.ndarray",
+    x_val: "np.ndarray | None" = None,
+    y_val: "np.ndarray | None" = None,
+    *,
+    num_classes: int,
+    signal_len: int,
+    epochs: int = 30,
+    batch_size: int = 256,
+    learning_rate: float = 1e-3,
+    weight_decay: float = 1e-4,
+    device: str = "cuda",
+    use_class_weights: bool = True,
+    model_channels: int = 32,
+    output_dir: "Path | str | None" = None,
+    early_stopping_patience: int = 10,
+) -> tuple[nn.Module, "Trainer", dict[str, Any]]:
+    """Train a signal-only ``SignalCNN`` classifier, reusing the leech
+    :class:`Trainer` (class-weighted CrossEntropy, early stopping, checkpointing).
+
+    For tasks where only signal carries the label (e.g. barcode demux from the
+    adapter signal). Returns ``(model, trainer, history)``.
+    """
+    from torch.utils.data import DataLoader
+
+    from leech.dataset import SignalDataset, collate_fn
+    from leech.models import SignalCNN
+
+    model = SignalCNN(num_classes=num_classes, signal_len=signal_len, channels=model_channels)
+    train_loader = DataLoader(
+        SignalDataset(x_train, y_train), batch_size=batch_size, shuffle=True, collate_fn=collate_fn
+    )
+    val_loader = (
+        DataLoader(SignalDataset(x_val, y_val), batch_size=batch_size, collate_fn=collate_fn)
+        if x_val is not None
+        else None
+    )
+    pos_weight = (
+        compute_class_weights_from_labels(y_train, num_classes) if use_class_weights else None
+    )
+    trainer = Trainer(
+        model=model,
+        model_type="SignalCNN",
+        train_loader=train_loader,
+        val_loader=val_loader,
+        device=device,
+        learning_rate=learning_rate,
+        weight_decay=weight_decay,
+        loss_type="cross_entropy",
+        num_out=num_classes,
+        epochs=epochs,
+        pos_weight=pos_weight,
+        output_dir=Path(output_dir) if output_dir is not None else None,
+    )
+    history = trainer.train(epochs, early_stopping_patience=early_stopping_patience)
+    return model, trainer, history
+
+
 class Trainer:
     """
     Trainer for leech models.
