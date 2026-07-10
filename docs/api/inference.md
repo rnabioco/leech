@@ -22,7 +22,7 @@ run_inference(
     model_path=Path("models/model_best.pt"),
     pod5_path=Path("reads.pod5"),
     bam_path=Path("reads.bam"),
-    output_bam=Path("predictions.bam"),
+    output_path=Path("predictions.bam"),
     batch_size=128,
     device="cuda",
     base_justify="center",  # Signal chunk centering strategy
@@ -31,10 +31,15 @@ run_inference(
 
 ## Output Format
 
-The output BAM file contains the following additional tags:
+The output BAM file contains the following additional tags. By default `ac`,
+`am`, `pp`, and `pc` are written as compact `uint8` (0-255); pass `raw=True`
+(CLI `--raw`) to write full-float values instead.
 
 | Tag | Type | Description |
 |-----|------|-------------|
-| `MP` | float | Modification probability (0-1) |
-| `ML` | int | Model prediction label (0 or 1) |
-| `MQ` | float | Prediction confidence score |
+| `aa` | str | Predicted class call (amino acid label, or `unc` if below threshold) |
+| `ac` | uint8 / float | Confidence (max class probability) |
+| `am` | uint8 / float | Margin (top probability minus second-highest) |
+| `pn` | str | Comma-separated class names |
+| `pp` | uint8[] / float[] | Full probability distribution over classes |
+| `pc` | uint8 / float | Predicted charging level (only when a CL regression head is present) |

@@ -409,7 +409,7 @@ The workflow is designed to integrate with the leech CLI commands and supports b
 
 The codebase is feature-complete (v0.3.1):
 - ✓ Feature extraction with dwell offset tuning and signal map refinement
-- ✓ 22 model architectures: ConvLSTM (Base/Dwell × BN/GN/LN/Attn), TCN (Dwell/DwellGN/DwellLN/DwellResidual/DwellResidualGN/DwellResidualLN), Transformer, ResNet, ConvOnly
+- ✓ 24 model architectures: ConvLSTM (Base/Dwell × BN/GN/LN/Attn), TCN (Dwell/DwellGN/DwellLN/DwellResidual/DwellResidualGN/DwellResidualLN/DwellSplitResidual/DwellSplitResidualLN), Transformer (Dwell/DwellResidual), ResNet, ConvOnly
 - ✓ CLI organized into 4 command groups: `data` (prepare, merge), `model` (train, optimize, bundle, bundle-info, calibrate, export), `eval` (test, compare, importance, ablation), `predict`
 - ✓ Training with focal loss, mixup augmentation, cosine annealing, gradient clipping, adversarial training, CL regression
 - ✓ Grid search with range syntax, parallel execution, dwell offset tuning

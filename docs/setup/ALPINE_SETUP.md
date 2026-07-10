@@ -77,19 +77,19 @@ This pipeline is designed to work in a **mixed cluster environment**:
 
 ### Configuration Strategy
 
-The pipeline includes **separate config files** for each cluster:
+The pipeline ships a main `config/config.yaml` plus sample-definition files
+that you supply via `--configfile`:
 
-- `config/bodhi-config.yaml` - Bodhi cluster (unlimited home storage)
-- `config/alpine-config.yaml` - Alpine cluster (strict quotas)
-- `config/config.yaml` - Template/default (local testing)
+- `config/config.yaml` - Main configuration (auto-loaded by the workflow)
+- `config/samples-alpine.yaml` - Sample definitions and storage paths for Alpine
 
 **Using cluster-specific configs:**
 ```bash title="Bash" linenums="1"
 # On Bodhi
-snakemake --configfile ../config/bodhi-config.yaml --cores 8
+snakemake --configfile ../config/samples-alpine.yaml --cores 8
 
 # On Alpine
-snakemake --configfile ../config/alpine-config.yaml --profile ../profiles/slurm
+snakemake --configfile ../config/samples-alpine.yaml --profile ../cluster/slurm
 ```
 
 **Key Differences:**
@@ -202,7 +202,7 @@ Set up your directories on Alpine following this structure:
 
 ### Configure Pipeline for Alpine Storage
 
-Edit `pipeline/config/alpine-config.yaml`:
+Edit `pipeline/config/samples-alpine.yaml`:
 
 ```yaml title="YAML" linenums="1"
 # Use scratch for intermediate files (high I/O)
@@ -309,7 +309,7 @@ rsync -avz /home/$USER/leech/ \
 # On Alpine
 cd /projects/$USER/leech/pipeline/workflow
 # Update config.yaml for Alpine paths
-snakemake --profile ../profiles/slurm
+snakemake --profile ../cluster/slurm
 
 # 4. Transfer results back to Bodhi for analysis
 rsync -avz $USER@login.rc.colorado.edu:/projects/$USER/leech/results/ \
@@ -324,16 +324,16 @@ rsync -avz $USER@login.rc.colorado.edu:/projects/$USER/leech/results/ \
 cd /projects/$USER/leech/pipeline/workflow
 
 # Dry run to see what will be executed
-snakemake --configfile ../config/alpine-config.yaml --profile ../profiles/slurm -n
+snakemake --configfile ../config/samples-alpine.yaml --profile ../cluster/slurm -n
 
 # Execute the pipeline
-snakemake --configfile ../config/alpine-config.yaml --profile ../profiles/slurm
+snakemake --configfile ../config/samples-alpine.yaml --profile ../cluster/slurm
 ```
 
 **Tip**: Create a shell alias for easier use:
 ```bash title="Bash" linenums="1"
 # Add to your ~/.bashrc on Alpine
-alias snakemake-alpine='snakemake --configfile config/alpine-config.yaml --profile profiles/slurm'
+alias snakemake-alpine='snakemake --configfile config/samples-alpine.yaml --profile cluster/slurm'
 
 # Then use:
 cd /projects/$USER/leech/pipeline/workflow
@@ -346,7 +346,7 @@ snakemake-alpine     # Execute
 #### 1. Prepare Training Data Only
 
 ```bash title="Bash" linenums="1"
-snakemake --profile ../profiles/slurm all_prepare
+snakemake --profile ../cluster/slurm all_prepare
 ```
 
 This will:
@@ -357,7 +357,7 @@ This will:
 #### 2. Train Models (GPU Jobs)
 
 ```bash title="Bash" linenums="1"
-snakemake --profile ../profiles/slurm all_train
+snakemake --profile ../cluster/slurm all_train
 ```
 
 This will:
@@ -372,13 +372,13 @@ This will:
 # Enable model comparison in config.yaml
 # Set: compare_models: true
 
-snakemake --profile ../profiles/slurm all_compare_models
+snakemake --profile ../cluster/slurm all_compare_models
 ```
 
 #### 4. Run Grid Search (Long Jobs)
 
 ```bash title="Bash" linenums="1"
-snakemake --profile ../profiles/slurm all_grid_search
+snakemake --profile ../cluster/slurm all_grid_search
 ```
 
 Grid search jobs run for up to 24 hours with GPU acceleration.
@@ -395,7 +395,7 @@ The pipeline automatically configures resources for Alpine:
 | Grid Search | `aa100` | `normal` | 1 | 24h | 16GB |
 | Testing | `atesting_a100` | `testing` | 1 | 1h | 4GB |
 
-These are defined in `profiles/slurm/config.yaml` and can be customized.
+These are defined in `cluster/slurm/config.yaml` and can be customized.
 
 ## Monitoring Jobs
 
@@ -440,7 +440,7 @@ ls results/models/*/train.log
 
 ### Using AMD MI100 GPUs Instead of A100
 
-Edit `profiles/slurm/config.yaml`:
+Edit `cluster/slurm/config.yaml`:
 
 ```yaml title="YAML" linenums="1"
 set-resources:
@@ -455,7 +455,7 @@ For models requiring high VRAM (e.g., 80GB A100s):
 
 Edit the rule in workflow files or use `--resources` flag:
 ```bash title="Bash" linenums="1"
-snakemake --profile ../profiles/slurm --resources gpu_mem_mb=80000
+snakemake --profile ../cluster/slurm --resources gpu_mem_mb=80000
 ```
 
 ### Adjusting Time Limits
@@ -512,7 +512,7 @@ If chunks are purged from scratch, regenerate them:
 cd /projects/$USER/leech/pipeline/workflow
 
 # Regenerate chunks for all samples
-snakemake --profile ../profiles/slurm all_prepare
+snakemake --profile ../cluster/slurm all_prepare
 ```
 
 Since chunks are derived from POD5/BAM (stored in `/projects`), they can always be regenerated.
@@ -598,7 +598,7 @@ export PATH="$HOME/.cargo/bin:$PATH"
 
 #### 4. CUDA/GPU Not Detected
 
-**Solution**: Load CUDA module in your job script or uncomment in `profiles/slurm/slurm_submit.sh`:
+**Solution**: Load CUDA module in your job script or uncomment in `cluster/slurm/slurm_submit.sh`:
 ```bash title="Bash" linenums="1"
 module load cuda/12.1.1
 ```
@@ -658,7 +658,7 @@ find /scratch/alpine/$USER -mtime +30 -delete
 **Solutions**:
 ```bash title="Bash" linenums="1"
 # Regenerate chunks from raw data in /projects
-snakemake --profile ../profiles/slurm all_prepare
+snakemake --profile ../cluster/slurm all_prepare
 
 # Restore from backup if you archived
 tar -xzf /projects/$USER/leech/chunks_archive_*.tar.gz -C /scratch/alpine/$USER/
@@ -687,14 +687,14 @@ tar -xzf /projects/$USER/leech/chunks_archive_*.tar.gz -C /scratch/alpine/$USER/
 Use the testing partition to verify your pipeline works:
 ```bash title="Bash" linenums="1"
 # Run a single small job first
-snakemake --profile ../profiles/slurm results/chunks/sample_1/train.json
+snakemake --profile ../cluster/slurm results/chunks/sample_1/train.json
 ```
 
 ### 2. Use Dry Runs
 
 Always check what will be submitted:
 ```bash title="Bash" linenums="1"
-snakemake --profile ../profiles/slurm -n
+snakemake --profile ../cluster/slurm -n
 ```
 
 ### 3. Monitor Resource Usage
@@ -752,16 +752,16 @@ tar -czf results_archive_$(date +%Y%m%d).tar.gz results/
 vim config/config.yaml  # Set cluster.account
 
 # 2. Test data preparation (CPU, fast)
-snakemake --profile ../profiles/slurm all_prepare -j 5
+snakemake --profile ../cluster/slurm all_prepare -j 5
 
 # 3. Train models (GPU)
-snakemake --profile ../profiles/slurm all_train
+snakemake --profile ../cluster/slurm all_train
 
 # 4. Run inference (GPU)
-snakemake --profile ../profiles/slurm all_infer
+snakemake --profile ../cluster/slurm all_infer
 
 # 5. Evaluate and summarize
-snakemake --profile ../profiles/slurm all
+snakemake --profile ../cluster/slurm all
 
 # 6. Monitor progress
 watch -n 10 squeue -u $USER

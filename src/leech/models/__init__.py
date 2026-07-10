@@ -1,7 +1,7 @@
 """
 Model architectures for leech.
 
-Available models (20 total):
+Available models (24 total):
 - ConvLSTMBase: Baseline model (signal + sequence only)
 - ConvLSTMBaseAttn: ConvLSTMBase with attention pooling
 - ConvLSTMBaseBN: ConvLSTMBase with batch normalization
@@ -21,6 +21,10 @@ Available models (20 total):
 - TCNDwellGN: TCNDwell with group normalization
 - TCNDwellLN: TCNDwell with layer normalization
 - TCNDwellResidual: TCNDwell with 2-channel signal (raw + kmer residual)
+- TCNDwellResidualGN: TCNDwellResidual with group normalization
+- TCNDwellResidualLN: TCNDwellResidual with layer normalization
+- TCNDwellSplitResidual: TCN with separate branches for raw signal and kmer residual
+- TCNDwellSplitResidualLN: TCNDwellSplitResidual with layer normalization
 - ResNetDwell: Residual Network with skip connections
 """
 

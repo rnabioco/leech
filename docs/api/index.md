@@ -28,10 +28,10 @@ see the [CLI Reference](../reference/cli.md).
 ### Extract dwell times from a BAM record
 
 ```python
-from leech.features import MoveTable, compute_dwell_times
+from leech.features import extract_move_table, compute_dwell_times
 
-move_table = MoveTable.from_bam_tag(alignment.get_tag("mv"))
-dwell_times = compute_dwell_times(move_table, signal)
+move_table = extract_move_table(alignment)
+dwell_times = compute_dwell_times(move_table)
 ```
 
 ### Load and run a model
@@ -45,7 +45,7 @@ model, config = load_model_from_checkpoint("model_best.pt", device="cuda")
 ### Load a model from a bundle
 
 ```python
-from leech.util import load_model_from_bundle
+from leech.bundling import load_model_from_bundle
 
 model, config = load_model_from_bundle("bundle.pt", pair="Ala_vs_Gly", device="cuda")
 ```
