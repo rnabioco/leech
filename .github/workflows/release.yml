@@ -43,7 +43,7 @@ jobs:
           manylinux: auto
           working-directory: rust
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wheels-rust-${{ matrix.target }}
           path: rust/dist/*.whl
@@ -69,7 +69,7 @@ jobs:
           args: --out dist
           working-directory: rust
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wheels-rust-sdist
           path: rust/dist/*.tar.gz
@@ -86,7 +86,7 @@ jobs:
       - name: Build sdist and wheel
         run: uv build --out-dir dist
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: wheels-python
           path: dist/*
@@ -102,7 +102,7 @@ jobs:
           fetch-depth: 0
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           pattern: wheels-*
           path: dist
@@ -159,7 +159,7 @@ jobs:
           fi
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           name: Release ${{ steps.get_version.outputs.tag }}
           body_path: ${{ steps.changelog.outputs.found == 'true' && 'changelog_extract.md' || '' }}
