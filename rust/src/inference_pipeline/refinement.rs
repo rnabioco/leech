@@ -25,6 +25,9 @@ const DWELL_WEIGHT: f32 = 0.5;
 const THEIL_SEN_MAX_POINTS: usize = 200;
 /// Bases clipped from each end during rough rescale.
 const ROUGH_CLIP_BASES: usize = 10;
+/// Fixed seed for the Theil-Sen subsample so refinement is reproducible on long
+/// reads. Must match leech's Python `REFINE_SUBSAMPLE_SEED`.
+const REFINE_SUBSAMPLE_SEED: u64 = 42;
 
 /// Build the refinement settings matching leech's pipeline.
 fn build_settings(half_bandwidth: i32, scale_iters: i32) -> RefineSettings {
@@ -44,6 +47,7 @@ fn build_settings(half_bandwidth: i32, scale_iters: i32) -> RefineSettings {
         rescale_algo: RescaleAlgo::TheilSen {
             filter,
             max_points: THEIL_SEN_MAX_POINTS,
+            seed: Some(REFINE_SUBSAMPLE_SEED),
         },
         rough_rescale_algo: RoughRescaleAlgo::LeastSquares {
             quantiles: RoughRescaleAlgo::default_quantiles(),
