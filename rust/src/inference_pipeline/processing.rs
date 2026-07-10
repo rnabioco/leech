@@ -81,12 +81,20 @@ pub(super) fn process_read_signal(
         && let Some(ref kt) = cfg.kmer_table
     {
         refine_signal_map_pipeline(
-            &mut norm_signal, &mut seq_to_sig, &use_sequence,
-            kt, cfg.kmer_len, cfg.kmer_center_idx,
-            cfg.refine_half_bandwidth, cfg.refine_scale_iters,
+            &mut norm_signal,
+            &mut seq_to_sig,
+            &use_sequence,
+            kt,
+            cfg.kmer_len,
+            cfg.kmer_center_idx,
+            cfg.refine_half_bandwidth,
+            cfg.refine_scale_iters,
         );
         expected_levels_f64 = Some(extract_levels_inner(
-            &use_sequence, kt, cfg.kmer_len, cfg.kmer_center_idx,
+            &use_sequence,
+            kt,
+            cfg.kmer_len,
+            cfg.kmer_center_idx,
         ));
     }
 
@@ -104,9 +112,9 @@ pub(super) fn process_read_signal(
     let features_data: Option<Vec<Vec<f32>>> = if cfg.compute_features {
         let (means, medians, stds, ranges) = compute_per_base_stats(&norm_signal, &seq_to_sig);
         let mut feats = compute_dwell_features(&dwells);
-        let kmer_residuals = expected_levels_f64.as_ref().map(|levels| {
-            compute_kmer_residual_features(&means, levels)
-        });
+        let kmer_residuals = expected_levels_f64
+            .as_ref()
+            .map(|levels| compute_kmer_residual_features(&means, levels));
         feats.push(means);
         feats.push(medians);
         feats.push(stds);
@@ -123,9 +131,9 @@ pub(super) fn process_read_signal(
     let num_features = features_data.as_ref().map(|f| f.len()).unwrap_or(0);
 
     let sig_residual: Option<Vec<f32>> = if cfg.signal_in_channels > 1 {
-        expected_levels_f64.as_ref().map(|levels| {
-            compute_signal_residual(&norm_signal, &seq_to_sig, levels, num_bases)
-        })
+        expected_levels_f64
+            .as_ref()
+            .map(|levels| compute_signal_residual(&norm_signal, &seq_to_sig, levels, num_bases))
     } else {
         None
     };

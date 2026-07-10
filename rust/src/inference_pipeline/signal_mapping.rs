@@ -1,6 +1,11 @@
 //! Move table and CIGAR-based signal mapping.
 
-pub(super) fn build_seq_to_sig_map(mv_array: &[u8], stride: u32, trim_offset: i64, num_samples: u64) -> Vec<i64> {
+pub(super) fn build_seq_to_sig_map(
+    mv_array: &[u8],
+    stride: u32,
+    trim_offset: i64,
+    num_samples: u64,
+) -> Vec<i64> {
     let mut sig_map: Vec<i64> = mv_array
         .iter()
         .enumerate()

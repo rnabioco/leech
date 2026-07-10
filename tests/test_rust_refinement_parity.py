@@ -729,3 +729,104 @@ class TestRefinerEndToEndParity:
                 atol=1e-6,
                 err_msg=f"Rust-accelerated signal mismatch for {r['read_id']}",
             )
+
+
+# ---------------------------------------------------------------------------
+# Tests: refinement-enabled monolithic pipeline (escapepod-backed refine)
+# ---------------------------------------------------------------------------
+
+
+class TestMonolithicRefinementPipeline:
+    """Exercise the refinement-enabled Rust monolithic extractor.
+
+    leech_core delegates its signal-map refinement to escapepod-signal's
+    ``resquiggle::refine_signal_map``. The rest of the parity suite runs the
+    monolithic extractor with refinement OFF, so this class covers the
+    refinement path directly: it must run, preserve chunk structure, produce
+    finite/bounded features, and measurably adjust the output vs no refinement.
+    """
+
+    @pytest.fixture(scope="class")
+    def kmer_table(self):
+        return load_kmer_table(LEVELS_TABLE)
+
+    def _extract(self, reads, refine, kmer_to_level, kmer_len):
+        rids = [r["read_id"] for r in reads]
+        seqs = [r["sequence"] for r in reads]
+        strides = [r["stride"] for r in reads]
+        movs = [r["moves"].tolist() for r in reads]
+        nss = [r["num_samples"] for r in reads]
+        tss = [r["trim_offset"] for r in reads]
+        motif_positions = [[len(r["sequence"]) // 2] for r in reads]
+        return _rs_extract_inference_chunks(
+            str(TRNA_POD5),
+            rids,
+            seqs,
+            strides,
+            movs,
+            nss,
+            tss,
+            200,  # signal_context_left
+            200,  # signal_context_right
+            5,  # kmer_context
+            motif_positions,
+            400,  # signal_len
+            True,  # compute_features
+            reverse_signal=True,
+            refine_signal_map=refine,
+            kmer_table=(kmer_to_level if refine else None),
+            kmer_len=kmer_len,
+            refine_half_bandwidth=5,
+            refine_scale_iters=2,
+        )
+
+    def test_refinement_runs_preserves_structure_and_has_effect(self, kmer_table):
+        kmer_to_level, kmer_len = kmer_table
+        reads = _load_real_reads(6)
+        if not reads:
+            pytest.skip("No fixture reads")
+
+        off = self._extract(reads, False, kmer_to_level, kmer_len)
+        on = self._extract(reads, True, kmer_to_level, kmer_len)
+
+        assert len(on) == len(off) and len(on) > 0, "refinement changed chunk count"
+
+        any_sig_changed = False
+        for on_chunk, off_chunk in zip(on, off, strict=True):
+            sig_on, _, feat_on, rid_on, _ = on_chunk
+            sig_off, _, feat_off, rid_off, _ = off_chunk
+            assert rid_on == rid_off
+            sig_on = np.asarray(sig_on)
+            feat_on = np.asarray(feat_on)
+
+            # Signal chunk shape is fixed (signal_len) either way.
+            assert sig_on.shape == np.asarray(sig_off).shape == (400,)
+            # Refinement enables kmer-residual features (expected levels present):
+            # 9 base features (5 dwell + 4 level) without refine, +3 (ke/kr/kra) with.
+            assert np.asarray(feat_off).shape[0] == 9
+            assert feat_on.shape[0] == 12
+            assert feat_on.shape[1] == np.asarray(feat_off).shape[1]
+
+            # Finite + bounded (normalized signal must stay sane)
+            assert np.all(np.isfinite(sig_on)), f"non-finite signal for {rid_on}"
+            assert np.all(np.isfinite(feat_on)), f"non-finite features for {rid_on}"
+            assert np.abs(sig_on).max() < 50.0, f"signal out of range for {rid_on}"
+
+            if not np.allclose(sig_on, np.asarray(sig_off), atol=1e-6):
+                any_sig_changed = True
+
+        assert any_sig_changed, "refinement had no measurable effect on the signal"
+
+    def test_refinement_dwell_features_positive(self, kmer_table):
+        """Refined per-base dwell (feature row 0) must stay positive."""
+        kmer_to_level, kmer_len = kmer_table
+        reads = _load_real_reads(6)
+        if not reads:
+            pytest.skip("No fixture reads")
+
+        on = self._extract(reads, True, kmer_to_level, kmer_len)
+        assert on, "no chunks produced with refinement"
+        for _sig, _seq, feat, rid, _bidx in on:
+            feat = np.asarray(feat)
+            dwell_row = feat[0]  # raw dwell feature
+            assert np.all(dwell_row >= 0.0), f"negative dwell after refinement for {rid}"
