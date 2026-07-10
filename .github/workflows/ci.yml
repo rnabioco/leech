@@ -75,11 +75,13 @@ jobs:
           UV_TORCH_BACKEND: cpu
         run: |
           uv venv
-          # Full install (Rust extension + escapepod); fall back without the
-          # Rust extension (leech_core) but keep escapepod (pod5), which leech
-          # imports unconditionally.
-          uv pip install --torch-backend=cpu -e ".[dev,pipeline,notebook,rust,pod5]" \
-            || uv pip install --torch-backend=cpu -e ".[dev,pipeline,notebook,pod5]"
+          # Only the test runner + runtime deps are needed here — no lint/type
+          # tooling (that's the Lint job) and no pipeline/notebook extras (tests
+          # don't import snakemake/plotnine). Full install (Rust extension +
+          # escapepod); fall back without the Rust extension (leech_core) but keep
+          # escapepod (pod5), which leech imports unconditionally.
+          uv pip install --torch-backend=cpu -e ".[test,rust,pod5]" \
+            || uv pip install --torch-backend=cpu -e ".[test,pod5]"
 
       - name: Run tests
         env:

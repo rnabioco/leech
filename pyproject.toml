@@ -39,10 +39,15 @@ check-rust = "leech._rust_accel:check_rust"
 [project.optional-dependencies]
 rust = ["leech-core"]
 pod5 = ["escapepod"]
-dev = [
+# Minimal deps to run the test suite (used by CI's test job).
+test = [
   "pytest>=8.0.0",
   "pytest-cov>=4.1.0",
   "pytest-xdist>=3.5.0",
+]
+# Full local dev env: test runners + lint/type/QA tooling.
+dev = [
+  "leech[test]",
   "ruff>=0.3.0",  # Modern linter/formatter (replaces black + flake8)
   "ty>=0.0.1a10",
   "nbqa>=1.7.0",  # Quality assurance for Jupyter notebooks
