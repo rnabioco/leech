@@ -37,7 +37,7 @@ dwell_times = compute_dwell_times(move_table, signal)
 ### Load and run a model
 
 ```python
-from leech.util import load_model_from_checkpoint
+from leech.model_loading import load_model_from_checkpoint
 
 model, config = load_model_from_checkpoint("model_best.pt", device="cuda")
 ```
