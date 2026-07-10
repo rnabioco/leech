@@ -41,7 +41,9 @@ fn extract_training_chunks_from_read(
         let kmer_len = kmer_end_u - kmer_start_u;
 
         // Signal chunk (same logic as inference)
-        let focus_sig = cfg.base_justify.focus_pos(seq_to_sig[bi], seq_to_sig[bi + 1]);
+        let focus_sig = cfg
+            .base_justify
+            .focus_pos(seq_to_sig[bi], seq_to_sig[bi + 1]);
         let sig_start_pos = focus_sig - cfg.signal_context_left;
         let sig_end_pos = focus_sig + cfg.signal_context_right;
         let actual_len = (sig_end_pos - sig_start_pos) as usize;
@@ -182,7 +184,9 @@ fn process_one_read_training(
     cigar_ops: Option<&[(u32, u32)]>,
     ref_seq: Option<&str>,
 ) -> Vec<TrainingChunkResult> {
-    match process_read_signal(raw_i16, sequence, mv, stride, ns, trim, cfg, cigar_ops, ref_seq) {
+    match process_read_signal(
+        raw_i16, sequence, mv, stride, ns, trim, cfg, cigar_ops, ref_seq,
+    ) {
         Some(processed) => extract_training_chunks_from_read(&processed, rid, positions, cfg),
         None => vec![],
     }
@@ -260,13 +264,10 @@ fn _process_and_convert_training<'py>(
             // Features as 2D array [num_features, dwell_width]
             if !c.features.is_empty() && c.num_features > 0 {
                 let dw = c.features.len() / c.num_features;
-                let arr = numpy::ndarray::Array2::from_shape_vec(
-                    (c.num_features, dw),
-                    c.features,
-                )
-                .map_err(|e| {
-                    pyo3::exceptions::PyValueError::new_err(format!("Feature error: {e}"))
-                })?;
+                let arr = numpy::ndarray::Array2::from_shape_vec((c.num_features, dw), c.features)
+                    .map_err(|e| {
+                        pyo3::exceptions::PyValueError::new_err(format!("Feature error: {e}"))
+                    })?;
                 dict.set_item("features", arr.into_pyarray(py))?;
             } else {
                 let empty = numpy::ndarray::Array2::<f32>::zeros((0, 0));
@@ -399,7 +400,8 @@ pub fn extract_training_chunks<'py>(
         compute_features,
         feat_start: feature_start.unwrap_or(-kmer_ctx),
         feat_end: feature_end.unwrap_or(kmer_ctx),
-        dwell_width: (feature_end.unwrap_or(kmer_ctx) - feature_start.unwrap_or(-kmer_ctx) + 1) as usize,
+        dwell_width: (feature_end.unwrap_or(kmer_ctx) - feature_start.unwrap_or(-kmer_ctx) + 1)
+            as usize,
         refine_signal_map,
         kmer_table,
         kmer_len,
@@ -415,9 +417,8 @@ pub fn extract_training_chunks<'py>(
         .iter()
         .filter_map(|s| escapepod_signal::Uuid::parse_str(s).ok())
         .collect();
-    let reader = escapepod_signal::Reader::open(pod5_path).map_err(|e| {
-        pyo3::exceptions::PyIOError::new_err(format!("Failed to open POD5: {e}"))
-    })?;
+    let reader = escapepod_signal::Reader::open(pod5_path)
+        .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("Failed to open POD5: {e}")))?;
 
     let matched_reads = reader.reads_by_ids(&target_uuids).map_err(|e| {
         pyo3::exceptions::PyIOError::new_err(format!("Failed to look up reads: {e}"))

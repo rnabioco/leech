@@ -27,8 +27,12 @@ pub(super) fn compute_per_base_stats(
         let mut mx = f32::MIN;
         for &v in slice {
             sum += v;
-            if v < mn { mn = v; }
-            if v > mx { mx = v; }
+            if v < mn {
+                mn = v;
+            }
+            if v > mx {
+                mx = v;
+            }
         }
         means[i] = sum / n;
         ranges[i] = mx - mn;
@@ -74,7 +78,11 @@ pub(super) fn compute_dwell_features(dwells: &[f32]) -> Vec<Vec<f32>> {
 
     let dwell_raw = dwells.to_vec();
     let dwell_log: Vec<f32> = dwells.iter().map(|&d| (d + eps).ln()).collect();
-    let dwell_ratio: Vec<f32> = dwells.iter().zip(dwell_mean.iter()).map(|(&d, &m)| d / (m + eps)).collect();
+    let dwell_ratio: Vec<f32> = dwells
+        .iter()
+        .zip(dwell_mean.iter())
+        .map(|(&d, &m)| d / (m + eps))
+        .collect();
 
     vec![dwell_raw, dwell_log, dwell_mean, dwell_std, dwell_ratio]
 }
@@ -84,7 +92,11 @@ pub(super) fn compute_kmer_residual_features(
     expected_levels: &[f64],
 ) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
     let kmer_expected: Vec<f32> = expected_levels.iter().map(|&v| v as f32).collect();
-    let kmer_residual: Vec<f32> = observed_means.iter().zip(kmer_expected.iter()).map(|(&o, &e)| o - e).collect();
+    let kmer_residual: Vec<f32> = observed_means
+        .iter()
+        .zip(kmer_expected.iter())
+        .map(|(&o, &e)| o - e)
+        .collect();
     let kmer_residual_abs: Vec<f32> = kmer_residual.iter().map(|&r| r.abs()).collect();
 
     (kmer_expected, kmer_residual, kmer_residual_abs)

@@ -62,7 +62,7 @@ fn build_settings(half_bandwidth: i32, scale_iters: i32) -> RefineSettings {
 /// unchanged, matching the previous pipeline's early-return behaviour.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn refine_signal_map_pipeline(
-    signal: &mut Vec<f32>,
+    signal: &mut [f32],
     seq_to_sig_map: &mut Vec<i64>,
     sequence: &str,
     kmer_to_level: &HashMap<String, f64>,
@@ -71,10 +71,11 @@ pub(super) fn refine_signal_map_pipeline(
     half_bandwidth: i32,
     scale_iters: i32,
 ) {
-    let levels_f32: Vec<f32> = extract_levels_inner(sequence, kmer_to_level, kmer_len, kmer_center_idx)
-        .iter()
-        .map(|&v| v as f32)
-        .collect();
+    let levels_f32: Vec<f32> =
+        extract_levels_inner(sequence, kmer_to_level, kmer_len, kmer_center_idx)
+            .iter()
+            .map(|&v| v as f32)
+            .collect();
     if levels_f32.is_empty() || seq_to_sig_map.len() != levels_f32.len() + 1 {
         return;
     }

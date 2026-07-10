@@ -28,7 +28,12 @@ type InferenceChunkPy = (
 );
 
 /// Test helper return: (norm_signal, sig_map, dwells, features_2d).
-type TestProcessReadResult = (Py<PyArray1<f32>>, Py<PyArray1<i64>>, Py<PyArray1<f32>>, Py<PyArray2<f32>>);
+type TestProcessReadResult = (
+    Py<PyArray1<f32>>,
+    Py<PyArray1<i64>>,
+    Py<PyArray1<f32>>,
+    Py<PyArray2<f32>>,
+);
 
 /// Process one read for inference. Uses shared signal processing,
 /// then extracts inference-encoded chunks.
@@ -46,7 +51,9 @@ fn process_one_read(
     cigar_ops: Option<&[(u32, u32)]>,
     ref_seq: Option<&str>,
 ) -> Vec<ChunkResult> {
-    let processed = match process_read_signal(raw_i16, sequence, mv, stride, ns, trim, cfg, cigar_ops, ref_seq) {
+    let processed = match process_read_signal(
+        raw_i16, sequence, mv, stride, ns, trim, cfg, cigar_ops, ref_seq,
+    ) {
         Some(p) => p,
         None => return vec![],
     };
@@ -74,7 +81,9 @@ fn process_one_read(
             continue;
         }
 
-        let focus_sig = cfg.base_justify.focus_pos(seq_to_sig[bi], seq_to_sig[bi + 1]);
+        let focus_sig = cfg
+            .base_justify
+            .focus_pos(seq_to_sig[bi], seq_to_sig[bi + 1]);
         let sig_start_pos = focus_sig - cfg.signal_context_left;
         let sig_end_pos = focus_sig + cfg.signal_context_right;
         let actual_len = (sig_end_pos - sig_start_pos) as usize;
@@ -133,11 +142,21 @@ fn process_one_read(
             let seq_ints = sequence_to_int(seq_with_ctx);
             let map_start = chunk_kmer_start;
             let map_end = (chunk_kmer_end + 1).min(seq_to_sig.len());
-            if map_start >= map_end { continue; }
+            if map_start >= map_end {
+                continue;
+            }
             let chunk_sig_map: Vec<i64> = seq_to_sig[map_start..map_end]
-                .iter().map(|&v| v - sig_start_pos).collect();
+                .iter()
+                .map(|&v| v - sig_start_pos)
+                .collect();
             let enc_dim = 4 * (kmer_before + 1 + kmer_after);
-            let flat = encode_signal_kmer_inner(&seq_ints, &chunk_sig_map, cfg.signal_len, kmer_before, kmer_after);
+            let flat = encode_signal_kmer_inner(
+                &seq_ints,
+                &chunk_sig_map,
+                cfg.signal_len,
+                kmer_before,
+                kmer_after,
+            );
             (flat, enc_dim, cfg.signal_len)
         } else {
             let kmer_seq = &seq_bytes[kmer_start as usize..kmer_end as usize];
@@ -247,17 +266,18 @@ fn _process_and_convert<'py>(
     for chunks in all_chunks {
         for c in chunks {
             let sig_py = c.signal.into_pyarray(py).unbind();
-            let seq_arr = numpy::ndarray::Array2::from_shape_vec((c.seq_rows, c.seq_cols), c.seq_enc)
-                .map_err(|e| {
-                    pyo3::exceptions::PyValueError::new_err(format!("Seq error: {e}"))
-                })?;
+            let seq_arr =
+                numpy::ndarray::Array2::from_shape_vec((c.seq_rows, c.seq_cols), c.seq_enc)
+                    .map_err(|e| {
+                        pyo3::exceptions::PyValueError::new_err(format!("Seq error: {e}"))
+                    })?;
             let seq_py = seq_arr.into_pyarray(py).unbind();
             let feat_py = if let Some(flat) = c.features {
                 let arr =
                     numpy::ndarray::Array2::from_shape_vec((c.num_features, c.dwell_width), flat)
                         .map_err(|e| {
-                            pyo3::exceptions::PyValueError::new_err(format!("Feat error: {e}"))
-                        })?;
+                        pyo3::exceptions::PyValueError::new_err(format!("Feat error: {e}"))
+                    })?;
                 Some(arr.into_pyarray(py).unbind())
             } else {
                 None
@@ -306,7 +326,8 @@ fn build_config(
         compute_features,
         feat_start: feature_start.unwrap_or(-kmer_ctx),
         feat_end: feature_end.unwrap_or(kmer_ctx),
-        dwell_width: (feature_end.unwrap_or(kmer_ctx) - feature_start.unwrap_or(-kmer_ctx) + 1) as usize,
+        dwell_width: (feature_end.unwrap_or(kmer_ctx) - feature_start.unwrap_or(-kmer_ctx) + 1)
+            as usize,
         refine_signal_map,
         kmer_table,
         kmer_len,
@@ -407,11 +428,24 @@ pub fn extract_inference_chunks<'py>(
     }
 
     let cfg = build_config(
-        reverse_signal, anchor, seq_encoding, signal_kmer_context,
-        signal_context_left, signal_context_right, kmer_context,
-        signal_len, compute_features, feature_start, feature_end,
-        refine_signal_map, kmer_table, kmer_len, kmer_center_idx,
-        refine_half_bandwidth, refine_scale_iters, signal_in_channels,
+        reverse_signal,
+        anchor,
+        seq_encoding,
+        signal_kmer_context,
+        signal_context_left,
+        signal_context_right,
+        kmer_context,
+        signal_len,
+        compute_features,
+        feature_start,
+        feature_end,
+        refine_signal_map,
+        kmer_table,
+        kmer_len,
+        kmer_center_idx,
+        refine_half_bandwidth,
+        refine_scale_iters,
+        signal_in_channels,
         base_justify,
     );
 
@@ -420,9 +454,8 @@ pub fn extract_inference_chunks<'py>(
         .iter()
         .filter_map(|s| escapepod_signal::Uuid::parse_str(s).ok())
         .collect();
-    let reader = escapepod_signal::Reader::open(pod5_path).map_err(|e| {
-        pyo3::exceptions::PyIOError::new_err(format!("Failed to open POD5: {e}"))
-    })?;
+    let reader = escapepod_signal::Reader::open(pod5_path)
+        .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("Failed to open POD5: {e}")))?;
 
     let matched_reads = reader.reads_by_ids(&target_uuids).map_err(|e| {
         pyo3::exceptions::PyIOError::new_err(format!("Failed to look up reads: {e}"))
@@ -541,11 +574,24 @@ pub fn extract_chunks_from_preloaded<'py>(
     }
 
     let cfg = build_config(
-        reverse_signal, anchor, seq_encoding, signal_kmer_context,
-        signal_context_left, signal_context_right, kmer_context,
-        signal_len, compute_features, feature_start, feature_end,
-        refine_signal_map, kmer_table, kmer_len, kmer_center_idx,
-        refine_half_bandwidth, refine_scale_iters, signal_in_channels,
+        reverse_signal,
+        anchor,
+        seq_encoding,
+        signal_kmer_context,
+        signal_context_left,
+        signal_context_right,
+        kmer_context,
+        signal_len,
+        compute_features,
+        feature_start,
+        feature_end,
+        refine_signal_map,
+        kmer_table,
+        kmer_len,
+        kmer_center_idx,
+        refine_half_bandwidth,
+        refine_scale_iters,
+        signal_in_channels,
         base_justify,
     );
 
@@ -585,10 +631,15 @@ pub fn _test_process_read<'py>(
     let trim_start = trim_offset.max(0) as usize;
     let trim_end = (num_samples as usize).min(raw_signal.len());
     if trim_start >= trim_end {
-        return Err(pyo3::exceptions::PyValueError::new_err("Empty signal after trimming"));
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "Empty signal after trimming",
+        ));
     }
 
-    let mut trimmed_f32: Vec<f32> = raw_signal[trim_start..trim_end].iter().map(|&x| x as f32).collect();
+    let mut trimmed_f32: Vec<f32> = raw_signal[trim_start..trim_end]
+        .iter()
+        .map(|&x| x as f32)
+        .collect();
     let mut sig_map = build_seq_to_sig_map(&mv_array, stride, trim_offset, num_samples);
 
     if reverse_signal {
@@ -606,7 +657,9 @@ pub fn _test_process_read<'py>(
         return Err(pyo3::exceptions::PyValueError::new_err("No bases"));
     }
 
-    let dwells: Vec<f32> = (0..num_bases).map(|j| (sig_map[j + 1] - sig_map[j]) as f32).collect();
+    let dwells: Vec<f32> = (0..num_bases)
+        .map(|j| (sig_map[j + 1] - sig_map[j]) as f32)
+        .collect();
     let (means, medians, stds, ranges) = compute_per_base_stats(&norm_signal, &sig_map);
     let mut all_feats = compute_dwell_features(&dwells);
     all_feats.push(means);
