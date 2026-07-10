@@ -50,6 +50,10 @@ DEFAULT_HALF_BANDWIDTH = 5
 DEFAULT_SHORT_DWELL_PARAMS = (4, 3, 0.5)  # (target, limit, weight)
 MAX_POINTS_FOR_THEIL_SEN = 1000
 
+# Fixed seed for escapepod's Theil-Sen subsample so refinement is reproducible
+# on long reads. Must match leech_core's REFINE_SUBSAMPLE_SEED (Rust path).
+REFINE_SUBSAMPLE_SEED = 42
+
 
 # ============================================================================
 # Kmer level table loading
@@ -994,52 +998,59 @@ class SigMapRefiner:
 
         Returns:
             Tuple of (rescaled_signal, refined_seq_to_sig_map).
-            If scale_iters == -1, mapping is unchanged (only normalization updated).
+
+        Delegates to escapepod-signal's ``refine_signal_map`` (the same canonical
+        implementation and settings leech_core's Rust path uses), so the Python
+        fallback and the Rust path agree. escapepod runs rough rescale + iterative
+        banded DP with Theil-Sen rescaling internally; the returned
+        (scale, shift, drift) reconstruct the level-matched signal.
         """
+        from escapepod import refine_signal_map as _epod_refine_signal_map
+
         expected = extract_levels(sequence, self.kmer_to_level, self.kmer_len, self.center_idx)
+        if expected.size == 0 or len(seq_to_sig_map) != expected.size + 1:
+            return signal, seq_to_sig_map
 
-        # Step 1: Rough rescale normalization (quantile-based)
-        if self.do_rough_rescale:
-            signal = rough_rescale_quantile(signal, expected, seq_to_sig_map)
+        # scale_iters < 0: rough-rescale-only mode (no banded DP), mapping left
+        # unchanged. escapepod's refine always runs >=1 DP pass, so this niche
+        # mode keeps leech's quantile rough rescale.
+        if self.scale_iters < 0:
+            if self.do_rough_rescale:
+                signal = rough_rescale_quantile(signal, expected, seq_to_sig_map)
+            return signal, seq_to_sig_map
 
-        # Step 2: Iterative banded DP refinement (only if scale_iters >= 0)
-        if self.scale_iters >= 0:
-            work_signal = signal.copy()
+        sig_f32 = signal.astype(np.float32, copy=False)
+        map_list = [int(x) for x in seq_to_sig_map]
+        if map_list[0] < 0 or map_list[0] >= map_list[-1] or map_list[-1] > sig_f32.size:
+            return signal, seq_to_sig_map
 
-            # 0 = one round of DP without rescaling
-            # >0 = N rounds with Theil-Sen rescaling between rounds
-            for iteration in range(max(1, self.scale_iters)):
-                try:
-                    refined_map = refine_signal_mapping(
-                        work_signal,
-                        seq_to_sig_map,
-                        expected,
-                        band_half_width=self.half_bandwidth,
-                        algo=self.algo,
-                        short_dwell_pen=self.sd_arr,
-                    )
-                except (ValueError, IndexError) as e:
-                    logger.debug(f"Refinement failed at iteration {iteration}: {e}")
-                    return signal, seq_to_sig_map
+        # escapepod builds RefineSettings internally (fixed banding, LSQ rough
+        # rescale, Theil-Sen rescale, asymmetric dwell penalty). scale_iters maps
+        # to n_refinement_iters the same way leech_core does: max(0, scale_iters).
+        levels_f32 = np.nan_to_num(expected.astype(np.float32, copy=False), nan=0.0)
+        try:
+            refined_map, scale, shift, drift = _epod_refine_signal_map(
+                sig_f32,
+                map_list,
+                levels_f32,
+                half_bandwidth=self.half_bandwidth,
+                scale_iters=max(0, self.scale_iters),
+                # Fixed seed so the Theil-Sen subsample (on long reads) is
+                # reproducible; must match leech_core's REFINE_SUBSAMPLE_SEED.
+                seed=REFINE_SUBSAMPLE_SEED,
+            )
+        except Exception as e:  # noqa: BLE001 - fall back to the input on any failure
+            logger.debug(f"escapepod refine_signal_map failed: {e}")
+            return signal, seq_to_sig_map
 
-                # Validate monotonicity
-                if np.any(np.diff(refined_map) <= 0):
-                    logger.debug(
-                        f"Non-monotonic refinement at iteration {iteration}, "
-                        "falling back to original mapping"
-                    )
-                    return signal, seq_to_sig_map
+        if len(refined_map) != len(seq_to_sig_map):
+            return signal, seq_to_sig_map
 
-                seq_to_sig_map = refined_map
-
-                # Inter-iteration rescaling (only if scale_iters > 0)
-                if self.scale_iters > 0:
-                    try:
-                        work_signal = _theil_sen_rescale(work_signal, expected, seq_to_sig_map)
-                    except Exception as e:
-                        logger.debug(f"Rescaling failed at iteration {iteration}: {e}")
-                        break
-
-            return work_signal, seq_to_sig_map
-
-        return signal, seq_to_sig_map
+        # Reconstruct the level-matched signal from the returned rescale params
+        # (matches leech_core: (signal[i] - shift - drift*i) / scale).
+        if abs(scale) > 1e-10:
+            idx = np.arange(sig_f32.size, dtype=np.float32)
+            rescaled = (sig_f32 - shift - drift * idx) / scale
+        else:
+            rescaled = sig_f32
+        return rescaled, np.asarray(refined_map)
