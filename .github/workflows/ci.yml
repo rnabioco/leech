@@ -66,12 +66,26 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
+        env:
+          # GPU-less runner: install the CPU-only torch wheel so uv doesn't pull
+          # the multi-GB CUDA stack (nvidia-cu13-*). `uv sync` installs the locked
+          # CUDA torch regardless of this, so we install via `uv pip install`,
+          # which honors --torch-backend. The lock (and local/cluster GPU installs
+          # via `uv sync`) are unchanged.
+          UV_TORCH_BACKEND: cpu
         run: |
-          # Try full install (with Rust extension); fall back without it
-          uv sync --all-extras || uv sync --extra dev --extra pipeline --extra notebook
+          uv venv
+          # Full install (Rust extension + escapepod); fall back without the
+          # Rust extension (leech_core) but keep escapepod (pod5), which leech
+          # imports unconditionally.
+          uv pip install --torch-backend=cpu -e ".[dev,pipeline,notebook,rust,pod5]" \
+            || uv pip install --torch-backend=cpu -e ".[dev,pipeline,notebook,pod5]"
 
       - name: Run tests
-        run: uv run pytest --cov=leech --cov-report=xml --cov-report=term
+        env:
+          UV_TORCH_BACKEND: cpu
+        # --no-sync: don't let `uv run` re-sync the env to the CUDA-pinned lock.
+        run: uv run --no-sync pytest --cov=leech --cov-report=xml --cov-report=term
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
