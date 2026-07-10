@@ -20,7 +20,7 @@ from conftest import TRNA_BAM, TRNA_FIXTURES_AVAILABLE, TRNA_POD5, TRNA_REF
 from leech.configs import ChunkConfig, LabelConfig, MotifConfig, PrepareConfig, SignalConfig
 from leech.io import collect_read_infos, get_reference_sequences
 from leech.io.pod5_reader import (
-    _READER_CACHE,
+    _DATASET_CACHE,
     get_cached_reader,
     read_pod5_signals_batch,
     read_pod5_signals_batch_cached,
@@ -37,9 +37,9 @@ pytestmark = pytest.mark.skipif(not TRNA_FIXTURES_AVAILABLE, reason="tRNA fixtur
 @pytest.fixture(autouse=True)
 def _clear_reader_cache():
     """Ensure each test starts with a clean cache."""
-    _READER_CACHE.clear()
+    _DATASET_CACHE.clear()
     yield
-    _READER_CACHE.clear()
+    _DATASET_CACHE.clear()
 
 
 class TestPOD5ReaderCache:
@@ -48,7 +48,7 @@ class TestPOD5ReaderCache:
         reader2, infos2 = get_cached_reader(TRNA_POD5)
         assert reader1 is reader2
         assert infos1 is infos2
-        assert str(TRNA_POD5) in _READER_CACHE
+        assert str(TRNA_POD5) in _DATASET_CACHE
 
     def test_distinct_paths_cached_separately(self, tmp_path):
         # Copying the same POD5 under a new name gives two distinct cache keys.
@@ -60,7 +60,7 @@ class TestPOD5ReaderCache:
         reader_a, _ = get_cached_reader(TRNA_POD5)
         reader_b, _ = get_cached_reader(alt)
         assert reader_a is not reader_b
-        assert set(_READER_CACHE.keys()) == {str(TRNA_POD5), str(alt)}
+        assert set(_DATASET_CACHE.keys()) == {str(TRNA_POD5), str(alt)}
 
     def test_cached_batch_matches_uncached(self):
         read_infos = collect_read_infos(TRNA_BAM, min_mapq=0)

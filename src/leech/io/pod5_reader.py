@@ -7,110 +7,55 @@ Uses escapepod-rs Python bindings for fast Rust-based POD5 access.
 
 POD5 sources may be either a single ``.pod5`` file or a directory
 containing one or more ``.pod5`` files (the "sequencing run" layout
-emitted by MinKNOW). Directory sources are expanded lazily and
-dispatched per file internally — each underlying ``escapepod.Reader``
-is cached separately so a fresh batch call over the same directory
-doesn't re-open every file.
+emitted by MinKNOW). Both are handled natively by
+:class:`escapepod.DatasetReader`, which scans the directory, opens each
+underlying file once, and routes every read to its owning file via a
+lazily-built id index — so leech no longer maintains its own per-file
+dispatch or handle cache.
 """
 
 import logging
 from pathlib import Path
 
 import numpy as np
-from escapepod import Reader
+from escapepod import DatasetReader
 
 logger = logging.getLogger("leech.io.pod5_reader")
 
 
-# Process-local cache of opened POD5 readers. Keyed by the single-file str
-# path so directory-backed sources reuse per-file handles across batches.
-# Workers keep files open until process exit; the OS reclaims handles then.
-_READER_CACHE: dict[str, tuple[Reader, list]] = {}
+# Process-local cache of opened datasets, keyed by the source path string.
+# A ``DatasetReader`` opens every ``.pod5`` under the source once and holds
+# the handles (mmap-backed) until process exit; caching by path lets repeated
+# batch calls over the same source skip the re-open + directory scan. The
+# ``run_infos`` list is cached alongside the reader because the property
+# rebuilds a fresh list on each access.
+_DATASET_CACHE: dict[str, tuple[DatasetReader, list]] = {}
 
 
-def _resolve_pod5_paths(pod5_path: Path | str) -> list[Path]:
-    """Expand a POD5 source to a sorted list of concrete ``.pod5`` files.
-
-    - Regular file: returns ``[path]``.
-    - Directory: returns all ``*.pod5`` files inside, sorted by name so
-      the iteration order is reproducible across runs.
-
-    Raises ``FileNotFoundError`` if the directory has no ``.pod5`` files.
-    """
-    p = Path(pod5_path)
-    if p.is_dir():
-        files = sorted(p.glob("*.pod5"))
-        if not files:
-            raise FileNotFoundError(f"No .pod5 files in directory: {p}")
-        return files
-    return [p]
+def _get_cached_entry(pod5_path: Path | str) -> tuple[DatasetReader, list]:
+    """Open (or reuse) a ``(DatasetReader, run_infos)`` pair for a source."""
+    key = str(pod5_path)
+    entry = _DATASET_CACHE.get(key)
+    if entry is None:
+        ds = DatasetReader(key)
+        entry = (ds, ds.run_infos)
+        _DATASET_CACHE[key] = entry
+    return entry
 
 
-def _get_cached_reader_single(pod5_file: str) -> tuple[Reader, list]:
-    """Open (or reuse) a Reader for one concrete POD5 file."""
-    cached = _READER_CACHE.get(pod5_file)
-    if cached is not None:
-        return cached
-    reader = Reader(pod5_file)
-    run_infos = reader.run_infos
-    _READER_CACHE[pod5_file] = (reader, run_infos)
-    return reader, run_infos
+def _get_cached_dataset(pod5_path: Path | str) -> DatasetReader:
+    """Open (or reuse) a :class:`DatasetReader` for a POD5 source."""
+    return _get_cached_entry(pod5_path)[0]
 
 
-def get_cached_reader(pod5_path: Path | str) -> tuple[Reader, list]:
-    """Return ``(reader, run_infos)`` for a single POD5 file.
-
-    Legacy single-file API preserved for existing callers. For multi-file
-    sources (a directory of POD5s), use
-    :func:`read_pod5_signals_batch_cached` or :class:`POD5Reader`, both of
-    which transparently dispatch across files.
-    """
-    paths = _resolve_pod5_paths(pod5_path)
-    if len(paths) > 1:
-        raise ValueError(
-            f"get_cached_reader expects a single POD5 file, but {pod5_path} "
-            f"resolved to {len(paths)} files. Use read_pod5_signals_batch_cached "
-            "or POD5Reader for directory sources."
-        )
-    return _get_cached_reader_single(str(paths[0]))
-
-
-def read_pod5_signals_batch_cached(
-    pod5_path: Path | str, read_ids: list[str]
-) -> dict[str, tuple[np.ndarray, dict]]:
-    """Batch POD5 read using cached Reader handles.
-
-    Accepts either a single ``.pod5`` file or a directory containing many.
-    For directory sources, iterates files and dispatches each read to the
-    first file that contains it. Readers are cached per file across calls,
-    so a later batch over the same directory is free of file-open cost.
-
-    Same result shape as :func:`read_pod5_signals_batch`; use this when
-    the caller issues many batches against the same source (workers,
-    multi-shard inference, etc.).
-    """
-    paths = _resolve_pod5_paths(pod5_path)
-    remaining = set(read_ids)
-    results: dict[str, tuple[np.ndarray, dict]] = {}
-    for p in paths:
-        if not remaining:
-            break
-        reader, run_infos = _get_cached_reader_single(str(p))
-        # `get_reads` silently drops ids not present in this file, so
-        # iterating all files is O(files × batch_size) lookups but fetches
-        # each read from exactly one reader.
-        reads = reader.get_reads(list(remaining))
-        if not reads:
-            continue
-        signals_list = reader.get_signals(reads)
-        sig_by_id = dict(signals_list)
-        for read_data in reads:
-            rid = read_data.read_id
-            signal = sig_by_id.get(rid)
-            if signal is not None:
-                results[rid] = (signal, _extract_pod5_metadata(read_data, run_infos))
-                remaining.discard(rid)
-    return results
+def _sample_rate_for(read, run_infos: list) -> int:
+    """Sample rate for a read, guarding a run_info_index that falls outside
+    the dataset's deduplicated run-info list (sample rate is constant within
+    a run in practice, so the first entry is a safe fallback)."""
+    idx = read.run_info_index
+    if 0 <= idx < len(run_infos):
+        return run_infos[idx].sample_rate
+    return run_infos[0].sample_rate if run_infos else 0
 
 
 def _extract_pod5_metadata(read, run_infos: list) -> dict:
@@ -119,7 +64,7 @@ def _extract_pod5_metadata(read, run_infos: list) -> dict:
 
     Args:
         read: An escapepod ReadData object
-        run_infos: List of RunInfo objects from reader.run_infos()
+        run_infos: List of RunInfo objects from the dataset/reader
 
     Returns:
         Dictionary with read_id, channel, well, pore_type,
@@ -132,8 +77,57 @@ def _extract_pod5_metadata(read, run_infos: list) -> dict:
         "pore_type": read.pore_type,
         "calibration_offset": read.calibration_offset,
         "calibration_scale": read.calibration_scale,
-        "sample_rate": run_infos[read.run_info_index].sample_rate,
+        "sample_rate": _sample_rate_for(read, run_infos),
     }
+
+
+def _batch_from_dataset(
+    ds: DatasetReader, read_ids: list[str], warn_missing: bool = False
+) -> dict[str, tuple[np.ndarray, dict]]:
+    """Fetch raw signals + metadata for ``read_ids`` from an open dataset.
+
+    ``DatasetReader.get_signals`` decodes each read from its owning file
+    (parallel VBZ decompression, GIL released), so this is a single bulk
+    call regardless of how many files back the source.
+    """
+    run_infos = ds.run_infos
+    reads = ds.reads(list(read_ids), missing_ok=True)
+    sig_by_id = dict(ds.get_signals(reads))
+    results: dict[str, tuple[np.ndarray, dict]] = {}
+    for read_data in reads:
+        signal = sig_by_id.get(read_data.read_id)
+        if signal is not None:
+            results[read_data.read_id] = (signal, _extract_pod5_metadata(read_data, run_infos))
+
+    if warn_missing:
+        missing = len(set(read_ids)) - len(results)
+        if missing > 0:
+            found = set(results)
+            sample = [rid for rid in read_ids if rid not in found][:5]
+            logger.warning(f"Could not find {missing} reads in POD5 source: {sample}...")
+    return results
+
+
+def get_cached_reader(pod5_path: Path | str) -> tuple[DatasetReader, list]:
+    """Return ``(dataset, run_infos)`` for a POD5 source, cached by path.
+
+    Handles single files and directories alike. Repeated calls for the same
+    path return the same :class:`DatasetReader` instance.
+    """
+    return _get_cached_entry(pod5_path)
+
+
+def read_pod5_signals_batch_cached(
+    pod5_path: Path | str, read_ids: list[str]
+) -> dict[str, tuple[np.ndarray, dict]]:
+    """Batch POD5 read using a cached :class:`DatasetReader`.
+
+    Accepts either a single ``.pod5`` file or a directory containing many.
+    Use this when the caller issues many batches against the same source
+    (workers, multi-shard inference, etc.) so the directory scan and file
+    opens happen only once.
+    """
+    return _batch_from_dataset(_get_cached_dataset(pod5_path), read_ids)
 
 
 def read_pod5_signal(pod5_path: Path, read_id: str) -> tuple[np.ndarray, dict]:
@@ -155,17 +149,13 @@ def read_pod5_signal(pod5_path: Path, read_id: str) -> tuple[np.ndarray, dict]:
         >>> print(f"Signal length: {len(signal)}")
         >>> print(f"Sample rate: {meta['sample_rate']}")
     """
-    for p in _resolve_pod5_paths(pod5_path):
-        reader = Reader(str(p))
-        run_infos = reader.run_infos
-        try:
-            read_data = reader.get_read(read_id)
-        except Exception:
-            # Reader raises when the id isn't in this file — fall through.
-            continue
-        signal = reader.get_signal(read_data)
-        return signal, _extract_pod5_metadata(read_data, run_infos)
-    raise ValueError(f"read_id {read_id!r} not found under {pod5_path}")
+    ds, run_infos = _get_cached_entry(pod5_path)
+    reads = ds.reads([read_id], missing_ok=True)
+    if not reads:
+        raise ValueError(f"read_id {read_id!r} not found under {pod5_path}")
+    read_data = reads[0]
+    signal = ds.get_signal(read_data)
+    return signal, _extract_pod5_metadata(read_data, run_infos)
 
 
 def read_pod5_signals_batch(
@@ -174,11 +164,9 @@ def read_pod5_signals_batch(
     """
     Read multiple signals from a POD5 source in a single batch.
 
-    Accepts a single ``.pod5`` file or a directory of ``.pod5`` files;
-    iterates files until every requested read is found (or none of the
-    remaining sources contain it). More efficient than reading one-by-one
-    for large batches — each file's get_signals uses parallel VBZ
-    decompression via rayon.
+    Accepts a single ``.pod5`` file or a directory of ``.pod5`` files.
+    More efficient than reading one-by-one for large batches — signals are
+    decoded per owning file with parallel VBZ decompression via rayon.
 
     Args:
         pod5_path: Path to a ``.pod5`` file or a directory of ``.pod5`` files.
@@ -194,31 +182,7 @@ def read_pod5_signals_batch(
         >>> for read_id, (signal, meta) in signals.items():
         ...     print(f"{read_id}: {len(signal)} samples")
     """
-    remaining = set(read_ids)
-    results: dict[str, tuple[np.ndarray, dict]] = {}
-    for p in _resolve_pod5_paths(pod5_path):
-        if not remaining:
-            break
-        reader = Reader(str(p))
-        run_infos = reader.run_infos
-        reads = reader.get_reads(list(remaining))
-        if not reads:
-            continue
-        signals_list = reader.get_signals(reads)
-        sig_by_id = dict(signals_list)
-        for read_data in reads:
-            rid = read_data.read_id
-            signal = sig_by_id.get(rid)
-            if signal is not None:
-                results[rid] = (signal, _extract_pod5_metadata(read_data, run_infos))
-                remaining.discard(rid)
-
-    if remaining:
-        logger.warning(
-            f"Could not find {len(remaining)} reads in POD5 source: {list(remaining)[:5]}..."
-        )
-
-    return results
+    return _batch_from_dataset(_get_cached_dataset(pod5_path), read_ids, warn_missing=True)
 
 
 class POD5Reader:
@@ -227,8 +191,9 @@ class POD5Reader:
 
     Provides a high-level interface for reading signals from POD5 sources,
     with support for batched access and caching. Accepts either a single
-    ``.pod5`` file or a directory containing many; directory sources open
-    one underlying ``escapepod.Reader`` per file and dispatch per read.
+    ``.pod5`` file or a directory containing many; both are handled by a
+    single :class:`escapepod.DatasetReader`, which opens each underlying
+    file once and dispatches per read.
 
     Examples:
         >>> with POD5Reader(Path("reads.pod5")) as reader:
@@ -249,82 +214,51 @@ class POD5Reader:
         Args:
             pod5_path: Path to a ``.pod5`` file or a directory of ``.pod5`` files.
             batch_size: Number of reads to fetch in each batch (for batch mode)
-            backend: "auto" (Rust if available), "rust" (force), or "python" (force)
+            backend: Retained for backward compatibility; POD5 access now always
+                goes through :class:`escapepod.DatasetReader`.
         """
         self.pod5_path = pod5_path
         self.batch_size = batch_size
         self.backend = backend
-        # _readers is a list of (reader, run_infos, path_str) — one entry
-        # per underlying .pod5 file. Single-file sources produce a one-
-        # element list so the rest of the class doesn't branch.
-        self._readers: list[tuple[Reader, list, str]] = []
+        self._ds: DatasetReader | None = None
+        self._run_infos: list = []
         self._cache: dict[str, tuple[np.ndarray, dict]] = {}
 
     def __enter__(self):
         """Open the POD5 source (single file or directory of files)."""
-        self._readers = []
-        for p in _resolve_pod5_paths(self.pod5_path):
-            reader = Reader(str(p))
-            self._readers.append((reader, reader.run_infos, str(p)))
+        self._ds = DatasetReader(str(self.pod5_path))
+        self._run_infos = self._ds.run_infos
         return self
 
     def __exit__(self, _exc_type, _exc_val, _exc_tb):
-        """Close POD5 handles."""
-        self._readers = []
+        """Release the dataset handle and cache."""
+        self._ds = None
+        self._run_infos = []
         self._cache.clear()
 
     def preload(self, read_ids: list[str]) -> None:
         """
         Pre-load signals for a batch of reads into the internal cache.
 
-        When Rust acceleration (leech_core) is available, uses its
-        read_pod5_batch for slightly lower overhead. Otherwise uses
-        escapepod.Reader.get_signals() for parallel VBZ decompression.
-        For directory sources, iterates each underlying file in turn and
-        stops once every requested read has been located.
+        Uses ``DatasetReader.get_signals()`` for parallel VBZ decompression
+        across the owning files.
 
         Args:
             read_ids: List of read identifiers to preload
         """
-        if not self._readers:
+        if self._ds is None:
             raise RuntimeError("POD5Reader must be used as a context manager")
 
         self._cache.clear()
-        remaining = set(read_ids)
-
-        from leech._rust_accel import HAS_RUST, _rs_read_pod5_batch
-
-        _use_rust = HAS_RUST and _rs_read_pod5_batch is not None and self.backend != "python"
-
-        for reader, run_infos, path_str in self._readers:
-            if not remaining:
-                break
-            if _use_rust:
-                batch = _rs_read_pod5_batch(path_str, list(remaining))
-                for rid, (signal, cal_offset, cal_scale) in batch.items():
-                    self._cache[rid] = (
-                        signal,
-                        {
-                            "calibration_offset": cal_offset,
-                            "calibration_scale": cal_scale,
-                        },
-                    )
-                    remaining.discard(rid)
-            else:
-                reads = reader.get_reads(list(remaining))
-                if not reads:
-                    continue
-                signals_list = reader.get_signals(reads)
-                sig_by_id = dict(signals_list)
-                for read_data in reads:
-                    rid = read_data.read_id
-                    signal = sig_by_id.get(rid)
-                    if signal is not None:
-                        self._cache[rid] = (
-                            signal,
-                            _extract_pod5_metadata(read_data, run_infos),
-                        )
-                        remaining.discard(rid)
+        reads = self._ds.reads(list(read_ids), missing_ok=True)
+        sig_by_id = dict(self._ds.get_signals(reads))
+        for read_data in reads:
+            signal = sig_by_id.get(read_data.read_id)
+            if signal is not None:
+                self._cache[read_data.read_id] = (
+                    signal,
+                    _extract_pod5_metadata(read_data, self._run_infos),
+                )
 
         loaded = len(self._cache)
         missing = len(read_ids) - loaded
@@ -334,10 +268,6 @@ class POD5Reader:
     def get_signal(self, read_id: str) -> tuple[np.ndarray, dict]:
         """
         Get signal for a single read. Uses cache if available.
-
-        For directory sources, iterates underlying readers until the read
-        is found (O(files) in the worst case; typically O(1) since each
-        read lives in exactly one file).
 
         Args:
             read_id: Read identifier
@@ -349,20 +279,16 @@ class POD5Reader:
             ValueError: If read not found in any underlying file.
             RuntimeError: If reader not opened (use as context manager)
         """
-        if not self._readers:
+        if self._ds is None:
             raise RuntimeError("POD5Reader must be used as a context manager")
 
-        # Check cache first (from preload)
         cached = self._cache.get(read_id)
         if cached is not None:
             return cached
 
-        for reader, run_infos, _ in self._readers:
-            try:
-                read_data = reader.get_read(read_id)
-            except Exception:
-                # Reader raises when the id isn't in this file.
-                continue
-            signal = reader.get_signal(read_data)
-            return signal, _extract_pod5_metadata(read_data, run_infos)
-        raise ValueError(f"read_id {read_id!r} not found under {self.pod5_path}")
+        reads = self._ds.reads([read_id], missing_ok=True)
+        if not reads:
+            raise ValueError(f"read_id {read_id!r} not found under {self.pod5_path}")
+        read_data = reads[0]
+        signal = self._ds.get_signal(read_data)
+        return signal, _extract_pod5_metadata(read_data, self._run_infos)
