@@ -29,6 +29,8 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0  # Fetch all history for git info
+          token: ${{ secrets.ESCAPEPOD_PAT }}
+          submodules: recursive  # escapepod-rs is a uv workspace member
 
       - name: Set up Python
         uses: actions/setup-python@v6
