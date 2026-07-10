@@ -188,18 +188,22 @@ signal from that molecule.
 Leech always splits at the *read* level: all chunks from a given read go into
 the same split.
 
-## Dwell margin for offset tuning
+## Widening the feature window for offset tuning
 
-If you plan to search over dwell offsets during grid search, prepare data with
-extra feature context using `--dwell-margin`:
+If you plan to search over dwell offsets during grid search, prepare data with a
+wider feature window using `--feature-start` and `--feature-end`. These set the
+feature window bounds as signed offsets from the focus base (negative = toward
+the tRNA body, positive = toward the adaptor). The defaults are `-5` and `5`
+(i.e., `±kmer_context`).
 
 ```bash
-leech data prepare --dwell-margin 15 ...
+leech data prepare --feature-start -20 --feature-end 20 ...
 ```
 
-This stores 15 extra bases on each side of the dwell/feature arrays, allowing
-`leech model optimize --dwell-offsets` to trim at runtime without re-preparing
-data.
+Storing extra bases on each side of the dwell/feature arrays allows
+`leech model optimize --dwell-offsets` to shift the window at runtime without
+re-preparing data. For a right-only window, use e.g. `--feature-start 0
+--feature-end 20`.
 
 ## Troubleshooting
 

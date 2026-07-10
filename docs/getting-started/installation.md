@@ -100,18 +100,14 @@ This installs additional tools for:
 
 ## Troubleshooting
 
-### POD5 Installation Issues
+### POD5 Support (escapepod)
 
-If you encounter issues installing `pod5`, you may need to install system dependencies:
+leech reads POD5 signal through `escapepod`, a Rust-backed reader installed via
+the `pod5` extra. It does not depend on the `pod5` Python package or `libhdf5`,
+so no HDF5 system libraries are required:
 
-**Ubuntu/Debian:**
 ```bash title="Bash" linenums="1"
-sudo apt-get install python3-dev libhdf5-dev
-```
-
-**macOS:**
-```bash title="Bash" linenums="1"
-brew install hdf5
+uv sync --extra pod5
 ```
 
 ### pysam Installation Issues

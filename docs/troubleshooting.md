@@ -51,8 +51,8 @@ with pysam.AlignmentFile('alignments.bam') as bam:
 
 # POD5 read IDs
 uv run python -c "
-from escapepod import Reader
-reader = Reader('reads.pod5')
+from escapepod import DatasetReader
+reader = DatasetReader('reads.pod5')
 for i, read in enumerate(reader.reads()):
     print(read.read_id)
     if i >= 3: break

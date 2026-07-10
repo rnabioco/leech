@@ -9,7 +9,7 @@ The CLI is organized into workflow-based command groups:
 | Group | Commands | Purpose |
 |-------|----------|---------|
 | `leech data` | `prepare`, `merge` | Extract features, merge and split datasets |
-| `leech model` | `train`, `optimize`, `bundle`, `bundle-info`, `calibrate`, `export` | Train, tune, calibrate, and package models |
+| `leech model` | `train`, `optimize`, `benchmark`, `bundle`, `bundle-info`, `calibrate`, `export` | Train, tune, calibrate, and package models |
 | `leech eval` | `test`, `compare`, `importance`, `ablation` | Evaluate and analyze models |
 | `leech predict` | *(top-level)* | Run inference on new data |
 
@@ -43,8 +43,7 @@ leech data prepare --pod5 FILE --bam FILE --output-dir DIR [OPTIONS]
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--feature-set STR` | `signal+dwell+levels` | Features to extract (combine with `+`) |
-| `--signal-context INT` | `200` | Signal samples on each side of motif |
-| `--kmer-context INT` | `5` | K-mer bases on each side of motif |
+| `--signal-context LEFT RIGHT` | *(symmetric 200/200)* | Asymmetric signal window as two ints (e.g. `--signal-context 90 450`) |
 | `--feature-start INT` | `-5` | Feature window start offset from focus base (negative = toward tRNA body) |
 | `--feature-end INT` | `5` | Feature window end offset from focus base (positive = toward adaptor) |
 
@@ -52,8 +51,8 @@ leech data prepare --pod5 FILE --bam FILE --output-dir DIR [OPTIONS]
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--motif STR` | `CCAGGC` | Sequence motif to center on |
-| `--motif-offset INT` | `2` | Focus base within motif (0-indexed) |
+| `--motif STR` | -- | Sequence motif to center on |
+| `--motif-offset INT` | `0` | Focus base within motif (0-indexed) |
 | `--motif-reference STR` | `fasta` | Search in `fasta` (reference) or `bam` (basecalled sequence) |
 | `--reference-fasta FILE` | -- | Reference FASTA if not in BAM header |
 | `--skip-motif-indels` | `False` | Skip motif sites with indels in alignment |
@@ -69,14 +68,14 @@ leech data prepare --pod5 FILE --bam FILE --output-dir DIR [OPTIONS]
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--label INT` | `0` | Class label for these chunks |
+| `--label STR` | -- | Label identifier for this sample (e.g. `Ala`, `charged`); numeric labels are assigned during merge |
 | `--train-split FLOAT` | `0.7` | Fraction for training |
 | `--val-split FLOAT` | `0.15` | Fraction for validation |
 | `--no-split` | `False` | Save all chunks to `all.npz` (for later merge) |
 | `--workers INT` | `8` | Parallel workers |
 | `--chunk-size INT` | `100` | Reads per batch |
-| `--min-mapq INT` | `10` | Minimum mapping quality |
-| `--seed INT` | `42` | Random seed |
+| `--min-mapq INT` | `0` | Minimum mapping quality |
+| `--seed INT` | *(none)* | Random seed |
 
 **Examples:**
 
@@ -115,6 +114,7 @@ leech data merge -i LABEL=FILE -i LABEL=FILE -o DIR [OPTIONS]
 | `--seed` | `42` | Random seed |
 | `--k-fold` | `1` | Number of cross-validation folds. When > 1, creates k-fold splits (must be >= 3) |
 | `--comparison-spec` | -- | TSV file with batch comparison specs |
+| `--split-by` | -- | NPZ field to split by group instead of by read (e.g. `reference_names`); reads sharing a value stay in the same split |
 
 **Examples:**
 
@@ -157,14 +157,14 @@ leech model train --train-data FILES --val-data FILES --model MODEL --output-dir
 | `--model MODEL` | Architecture name (see below) |
 | `--output-dir DIR` | Directory for model checkpoints |
 
-**Available architectures (20 total):**
+**Available architectures (24 total):**
 
 | Family | Models |
 |--------|--------|
 | ConvLSTM | `ConvLSTMDwell` (recommended), `ConvLSTMBase`, +BN, +Attn, +BNAttn, +GNAttn, +LNAttn variants |
 | Remora-compat | `ConvLSTMRemora`, `ConvLSTMRemoraBase` |
 | Transformer | `TransformerDwell`, `TransformerDwellResidual` (2-channel signal) |
-| TCN | `TCNDwell`, `TCNDwellGN`, `TCNDwellLN`, `TCNDwellResidual` (2-channel signal) |
+| TCN | `TCNDwell`, `TCNDwellGN`, `TCNDwellLN`, `TCNDwellResidual`, `TCNDwellResidualGN`, `TCNDwellResidualLN`, `TCNDwellSplitResidual`, `TCNDwellSplitResidualLN` |
 | Other | `ResNetDwell`, `ConvOnly` |
 
 **Core training options:**
@@ -174,8 +174,8 @@ leech model train --train-data FILES --val-data FILES --model MODEL --output-dir
 | `--epochs INT` | `50` | Training epochs |
 | `--batch-size INT` | `128` | Batch size |
 | `--learning-rate FLOAT` | `0.001` | Learning rate |
-| `--device STR` | auto | `cuda` or `cpu` |
-| `--seed INT` | `42` | Random seed |
+| `--device STR` | `cuda` | `cuda` or `cpu` |
+| `--seed INT` | *(none)* | Random seed |
 | `--early-stopping INT` | `10` | Stop after N epochs without improvement (0 = disable) |
 | `--resume FILE` | -- | Resume from a checkpoint file |
 
@@ -192,7 +192,7 @@ leech model train --train-data FILES --val-data FILES --model MODEL --output-dir
 |--------|---------|-------------|
 | `--weight-decay FLOAT` | `0` | L2 weight decay |
 | `--max-grad-norm FLOAT` | `0` | Gradient clipping (0 = disabled) |
-| `--scheduler STR` | `none` | LR scheduler: `none` or `reduce_on_plateau` |
+| `--scheduler STR` | `none` | LR scheduler: `none`, `reduce_on_plateau`, or `cosine` |
 | `--scheduler-patience INT` | `5` | Epochs before reducing LR |
 | `--scheduler-factor FLOAT` | `0.5` | Factor to reduce LR by |
 | `--warmup-epochs INT` | `0` | Linear warmup epochs |
@@ -201,7 +201,7 @@ leech model train --train-data FILES --val-data FILES --model MODEL --output-dir
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--loss STR` | `bce` | Loss function: `bce` or `focal` |
+| `--loss STR` | `bce` | Loss function: `bce`, `focal`, or `cross_entropy` |
 | `--focal-gamma FLOAT` | `2.0` | Focal loss gamma (only with `--loss focal`) |
 
 **Data augmentation:**
@@ -221,16 +221,16 @@ leech model train --train-data FILES --val-data FILES --model MODEL --output-dir
 | `--motif-offset INT` | `0` | Focus base within motif (0-indexed) |
 | `--base-justify STR` | `center` | Signal justification |
 | `--model-config FILE` | -- | JSON file with model architecture overrides |
-| `--seq-encoding STR` | `base_onehot` | Sequence encoding: `base_onehot` or `signal_kmer` |
+| `--seq-encoding STR` | `signal_kmer` | Sequence encoding: `base_onehot` or `signal_kmer` |
 | `--num-workers INT` | `0` | DataLoader workers (0=auto) |
 | `--balance-groups / --no-balance-groups` | disabled | Balance sampling across source groups (e.g., per-AA) so each group contributes equally per epoch |
 
 **Output files:**
 
-- `model_best.pt` -- best checkpoint by validation loss
+- `model_best.pt` -- best checkpoint by `--checkpoint-metric` (default `auto`: val_auc for binary, val_f1 for multiclass)
 - `model_last.pt` -- final epoch checkpoint
 - `config.json` -- full training configuration (needed for inference)
-- `training_history.json` -- per-epoch metrics
+- `metrics.json` -- per-epoch metrics
 
 **Examples:**
 
@@ -329,7 +329,7 @@ leech model bundle --model-dir DIR --output FILE --version VERSION [OPTIONS]
 | `--model-dir DIR` | *(required)* | Root directory containing pair subdirectories (each with `model_best.pt` + `config.json`) |
 | `-o, --output FILE` | *(required)* | Output `.pt` bundle file |
 | `-v, --version STR` | *(required)* | Semantic version (e.g., `"0.1.0-alpha.1"`) |
-| `--comparison-type STR` | `pairwise` | `pairwise` or `one_vs_all` |
+| `--comparison-type STR` | `pairwise` | `pairwise`, `one_vs_all`, `group`, or `multiclass` |
 
 The command auto-discovers all subdirectories containing `model_best.pt` and `config.json`.
 
@@ -362,7 +362,7 @@ Shows architecture, version, comparison type, included pairs, and file size.
 
 ### leech model calibrate
 
-Learn post-hoc Platt scaling on the validation set. Fits two parameters (a, b) per model so that `sigmoid(a*logit + b)` is better calibrated.
+Learn post-hoc calibration on the validation set. Binary models use Platt scaling (fits `a, b` so `sigmoid(a*logit + b)` is better calibrated). Multiclass models use temperature (default), matrix, or Dirichlet scaling.
 
 ```bash
 leech model calibrate --model-dir DIR --val-data FILE [OPTIONS]
@@ -375,8 +375,11 @@ leech model calibrate --model-dir DIR --val-data FILE [OPTIONS]
 | `--device STR` | `cpu` | Device for inference |
 | `--batch-size INT` | `1024` | Batch size for validation pass |
 | `--num-workers INT` | `0` | DataLoader workers |
+| `--method STR` | `temperature` | Multiclass method: `temperature`, `matrix`, or `dirichlet` (binary always uses Platt) |
+| `--reg-lambda FLOAT` | `0.01` | L2 regularization toward identity for `matrix`/`dirichlet` |
+| `-o, --output FILE` | -- | Output calibration JSON path (single model only) |
 
-Writes `platt.json` to the model directory. For a parent directory with pair subdirs, calibrates each pair independently.
+Binary models write `platt.json`; multiclass models write `calibration.json` to the model directory. For a parent directory with pair subdirs, calibrates each pair independently.
 
 **Examples:**
 
@@ -390,7 +393,7 @@ leech model calibrate --model-dir models/one_vs_all/ --val-data val.npz
 
 ### leech model export
 
-Export a trained model as a standalone TorchScript file, loadable with `torch.jit.load()` without the leech codebase.
+Export a trained model as a standalone `.pt` file, loadable with `torch.export.load()` without the leech codebase.
 
 ```bash
 leech model export --model-dir DIR --output FILE
@@ -399,7 +402,7 @@ leech model export --model-dir DIR --output FILE
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--model-dir DIR` | *(required)* | Model checkpoint directory |
-| `-o, --output FILE` | *(required)* | Output TorchScript `.pt` file |
+| `-o, --output FILE` | *(required)* | Output `.pt` file |
 
 **Example:**
 
@@ -506,7 +509,7 @@ leech predict --pod5 FILE --bam FILE --output FILE (--model DIR | --bundle FILE 
 |--------|-------------|
 | `--pair NAME` | Run a single pair's model from the bundle |
 | `--all` | Run every model in the bundle, aggregate to a single amino acid prediction |
-| `--raw` | With `--all`, also write per-pair probabilities (`pn`/`pp` BAM tags) |
+| `--raw` | Write full-float probabilities instead of the compact uint8 encoding (`ac`/`pp` tags) |
 
 **Signal handling:**
 

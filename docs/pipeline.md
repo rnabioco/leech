@@ -10,8 +10,8 @@ HPC clusters.
 pipeline/
 ├── config/
 │   ├── config.yaml              # Main configuration
-│   ├── alpine-config.yaml       # CU Boulder Alpine (SLURM)
-│   └── bodhi-config.yaml        # Bodhi cluster (LSF)
+│   ├── samples-alpine.yaml      # Sample definitions (passed via --configfile)
+│   └── comparisons_*.tsv        # Comparison specs (pairwise, chemical, etc.)
 ├── workflow/
 │   ├── Snakefile                # Main workflow
 │   └── rules/                   # Modular rule files
@@ -111,7 +111,7 @@ snakemake --profile ../cluster/slurm
 
 ```bash
 # Using the modern executor plugin (recommended)
-snakemake --executor lsf --configfile ../config/bodhi-config.yaml \
+snakemake --executor lsf --configfile ../config/samples-alpine.yaml \
   --default-resources lsf_queue=gpuqueue --jobs 100
 
 # Or using the profile
@@ -158,7 +158,7 @@ results/
 │   ├── charged_vs_uncharged/     # Trained models
 │   │   ├── model_best.pt
 │   │   ├── config.json
-│   │   └── training_history.json
+│   │   └── metrics.json
 │   └── pairwise/{pair}/
 ├── inference/                    # Prediction BAMs
 │   └── {sample}_predictions.bam

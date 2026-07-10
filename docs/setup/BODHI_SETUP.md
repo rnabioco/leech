@@ -74,7 +74,7 @@ uv sync --all-extras
 
 ## Configuration
 
-The pipeline includes `config/bodhi-config.yaml` optimized for Bodhi:
+The main `config/config.yaml` uses simple relative paths suited to Bodhi (everything under your home directory):
 
 ```yaml title="YAML" linenums="1"
 # Simple relative paths (everything in home directory)
@@ -92,7 +92,7 @@ cluster:
 
 ### Update for Your Bodhi Environment
 
-Edit `config/bodhi-config.yaml` to match your Bodhi setup:
+Edit `config/config.yaml` to match your Bodhi setup:
 
 ```yaml title="YAML" linenums="1"
 cluster:
@@ -113,7 +113,7 @@ cd /home/$USER/leech/pipeline/workflow
 # Dry run
 snakemake \
   --executor lsf \
-  --configfile ../config/bodhi-config.yaml \
+  --configfile ../config/samples-alpine.yaml \
   --default-resources lsf_queue=gpuqueue \
   --jobs 100 \
   -n
@@ -121,7 +121,7 @@ snakemake \
 # Execute pipeline
 snakemake \
   --executor lsf \
-  --configfile ../config/bodhi-config.yaml \
+  --configfile ../config/samples-alpine.yaml \
   --default-resources lsf_queue=gpuqueue \
   --jobs 100
 ```
@@ -129,7 +129,7 @@ snakemake \
 **Create an alias** for convenience (add to `~/.bashrc`):
 
 ```bash title="Bash" linenums="1"
-alias snakemake-bodhi='snakemake --executor lsf --configfile config/bodhi-config.yaml --default-resources lsf_queue=gpuqueue --jobs 100'
+alias snakemake-bodhi='snakemake --executor lsf --configfile config/samples-alpine.yaml --default-resources lsf_queue=gpuqueue --jobs 100'
 ```
 
 Then use:
@@ -147,10 +147,10 @@ The traditional approach still works:
 cd /home/$USER/leech/pipeline/workflow
 
 # Dry run
-snakemake --profile ../profiles/lsf --configfile ../config/bodhi-config.yaml -n
+snakemake --profile ../cluster/lsf --configfile ../config/samples-alpine.yaml -n
 
 # Execute
-snakemake --profile ../profiles/lsf --configfile ../config/bodhi-config.yaml
+snakemake --profile ../cluster/lsf --configfile ../config/samples-alpine.yaml
 ```
 
 ### Common Workflows
@@ -241,8 +241,9 @@ On Bodhi, everything can run from your home directory:
 ├── leech/                          # Code repository (if cloned here)
 ├── pipeline/
 │   ├── config/
-│   │   └── bodhi-config.yaml      # Bodhi-specific config
-│   ├── profiles/
+│   │   ├── config.yaml            # Main configuration
+│   │   └── samples-alpine.yaml    # Sample definitions
+│   ├── cluster/
 │   │   └── lsf/                   # LSF profile
 │   └── workflow/                  # Snakemake workflow
 ├── data/                          # Raw data (POD5, BAM)
@@ -320,7 +321,7 @@ python -c "import snakemake_executor_plugin_lsf; print('OK')"
 
 If your jobs need specific modules:
 
-Edit `profiles/lsf/lsf_submit.sh` and uncomment/add:
+Edit `cluster/lsf/lsf_submit.sh` and uncomment/add:
 ```bash title="Bash" linenums="1"
 module purge
 module load cuda/12.1
@@ -365,7 +366,7 @@ Run data preparation locally (faster turnaround):
 ```bash title="Bash" linenums="1"
 # Run prep locally without cluster submission
 cd /home/$USER/leech/pipeline/workflow
-snakemake --configfile ../config/bodhi-config.yaml --cores 8 all_prepare
+snakemake --configfile ../config/samples-alpine.yaml --cores 8 all_prepare
 ```
 
 ## Comparing Bodhi vs Alpine
@@ -402,7 +403,7 @@ snakemake --configfile ../config/bodhi-config.yaml --cores 8 all_prepare
 
 ```bash title="Bash" linenums="1"
 # Quick local test with 8 cores
-snakemake --configfile config/bodhi-config.yaml --cores 8 -n
+snakemake --configfile config/samples-alpine.yaml --cores 8 -n
 ```
 
 ### 2. Start Small
@@ -452,13 +453,13 @@ rm -rf .snakemake/
 cd /home/$USER/leech/pipeline/workflow
 
 # 2. Update config with your data paths
-vim ../config/bodhi-config.yaml
+vim ../config/samples-alpine.yaml
 
 # 3. Test with dry run
 snakemake-bodhi -n
 
 # 4. Prepare data (can run locally for speed)
-snakemake --configfile ../config/bodhi-config.yaml --cores 8 all_prepare
+snakemake --configfile ../config/samples-alpine.yaml --cores 8 all_prepare
 
 # 5. Train models (submit to GPU queue)
 snakemake-bodhi all_train
@@ -491,11 +492,11 @@ ls -lh results/inference/
 uv pip install snakemake-executor-plugin-lsf
 
 # Run (modern)
-snakemake --executor lsf --configfile config/bodhi-config.yaml \
+snakemake --executor lsf --configfile config/samples-alpine.yaml \
   --default-resources lsf_queue=gpuqueue --jobs 100
 
 # Run (legacy)
-snakemake --profile profiles/lsf --configfile config/bodhi-config.yaml
+snakemake --profile cluster/lsf --configfile config/samples-alpine.yaml
 
 # Monitor
 bjobs                    # List your jobs

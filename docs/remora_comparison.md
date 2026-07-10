@@ -39,7 +39,7 @@ This document systematically documents the differences between [Remora](https://
 |--------|--------|-------|
 | **Signal norm** | DAC -> pA -> median-MAD on pA (or pa_scaling from basecaller) | median-MAD on raw DACs |
 | **Signal trimming** | Trim to reference-aligned region only | Full read signal |
-| **Reference anchoring** | Default: uses ref sequence + ref->signal mapping via CIGAR | Uses basecalled sequence (ref-based motif search only) |
+| **Reference anchoring** | Default: uses ref sequence + ref->signal mapping via CIGAR | Default `--anchor reference`: uses ref sequence + ref->signal mapping via CIGAR (matches Remora); `--anchor basecall` available |
 | **Signal map refinement** | Viterbi/dwell-penalty refinement of base boundaries with kmer level tables | None (uses raw move table boundaries) |
 | **Seq encoding** | Signal-level kmer only (36 channels for 9-mer) | Signal-level kmer (default) + base_onehot fallback |
 | **Chunk context** | Signal-level (raw samples around focus base) | Signal-level (configurable left/right context) |

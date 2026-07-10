@@ -44,10 +44,10 @@ uv run leech data prepare \
 - `--pod5`: Path to POD5 file with raw signal
 - `--bam`: Path to BAM file with alignments and move tables
 - `--output-dir`: Directory to save training chunks
-- `--feature-set`: Features to extract (`signal`, `dwell`, `levels`, or combinations)
+- `--feature-set`: Features to extract (one of `signal`, `signal+dwell`, `signal+levels`, `signal+dwell+levels`)
 - `--motif`: Sequence motif to center on (e.g., "CCAGGC" for tRNA 3' end)
 - `--motif-offset`: Position within motif to focus on (0-indexed)
-- `--label`: Class label (0 or 1)
+- `--label`: Label identifier for this sample (e.g., `Ala`, `charged`); a string, not necessarily 0/1
 
 ### Parallel Processing
 
@@ -93,8 +93,8 @@ uv run leech model train \
 The training process will save:
 
 - `model_best.pt`: Best model checkpoint (by validation loss)
-- `model_checkpoint.pt`: Latest checkpoint
-- `training_history.json`: Training metrics over time
+- `model_last.pt`: Latest checkpoint
+- `metrics.json`: Training metrics over time
 
 ## Step 3: Test the Model
 
@@ -133,7 +133,7 @@ Apply your model to new data:
 
 ```bash title="Bash" linenums="1"
 uv run leech predict \
-  --model models/model_best.pt \
+  --model models/ \
   --pod5 new_reads.pod5 \
   --bam new_alignments.bam \
   --output predictions.bam

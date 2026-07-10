@@ -54,7 +54,7 @@ To convert a move table into per-base dwell times:
 
 1. Extract the stride from `mv[0]` and the binary moves from `mv[1:]`
 2. Find positions where `move == 1` (base boundaries)
-3. Convert move-space positions to signal-space: `signal_idx = (position + 1) * stride`
+3. Convert move-space positions to signal-space: `signal_idx = position * stride` (plus `trim_offset` for untrimmed signal). This follows the Remora convention `np.nonzero(mv)[0] * stride`. The total sample count (`ns` tag) is appended as the final boundary.
 4. Compute dwell as the difference between consecutive signal indices
 
 ### Worked example
@@ -70,33 +70,44 @@ mv = [5, 1, 0, 0, 1, 1, 0, 1]
 The moves array is `[1, 0, 0, 1, 1, 0, 1]`. Positions where `move == 1` are
 indices 0, 3, 4, and 6.
 
-Converting to signal indices:
+Converting to signal indices (`position × stride`, with the total sample
+count appended as the final boundary):
 
-| Move index | Signal index           | Base |
-|------------|------------------------|------|
-| 0          | (0 + 1) × 5 = 5       | A    |
-| 3          | (3 + 1) × 5 = 20      | T    |
-| 4          | (4 + 1) × 5 = 25      | C    |
-| 6          | (6 + 1) × 5 = 35      | G    |
+| Move index | Signal index      | Base |
+|------------|-------------------|------|
+| 0          | 0 × 5 = 0        | A    |
+| 3          | 3 × 5 = 15       | T    |
+| 4          | 4 × 5 = 20       | C    |
+| 6          | 6 × 5 = 30       | G    |
+| (end)      | ns = 35          | --   |
 
 Per-base dwell times (differences between consecutive signal indices):
 
 | Base | Signal range | Dwell (samples) |
 |------|-------------|-----------------|
-| A    | 5--20       | 15              |
-| T    | 20--25      | 5               |
-| C    | 25--35      | 10              |
+| A    | 0--15       | 15              |
+| T    | 15--20      | 5               |
+| C    | 20--30      | 10              |
+| G    | 30--35      | 5               |
 
-At 4000 Hz, these correspond to 3.75 ms, 1.25 ms, and 2.50 ms respectively.
-The variation in dwell times across bases reflects differences in translocation
-kinetics at each sequence context.
+At 4000 Hz, these correspond to 3.75 ms, 1.25 ms, 2.50 ms, and 1.25 ms
+respectively. The variation in dwell times across bases reflects differences in
+translocation kinetics at each sequence context.
 
 In leech, the `MoveTable` class in `features.py` handles this conversion:
 
 ```python title="Python" linenums="1"
+import numpy as np
 from leech.features import MoveTable
 
-move_table = MoveTable(mv_tag=[5, 1, 0, 0, 1, 1, 0, 1])
+# In practice, build the MoveTable from a BAM record with
+# extract_move_table(alignment); here we construct it directly.
+move_table = MoveTable(
+    stride=5,
+    moves=np.array([1, 0, 0, 1, 1, 0, 1]),
+    read_id="example",
+    num_samples=35,
+)
 seq_to_sig = move_table.to_seq_to_sig_map()
 dwells = np.diff(seq_to_sig)
 ```

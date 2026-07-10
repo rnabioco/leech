@@ -4,7 +4,7 @@ Neural network architectures for nanopore signal classification.
 
 ## Overview
 
-The models module contains 20 PyTorch model architectures across 5 families. All models accept a `signal_in_channels` parameter for multi-channel signal input (default: 1).
+The models module contains 24 PyTorch model architectures across 5 families. All models accept a `signal_in_channels` parameter for multi-channel signal input (default: 1).
 
 ## Model Registry
 

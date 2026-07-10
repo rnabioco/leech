@@ -122,7 +122,7 @@ leech model optimize \
 - `--learning-rate`: Learning rate (default: 0.001)
 - `--device`: Training device (cuda/cpu, default: cuda)
 - `--parallel`: Number of grid points to train concurrently (default: 1)
-- `--seed`: Random seed (default: 42)
+- `--seed`: Random seed (default: none)
 
 ## Parallel Execution
 
