@@ -41,6 +41,29 @@ jobs:
       - name: Run type check
         run: uvx ty check src/leech/
 
+  rust-lint:
+    name: Rust lint (fmt + clippy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          token: ${{ secrets.ESCAPEPOD_PAT }}
+          submodules: recursive
+
+      - name: Install Rust toolchain (rustfmt + clippy)
+        run: rustup component add rustfmt clippy
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      - name: rustfmt
+        run: cargo fmt --manifest-path rust/Cargo.toml --check
+
+      - name: clippy
+        run: cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings
+
   test:
     name: Test - Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
@@ -65,13 +88,40 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      # Cache the Rust build for both crate workspaces (leech_core in rust/,
+      # escapepod-python in escapepod-rs/). The bulk of the test job is compiling
+      # arrow + escapepod-signal + leech_core via maturin; caching target/ and
+      # the cargo registry cuts that from minutes to seconds on unchanged deps.
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            rust
+            escapepod-rs
+
       - name: Install dependencies
+        env:
+          # GPU-less runner: install the CPU-only torch wheel so uv doesn't pull
+          # the multi-GB CUDA stack (nvidia-cu13-*). `uv sync` installs the locked
+          # CUDA torch regardless of this, so we install via `uv pip install`,
+          # which honors --torch-backend. The lock (and local/cluster GPU installs
+          # via `uv sync`) are unchanged.
+          UV_TORCH_BACKEND: cpu
         run: |
-          # Try full install (with Rust extension); fall back without it
-          uv sync --all-extras || uv sync --extra dev --extra pipeline --extra notebook
+          uv venv
+          # Only the test runner + runtime deps are needed here — no lint/type
+          # tooling (that's the Lint job) and no pipeline/notebook extras (tests
+          # don't import snakemake/plotnine). Full install (Rust extension +
+          # escapepod); fall back without the Rust extension (leech_core) but keep
+          # escapepod (pod5), which leech imports unconditionally.
+          uv pip install --torch-backend=cpu -e ".[test,rust,pod5]" \
+            || uv pip install --torch-backend=cpu -e ".[test,pod5]"
 
       - name: Run tests
-        run: uv run pytest --cov=leech --cov-report=xml --cov-report=term
+        env:
+          UV_TORCH_BACKEND: cpu
+        # --no-sync: don't let `uv run` re-sync the env to the CUDA-pinned lock.
+        run: uv run --no-sync pytest --cov=leech --cov-report=xml --cov-report=term
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5

@@ -2,8 +2,6 @@
 
 pub(super) const F32_CMP: fn(&f32, &f32) -> std::cmp::Ordering =
     |a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal);
-pub(super) const F64_CMP: fn(&f64, &f64) -> std::cmp::Ordering =
-    |a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal);
 
 pub(super) fn median_f32(data: &mut [f32]) -> f32 {
     if data.is_empty() {
@@ -20,37 +18,6 @@ pub(super) fn median_f32(data: &mut [f32]) -> f32 {
         (data[mid - 1] + data[mid]) / 2.0
     } else {
         data[mid]
-    }
-}
-
-pub(super) fn median_f64(data: &mut [f64]) -> f64 {
-    if data.is_empty() {
-        return 0.0;
-    }
-    let n = data.len();
-    let mid = n / 2;
-    data.select_nth_unstable_by(mid, F64_CMP);
-    if n.is_multiple_of(2) {
-        let hi = data[mid];
-        let lo = data[..mid].iter().copied().fold(f64::NEG_INFINITY, f64::max);
-        (lo + hi) / 2.0
-    } else {
-        data[mid]
-    }
-}
-
-pub(super) fn percentile_f64(sorted: &[f64], pct: f64) -> f64 {
-    if sorted.is_empty() {
-        return 0.0;
-    }
-    let idx = pct / 100.0 * (sorted.len() - 1) as f64;
-    let lo = idx.floor() as usize;
-    let hi = idx.ceil().min((sorted.len() - 1) as f64) as usize;
-    if lo == hi {
-        sorted[lo]
-    } else {
-        let frac = idx - lo as f64;
-        sorted[lo] * (1.0 - frac) + sorted[hi] * frac
     }
 }
 

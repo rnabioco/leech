@@ -335,17 +335,17 @@ class TestParallelWorkerReverseSignal:
         mock_run_info = MagicMock()
         mock_run_info.sample_rate = 4000
 
-        # Mock escapepod Reader
+        # Mock escapepod DatasetReader
         mock_reader = MagicMock()
-        mock_reader.run_infos.return_value = [mock_run_info]
-        mock_reader.get_reads.return_value = [mock_read_data]
+        mock_reader.run_infos = [mock_run_info]
+        mock_reader.reads.return_value = [mock_read_data]
         mock_reader.get_signals.return_value = [("test_read", raw_signal.copy())]
 
-        # `parallel.py` doesn't import Reader directly — it calls
-        # `read_pod5_signals_batch_cached`, which in turn opens a Reader
-        # inside `leech.io.pod5_reader`. Patching at the module where the
-        # `from escapepod import Reader` lives is the one that intercepts.
-        with patch("leech.io.pod5_reader.Reader", return_value=mock_reader):
+        # `parallel.py` doesn't import DatasetReader directly — it calls
+        # `read_pod5_signals_batch_cached`, which in turn opens a
+        # DatasetReader inside `leech.io.pod5_reader`. Patching at the module
+        # where the `from escapepod import DatasetReader` lives intercepts it.
+        with patch("leech.io.pod5_reader.DatasetReader", return_value=mock_reader):
             from leech.preparation.parallel import _process_read_chunk_worker
 
             # Build PrepareConfig with reverse_signal=True

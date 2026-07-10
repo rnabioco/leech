@@ -40,7 +40,14 @@ pub fn seq_banded_dp<'py>(
         band_hi[i] = seq_band_arr[[1, i]];
     }
 
-    let path = seq_banded_dp_inner(signal, levels, &band_lo, &band_hi, sd_pen, algo == "dwell_penalty");
+    let path = seq_banded_dp_inner(
+        signal,
+        levels,
+        &band_lo,
+        &band_hi,
+        sd_pen,
+        algo == "dwell_penalty",
+    );
     let result = Array1::from_vec(path);
     Ok(result.into_pyarray(py))
 }
@@ -99,11 +106,7 @@ pub fn extract_levels<'py>(
 }
 
 /// Internal rough rescaling (no PyO3 types). Returns rescaled signal or original.
-pub(crate) fn rough_rescale_inner(
-    signal: &[f64],
-    expected: &[f64],
-    sig_map: &[i64],
-) -> Vec<f64> {
+pub(crate) fn rough_rescale_inner(signal: &[f64], expected: &[f64], sig_map: &[i64]) -> Vec<f64> {
     let num_bases = sig_map.len().saturating_sub(1);
     let mut observed = vec![0.0f64; num_bases];
 
