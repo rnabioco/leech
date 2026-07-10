@@ -11,11 +11,6 @@ The inference module provides functions for running predictions on new POD5/BAM 
       show_root_heading: true
       show_source: true
 
-::: leech.inference.load_predictions_from_bam
-    options:
-      show_root_heading: true
-      show_source: true
-
 ## Example Usage
 
 ```python title="Python" linenums="1"

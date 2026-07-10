@@ -8,31 +8,31 @@ The util module provides various helper functions for model loading, metrics com
 
 ## Model Loading
 
-::: leech.util.load_model_from_checkpoint
+::: leech.model_loading.load_model_from_checkpoint
     options:
       show_root_heading: true
       show_source: true
 
 ## Metrics Computation
 
-::: leech.util.compute_metrics
+::: leech.metrics.compute_metrics
     options:
       show_root_heading: true
       show_source: true
 
-::: leech.util.save_metrics
+::: leech.metrics.save_metrics
     options:
       show_root_heading: true
       show_source: true
 
-::: leech.util.print_metrics
+::: leech.metrics.print_metrics
     options:
       show_root_heading: true
       show_source: true
 
 ## Reproducibility
 
-::: leech.util.setup_random_seed
+::: leech.model_loading.setup_random_seed
     options:
       show_root_heading: true
       show_source: true
@@ -40,7 +40,7 @@ The util module provides various helper functions for model loading, metrics com
 ## Example Usage
 
 ```python title="Python" linenums="1"
-from leech.util import load_model_from_checkpoint, setup_random_seed
+from leech.model_loading import load_model_from_checkpoint, setup_random_seed
 from pathlib import Path
 
 # Set random seed for reproducibility
