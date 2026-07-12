@@ -36,17 +36,17 @@ rule diagnose_signal_orientation:
     output:
         plot=get_project_path(config.get("metrics_dir", "results/metrics"))
         + "/diagnostics/{sample}/signal_orientation.png",
+    log:
+        get_project_path(config.get("metrics_dir", "results/metrics"))
+        + "/diagnostics/{sample}/signal_orientation.log",
     wildcard_constraints:
         sample="[^/]+",  # Sample name cannot contain slashes
+    conda:
+        "../envs/leech.yaml"
     params:
         motif=config.get("motif", "CCATGGC"),
         output_dir=get_project_path(config.get("metrics_dir", "results/metrics"))
         + "/diagnostics/{sample}",
-    log:
-        get_project_path(config.get("metrics_dir", "results/metrics"))
-        + "/diagnostics/{sample}/signal_orientation.log",
-    conda:
-        "../envs/leech.yaml"
     shell:
         """
         # Create output directory
@@ -58,5 +58,5 @@ rule diagnose_signal_orientation:
             --pod5 {input.pod5} \
             --motif {params.motif} \
             --output {output.plot} \
-            > {log} 2>&1
+            >{log} 2>&1
         """

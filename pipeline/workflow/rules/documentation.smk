@@ -9,14 +9,14 @@ Generates self-documenting summary files for each pipeline run.
 rule generate_run_summary:
     """Generate a run summary document with config, timestamp, and version info.
 
-    This rule creates a self-documenting summary at the project root that includes:
-    - Timestamp of the run
-    - Git version (tag or commit)
-    - Full configuration used for the run
+This rule creates a self-documenting summary at the project root that includes:
+- Timestamp of the run
+- Git version (tag or commit)
+- Full configuration used for the run
 
-    The summary is generated at the start of each pipeline run and provides
-    a permanent record of the exact parameters and version used.
-    """
+The summary is generated at the start of each pipeline run and provides
+a permanent record of the exact parameters and version used.
+"""
     output:
         RUN_SUMMARY_FILE,
     run:
@@ -28,15 +28,12 @@ rule generate_run_summary:
         # Ensure output directory exists
         output_path = Path(output[0])
         output_path.parent.mkdir(parents=True, exist_ok=True)
-
         # Get timestamp
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
         # Get git version info
         git_version = "unknown"
         git_commit = "unknown"
         git_dirty = False
-
         try:
             # Try to get git tag
             result = subprocess.run(
@@ -59,40 +56,33 @@ rule generate_run_summary:
                 )
                 git_commit = result.stdout.strip()
                 git_version = f"commit-{git_commit}"
-
                 # Check if working directory is dirty
             result = subprocess.run(
                 ["git", "diff", "--quiet"], cwd=workflow.basedir, check=False
             )
             git_dirty = result.returncode != 0
-
             if git_dirty:
                 git_version += " (dirty)"
-
         except (subprocess.CalledProcessError, FileNotFoundError):
             # Git not available or not a git repository
             pass
-
             # Write summary file
         with open(output[0], "w") as f:
             f.write("# Leech Pipeline Run Summary\n\n")
             f.write(f"**Generated:** {timestamp}\n\n")
             f.write(f"**Pipeline Version:** {git_version}\n\n")
-
             if git_commit != "unknown" and not git_dirty:
                 f.write(f"**Git Commit:** {git_commit}\n\n")
-
             if git_dirty:
-                f.write("**Warning:** Working directory has uncommitted changes\n\n")
-
+                f.write(
+                    "**Warning:** Working directory has uncommitted changes\n\n"
+                )
             f.write("---\n\n")
             f.write("## Configuration\n\n")
             f.write("This run was executed with the following configuration:\n\n")
             f.write("```yaml\n")
-
             # Create a clean config dict without sensitive/internal data
             clean_config = dict(config)
-
             # Format and write config as YAML
             yaml_str = yaml.dump(
                 clean_config,
@@ -102,7 +92,6 @@ rule generate_run_summary:
             )
             f.write(yaml_str)
             f.write("```\n\n")
-
             f.write("---\n\n")
             f.write("## Pipeline Outputs\n\n")
             f.write("The following directories contain pipeline outputs:\n\n")
@@ -110,10 +99,8 @@ rule generate_run_summary:
             f.write(f"- **Models:** `{MODELS_DIR}`\n")
             f.write(f"- **Inference:** `{INFER_DIR}`\n")
             f.write(f"- **Metrics:** `{METRICS_DIR}`\n\n")
-
             if config.get("project_name"):
                 f.write(f"**Project Name:** {config['project_name']}\n\n")
-
             f.write("---\n\n")
             f.write("## Sample Information\n\n")
             f.write(f"**Number of samples:** {len(SAMPLES)}\n\n")
@@ -122,7 +109,6 @@ rule generate_run_summary:
                 sample_data = config["samples"][sample]
                 label = sample_data.get("label", "unknown")
                 f.write(f"- `{sample}` (label: {label})\n")
-
             f.write("\n---\n\n")
             f.write("## Comparison Specification\n\n")
             if AA_PAIRS:
@@ -141,7 +127,6 @@ rule generate_run_summary:
                         f.write(f"- `{pair}`\n")
             else:
                 f.write("No comparisons configured.\n")
-
             f.write("\n---\n\n")
             f.write("## Model Configuration\n\n")
             if COMPARE_MODELS:
@@ -149,10 +134,12 @@ rule generate_run_summary:
                 f.write(f"**Architectures:** {', '.join(MODEL_ARCHITECTURES)}\n\n")
             else:
                 f.write("**Mode:** Single model\n\n")
-                f.write(f"**Architecture:** {config.get('model', 'ConvLSTMDwell')}\n\n")
-
-            f.write(f"**Use grid search:** {config.get('use_grid_search', False)}\n\n")
-
+                f.write(
+                    f"**Architecture:** {config.get('model', 'ConvLSTMDwell')}\n\n"
+                )
+            f.write(
+                f"**Use grid search:** {config.get('use_grid_search', False)}\n\n"
+            )
             if config.get("use_grid_search"):
                 f.write("**Grid search parameters:**\n\n")
                 f.write("```yaml\n")
@@ -167,7 +154,6 @@ rule generate_run_summary:
                 f.write(
                     f"- Early stopping patience: {config.get('early_stopping_patience',5)}\n"
                 )
-
             f.write("\n---\n\n")
             f.write(
                 f"*This summary was automatically generated by the Leech pipeline at {timestamp}*\n"

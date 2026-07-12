@@ -11,9 +11,8 @@ rule test_pairwise_aa:
         test=CHUNKS_DIR + "/merged/pairwise/{pair}/test.npz",
     output:
         metrics=METRICS_DIR + "/pairwise/{pair}/test_metrics.json",
-    params:
-        model_dir=MODELS_DIR + "/pairwise/{pair}",
-        device="cpu" if config.get("use_cpu_training", False) else "cuda",
+    log:
+        METRICS_DIR + "/pairwise/{pair}/test.log",
     resources:
         slurm_partition=lambda wildcards, attempt: (
             "amilan" if config.get("use_cpu_training", False) else "atesting_a100"
@@ -28,8 +27,9 @@ rule test_pairwise_aa:
         gres=lambda wildcards, attempt: (
             "" if config.get("use_cpu_training", False) else "gpu:1"
         ),
-    log:
-        METRICS_DIR + "/pairwise/{pair}/test.log",
+    params:
+        model_dir=MODELS_DIR + "/pairwise/{pair}",
+        device="cpu" if config.get("use_cpu_training", False) else "cuda",
     shell:
         """
         uv run leech eval test \

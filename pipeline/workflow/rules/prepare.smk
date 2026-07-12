@@ -6,11 +6,11 @@ Data preparation rules for extracting training chunks.
 rule prepare_chunks:
     """Extract training chunks from POD5/BAM files without splitting.
 
-    Chunks are extracted with labels but not split into train/val/test.
-    Splitting happens later at the merge step to prevent data leakage across samples.
+Chunks are extracted with labels but not split into train/val/test.
+Splitting happens later at the merge step to prevent data leakage across samples.
 
-    Uses parallel processing with workers matching the number of allocated CPUs.
-    """
+Uses parallel processing with workers matching the number of allocated CPUs.
+"""
     input:
         pod5=get_project_path(config.get("pod5_dir", "results/pod5"))
         + "/{sample}/{sample}.pod5",
@@ -18,6 +18,8 @@ rule prepare_chunks:
         + "/{sample}/{sample}.aligned.bam",
     output:
         all=CHUNKS_DIR + "/{sample}/all.npz",
+    log:
+        CHUNKS_DIR + "/{sample}/prepare.log",
     wildcard_constraints:
         sample="[^/]+",  # Sample name cannot contain slashes (excludes merged/*/)
     threads: config.get("workers", 4)  # Match threads to workers from config
@@ -47,8 +49,6 @@ rule prepare_chunks:
             else ""
         ),
         slurm_extra="",  # No GPU needed for data preparation
-    log:
-        CHUNKS_DIR + "/{sample}/prepare.log",
     shell:
         """
         uv run leech data prepare \

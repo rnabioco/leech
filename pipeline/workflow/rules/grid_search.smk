@@ -12,6 +12,20 @@ rule grid_search_pairwise_aa:
     output:
         results=MODELS_DIR + "/grid_search/pairwise/{pair}/grid_search_results.json",
         best_params=MODELS_DIR + "/grid_search/pairwise/{pair}/best_params.json",
+    log:
+        MODELS_DIR + "/grid_search/pairwise/{pair}/grid_search.log",
+    resources:
+        slurm_partition=lambda wildcards, attempt: (
+            "amilan" if config.get("use_cpu_training", False) else "aa100"
+        ),
+        runtime=240,
+        cpus_per_task=lambda wildcards, attempt: (
+            16 if config.get("use_cpu_training", False) else 4
+        ),
+        mem_mb=16000,
+        gres=lambda wildcards, attempt: (
+            "" if config.get("use_cpu_training", False) else "gpu:1"
+        ),
     params:
         output_dir=MODELS_DIR + "/grid_search/pairwise/{pair}",
         param_grid=config.get(
@@ -25,20 +39,6 @@ rule grid_search_pairwise_aa:
         ),
         max_epochs=config.get("grid_search_epochs", 20),
         device="cpu" if config.get("use_cpu_training", False) else "cuda",
-    resources:
-        slurm_partition=lambda wildcards, attempt: (
-            "amilan" if config.get("use_cpu_training", False) else "aa100"
-        ),
-        runtime=240,
-        cpus_per_task=lambda wildcards, attempt: (
-            16 if config.get("use_cpu_training", False) else 4
-        ),
-        mem_mb=16000,
-        gres=lambda wildcards, attempt: (
-            "" if config.get("use_cpu_training", False) else "gpu:1"
-        ),
-    log:
-        MODELS_DIR + "/grid_search/pairwise/{pair}/grid_search.log",
     shell:
         """
         uv run leech model optimize \

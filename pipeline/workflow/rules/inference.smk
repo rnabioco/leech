@@ -17,11 +17,8 @@ rule infer_pairwise_aa:
     output:
         bam=INFER_DIR + "/pairwise/{pair}/{sample}_predictions.bam",
         bai=INFER_DIR + "/pairwise/{pair}/{sample}_predictions.bam.bai",
-    params:
-        model_dir=MODELS_DIR + "/pairwise/{pair}",
-        batch_size=config.get("infer_batch_size", 256),
-        device="cpu" if config.get("use_cpu_training", False) else "cuda",
-        samtools_bin=config.get("samtools_bin", "samtools"),
+    log:
+        INFER_DIR + "/pairwise/{pair}/{sample}_infer.log",
     resources:
         slurm_partition=lambda wildcards, attempt: (
             "amilan" if config.get("use_cpu_training", False) else "aa100"
@@ -36,8 +33,11 @@ rule infer_pairwise_aa:
         gres=lambda wildcards, attempt: (
             "" if config.get("use_cpu_training", False) else "gpu:1"
         ),
-    log:
-        INFER_DIR + "/pairwise/{pair}/{sample}_infer.log",
+    params:
+        model_dir=MODELS_DIR + "/pairwise/{pair}",
+        batch_size=config.get("infer_batch_size", 256),
+        device="cpu" if config.get("use_cpu_training", False) else "cuda",
+        samtools_bin=config.get("samtools_bin", "samtools"),
     shell:
         """
         uv run leech predict \

@@ -73,11 +73,11 @@ def get_raw_pod5_inputs(wildcards):
 
 rule merge_pods:
     """
-    Merge raw POD5 files.
+Merge raw POD5 files.
 
-    The pod5 merge command automatically handles v3→v4 migration,
-    so no separate update step is needed.
-    """
+The pod5 merge command automatically handles v3→v4 migration,
+so no separate update step is needed.
+"""
     input:
         get_raw_pod5_inputs,
     output:
@@ -89,20 +89,20 @@ rule merge_pods:
     shell:
         """
         # Merge POD5 files
-        pod5 merge -t {threads} -f -o {output.pod5} {input} &>> {log}
+        pod5 merge -t {threads} -f -o {output.pod5} {input} &>>{log}
         """
 
 
 rule inspect_merged_pod5:
     """
-    Inspect merged POD5 file for provenance and version information.
+Inspect merged POD5 file for provenance and version information.
 
-    Reports:
-    - POD5 file format version
-    - Total number of reads
-    - Input file provenance
-    - Read count per input file
-    """
+Reports:
+- POD5 file format version
+- Total number of reads
+- Input file provenance
+- Read count per input file
+"""
     input:
         pod5=rules.merge_pods.output.pod5,
         raw_inputs=get_raw_pod5_inputs,
@@ -114,67 +114,68 @@ rule inspect_merged_pod5:
         + "/{sample}/inspect.log",
     shell:
         """
-        echo "=== POD5 Inspection Report ===" > {output.report}
-        echo "Sample: {wildcards.sample}" >> {output.report}
-        echo "Date: $(date)" >> {output.report}
-        echo "" >> {output.report}
+        echo "=== POD5 Inspection Report ===" >{output.report}
+        echo "Sample: {wildcards.sample}" >>{output.report}
+        echo "Date: $(date)" >>{output.report}
+        echo "" >>{output.report}
 
         # Get POD5 version
-        echo "=== POD5 Tool Version ===" >> {output.report}
-        pod5 --version >> {output.report} 2>&1
-        echo "" >> {output.report}
+        echo "=== POD5 Tool Version ===" >>{output.report}
+        pod5 --version >>{output.report} 2>&1
+        echo "" >>{output.report}
 
         # Get merged file format version and info
-        echo "=== Merged POD5 File Info ===" >> {output.report}
-        echo "File: {input.pod5}" >> {output.report}
-        pod5 inspect read {input.pod5} >> {output.report} 2>&1 || echo "Inspect failed, trying alternative method..." >> {output.report}
-        echo "" >> {output.report}
+        echo "=== Merged POD5 File Info ===" >>{output.report}
+        echo "File: {input.pod5}" >>{output.report}
+        pod5 inspect read {input.pod5} >>{output.report} 2>&1 || echo "Inspect failed, trying alternative method..." >>{output.report}
+        echo "" >>{output.report}
 
         # Count reads in merged file
-        echo "=== Merged File Read Count ===" >> {output.report}
+        echo "=== Merged File Read Count ===" >>{output.report}
         merged_count=$(pod5 view {input.pod5} --include "read_id" --output - 2>/dev/null | tail -n +2 | wc -l)
-        echo "Total reads in merged file: $merged_count" >> {output.report}
-        echo "" >> {output.report}
+        echo "Total reads in merged file: $merged_count" >>{output.report}
+        echo "" >>{output.report}
 
         # Input file provenance
-        echo "=== Input File Provenance ===" >> {output.report}
-        echo "Number of input files: $(echo {input.raw_inputs} | wc -w)" >> {output.report}
-        echo "" >> {output.report}
+        echo "=== Input File Provenance ===" >>{output.report}
+        echo "Number of input files: $(echo {input.raw_inputs} | wc -w)" >>{output.report}
+        echo "" >>{output.report}
 
         # Count reads per input file
-        echo "=== Read Counts Per Input File ===" >> {output.report}
+        echo "=== Read Counts Per Input File ===" >>{output.report}
         total_input_reads=0
         for f in {input.raw_inputs}; do
             count=$(pod5 view "$f" --include "read_id" --output - 2>/dev/null | tail -n +2 | wc -l)
-            echo "  $f: $count reads" >> {output.report}
+            echo "  $f: $count reads" >>{output.report}
             total_input_reads=$((total_input_reads + count))
         done
-        echo "" >> {output.report}
-        echo "Total reads in input files: $total_input_reads" >> {output.report}
-        echo "" >> {output.report}
+        echo "" >>{output.report}
+        echo "Total reads in input files: $total_input_reads" >>{output.report}
+        echo "" >>{output.report}
 
         # Verify read count matches
-        echo "=== Verification ===" >> {output.report}
+        echo "=== Verification ===" >>{output.report}
         if [ "$merged_count" -eq "$total_input_reads" ]; then
-            echo "✓ Read counts match: $merged_count reads" >> {output.report}
+            echo "✓ Read counts match: $merged_count reads" >>{output.report}
         else
-            echo "✗ WARNING: Read count mismatch!" >> {output.report}
-            echo "  Input files total: $total_input_reads" >> {output.report}
-            echo "  Merged file total: $merged_count" >> {output.report}
+            echo "✗ WARNING: Read count mismatch!" >>{output.report}
+            echo "  Input files total: $total_input_reads" >>{output.report}
+            echo "  Merged file total: $merged_count" >>{output.report}
             diff=$((merged_count - total_input_reads))
-            echo "  Difference: $diff reads" >> {output.report}
+            echo "  Difference: $diff reads" >>{output.report}
         fi
 
-        echo "Inspection complete" >> {log}
+        echo "Inspection complete" >>{log}
         """
 
 
 rule rebasecall:
     """
-    Rebasecall POD5 files using dorado basecaller.
+Rebasecall POD5 files using dorado basecaller.
 
-    Outputs BAM file with basecalls and move tables (mv tag) needed for leech feature extraction.
-    """
+Outputs BAM file with basecalls and move tables (mv tag) needed for leech feature extraction.
+
+"""
     input:
         rules.merge_pods.output.pod5,
     output:
@@ -182,6 +183,9 @@ rule rebasecall:
             get_project_path(config.get("rebasecall_dir", "results/bam/rebasecall"))
             + "/{sample}/{sample}.rbc.bam"
         ),
+    log:
+        get_project_path(config.get("rebasecall_dir", "results/bam/rebasecall"))
+        + "/{sample}/rebasecall.log",
     params:
         dorado_bin=config.get("dorado_bin", "dorado"),
         model=config.get("base_calling_model", "rna004_130bps_sup@v5.2.0"),
@@ -196,42 +200,39 @@ rule rebasecall:
             get_project_path(config.get("rebasecall_dir", "results/bam/rebasecall"))
             + "/.models",
         ),
-    log:
-        get_project_path(config.get("rebasecall_dir", "results/bam/rebasecall"))
-        + "/{sample}/rebasecall.log",
     shell:
         """
         if [[ "${{CUDA_VISIBLE_DEVICES:-}}" ]]; then
-            echo "CUDA_VISIBLE_DEVICES $CUDA_VISIBLE_DEVICES" >> {log}
+            echo "CUDA_VISIBLE_DEVICES $CUDA_VISIBLE_DEVICES" >>{log}
             export CUDA_VISIBLE_DEVICES
         fi
 
         # Create models directory on scratch
         mkdir -p {params.models_dir}
-        echo "Using dorado models directory: {params.models_dir}" >> {log}
+        echo "Using dorado models directory: {params.models_dir}" >>{log}
 
         # Run basecaller with models directory on scratch
         if [[ -n "{params.modifications}" ]]; then
-            {params.dorado_bin} basecaller {params.model} {input} {params.dorado_opts} --models-directory {params.models_dir} --modified-bases {params.modifications} 2> {log} > {output.bam}
+            {params.dorado_bin} basecaller {params.model} {input} {params.dorado_opts} --models-directory {params.models_dir} --modified-bases {params.modifications} 2>{log} >{output.bam}
         else
-            {params.dorado_bin} basecaller {params.model} {input} {params.dorado_opts} --models-directory {params.models_dir} 2> {log} > {output.bam}
+            {params.dorado_bin} basecaller {params.model} {input} {params.dorado_opts} --models-directory {params.models_dir} 2>{log} >{output.bam}
         fi
         """
 
 
 rule align_rebasecalled:
     """
-    Align rebasecalled reads to reference using minimap2.
+Align rebasecalled reads to reference using minimap2.
 
-    CRITICAL: This step preserves all tags from the rebasecalled BAM:
-    - mv: Move table (required for leech dwell time features)
-    - ns: Number of samples per base
-    - MM: Modified base positions/types (if modification calling enabled)
-    - ML: Modified base probabilities (if modification calling enabled)
+CRITICAL: This step preserves all tags from the rebasecalled BAM:
+- mv: Move table (required for leech dwell time features)
+- ns: Number of samples per base
+- MM: Modified base positions/types (if modification calling enabled)
+- ML: Modified base probabilities (if modification calling enabled)
 
-    The -T '*' flag in samtools fastq preserves all auxiliary tags.
-    The -y flag in minimap2 copies tags from input to aligned output.
-    """
+The -T '*' flag in samtools fastq preserves all auxiliary tags.
+The -y flag in minimap2 copies tags from input to aligned output.
+"""
     input:
         bam=rules.rebasecall.output.bam,
         reference=config.get("reference", "references/reference.fasta"),
@@ -240,26 +241,26 @@ rule align_rebasecalled:
         + "/{sample}/{sample}.aligned.bam",
         bai=get_project_path(config.get("rebasecall_dir", "results/bam/rebasecall"))
         + "/{sample}/{sample}.aligned.bam.bai",
-    params:
-        samtools_bin=config.get("samtools_bin", "samtools"),
-        minimap2_bin=config.get("minimap2_bin", "minimap2"),
     log:
         get_project_path(config.get("rebasecall_dir", "results/bam/rebasecall"))
         + "/{sample}/align.log",
+    params:
+        samtools_bin=config.get("samtools_bin", "samtools"),
+        minimap2_bin=config.get("minimap2_bin", "minimap2"),
     shell:
         """
         # Convert BAM to FASTQ preserving all tags (-T '*')
         # Align with minimap2 copying tags to output (-y)
         # Sort and index the aligned BAM
-        {params.samtools_bin} fastq -T '*' {input.bam} | \
-        {params.minimap2_bin} -ax map-ont -y {input.reference} - | \
-        {params.samtools_bin} sort -@ {threads} -o {output.bam} - 2> {log}
+        {params.samtools_bin} fastq -T '*' {input.bam} \
+            | {params.minimap2_bin} -ax map-ont -y {input.reference} - \
+            | {params.samtools_bin} sort -@ {threads} -o {output.bam} - 2>{log}
 
         # Index the aligned BAM
         {params.samtools_bin} index {output.bam}
 
         # Verify critical tags are present
-        echo "Verifying critical tags (mv, ns, MM, ML) in aligned BAM..." >> {log}
-        {params.samtools_bin} view {output.bam} | head -n 1 | grep -o "mv:B:[^[:space:]]*" >> {log} || echo "WARNING: mv tag not found" >> {log}
-        {params.samtools_bin} view {output.bam} | head -n 1 | grep -o "ns:i:[^[:space:]]*" >> {log} || echo "WARNING: ns tag not found" >> {log}
+        echo "Verifying critical tags (mv, ns, MM, ML) in aligned BAM..." >>{log}
+        {params.samtools_bin} view {output.bam} | head -n 1 | grep -o "mv:B:[^[:space:]]*" >>{log} || echo "WARNING: mv tag not found" >>{log}
+        {params.samtools_bin} view {output.bam} | head -n 1 | grep -o "ns:i:[^[:space:]]*" >>{log} || echo "WARNING: ns tag not found" >>{log}
         """
