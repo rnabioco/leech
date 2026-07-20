@@ -21,13 +21,14 @@ Usage:
         --model /path/to/cca_classifier.pt \
         --num-reads 50000 --workers 4
 
-    # Use defaults from 2026-aars-in-vitro pipeline
+    # Use defaults from a local pipeline dir (set LEECH_PIPELINE_DIR)
     uv run python benchmarks/benchmark_cca.py --num-reads 10000
 """
 
 import argparse
 import json
 import logging
+import os
 import subprocess
 import sys
 import tempfile
@@ -40,13 +41,13 @@ import pysam
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("benchmark_cca")
 
-# Default paths from 2026-aars-in-vitro pipeline
-PIPELINE_DIR = Path("/beevol/home/jhessel/devel/rnabioco/2026-aars-in-vitro")
-DEFAULT_SAMPLE = "AsnRS_asn_b1"
-DEFAULT_MODEL = PIPELINE_DIR / "aa-tRNA-seq-pipeline/resources/models/cca_classifier.pt"
+# Default paths (override PIPELINE_DIR via the LEECH_PIPELINE_DIR env var)
+PIPELINE_DIR = Path(os.environ.get("LEECH_PIPELINE_DIR", "/path/to/aa-tRNA-seq-pipeline"))
+DEFAULT_SAMPLE = os.environ.get("LEECH_BENCH_SAMPLE", "sample_b1")
+DEFAULT_MODEL = PIPELINE_DIR / "resources/models/cca_classifier.pt"
 DEFAULT_BAM = PIPELINE_DIR / f"results/bam/tagged/{DEFAULT_SAMPLE}/{DEFAULT_SAMPLE}.tagged.bam"
 DEFAULT_POD5 = PIPELINE_DIR / f"results/demux/pod5/{DEFAULT_SAMPLE}/{DEFAULT_SAMPLE}.pod5"
-REMORA_BIN = PIPELINE_DIR / "aa-tRNA-seq-pipeline/.pixi/envs/default/bin/remora"
+REMORA_BIN = Path(os.environ.get("REMORA_BIN", "remora"))
 
 
 def subset_bam(bam_path: Path, output_path: Path, num_reads: int) -> int:

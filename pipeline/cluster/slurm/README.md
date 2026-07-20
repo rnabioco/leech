@@ -60,20 +60,11 @@ snakemake --profile cluster/slurm-testing --configfile config/samples-alpine.yam
 - Shorter runtimes: 2-4 hours max (vs 8-24 hours)
 - Uses `testing` QoS for faster scheduling
 
-### Test Scripts
+### Orchestrated runs
 
-The repository includes test scripts that use the Slurm executor:
-
-```bash
-# Test rebasecalling (uses testing config automatically)
-sbatch scripts/test_rebasecall.sh
-
-# Test POD5 merging
-sbatch scripts/test_merge_pods.sh
-
-# Test full pipeline
-sbatch scripts/test_full_pipeline.sh
-```
+Submit the workflow through the Slurm executor with an orchestrator job that
+drives Snakemake (for example, `snakemake --executor slurm --profile
+pipeline/cluster/slurm`).
 
 The orchestrator job will:
 1. Run a dry-run to show the execution plan

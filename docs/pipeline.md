@@ -166,10 +166,3 @@ results/
     ├── charged_vs_uncharged_summary.tsv
     └── pairwise_summary.tsv
 ```
-
-## Cluster setup guides
-
-For detailed cluster-specific setup (storage layout, modules, quotas):
-
-- [Alpine Setup (SLURM)](setup/ALPINE_SETUP.md) -- CU Boulder Alpine
-- [Bodhi Setup (LSF)](setup/BODHI_SETUP.md) -- Local Bodhi cluster

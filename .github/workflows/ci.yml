@@ -34,16 +34,13 @@ jobs:
           python-version-file: "pyproject.toml"
 
       - name: Install linting tools only
-        run: uv pip install --system ruff nbqa
+        run: uv pip install --system ruff
 
       - name: Run ruff format check
-        run: ruff format --check --exclude notebooks/ --exclude vulture_whitelist.py .
+        run: ruff format --check --exclude vulture_whitelist.py .
 
       - name: Run ruff lint
-        run: ruff check --exclude notebooks/ --exclude vulture_whitelist.py .
-
-      - name: Run ruff lint on notebooks
-        run: nbqa ruff notebooks/
+        run: ruff check --exclude vulture_whitelist.py .
 
       - name: Run type check
         run: uvx ty check src/leech/

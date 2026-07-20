@@ -44,10 +44,6 @@ jobs:
         run: |
           uv sync --only-group docs
 
-      - name: Generate move table figure
-        run: |
-          uv run --only-group docs python scripts/generate_move_table_figure.py
-
       - name: Build documentation
         run: |
           uv run --only-group docs zensical build

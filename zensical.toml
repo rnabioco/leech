@@ -28,8 +28,6 @@ nav = [
   ] },
   { "Pipeline" = [
     { "Overview" = "pipeline.md" },
-    { "Alpine Setup (SLURM)" = "setup/ALPINE_SETUP.md" },
-    { "Bodhi Setup (LSF)" = "setup/BODHI_SETUP.md" },
   ] },
   { "Troubleshooting" = "troubleshooting.md" },
   { "API Reference" = [

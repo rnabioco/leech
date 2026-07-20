@@ -5,6 +5,7 @@ Measures the complete per-read cost including POD5 reading, normalization,
 move table parsing, feature computation, and chunk extraction.
 """
 
+import os
 import time
 from pathlib import Path
 
@@ -20,14 +21,9 @@ from leech.features import (
     normalize_signal,
 )
 
-BAM = Path(
-    "/beevol/home/jhessel/devel/rnabioco/2026-aa-trna-models/"
-    "results-production/data/filtered/LeuRS_leu_b3/cognate.bam"
-)
-POD5 = Path(
-    "/beevol/home/jhessel/devel/rnabioco/2026-aa-trna-models/"
-    "results-production/data/filtered/LeuRS_leu_b3/cognate.pod5"
-)
+# Point these at a local BAM/POD5 pair with mv/ns tags to run the benchmark.
+BAM = Path(os.environ.get("LEECH_BENCH_BAM", "/path/to/reads.bam"))
+POD5 = Path(os.environ.get("LEECH_BENCH_POD5", "/path/to/reads.pod5"))
 
 
 def collect_bam_data(bam_path, max_reads=2000):

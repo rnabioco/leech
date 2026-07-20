@@ -41,7 +41,7 @@ samples:
 reference: "references/transcriptome.fasta"
 
 # Scratch directory for intermediate files (improves I/O performance)
-scratch_dir: "/scratch/alpine/jhesselberth@xsede.org"
+scratch_dir: "/scratch/alpine/$USER"
 
 # Dorado binary path
 dorado_bin: "dorado"  # or "/path/to/dorado"

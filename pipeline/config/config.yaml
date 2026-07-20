@@ -39,10 +39,10 @@ project_name: ""
 #
 # All outputs on scratch for testing (fast I/O, 90-day purge)
 # Move to /projects for permanent storage after testing
-chunks_dir: "/scratch/alpine/jhesselberth@xsede.org/leech/chunks"
-models_dir: "/scratch/alpine/jhesselberth@xsede.org/leech/models"
-inference_dir: "/scratch/alpine/jhesselberth@xsede.org/leech/inference"
-metrics_dir: "/scratch/alpine/jhesselberth@xsede.org/leech/metrics"
+chunks_dir: "/scratch/alpine/$USER/leech/chunks"
+models_dir: "/scratch/alpine/$USER/leech/models"
+inference_dir: "/scratch/alpine/$USER/leech/inference"
+metrics_dir: "/scratch/alpine/$USER/leech/metrics"
 
 # ============================================================================
 # Sample Configuration
@@ -138,7 +138,7 @@ chunk_size: 100           # Number of reads per batch for parallel processing
 # - Alpine: "/scratch/alpine/$USER/leech/tmp" (high I/O, 10TB, 90-day purge)
 # - Bodhi: "" or null (use home directory, unlimited storage)
 # - Local: "" or null (use regular output directories)
-scratch_dir: "/scratch/alpine/jhesselberth@xsede.org/leech/tmp"
+scratch_dir: "/scratch/alpine/$USER/leech/tmp"
 
 # Output directories for rebasecalling workflow
 # If scratch_dir is set, intermediate files are processed in scratch_dir
@@ -146,8 +146,8 @@ scratch_dir: "/scratch/alpine/jhesselberth@xsede.org/leech/tmp"
 #
 # For Alpine: Use scratch paths for fast I/O and large file storage
 # Files on scratch are purged after 90 days (sufficient for pipeline intermediates)
-pod5_dir: "/scratch/alpine/jhesselberth@xsede.org/leech/pod5"
-rebasecall_dir: "/scratch/alpine/jhesselberth@xsede.org/leech/bam/rebasecall"
+pod5_dir: "/scratch/alpine/$USER/leech/pod5"
+rebasecall_dir: "/scratch/alpine/$USER/leech/bam/rebasecall"
 
 # Reference genome/transcriptome for alignment
 # Required for aligning rebasecalled reads
@@ -164,15 +164,15 @@ reference: "pipeline/resources/references/synthetic-trna.fa"
 # Cluster-specific examples:
 # - Alpine: "$HOME/software/dorado/bin/dorado" or "dorado" if in PATH
 # - Bodhi: "$HOME/projects/software/dorado/bin/dorado"
-dorado_bin: "/home/jhesselberth@xsede.org/projects/software/dorado/dorado-1.2.0-linux-x64/bin/dorado"
+dorado_bin: "dorado"
 
 # Samtools binary path
 # Set to "samtools" to use system PATH, or specify full path to binary
-samtools_bin: "/home/jhesselberth@xsede.org/projects/software/samtools/samtools"
+samtools_bin: "samtools"
 
 # Minimap2 binary path
 # Set to "minimap2" to use system PATH, or specify full path to binary
-minimap2_bin: "/home/jhesselberth@xsede.org/projects/software/minimap2/minimap2"
+minimap2_bin: "minimap2"
 
 # Dorado basecalling model
 # Available models: https://github.com/nanoporetech/dorado#available-basecalling-models
