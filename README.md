@@ -1,5 +1,10 @@
 # leech
 
+> [!WARNING]
+> **leech is alpha quality and under active development.** APIs, CLI flags, and
+> output formats may change without notice, and bugs are expected. Validate
+> results before relying on it for anything important.
+
 **L**earning **E**nhanc**e**d **E**lectrical **C**lassifiers from **H**anopore signals
 
 [![CI](https://github.com/rnabioco/leech/actions/workflows/ci.yml/badge.svg)](https://github.com/rnabioco/leech/actions/workflows/ci.yml)

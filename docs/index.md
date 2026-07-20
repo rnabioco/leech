@@ -1,5 +1,11 @@
 # Leech
 
+!!! warning "Alpha quality — under active development"
+
+    leech is alpha software. APIs, CLI flags, and output formats may change
+    without notice, and bugs are expected. Validate results before relying on
+    it for anything important.
+
 <b>L</b>earning <b>E</b>nhanced <b>E</b>lectrical <b>C</b>lassifiers from <b>H</b>anopore signals
 
 [![CI](https://github.com/rnabioco/leech/actions/workflows/ci.yml/badge.svg)](https://github.com/rnabioco/leech/actions/workflows/ci.yml)
