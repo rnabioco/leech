@@ -6,11 +6,11 @@ Data preparation rules for extracting training chunks.
 rule prepare_chunks:
     """Extract training chunks from POD5/BAM files without splitting.
 
-Chunks are extracted with labels but not split into train/val/test.
-Splitting happens later at the merge step to prevent data leakage across samples.
+    Chunks are extracted with labels but not split into train/val/test.
+    Splitting happens later at the merge step to prevent data leakage across samples.
 
-Uses parallel processing with workers matching the number of allocated CPUs.
-"""
+    Uses parallel processing with workers matching the number of allocated CPUs.
+    """
     input:
         pod5=get_project_path(config.get("pod5_dir", "results/pod5"))
         + "/{sample}/{sample}.pod5",

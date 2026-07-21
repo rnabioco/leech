@@ -19,7 +19,25 @@ from leech.logging_config import setup_logging
 configure_rich_click()
 
 
-@click.group(context_settings={"help_option_names": ["-h", "--help"]})
+class WorkflowGroup(click.RichGroup):
+    """A rich-click group that lists subcommands in workflow order.
+
+    Click sorts subcommands alphabetically by default, which scrambles the
+    natural order of a pipeline (e.g. ``merge`` ahead of ``prepare``). Set
+    ``command_order`` on the group to list commands in the order a user would
+    run them; any command not named there falls back to definition order after
+    the explicitly ordered ones.
+    """
+
+    command_order: tuple[str, ...] = ()
+
+    def list_commands(self, ctx):
+        ordered = [name for name in self.command_order if name in self.commands]
+        rest = [name for name in self.commands if name not in self.command_order]
+        return ordered + rest
+
+
+@click.group(cls=WorkflowGroup, context_settings={"help_option_names": ["-h", "--help"]})
 @click.version_option(version=pkg_version("leech"), prog_name="leech")
 def cli():
     """LEECH - Learning Enhanced Electrical Classifiers from Hanopore signals
@@ -34,15 +52,21 @@ def cli():
     setup_logging(level=logging.INFO)
 
 
+cli.command_order = ("data", "model", "eval", "predict")
+
+
 # ============================================================================
 # DATA PREPARATION COMMANDS
 # ============================================================================
 
 
-@cli.group()
+@cli.group(cls=WorkflowGroup)
 def data():
     """Prepare and process training data from POD5/BAM files."""
     pass
+
+
+data.command_order = ("prepare", "merge")
 
 
 @data.command()
@@ -347,10 +371,21 @@ def prepare(
 # ============================================================================
 
 
-@cli.group()
+@cli.group(cls=WorkflowGroup)
 def model():
     """Train and optimize models."""
     pass
+
+
+model.command_order = (
+    "train",
+    "optimize",
+    "benchmark",
+    "calibrate",
+    "bundle",
+    "bundle-info",
+    "export",
+)
 
 
 @data.command()
@@ -1208,10 +1243,13 @@ def optimize(
 # ============================================================================
 
 
-@cli.group()
+@cli.group(cls=WorkflowGroup)
 def eval():
     """Evaluate and analyze trained models."""
     pass
+
+
+eval.command_order = ("test", "compare", "importance", "ablation")
 
 
 @eval.command()
