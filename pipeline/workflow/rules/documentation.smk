@@ -9,14 +9,14 @@ Generates self-documenting summary files for each pipeline run.
 rule generate_run_summary:
     """Generate a run summary document with config, timestamp, and version info.
 
-This rule creates a self-documenting summary at the project root that includes:
-- Timestamp of the run
-- Git version (tag or commit)
-- Full configuration used for the run
+    This rule creates a self-documenting summary at the project root that includes:
+    - Timestamp of the run
+    - Git version (tag or commit)
+    - Full configuration used for the run
 
-The summary is generated at the start of each pipeline run and provides
-a permanent record of the exact parameters and version used.
-"""
+    The summary is generated at the start of each pipeline run and provides
+    a permanent record of the exact parameters and version used.
+    """
     output:
         RUN_SUMMARY_FILE,
     run:

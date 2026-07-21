@@ -73,11 +73,11 @@ def get_raw_pod5_inputs(wildcards):
 
 rule merge_pods:
     """
-Merge raw POD5 files.
+    Merge raw POD5 files.
 
-The pod5 merge command automatically handles v3→v4 migration,
-so no separate update step is needed.
-"""
+    The pod5 merge command automatically handles v3→v4 migration,
+    so no separate update step is needed.
+    """
     input:
         get_raw_pod5_inputs,
     output:
@@ -95,14 +95,14 @@ so no separate update step is needed.
 
 rule inspect_merged_pod5:
     """
-Inspect merged POD5 file for provenance and version information.
+    Inspect merged POD5 file for provenance and version information.
 
-Reports:
-- POD5 file format version
-- Total number of reads
-- Input file provenance
-- Read count per input file
-"""
+    Reports:
+    - POD5 file format version
+    - Total number of reads
+    - Input file provenance
+    - Read count per input file
+    """
     input:
         pod5=rules.merge_pods.output.pod5,
         raw_inputs=get_raw_pod5_inputs,
@@ -171,11 +171,11 @@ Reports:
 
 rule rebasecall:
     """
-Rebasecall POD5 files using dorado basecaller.
+    Rebasecall POD5 files using dorado basecaller.
 
-Outputs BAM file with basecalls and move tables (mv tag) needed for leech feature extraction.
+    Outputs BAM file with basecalls and move tables (mv tag) needed for leech feature extraction.
 
-"""
+    """
     input:
         rules.merge_pods.output.pod5,
     output:
@@ -222,17 +222,17 @@ Outputs BAM file with basecalls and move tables (mv tag) needed for leech featur
 
 rule align_rebasecalled:
     """
-Align rebasecalled reads to reference using minimap2.
+    Align rebasecalled reads to reference using minimap2.
 
-CRITICAL: This step preserves all tags from the rebasecalled BAM:
-- mv: Move table (required for leech dwell time features)
-- ns: Number of samples per base
-- MM: Modified base positions/types (if modification calling enabled)
-- ML: Modified base probabilities (if modification calling enabled)
+    CRITICAL: This step preserves all tags from the rebasecalled BAM:
+    - mv: Move table (required for leech dwell time features)
+    - ns: Number of samples per base
+    - MM: Modified base positions/types (if modification calling enabled)
+    - ML: Modified base probabilities (if modification calling enabled)
 
-The -T '*' flag in samtools fastq preserves all auxiliary tags.
-The -y flag in minimap2 copies tags from input to aligned output.
-"""
+    The -T '*' flag in samtools fastq preserves all auxiliary tags.
+    The -y flag in minimap2 copies tags from input to aligned output.
+    """
     input:
         bam=rules.rebasecall.output.bam,
         reference=config.get("reference", "references/reference.fasta"),

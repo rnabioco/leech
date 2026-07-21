@@ -7,14 +7,14 @@ All comparisons are defined in TSV spec files and handled uniformly.
 rule merge_chunks_pairwise:
     """Merge pairwise amino acid chunks and split at read level to prevent data leakage.
 
-This rule implements the correct workflow:
-1. Merge all chunks from the two amino acid samples
-2. Relabel chunks for pairwise comparison (aa1=0, aa2=1)
-3. Split merged data at the READ level into train/val/test
+    This rule implements the correct workflow:
+    1. Merge all chunks from the two amino acid samples
+    2. Relabel chunks for pairwise comparison (aa1=0, aa2=1)
+    3. Split merged data at the READ level into train/val/test
 
-This prevents data leakage that occurs when splitting each sample independently
-and then merging the splits.
-"""
+    This prevents data leakage that occurs when splitting each sample independently
+    and then merging the splits.
+    """
     input:
         chunks=lambda wildcards: expand(
             CHUNKS_DIR + "/{sample}/all.npz",

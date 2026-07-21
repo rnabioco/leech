@@ -37,10 +37,10 @@ def get_sample_pod5_files(wildcards):
 
 rule inspect_sample_pod5s:
     """
-Inspect all POD5 files for a sample and generate a report.
+    Inspect all POD5 files for a sample and generate a report.
 
-Runs pod5 inspect on each file and aggregates the results.
-"""
+    Runs pod5 inspect on each file and aggregates the results.
+    """
     output:
         report="results/pod5_inspection/{sample}/inspection_report.tsv.gz",
     log:
@@ -132,11 +132,11 @@ Runs pod5 inspect on each file and aggregates the results.
 
 rule aggregate_all_inspections:
     """
-Aggregate inspection results across all samples into a single master report.
+    Aggregate inspection results across all samples into a single master report.
 
-This provides an overview of all POD5 files in the project and highlights
-any corrupted or problematic files.
-"""
+    This provides an overview of all POD5 files in the project and highlights
+    any corrupted or problematic files.
+    """
     input:
         reports=expand(
             "results/pod5_inspection/{sample}/inspection_report.tsv.gz",

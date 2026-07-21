@@ -8,26 +8,26 @@ by checking move table monotonicity and signal-sequence alignment.
 
 rule diagnose_signal_orientation:
     """
-    Run signal orientation diagnostics on a sample.
+        Run signal orientation diagnostics on a sample.
 
-    This standalone rule checks if signal and sequence are properly aligned
-    for RNA sequencing data. It performs three tests:
-    1. Move table monotonicity (should increase, not decrease)
-    2. Visual signal-sequence alignment at motifs
-    3. Base-signal correlation patterns
+        This standalone rule checks if signal and sequence are properly aligned
+        for RNA sequencing data. It performs three tests:
+        1. Move table monotonicity (should increase, not decrease)
+        2. Visual signal-sequence alignment at motifs
+        3. Base-signal correlation patterns
 
-    Outputs:
-    - PNG plot showing signal traces with base annotations
-    - Log file with diagnostic results and interpretation
+        Outputs:
+        - PNG plot showing signal traces with base annotations
+        - Log file with diagnostic results and interpretation
 
-    Usage:
-        # Run on single sample
-        snakemake --configfile config/samples-alpine.yaml \
-            results/diagnostics/ala_synthetic/signal_orientation.png
+        Usage:
+            # Run on single sample
+            snakemake --configfile config/samples-alpine.yaml \
+                results/diagnostics/ala_synthetic/signal_orientation.png
 
-        # Run on all AA synthetic samples
-        snakemake --configfile config/samples-alpine.yaml all_diagnose
-    """
+            # Run on all AA synthetic samples
+            snakemake --configfile config/samples-alpine.yaml all_diagnose
+        """
     input:
         pod5=get_project_path(config.get("pod5_dir", "results/pod5"))
         + "/{sample}/{sample}.pod5",
