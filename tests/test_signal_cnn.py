@@ -1,7 +1,6 @@
 """Tests for the signal-only SignalCNN classifier + train_signal_classifier."""
 
 import numpy as np
-import pytest
 import torch
 
 from leech.dataset import SignalDataset, collate_fn
@@ -20,7 +19,9 @@ def test_forward_ignores_sequence():
 
 
 def test_signal_dataset_batch_contract():
-    ds = SignalDataset(np.random.randn(8, 256).astype(np.float32), np.array([0, 1, 2, 3, 4, 0, 1, 2]))
+    ds = SignalDataset(
+        np.random.randn(8, 256).astype(np.float32), np.array([0, 1, 2, 3, 4, 0, 1, 2])
+    )
     batch = collate_fn([ds[i] for i in range(8)])
     assert set(batch) >= {"signal", "sequence", "label"}
     assert batch["signal"].shape == (8, 1, 256)
@@ -36,8 +37,11 @@ def test_class_weights_from_labels():
 def test_train_signal_classifier_separable():
     rng = np.random.default_rng(0)
     X = np.concatenate(
-        [np.full((150, 128), k, np.float32) + 0.3 * rng.standard_normal((150, 128)).astype(np.float32)
-         for k in range(3)]
+        [
+            np.full((150, 128), k, np.float32)
+            + 0.3 * rng.standard_normal((150, 128)).astype(np.float32)
+            for k in range(3)
+        ]
     )
     y = np.repeat(np.arange(3), 150)
     idx = rng.permutation(len(X))

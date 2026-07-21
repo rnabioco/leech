@@ -17,15 +17,19 @@ import torch.nn as nn
 class SignalCNN(nn.Module):
     def __init__(
         self,
-        num_classes: int,
+        num_classes: int = 2,
         signal_len: int = 256,
         channels: int = 32,
         signal_in_channels: int = 1,
         kernel_size: int = 7,
+        seq_encoding: str = "base_onehot",
         **_: object,
     ) -> None:
         super().__init__()
         self.signal_len = signal_len
+        # Stored for registry-contract compatibility; SignalCNN ignores sequence
+        # input, so the encoding only affects models that consume it.
+        self.seq_encoding = seq_encoding
 
         def block(cin: int, cout: int) -> nn.Sequential:
             return nn.Sequential(
