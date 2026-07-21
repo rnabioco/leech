@@ -32,9 +32,11 @@ from leech.constants import (
 )
 
 
-# Model choices for CLI — lazy to avoid importing torch at CLI load time
+# Model choices for CLI. leech.models is torch-free at import time and its
+# MODEL_REGISTRY resolves classes lazily, so listing the names (to render
+# `--model` help / validate choices) does not import torch (~10s).
 def get_model_choices() -> list[str]:
-    """Return sorted model names, importing MODEL_REGISTRY on first call."""
+    """Return sorted model names without importing torch."""
     from leech.models import MODEL_REGISTRY
 
     return sorted(MODEL_REGISTRY.keys())
