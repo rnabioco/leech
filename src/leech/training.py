@@ -1126,58 +1126,54 @@ def train_model(
         }
         logger.info(f"Signal augmentation enabled: {augmentation}")
 
-    # Build confound map for adversarial training
-    confound_map: dict[int, int] | None = None
-    ref_confound_map: dict[str, int] | None = None
-    adversarial_num_classes = 4  # default: A/C/G/T
+    # Build the confound encoder for adversarial training. The confound is
+    # described declaratively (built-in alias or 'source:mapping[:table]' spec);
+    # the encoder maps each chunk to an integer class for gradient reversal.
+    confound_encoder = None
+    adversarial_num_classes = 4  # default class count when adversarial is off
 
-    if adversarial_lambda > 0 and confound == "disc_base":
+    if adversarial_lambda > 0 and confound:
         from leech.confounds import (
-            NUM_DISC_BASES,
-            build_confound_map,
-            load_disc_base_map,
+            build_confound_encoder,
+            parse_confound_token,
         )
 
+        spec = parse_confound_token(confound)
+
+        # Collect this chunk field's values (needed for identity mappings).
+        source_values: list | None = None
+        if train_chunks is not None:
+            source_values = [c.get(spec.source) for c in train_chunks]
+        elif train_data_path is not None:
+            _npz = np.load(train_data_path, allow_pickle=True)
+            # npz arrays are stored under the pluralized field name.
+            for _key in (spec.source, f"{spec.source}s"):
+                if _key in _npz:
+                    source_values = _npz[_key].tolist()
+                    break
+
+        # Resolve label_map for label-keyed confounds (e.g. disc_base).
         _lm = label_map
-        if _lm is None:
+        if _lm is None and train_data_path is not None:
             _lm_path = train_data_path.parent / "label_map.json"
             if not _lm_path.exists():
                 _lm_path = train_data_path.parent.parent / "label_map.json"
             if _lm_path.exists():
                 with open(_lm_path) as f:
                     _lm = json.load(f)
-        if _lm is not None:
-            _dbm = load_disc_base_map(train_data_path.parent)
-            confound_map = build_confound_map(_lm, disc_base_map=_dbm)
-            adversarial_num_classes = NUM_DISC_BASES
-            logger.info(f"Adversarial confound 'disc_base': {confound_map}")
+
+        _data_dir = train_data_path.parent if train_data_path is not None else None
+        confound_encoder = build_confound_encoder(
+            spec,
+            source_values=source_values,
+            label_map=_lm,
+            data_dir=_data_dir,
+        )
+        if confound_encoder is not None:
+            adversarial_num_classes = confound_encoder.num_classes
         else:
             logger.warning(
-                "adversarial_lambda > 0 with confound='disc_base' but no label_map found; "
-                "adversarial training disabled"
-            )
-            adversarial_lambda = 0.0
-
-    elif adversarial_lambda > 0 and confound == "trna_id":
-        # Full tRNA-isoacceptor identity confound. Each unique reference name
-        # (e.g. tRNA-Ser-CGA-1-1) becomes a distinct adversarial class,
-        # directly penalising the model for encoding ANY tRNA-body information.
-        from leech.confounds import build_trna_identity_map
-
-        _ref_names = None
-        if train_chunks is not None:
-            _ref_names = [c.get("reference_name", "") for c in train_chunks]
-        elif train_data_path is not None:
-            _npz = np.load(train_data_path, allow_pickle=True)
-            if "reference_names" in _npz:
-                _ref_names = _npz["reference_names"].tolist()
-        if _ref_names is not None:
-            ref_confound_map, adversarial_num_classes = build_trna_identity_map(_ref_names)
-            logger.info(f"Adversarial confound 'trna_id': {adversarial_num_classes} classes")
-        else:
-            logger.warning(
-                "adversarial_lambda > 0 with confound='trna_id' but no "
-                "reference_names in training data; adversarial training disabled"
+                "Confound '%s' could not be built; adversarial training disabled", confound
             )
             adversarial_lambda = 0.0
 
@@ -1194,8 +1190,7 @@ def train_model(
         signal_kmer_context=signal_kmer_context,
         left_context=left_context,
         right_context=right_context,
-        confound_map=confound_map,
-        ref_confound_map=ref_confound_map,
+        confound_encoder=confound_encoder,
         cl_regression=cl_regression,
         signal_mode=signal_mode,
         time_mask_bases=augment_time_mask_bases,
@@ -1218,8 +1213,7 @@ def train_model(
             signal_kmer_context=signal_kmer_context,
             left_context=left_context,
             right_context=right_context,
-            confound_map=confound_map,
-            ref_confound_map=ref_confound_map,
+            confound_encoder=confound_encoder,
             cl_regression=cl_regression,
             signal_mode=signal_mode,
             dwell_template_table=dwell_template_table,

@@ -1,13 +1,21 @@
 """Tests for confound mappings, in particular the per-AA disc_base extractor."""
 
+import json
 from pathlib import Path
 
 import pytest
 
 from leech.confounds import (
+    BUILTIN_CONFOUNDS,
     DISC_BASE_TO_INT,
+    NUM_DISC_BASES,
+    ConfoundEncoder,
+    ConfoundSpec,
+    build_confound_encoder,
     build_confound_map,
     extract_disc_bases_from_fasta,
+    load_confound_config,
+    parse_confound_token,
 )
 
 
@@ -87,3 +95,133 @@ def test_extract_disc_bases_feeds_build_confound_map(fasta_path: Path) -> None:
         1: DISC_BASE_TO_INT["G"],
         2: DISC_BASE_TO_INT["T"],
     }
+
+
+# ---------------------------------------------------------------------------
+# Generic, config-driven confound layer
+# ---------------------------------------------------------------------------
+
+
+def test_parse_confound_token_aliases() -> None:
+    assert parse_confound_token("trna_id") is BUILTIN_CONFOUNDS["trna_id"]
+    assert parse_confound_token("disc_base") is BUILTIN_CONFOUNDS["disc_base"]
+
+
+def test_parse_confound_token_inline_identity() -> None:
+    spec = parse_confound_token("reference_name:identity")
+    assert spec.source == "reference_name"
+    assert spec.mapping == "identity"
+    assert spec.table is None
+
+
+def test_parse_confound_token_inline_lookup() -> None:
+    spec = parse_confound_token("source_group:lookup:groups.json")
+    assert spec.source == "source_group"
+    assert spec.mapping == "lookup"
+    assert spec.table == "groups.json"
+
+
+def test_parse_confound_token_unknown_alias() -> None:
+    with pytest.raises(ValueError, match="Unknown confound"):
+        parse_confound_token("nonsense")
+
+
+def test_parse_confound_token_bad_mapping() -> None:
+    with pytest.raises(ValueError, match="Unknown confound mapping"):
+        parse_confound_token("reference_name:bogus")
+
+
+def test_confound_spec_token_round_trip() -> None:
+    for token in ("trna_id", "disc_base", "reference_name:identity", "g:lookup:t.json"):
+        assert parse_confound_token(token).to_token() == token
+
+
+def test_load_confound_config_json_list(tmp_path: Path) -> None:
+    path = tmp_path / "conf.json"
+    path.write_text(json.dumps(["trna_id"]))
+    specs = load_confound_config(path)
+    assert len(specs) == 1
+    assert specs[0].to_token() == "trna_id"
+
+
+def test_load_confound_config_yaml_dict(tmp_path: Path) -> None:
+    path = tmp_path / "conf.yaml"
+    path.write_text(
+        "confounds:\n"
+        "  - source: source_group\n"
+        "    mapping: lookup\n"
+        "    table: groups.json\n"
+        "    name: aa_group\n"
+    )
+    specs = load_confound_config(path)
+    assert len(specs) == 1
+    assert specs[0].source == "source_group"
+    assert specs[0].mapping == "lookup"
+    assert specs[0].table == "groups.json"
+    assert specs[0].label == "aa_group"
+
+
+def test_build_encoder_identity() -> None:
+    """Identity mapping assigns a contiguous class per distinct value (sorted)."""
+    spec = ConfoundSpec(source="reference_name", mapping="identity")
+    values = ["tRNA-Ser-CGA-1-1", "tRNA-Ala-GGC-1-1", "tRNA-Ser-CGA-1-1", None, ""]
+    enc = build_confound_encoder(spec, source_values=values)
+    assert enc is not None
+    assert enc.num_classes == 2
+    assert enc.value_to_class == {"tRNA-Ala-GGC-1-1": 0, "tRNA-Ser-CGA-1-1": 1}
+    # encode reads the configured chunk field; unknown/missing -> -1
+    assert enc.encode({"reference_name": "tRNA-Ala-GGC-1-1"}) == 0
+    assert enc.encode({"reference_name": "tRNA-Ser-CGA-1-1"}) == 1
+    assert enc.encode({"reference_name": "unseen"}) == -1
+    assert enc.encode({}) == -1
+
+
+def test_build_encoder_identity_no_values_returns_none() -> None:
+    spec = ConfoundSpec(source="reference_name", mapping="identity")
+    assert build_confound_encoder(spec, source_values=[]) is None
+
+
+def test_build_encoder_lookup(tmp_path: Path) -> None:
+    """Lookup maps raw values through a sidecar table, categories -> ints."""
+    table = tmp_path / "groups.json"
+    table.write_text(json.dumps({"Ala": "small", "Gly": "small", "Trp": "large"}))
+    spec = ConfoundSpec(source="source_group", mapping="lookup", table="groups.json")
+    enc = build_confound_encoder(spec, data_dir=tmp_path)
+    assert enc is not None
+    assert enc.num_classes == 2  # small, large
+    # categories sorted: large=0, small=1
+    assert enc.encode({"source_group": "Trp"}) == 0
+    assert enc.encode({"source_group": "Ala"}) == 1
+    assert enc.encode({"source_group": "Gly"}) == 1
+    assert enc.encode({"source_group": "Unknown"}) == -1
+
+
+def test_build_encoder_disc_base_matches_legacy(fasta_path: Path, tmp_path: Path) -> None:
+    """The disc_base alias reproduces the legacy build_confound_map behaviour."""
+    disc_map = extract_disc_bases_from_fasta(fasta_path)
+    (tmp_path / "disc_base_map.json").write_text(json.dumps(disc_map))
+    label_map = {"Ala": 0, "Arg": 1, "Cys": 2}
+
+    enc = build_confound_encoder(
+        BUILTIN_CONFOUNDS["disc_base"],
+        label_map=label_map,
+        data_dir=tmp_path,
+    )
+    assert enc is not None
+    assert enc.num_classes == NUM_DISC_BASES
+    assert enc.source == "label_int"
+    assert enc.value_to_class == build_confound_map(label_map, disc_map)
+    # encode keys on the chunk's label_int field
+    assert enc.encode({"label_int": 0}) == DISC_BASE_TO_INT["C"]
+    assert enc.encode({"label_int": 99}) == -1
+
+
+def test_build_encoder_disc_base_needs_label_map() -> None:
+    enc = build_confound_encoder(BUILTIN_CONFOUNDS["disc_base"], label_map=None)
+    assert enc is None
+
+
+def test_confound_encoder_direct() -> None:
+    enc = ConfoundEncoder(name="c", source="source_group", value_to_class={"x": 0}, num_classes=1)
+    assert enc.encode({"source_group": "x"}) == 0
+    assert enc.encode({"source_group": "y"}) == -1
