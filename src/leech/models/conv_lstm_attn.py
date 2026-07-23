@@ -171,6 +171,7 @@ class _ConvLSTMAttn(BaseModel):
                 query=lstm_out,
                 key=feat_out,
                 value=feat_out,
+                need_weights=False,  # enables fused SDPA kernel; weights are unused
             )
             combined = self.attn_norm(lstm_out + attn_out)
 

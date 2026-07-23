@@ -309,6 +309,7 @@ class ResNetDwell(BaseModel):
             query=merged,  # (batch, kmer_len, merged_dim)
             key=feat_out,  # (batch, feat_len, 256)
             value=feat_out,  # (batch, feat_len, 256)
+            need_weights=False,  # enables fused SDPA kernel; weights are unused
         )  # attn_out: (batch, kmer_len, merged_dim)
 
         # Residual connection + layer norm

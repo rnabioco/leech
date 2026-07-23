@@ -247,6 +247,7 @@ class TransformerDwell(BaseModel):
             query=merged,  # (batch, kmer_len, d_model*2)
             key=feat_out,  # (batch, feat_len, d_model)
             value=feat_out,  # (batch, feat_len, d_model)
+            need_weights=False,  # enables fused SDPA kernel; weights are unused
         )  # attn_out: (batch, kmer_len, d_model*2)
 
         # Residual connection + layer norm

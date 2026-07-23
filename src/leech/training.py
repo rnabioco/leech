@@ -5,6 +5,7 @@ Training loop and utilities for leech models.
 import copy
 import json
 import logging
+import random
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,19 @@ from leech.models.inference_wrapper import ModelInferenceWrapper
 
 logger = logging.getLogger("leech.training")
 console = make_console()
+
+
+def _seed_worker(worker_id: int) -> None:
+    """Seed a DataLoader worker's RNGs for reproducible augmentation.
+
+    PyTorch already seeds each worker's torch RNG (base_seed + worker_id); this
+    derives the numpy/random seeds from it so any non-torch randomness is
+    reproducible too. Must stay module-level to remain picklable for spawned
+    workers.
+    """
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
 
 
 def compute_class_weights(dataset: LeechDataset) -> torch.Tensor | None:
@@ -191,7 +205,14 @@ class Trainer:
         # applies decay directly to weights and preserves regularization through
         # the LR schedule. State dict is compatible with Adam checkpoints for
         # resume — only the step rule changes.
-        self.optimizer = torch.optim.AdamW(all_params, lr=learning_rate, weight_decay=weight_decay)
+        # fused=True runs the optimizer step as a single fused CUDA kernel (faster);
+        # it is only supported on CUDA, so fall back to the standard path on CPU.
+        self.optimizer = torch.optim.AdamW(
+            all_params,
+            lr=learning_rate,
+            weight_decay=weight_decay,
+            fused=(device != "cpu"),
+        )
 
         # Setup loss
         self.loss_type = loss_type
@@ -1225,15 +1246,22 @@ def train_model(
         f"(requested={num_workers}, daemon={is_daemon}, device={device})"
     )
 
+    # Seed the DataLoader generator from the run seed so shuffle order and each
+    # worker's base seed are reproducible regardless of prior global-RNG use.
+    loader_generator = torch.Generator()
+    loader_generator.manual_seed(seed)
+
     loader_kwargs: dict = {
         "collate_fn": collate_fn,
         "num_workers": effective_workers,
+        "generator": loader_generator,
     }
     if device != "cpu":
         loader_kwargs["pin_memory"] = True
     if effective_workers > 0:
         loader_kwargs["persistent_workers"] = True
         loader_kwargs["prefetch_factor"] = 4
+        loader_kwargs["worker_init_fn"] = _seed_worker
 
     # Cap batch_size so drop_last doesn't discard all data
     effective_batch_size = min(batch_size, len(train_dataset))
@@ -1380,9 +1408,12 @@ def train_model(
     model = get_model(model_name, **model_init_kwargs)
 
     # Enable cuDNN autotuner for fixed-size inputs (finds fastest conv algorithms)
+    # plus TF32 matmuls (faster LSTM/attention/linear on Ampere+), matching the
+    # eval/inference paths.
     if device != "cpu":
         torch.backends.cudnn.benchmark = True
-        logger.info("cuDNN benchmark enabled")
+        torch.set_float32_matmul_precision("high")
+        logger.info("cuDNN benchmark + TF32 matmul enabled")
 
     # Compile model with torch.compile for graph-level optimizations (PyTorch 2+)
     if device != "cpu" and hasattr(torch, "compile"):
