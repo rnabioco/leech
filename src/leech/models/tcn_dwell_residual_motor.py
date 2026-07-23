@@ -97,7 +97,7 @@ class TCNDwellResidualMotor(TCNDwellResidual):
         merged = torch.cat([signal_feat, seq_feat], dim=1)
         merged = merged.transpose(1, 2)  # (batch, kmer_len, merged_dim)
 
-        attn_out, _ = self.cross_attn(query=merged, key=feat_kv, value=feat_kv)
+        attn_out, _ = self.cross_attn(query=merged, key=feat_kv, value=feat_kv, need_weights=False)
         combined = self.attn_norm(merged + attn_out)
 
         # Attention pooling

@@ -327,6 +327,7 @@ class TCNDwell(BaseModel):
             query=merged,  # (batch, kmer_len, hidden_channels*2)
             key=feat_out,  # (batch, feat_len, 256)
             value=feat_out,  # (batch, feat_len, 256)
+            need_weights=False,  # enables fused SDPA kernel; weights are unused
         )  # attn_out: (batch, kmer_len, hidden_channels*2)
 
         # Residual connection + layer norm

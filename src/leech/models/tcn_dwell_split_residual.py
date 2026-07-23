@@ -196,6 +196,7 @@ class TCNDwellSplitResidual(BaseModel):
             query=merged,
             key=feat_out,
             value=feat_out,
+            need_weights=False,  # enables fused SDPA kernel; weights are unused
         )
 
         # Residual connection + layer norm
