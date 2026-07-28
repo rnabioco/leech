@@ -1172,7 +1172,7 @@ dev = [
 ]
 docs = [
     { name = "matplotlib", specifier = ">=3.10.7" },
-    { name = "mkdocstrings", extras = ["python"], specifier = ">=0.30.1" },
+    { name = "mkdocstrings", extras = ["python"], specifier = ">=1.0.6" },
     { name = "zensical" },
 ]
 
