@@ -102,13 +102,11 @@ This installs additional tools for:
 
 ### POD5 Support (escapepod)
 
-leech reads POD5 signal through `escapepod`, a Rust-backed reader installed via
-the `pod5` extra. It does not depend on the `pod5` Python package or `libhdf5`,
-so no HDF5 system libraries are required:
-
-```bash title="Bash" linenums="1"
-uv sync --extra pod5
-```
+leech reads POD5 signal through `escapepod`, a Rust-backed reader that installs
+as a prebuilt wheel from PyPI. It is a required dependency, so a plain
+`uv sync` is enough — the `pod5` extra is kept as a no-op alias for existing
+scripts. escapepod does not depend on the `pod5` Python package or `libhdf5`, so
+no HDF5 system libraries are required.
 
 ### pysam Installation Issues
 

@@ -13,7 +13,7 @@ from leech.features import (
     MoveTable,
     compute_dwell_features,
     compute_signal_features,
-    normalize_signal,
+    normalize_read_signal,
 )
 
 
@@ -54,7 +54,7 @@ def python_pipeline(read, reverse=True):
     if reverse:
         py_map = (ns - ts) - py_map[::-1]
 
-    norm, _ = normalize_signal(trimmed, method="median_mad")
+    norm, _ = normalize_read_signal(trimmed, method="median_mad")
     dwells = np.diff(py_map).astype(np.float32)
     dwell_feats = compute_dwell_features(dwells)
     sig_feats = compute_signal_features(norm, py_map)

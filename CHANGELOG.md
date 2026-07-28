@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- POD5 read lookups now use escapepod's read-id index. `DatasetReader` was
+  constructed but never entered, and entering it is what warms the index — so
+  every `reads(selection=...)` call re-scanned the whole reads table, making a
+  per-read lookup O(reads-in-file). Affects both the cached module-level reader
+  and `POD5Reader`.
+- `median_mad` normalization no longer returns an all-`NaN` signal for a
+  constant (dead-pore or flat) read. It now delegates to
+  `escapepod.mad_normalize`, the same routine `leech_core` already used, so the
+  Python and Rust normalization paths agree by construction rather than by two
+  parallel implementations.
+
+### Changed
+
+- Renamed `leech.features.normalize_signal` to `normalize_read_signal`. The old
+  name collided with `escapepod.normalize_signal`, which is a *different*
+  transform (int16 input, no 1.4826 scale factor) that would silently rescale
+  every signal in the pipeline if swapped in by name.
+- `median_mad` normalization now returns `float32` rather than `float64`,
+  matching the Rust path. Values agree with the previous output to f32 precision
+  (~7e-8 relative).
+- `escapepod` moved from the optional `pod5` extra into required dependencies —
+  `leech.io.pod5_reader` and `leech.features` both import it unconditionally, so
+  a base install previously failed on `import leech.io`. The `pod5` extra is
+  retained as a no-op alias.
+
+- Dropped the `escapepod-rs` git submodule. Now that the repository is public,
+  `escapepod-signal` is a tag-pinned git dependency in `rust/Cargo.toml` and the
+  `escapepod` Python package installs from PyPI as a prebuilt wheel, so a plain
+  `git clone` + `uv sync` is enough to build leech.
+- Bumped `escapepod` to v0.6.3, which fixes a `mad_normalize` abort on constant
+  (dead-pore or flat) signal that could kill a long run on a single bad read.
+- CI no longer needs the `ESCAPEPOD_PAT` secret, so dependabot now tracks GitHub
+  Actions and the `rust/` cargo manifest too.
+
 ## [0.4.1] - 2026-07-20
 
 ### Documentation

@@ -16,7 +16,7 @@ Core Functions:
     extract_move_table(): Parse move table from BAM alignment
     compute_dwell_times(): Calculate per-base dwell times from move table
     compute_signal_levels(): Calculate signal statistics (mean, median, std, range)
-    normalize_signal(): Normalize raw signal using median-MAD, z-score, or quantile
+    normalize_read_signal(): Normalize raw signal using median-MAD, z-score, or quantile
 
 Feature Engineering:
     Dwell features (5 total):
@@ -55,6 +55,7 @@ from typing import Any
 
 import numpy as np
 import pysam
+from escapepod import mad_normalize
 from numpy.lib.stride_tricks import sliding_window_view
 
 # Try to import Rust-accelerated implementations
@@ -235,7 +236,7 @@ def compute_signal_levels(
     return levels
 
 
-def normalize_signal(
+def normalize_read_signal(
     raw_signal: np.ndarray,
     method: str = "median_mad",
     pa_mean: float | None = None,
@@ -245,6 +246,11 @@ def normalize_signal(
 ) -> tuple[np.ndarray, dict[str, float]]:
     """
     Normalize raw signal data.
+
+    Named to avoid colliding with :func:`escapepod.normalize_signal`, which is a
+    *different* transform: it takes int16 DAC input and divides by the bare MAD,
+    with no 1.4826 factor. The ``median_mad`` method here delegates to
+    :func:`escapepod.mad_normalize` instead, which is the matching one.
 
     Args:
         raw_signal: Raw DAC signal values
@@ -258,12 +264,16 @@ def normalize_signal(
         Tuple of (normalized_signal, normalization_params)
     """
     if method == "median_mad":
-        # Median Absolute Deviation normalization (robust to outliers)
+        # Median Absolute Deviation normalization (robust to outliers).
+        # escapepod's mad_normalize is the same 1.4826-scaled transform that
+        # leech_core already uses (via escapepod_signal::mad_normalize_robust),
+        # so the Python and Rust paths agree by construction. It also degrades
+        # gracefully on a constant signal (dead pore / flat read), where the
+        # naive form divides by a zero MAD and yields all-NaN.
         median = np.median(raw_signal)
         mad = np.median(np.abs(raw_signal - median))
-        # Scale factor for consistency with standard deviation
         scale_factor = 1.4826
-        normalized = (raw_signal - median) / (mad * scale_factor)
+        normalized = mad_normalize(np.ascontiguousarray(raw_signal, dtype=np.float32))
         params = {"median": float(median), "mad": float(mad), "scale_factor": scale_factor}
 
     elif method == "zscore":

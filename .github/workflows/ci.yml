@@ -19,9 +19,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-        with:
-          token: ${{ secrets.ESCAPEPOD_PAT }}
-          submodules: recursive
 
       - name: Install uv
         uses: astral-sh/setup-uv@v9.0.0
@@ -50,9 +47,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-        with:
-          token: ${{ secrets.ESCAPEPOD_PAT }}
-          submodules: recursive
 
       - name: Install Rust toolchain (rustfmt + clippy)
         run: rustup component add rustfmt clippy
@@ -78,9 +72,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
-        with:
-          token: ${{ secrets.ESCAPEPOD_PAT }}
-          submodules: recursive
 
       - name: Install uv
         uses: astral-sh/setup-uv@v9.0.0
@@ -92,16 +83,13 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      # Cache the Rust build for both crate workspaces (leech_core in rust/,
-      # escapepod-python in escapepod-rs/). The bulk of the test job is compiling
+      # Cache the leech_core build. The bulk of the test job is compiling
       # arrow + escapepod-signal + leech_core via maturin; caching target/ and
       # the cargo registry cuts that from minutes to seconds on unchanged deps.
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: |
-            rust
-            escapepod-rs
+          workspaces: rust
 
       - name: Install dependencies
         env:
@@ -117,7 +105,7 @@ jobs:
           # tooling (that's the Lint job) and no pipeline/notebook extras (tests
           # don't import snakemake/plotnine). Full install (Rust extension +
           # escapepod); fall back without the Rust extension (leech_core) but keep
-          # escapepod (pod5), which leech imports unconditionally.
+          # escapepod (a PyPI wheel), which leech imports unconditionally.
           uv pip install --torch-backend=cpu -e ".[test,rust,pod5]" \
             || uv pip install --torch-backend=cpu -e ".[test,pod5]"
 

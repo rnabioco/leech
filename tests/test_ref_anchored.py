@@ -8,7 +8,7 @@ known CIGAR strings.
 import numpy as np
 import pytest
 
-from leech.features import compute_ref_to_signal, make_ref_to_query_mapping, normalize_signal
+from leech.features import compute_ref_to_signal, make_ref_to_query_mapping, normalize_read_signal
 
 
 class TestMakeRefToQueryMapping:
@@ -170,7 +170,7 @@ class TestPaScalingNormalization:
         pa_stdev = 200.0
         # norm = (100-400)/200=-1.5, (300-400)/200=-0.5, (500-400)/200=0.5, (700-400)/200=1.5
 
-        normalized, params = normalize_signal(
+        normalized, params = normalize_read_signal(
             raw,
             method="pa_scaling",
             pa_mean=pa_mean,
@@ -188,10 +188,10 @@ class TestPaScalingNormalization:
         """Test that pa_scaling raises without required params."""
         raw = np.array([1.0, 2.0, 3.0], dtype=np.float32)
         with pytest.raises(ValueError, match="pa_scaling requires pa_mean"):
-            normalize_signal(raw, method="pa_scaling")
+            normalize_read_signal(raw, method="pa_scaling")
 
         with pytest.raises(ValueError, match="pa_scaling requires cal_offset"):
-            normalize_signal(raw, method="pa_scaling", pa_mean=1.0, pa_stdev=1.0)
+            normalize_read_signal(raw, method="pa_scaling", pa_mean=1.0, pa_stdev=1.0)
 
     def test_median_mad_invariance(self):
         """Verify median-MAD is invariant to affine transform (DAC vs pA)."""
@@ -199,11 +199,11 @@ class TestPaScalingNormalization:
         raw_dac = np.random.randn(1000).astype(np.float32) * 100 + 500
 
         # Normalize DACs directly
-        norm_dac, _ = normalize_signal(raw_dac, method="median_mad")
+        norm_dac, _ = normalize_read_signal(raw_dac, method="median_mad")
 
         # Convert to pA then normalize
         offset, scale = 50.0, 2.0
         pa = (raw_dac - offset) * scale
-        norm_pa, _ = normalize_signal(pa, method="median_mad")
+        norm_pa, _ = normalize_read_signal(pa, method="median_mad")
 
         np.testing.assert_allclose(norm_dac, norm_pa, rtol=1e-5)

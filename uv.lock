@@ -10,7 +10,6 @@ resolution-markers = [
 
 [manifest]
 members = [
-    "escapepod",
     "leech",
     "leech-core",
 ]
@@ -447,7 +446,7 @@ name = "cuda-bindings"
 version = "13.3.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cuda-pathfinder" },
+    { name = "cuda-pathfinder", marker = "sys_platform != 'emscripten'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ce/67/5e7dba1ba576dd73da5dee894ca076ca5e959450dfff66d6d510a255d1f7/cuda_bindings-13.3.1-cp312-cp312-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:c7855c4868aabc0cfae28abbe83d56734bdfbd08f08fc234ac1912a12858bf49", size = 6025351, upload-time = "2026-05-29T23:11:49.685Z" },
@@ -564,7 +563,17 @@ wheels = [
 
 [[package]]
 name = "escapepod"
-source = { editable = "escapepod-rs/crates/escapepod-python" }
+version = "0.6.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/63/fb/6639e9595a95c7e5915fc69f9ca4eb10e2b6b3244af63428bf2a68042a33/escapepod-0.6.3.tar.gz", hash = "sha256:83dd7ac3ca665cb0744b5cb0186fb5a64d6cc73011b4b40bfb2be7cc5e1e39c5", size = 293572, upload-time = "2026-07-26T23:09:21.006Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ef/d2/5b7c410debe68d7f46e042b2956de3efb22506fc124d5465d9ac6f3cd402/escapepod-0.6.3-cp39-abi3-macosx_10_12_x86_64.whl", hash = "sha256:9c6c47dd7642da046031c8c3a3707dc753f084219f0d1fb0638fd54ff940fe22", size = 1545652, upload-time = "2026-07-26T23:09:11.083Z" },
+    { url = "https://files.pythonhosted.org/packages/31/a8/cd6ff4ff31b5cac27dc400cfa8dcd995ff8637409352ba05c0afc163ce5d/escapepod-0.6.3-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:6c3bc252b242fa06dcf0a06c1a5a90d1172b72cd126e7778657f8a5a4f7bc2ac", size = 1356237, upload-time = "2026-07-26T23:09:12.956Z" },
+    { url = "https://files.pythonhosted.org/packages/b8/51/2eaf3d160be173a7ab16d09d0a8bd3f6e3889bebbc4646b244fd9b72d8a3/escapepod-0.6.3-cp39-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:f42973b45ca64cc24573febdd72c0b0b05fcf8b9cb56af5ce91dcf8f532ccad9", size = 1517005, upload-time = "2026-07-26T23:09:14.266Z" },
+    { url = "https://files.pythonhosted.org/packages/8c/9a/36c7ed0aa0ab614d90989f9cc5b79bd99296e414fe19215bb0062fb3b2cc/escapepod-0.6.3-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:9620d160f8433c85d5a2c09ed773c46f10fdc4b2cc65d22f434eb2f03868c75f", size = 1697519, upload-time = "2026-07-26T23:09:15.708Z" },
+    { url = "https://files.pythonhosted.org/packages/31/80/f36a0b513fdfcff33fd2f2bc3184afaf4e5817685033f3271f82e8a29c31/escapepod-0.6.3-cp39-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:5cf3757dcd636c88c47332bc1222ecb99c1d16b15a9a96e99568cf791e7cece0", size = 1727492, upload-time = "2026-07-26T23:09:17.701Z" },
+    { url = "https://files.pythonhosted.org/packages/5b/6a/9684b363f965e7f04e23d4005597cfafc61db92ded4f8786c5803b238bb2/escapepod-0.6.3-cp39-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:ae9d030893263814e6387ed45ec4a9aa576162a3e28000d72858376de772c299", size = 1888585, upload-time = "2026-07-26T23:09:19.539Z" },
+]
 
 [[package]]
 name = "execnet"
@@ -1070,6 +1079,7 @@ version = "0.4.1"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
+    { name = "escapepod" },
     { name = "numpy" },
     { name = "nvitop" },
     { name = "polars" },
@@ -1103,9 +1113,6 @@ pipeline = [
     { name = "snakemake-executor-plugin-lsf" },
     { name = "snakemake-executor-plugin-slurm" },
 ]
-pod5 = [
-    { name = "escapepod" },
-]
 rust = [
     { name = "leech-core" },
 ]
@@ -1129,7 +1136,7 @@ docs = [
 [package.metadata]
 requires-dist = [
     { name = "click", specifier = ">=8.1.0" },
-    { name = "escapepod", marker = "extra == 'pod5'", editable = "escapepod-rs/crates/escapepod-python" },
+    { name = "escapepod", specifier = ">=0.6.3" },
     { name = "great-tables", marker = "extra == 'notebook'", specifier = ">=0.14.0" },
     { name = "leech", extras = ["test"], marker = "extra == 'dev'" },
     { name = "leech-core", marker = "extra == 'rust'", editable = "rust" },
@@ -1623,7 +1630,7 @@ name = "nvidia-cublas"
 version = "13.1.1.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cuda-nvrtc" },
+    { name = "nvidia-cuda-nvrtc", marker = "sys_platform != 'emscripten'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a7/a1/0bd24ee8c8d03adac032fd2909426a00c88f8c57961b1277ded97f91119f/nvidia_cublas-13.1.1.3-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:b7a210458267ac818974c53038fbec2e969d5c99f305ab15c72522fa9f001dd5", size = 542848918, upload-time = "2026-04-08T18:46:22.985Z" },
@@ -1662,7 +1669,7 @@ name = "nvidia-cudnn-cu13"
 version = "9.20.0.48"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cublas" },
+    { name = "nvidia-cublas", marker = "sys_platform != 'emscripten'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/56/c5/83384d846b2fd17c44bd499b36c75a45ed4f095fbbb2252294e89cea5c5c/nvidia_cudnn_cu13-9.20.0.48-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:e31454ae00094b0c55319d9d15b6fa2fc50a9e1c0f5c8c80fb75258234e731e1", size = 444574296, upload-time = "2026-03-09T19:28:27.751Z" },
@@ -1674,7 +1681,7 @@ name = "nvidia-cufft"
 version = "12.0.0.61"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-nvjitlink" },
+    { name = "nvidia-nvjitlink", marker = "sys_platform != 'emscripten'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/8b/ae/f417a75c0259e85c1d2f83ca4e960289a5f814ed0cea74d18c353d3e989d/nvidia_cufft-12.0.0.61-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:2708c852ef8cd89d1d2068bdbece0aa188813a0c934db3779b9b1faa8442e5f5", size = 214053554, upload-time = "2025-09-04T08:31:38.196Z" },
@@ -1704,9 +1711,9 @@ name = "nvidia-cusolver"
 version = "12.0.4.66"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cublas" },
-    { name = "nvidia-cusparse" },
-    { name = "nvidia-nvjitlink" },
+    { name = "nvidia-cublas", marker = "sys_platform != 'emscripten'" },
+    { name = "nvidia-cusparse", marker = "sys_platform != 'emscripten'" },
+    { name = "nvidia-nvjitlink", marker = "sys_platform != 'emscripten'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c8/c3/b30c9e935fc01e3da443ec0116ed1b2a009bb867f5324d3f2d7e533e776b/nvidia_cusolver-12.0.4.66-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:02c2457eaa9e39de20f880f4bd8820e6a1cfb9f9a34f820eb12a155aa5bc92d2", size = 223467760, upload-time = "2025-09-04T08:33:04.222Z" },
@@ -1718,7 +1725,7 @@ name = "nvidia-cusparse"
 version = "12.6.3.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-nvjitlink" },
+    { name = "nvidia-nvjitlink", marker = "sys_platform != 'emscripten'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f8/94/5c26f33738ae35276672f12615a64bd008ed5be6d1ebcb23579285d960a9/nvidia_cusparse-12.6.3.3-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:80bcc4662f23f1054ee334a15c72b8940402975e0eab63178fc7e670aa59472c", size = 162155568, upload-time = "2025-09-04T08:33:42.864Z" },

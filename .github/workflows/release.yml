@@ -26,11 +26,6 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Checkout private submodules
-        run: |
-          git config --global url."https://x-access-token:${{ secrets.ESCAPEPOD_PAT }}@github.com/".insteadOf "https://github.com/"
-          git submodule update --init --recursive
-
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
@@ -56,11 +51,6 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-
-      - name: Checkout private submodules
-        run: |
-          git config --global url."https://x-access-token:${{ secrets.ESCAPEPOD_PAT }}@github.com/".insteadOf "https://github.com/"
-          git submodule update --init --recursive
 
       - name: Build sdist
         uses: PyO3/maturin-action@v1

@@ -29,7 +29,7 @@ The features module provides functions for extracting dwell times from move tabl
 
 ## Signal Normalization
 
-::: leech.features.normalize_signal
+::: leech.features.normalize_read_signal
     options:
       show_root_heading: true
       show_source: true

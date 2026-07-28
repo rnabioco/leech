@@ -22,7 +22,7 @@ from leech.features import (
     compute_signal_features,
     compute_signal_residual,
     extract_move_table,
-    normalize_signal,
+    normalize_read_signal,
 )
 from leech.io import POD5Reader, iter_bam_batches
 
@@ -75,7 +75,7 @@ def build_leech_read(
         raw_signal = raw_signal[::-1]
         query_to_sig_map = sig_len - query_to_sig_map[::-1]
 
-    norm_signal, norm_params = normalize_signal(
+    norm_signal, norm_params = normalize_read_signal(
         raw_signal,
         method=signal_config.norm_method,
         pa_mean=signal_config.pa_mean,

@@ -1,12 +1,24 @@
 version: 2
 updates:
   # Keep Python (uv) dependencies current.
-  # NOTE: github-actions updates are intentionally omitted — CI checks out the
-  # private escapepod-rs submodule via ESCAPEPOD_PAT, but GitHub does not expose
-  # Actions secrets to dependabot-triggered runs, so those PRs can't pass CI.
-  # Bump action versions manually instead.
   - package-ecosystem: uv
     directory: "/"
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+
+  # leech_core's Rust deps. escapepod-signal is a tag-pinned git dependency,
+  # which dependabot does not bump — move that tag by hand in rust/Cargo.toml.
+  - package-ecosystem: cargo
+    directory: "/rust"
     schedule:
       interval: weekly
     labels:

@@ -10,7 +10,9 @@ crate-type = ["cdylib"]
 [dependencies]
 pyo3 = { version = "0.28", features = ["extension-module"] }
 numpy = "0.28"
-escapepod-signal = { path = "../escapepod-rs/crates/escapepod-signal" }
+# Not on crates.io; pulled straight from the public GitHub repo. Pin by tag so
+# the build is reproducible — bump the tag to take a new escapepod release.
+escapepod-signal = { git = "https://github.com/rnabioco/escapepod-rs", tag = "v0.6.3" }
 rayon = "1"
 
 [profile.release]

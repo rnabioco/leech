@@ -22,6 +22,9 @@ classifiers = [
 ]
 dependencies = [
   "click>=8.1.0",
+  # POD5 I/O and signal normalization. Imported unconditionally by
+  # leech.io.pod5_reader and leech.features, so it cannot be optional.
+  "escapepod>=0.6.3",
   "numpy>=2.0.0",
   "nvitop>=1.6.1",
   "polars>=1.0.0",
@@ -38,7 +41,9 @@ check-rust = "leech._rust_accel:check_rust"
 
 [project.optional-dependencies]
 rust = ["leech-core"]
-pod5 = ["escapepod"]
+# Retained as a no-op alias: escapepod is now a required dependency, but
+# `--extra pod5` appears in existing docs, CI, and user scripts.
+pod5 = []
 # Minimal deps to run the test suite (used by CI's test job).
 test = [
   "pytest>=8.0.0",
@@ -96,18 +101,17 @@ testpaths = ["tests"]
 markers = ["slow: slow tests (torch.export, bundles) — run with --slow"]
 
 [tool.uv.workspace]
-members = ["rust", "escapepod-rs/crates/escapepod-python"]
+members = ["rust"]
 
 [tool.uv.sources]
 leech-core = { workspace = true }
-escapepod = { workspace = true }
 
 [tool.ruff]
 line-length = 100
 target-version = "py312"
 src = ["src"]
 exclude = ["*.ipynb"]
-extend-exclude = ["escapepod-rs", "vulture_whitelist.py"]
+extend-exclude = ["vulture_whitelist.py"]
 
 [tool.ruff.lint]
 select = [

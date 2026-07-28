@@ -38,6 +38,13 @@ def _get_cached_entry(pod5_path: Path | str) -> tuple[DatasetReader, list]:
     entry = _DATASET_CACHE.get(key)
     if entry is None:
         ds = DatasetReader(key)
+        # Entering the dataset is what warms escapepod's read-id index; without
+        # it every ``reads(selection=...)`` re-scans the whole reads table, so a
+        # per-read lookup costs O(reads-in-file) instead of O(1). The dataset is
+        # cached for the life of the process, so there is no matching __exit__ —
+        # the handles are released when the process ends. ``__enter__`` is the
+        # only entry point for this: DatasetReader has no public build_index().
+        ds.__enter__()
         entry = (ds, ds.run_infos)
         _DATASET_CACHE[key] = entry
     return entry
@@ -226,15 +233,22 @@ class POD5Reader:
 
     def __enter__(self):
         """Open the POD5 source (single file or directory of files)."""
-        self._ds = DatasetReader(str(self.pod5_path))
-        self._run_infos = self._ds.run_infos
+        ds = DatasetReader(str(self.pod5_path))
+        # Entering the dataset warms escapepod's read-id index, which is what
+        # makes the uncached ``get_signal`` path an indexed lookup rather than a
+        # full scan of the reads table.
+        ds.__enter__()
+        self._ds = ds
+        self._run_infos = ds.run_infos
         return self
 
-    def __exit__(self, _exc_type, _exc_val, _exc_tb):
+    def __exit__(self, exc_type, exc_val, exc_tb):
         """Release the dataset handle and cache."""
-        self._ds = None
+        ds, self._ds = self._ds, None
         self._run_infos = []
         self._cache.clear()
+        if ds is not None:
+            ds.__exit__(exc_type, exc_val, exc_tb)
 
     def preload(self, read_ids: list[str]) -> None:
         """
