@@ -111,7 +111,14 @@ line-length = 100
 target-version = "py312"
 src = ["src"]
 exclude = ["*.ipynb"]
-extend-exclude = ["vulture_whitelist.py"]
+# ruff 0.16 formats Python code blocks inside Markdown. Left on, it rewrites
+# doc examples to fit the formatter rather than to read well -- it collapses the
+# idiomatic multi-line plotnine chain in CLAUDE.md onto one 103-char line, and
+# strips the aligned comment columns from the training-chunk dict. Prose examples
+# are hand-formatted on purpose, so keep .md out of both format and check.
+# Note: these must be extend-exclude, not exclude -- CI passes `--exclude
+# vulture_whitelist.py`, and a CLI --exclude replaces `exclude` entirely.
+extend-exclude = ["vulture_whitelist.py", "*.md"]
 
 [tool.ruff.lint]
 select = [
