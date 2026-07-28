@@ -10,7 +10,7 @@ from leech.features import (
     compute_dwell_features,
     compute_dwell_times,
     compute_signal_levels,
-    normalize_signal,
+    normalize_read_signal,
 )
 
 
@@ -60,12 +60,12 @@ def test_compute_dwell_times():
     np.testing.assert_array_equal(dwells, expected)
 
 
-def test_normalize_signal_median_mad():
+def test_normalize_read_signal_median_mad():
     """Test median-MAD normalization."""
     # Create signal with known statistics
     signal = np.array([100, 102, 98, 105, 95, 101, 99, 103, 97], dtype=np.float32)
 
-    norm_signal, params = normalize_signal(signal, method="median_mad")
+    norm_signal, params = normalize_read_signal(signal, method="median_mad")
 
     # Check that normalization parameters are computed
     assert "median" in params
@@ -75,11 +75,11 @@ def test_normalize_signal_median_mad():
     assert abs(np.median(norm_signal)) < 0.1
 
 
-def test_normalize_signal_zscore():
+def test_normalize_read_signal_zscore():
     """Test z-score normalization."""
     signal = np.array([100, 102, 98, 105, 95, 101, 99, 103, 97], dtype=np.float32)
 
-    norm_signal, params = normalize_signal(signal, method="zscore")
+    norm_signal, params = normalize_read_signal(signal, method="zscore")
 
     # Check parameters
     assert "mean" in params

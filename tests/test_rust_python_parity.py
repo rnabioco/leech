@@ -2,7 +2,7 @@
 Test that Rust and Python extraction paths produce identical signals.
 
 Compares the _test_process_read Rust helper against the pure-Python pipeline
-(normalize_signal, MoveTable.to_seq_to_sig_map, compute_dwell_features,
+(normalize_read_signal, MoveTable.to_seq_to_sig_map, compute_dwell_features,
 compute_signal_features) on synthetic data with realistic signal statistics.
 """
 
@@ -13,7 +13,7 @@ from leech.features import (
     MoveTable,
     compute_dwell_features,
     compute_signal_features,
-    normalize_signal,
+    normalize_read_signal,
 )
 
 # Skip entire module if leech_core not built
@@ -92,7 +92,7 @@ class TestNormalizationParity:
         trimmed = raw[ts:ns].astype(np.float32)
         if reverse:
             trimmed = trimmed[::-1].copy()
-        py_norm, _ = normalize_signal(trimmed, method="median_mad")
+        py_norm, _ = normalize_read_signal(trimmed, method="median_mad")
 
         # --- Rust path ---
         rs_norm, rs_map, rs_dwells, rs_feats = _rs_test_process_read(
@@ -212,7 +212,7 @@ class TestFeatureParity:
         sig_len = ns - ts
         py_map = sig_len - py_map[::-1]
 
-        py_norm, _ = normalize_signal(trimmed, method="median_mad")
+        py_norm, _ = normalize_read_signal(trimmed, method="median_mad")
         py_dwells = np.diff(py_map).astype(np.float32)
 
         # Dwell features (5 rows)
@@ -289,7 +289,7 @@ class TestEndToEnd:
         )
         py_map = mt.to_seq_to_sig_map() - ts
         py_map = (ns - ts) - py_map[::-1]
-        py_norm, _ = normalize_signal(trimmed, method="median_mad")
+        py_norm, _ = normalize_read_signal(trimmed, method="median_mad")
 
         # Rust path
         rs_norm, rs_map, rs_dwells, rs_feats = _rs_test_process_read(

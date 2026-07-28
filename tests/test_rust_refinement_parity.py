@@ -22,7 +22,7 @@ from leech.features import (
     compute_dwell_features,
     compute_signal_features,
     extract_move_table,
-    normalize_signal,
+    normalize_read_signal,
     sequence_to_int,
 )
 from leech.signal_refine import (
@@ -282,7 +282,7 @@ class TestSeqBandedDpParity:
         ts = r["trim_offset"]
         ns = r["num_samples"]
         trimmed = raw[ts:ns].astype(np.float32)[::-1].copy()
-        norm, _ = normalize_signal(trimmed, method="median_mad")
+        norm, _ = normalize_read_signal(trimmed, method="median_mad")
 
         mt = MoveTable(
             stride=r["stride"],
@@ -360,7 +360,7 @@ class TestRefinementPipelineParity:
             ts = r["trim_offset"]
             ns = r["num_samples"]
             trimmed = raw[ts:ns].astype(np.float32)[::-1].copy()
-            norm, _ = normalize_signal(trimmed, method="median_mad")
+            norm, _ = normalize_read_signal(trimmed, method="median_mad")
 
             mt = MoveTable(
                 stride=r["stride"],
@@ -421,7 +421,7 @@ class TestMonolithicPipelineParity:
         ts = r["trim_offset"]
         ns = r["num_samples"]
         trimmed = raw[ts:ns].astype(np.float32)[::-1].copy()
-        norm, _ = normalize_signal(trimmed, method="median_mad")
+        norm, _ = normalize_read_signal(trimmed, method="median_mad")
 
         mt = MoveTable(
             stride=r["stride"],
@@ -684,7 +684,7 @@ class TestRefinerEndToEndParity:
             ts = r["trim_offset"]
             ns = r["num_samples"]
             trimmed = raw[ts:ns].astype(np.float32)[::-1].copy()
-            norm, _ = normalize_signal(trimmed, method="median_mad")
+            norm, _ = normalize_read_signal(trimmed, method="median_mad")
 
             mt = MoveTable(
                 stride=r["stride"],

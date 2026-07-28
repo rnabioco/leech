@@ -21,7 +21,7 @@ from leech.features import (
     MoveTable,
     compute_ref_to_signal,
     extract_move_table,
-    normalize_signal,
+    normalize_read_signal,
 )
 
 # Skip if leech_core not built
@@ -233,7 +233,7 @@ def compare_full_pipeline(max_reads=500):
         ts = r["trim_offset"]
         ns = r["num_samples"]
         trimmed = raw[ts:ns].astype(np.float32)[::-1].copy()
-        py_norm, _ = normalize_signal(trimmed, method="median_mad")
+        py_norm, _ = normalize_read_signal(trimmed, method="median_mad")
 
         mt = MoveTable(
             stride=r["stride"],

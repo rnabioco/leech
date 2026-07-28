@@ -18,7 +18,7 @@ from leech.features import (
     compute_dwell_features,
     compute_signal_features,
     extract_move_table,
-    normalize_signal,
+    normalize_read_signal,
 )
 
 # Point these at a local BAM/POD5 pair with mv/ns tags to run the benchmark.
@@ -106,7 +106,7 @@ def python_full_pipeline(reads, pod5_path, reverse=True):
         if reverse:
             sig_map = (ns - ts) - sig_map[::-1]
 
-        norm, _ = normalize_signal(trimmed, method="median_mad")
+        norm, _ = normalize_read_signal(trimmed, method="median_mad")
         dwells = np.diff(sig_map).astype(np.float32)
         compute_dwell_features(dwells)
         compute_signal_features(norm, sig_map)
@@ -227,7 +227,7 @@ if __name__ == "__main__":
         trimmed = raw[ts:ns].astype(np.float32)[::-1].copy()
 
         t0 = time.perf_counter()
-        norm, _ = normalize_signal(trimmed, method="median_mad")
+        norm, _ = normalize_read_signal(trimmed, method="median_mad")
         t_norm += time.perf_counter() - t0
 
         t0 = time.perf_counter()

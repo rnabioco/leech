@@ -579,16 +579,16 @@ class TestReversalProperties:
         This is important because it means the order of operations doesn't
         matter for the final normalized signal values — only the ordering changes.
         """
-        from leech.features import normalize_signal
+        from leech.features import normalize_read_signal
 
         signal = _make_asymmetric_signal(500)
 
         # Path 1: reverse then normalize
         reversed_signal = signal[::-1].copy()
-        norm_of_reversed, _ = normalize_signal(reversed_signal, method="median_mad")
+        norm_of_reversed, _ = normalize_read_signal(reversed_signal, method="median_mad")
 
         # Path 2: normalize then reverse
-        norm_of_original, _ = normalize_signal(signal.copy(), method="median_mad")
+        norm_of_original, _ = normalize_read_signal(signal.copy(), method="median_mad")
         reversed_norm = norm_of_original[::-1]
 
         np.testing.assert_allclose(
