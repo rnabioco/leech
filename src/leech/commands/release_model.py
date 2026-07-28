@@ -67,7 +67,7 @@ def handle_release(
     bundle_metadata: dict | None = None
     bundle_size_mb: float | None = None
     try:
-        from leech.util import list_bundle_models
+        from leech.bundling import list_bundle_models
 
         bundle_metadata = list_bundle_models(bundle_path)
         bundle_size_mb = bundle_path.stat().st_size / (1024 * 1024)
@@ -200,7 +200,7 @@ def handle_fetch(
 
     # Quick verification
     try:
-        from leech.util import list_bundle_models
+        from leech.bundling import list_bundle_models
 
         meta = list_bundle_models(bundle_path)
         console.print(

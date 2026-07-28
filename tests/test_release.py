@@ -277,8 +277,20 @@ class TestGitHubWrapper:
     @patch("leech.release.github._run_gh")
     def test_list_releases(self, mock_gh):
         releases = [
-            {"tagName": "model-foo-v1.0", "name": "foo", "publishedAt": "2026-01-01", "isPrerelease": False, "isDraft": False},
-            {"tagName": "v0.3.1", "name": "code release", "publishedAt": "2026-01-01", "isPrerelease": False, "isDraft": False},
+            {
+                "tagName": "model-foo-v1.0",
+                "name": "foo",
+                "publishedAt": "2026-01-01",
+                "isPrerelease": False,
+                "isDraft": False,
+            },
+            {
+                "tagName": "v0.3.1",
+                "name": "code release",
+                "publishedAt": "2026-01-01",
+                "isPrerelease": False,
+                "isDraft": False,
+            },
         ]
         mock_gh.return_value = _mock_run(stdout=json.dumps(releases))
         from leech.release.github import list_releases
@@ -309,7 +321,7 @@ class TestHandleRelease:
             patch("leech.release.check_gh_authenticated", return_value=True),
             patch("leech.release.get_repo_slug", return_value="owner/repo"),
             patch("leech.release.create_release") as mock_create,
-            patch("leech.util.list_bundle_models", return_value=SAMPLE_BUNDLE_META),
+            patch("leech.bundling.list_bundle_models", return_value=SAMPLE_BUNDLE_META),
         ):
             from leech.commands.release_model import handle_release
 
@@ -324,7 +336,7 @@ class TestHandleRelease:
             patch("leech.release.get_repo_slug", return_value="owner/repo"),
             patch("leech.release.delete_release") as mock_delete,
             patch("leech.release.create_release", return_value="https://url"),
-            patch("leech.util.list_bundle_models", return_value=SAMPLE_BUNDLE_META),
+            patch("leech.bundling.list_bundle_models", return_value=SAMPLE_BUNDLE_META),
         ):
             from leech.commands.release_model import handle_release
 
@@ -347,7 +359,7 @@ class TestHandleFetch:
             patch("leech.release.check_gh_available", return_value=True),
             patch("leech.release.get_repo_slug", return_value="owner/repo"),
             patch("leech.release.download_release_asset") as mock_dl,
-            patch("leech.util.list_bundle_models", return_value=SAMPLE_BUNDLE_META),
+            patch("leech.bundling.list_bundle_models", return_value=SAMPLE_BUNDLE_META),
         ):
             mock_dl.return_value = tmp_path
             from leech.commands.release_model import handle_fetch
@@ -365,7 +377,7 @@ class TestHandleFetch:
             patch("leech.release.check_gh_available", return_value=True),
             patch("leech.release.get_repo_slug", return_value="owner/repo"),
             patch("leech.release.download_release_asset") as mock_dl,
-            patch("leech.util.list_bundle_models", return_value=SAMPLE_BUNDLE_META),
+            patch("leech.bundling.list_bundle_models", return_value=SAMPLE_BUNDLE_META),
         ):
             mock_dl.return_value = tmp_path
             from leech.commands.release_model import handle_fetch
