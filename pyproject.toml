@@ -53,7 +53,7 @@ test = [
 # Full local dev env: test runners + lint/type/QA tooling.
 dev = [
   "leech[test]",
-  "ruff>=0.3.0",  # Modern linter/formatter (replaces black + flake8)
+  "ruff>=0.16.0",  # Modern linter/formatter (replaces black + flake8)
   "ty>=0.0.1a10",
   "nbqa>=1.7.0",  # Quality assurance for Jupyter notebooks
   "vulture>=2.15",  # Dead code detection
