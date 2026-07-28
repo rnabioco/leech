@@ -19,6 +19,27 @@ from leech.logging_config import setup_logging
 configure_rich_click()
 
 
+def _resolve_confound_token(confound: str | None, confound_config: str | None) -> str | None:
+    """Collapse the two confound CLI surfaces into a single canonical token.
+
+    ``--confound-config`` (a JSON/YAML file with exactly one confound, in the
+    single-confound scope) takes precedence over the inline ``--confound``
+    string. The result is a token string carried through the existing training
+    plumbing and parsed by ``leech.confounds.parse_confound_token``.
+    """
+    if confound_config:
+        from leech.confounds import load_confound_config
+
+        specs = load_confound_config(confound_config)
+        if len(specs) != 1:
+            raise click.BadParameter(
+                f"--confound-config must define exactly one confound, found {len(specs)}",
+                param_hint="--confound-config",
+            )
+        return specs[0].to_token()
+    return confound
+
+
 class WorkflowGroup(click.RichGroup):
     """A rich-click group that lists subcommands in workflow order.
 
@@ -585,9 +606,21 @@ def merge(
 )
 @click.option(
     "--confound",
-    type=click.Choice(["disc_base", "trna_id"]),
+    type=str,
     default=None,
-    help="Confound to decorrelate via gradient reversal. 'disc_base' = discriminator base at position 73 (4 classes). 'trna_id' = full tRNA isoacceptor identity (N classes, one per unique reference tRNA).",
+    help=(
+        "Confound to decorrelate via gradient reversal. Built-in aliases: "
+        "'disc_base' (discriminator base at position 73, 4 classes) and "
+        "'trna_id' (tRNA isoacceptor identity, one class per reference). "
+        "Or an inline spec 'source:mapping[:table]', e.g. "
+        "'reference_name:identity' or 'source_group:lookup:groups.json'."
+    ),
+)
+@click.option(
+    "--confound-config",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help="Path to a JSON/YAML confound config (single confound). Takes precedence over --confound.",
 )
 @click.option(
     "--cl-regression/--no-cl-regression",
@@ -665,6 +698,7 @@ def train(
     adversarial_lambda,
     adversarial_anneal_epochs,
     confound,
+    confound_config,
     cl_regression,
     cl_lambda,
     signal_mode,
@@ -673,6 +707,8 @@ def train(
 ):
     """Train a model on prepared data."""
     from leech.commands.train import handle_train
+
+    confound = _resolve_confound_token(confound, confound_config)
 
     handle_train(
         train_data=train_data,
@@ -1156,9 +1192,21 @@ def fetch(name, model_version, tag, output_dir, repo):
 )
 @click.option(
     "--confound",
-    type=click.Choice(["disc_base", "trna_id"]),
+    type=str,
     default=None,
-    help="Confound to decorrelate via gradient reversal. 'disc_base' = discriminator base at position 73 (4 classes). 'trna_id' = full tRNA isoacceptor identity (N classes, one per unique reference tRNA).",
+    help=(
+        "Confound to decorrelate via gradient reversal. Built-in aliases: "
+        "'disc_base' (discriminator base at position 73, 4 classes) and "
+        "'trna_id' (tRNA isoacceptor identity, one class per reference). "
+        "Or an inline spec 'source:mapping[:table]', e.g. "
+        "'reference_name:identity' or 'source_group:lookup:groups.json'."
+    ),
+)
+@click.option(
+    "--confound-config",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help="Path to a JSON/YAML confound config (single confound). Takes precedence over --confound.",
 )
 @click.option(
     "--cl-regression/--no-cl-regression",
@@ -1230,6 +1278,7 @@ def optimize(
     adversarial_lambda,
     adversarial_anneal_epochs,
     confound,
+    confound_config,
     cl_regression,
     cl_lambda,
     signal_mode,
@@ -1237,6 +1286,8 @@ def optimize(
 ):
     """Optimize model hyperparameters using grid search over chunk contexts."""
     from leech.commands.optimize import handle_optimize
+
+    confound = _resolve_confound_token(confound, confound_config)
 
     handle_optimize(
         train_data=train_data,

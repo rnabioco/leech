@@ -1,17 +1,38 @@
-"""Confound mappings for adversarial training.
+"""Confound handling for adversarial (gradient-reversal) training.
 
-The discriminator base (position 73 in Sprinzl numbering) is the nucleotide
-immediately 5' of the CCA tail.  It varies between tRNA species and creates a
-sequence-level confound that can bias signal-based classifiers.
+Adversarial training decorrelates the learned representation from a *confound*:
+some per-chunk categorical variable the model should NOT use. The gradient
+reversal machinery (``losses.AdversarialHead``) only needs, per chunk, an
+integer confound class (or ``-1`` to ignore) plus a class count. Everything
+domain-specific lives in how that integer is derived from chunk metadata.
 
-The disc_base_map is derived at pipeline time from the reference FASTA (see
-``extract_disc_bases`` in the Snakemake rules).  The library never hardcodes
-organism-specific base assignments.
+That derivation is described declaratively by a :class:`ConfoundSpec`:
+
+* ``source`` -- which chunk field holds the raw value
+  (e.g. ``"reference_name"``, ``"label_int"``, ``"source_group"``).
+* ``mapping`` -- how a raw value becomes a class int:
+
+  * ``"identity"`` -- each distinct observed value gets its own class
+    (this is the generic form of the old ``trna_id`` mode).
+  * ``"lookup"`` -- translate raw values through an external table
+    ``{value: category}`` and map categories to contiguous ints
+    (the generic form of the old ``disc_base`` mode).
+
+Two built-in aliases reproduce the original tRNA-specific behaviour:
+
+* ``trna_id``   == ``ConfoundSpec("reference_name", "identity")``
+* ``disc_base`` == a ``label_int`` lookup through ``disc_base_map.json``.
+
+The discriminator base (Sprinzl position 73, one nt 5' of the CCA tail) is a
+tRNA-specific sequence confound; :func:`extract_disc_bases_from_fasta` derives
+its per-amino-acid map at pipeline time. The training path never hardcodes
+organism-specific assignments -- it only consumes the generic sidecar.
 """
 
 import json
 import logging
 from collections import Counter, defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 
 DISC_BASE_TO_INT: dict[str, int] = {"A": 0, "C": 1, "G": 2, "T": 3}
@@ -197,3 +218,237 @@ def build_trna_identity_map(
     for name, idx in ref_to_int.items():
         logger.debug(f"  {name} -> {idx}")
     return ref_to_int, len(ref_to_int)
+
+
+# ---------------------------------------------------------------------------
+# Generic, config-driven confound layer
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ConfoundSpec:
+    """Declarative description of an adversarial confound.
+
+    Args:
+        source: Chunk-dict field holding the raw confound value
+            (e.g. ``"reference_name"``, ``"label_int"``, ``"source_group"``).
+        mapping: ``"identity"`` (each distinct value is its own class) or
+            ``"lookup"`` (translate values through an external ``table``).
+        table: For ``mapping="lookup"``, path to a JSON/YAML sidecar mapping
+            ``{raw_value: category}``. Resolved relative to the training data
+            directory when not absolute. Ignored by the built-in ``disc_base``
+            alias, which loads ``disc_base_map.json`` via :func:`load_disc_base_map`.
+        name: Human-readable label used in logging. Defaults to ``source``.
+        builtin: Internal marker for the ``disc_base`` alias, which composes
+            the lookup through ``label_map`` and the fixed A/C/G/T class space.
+    """
+
+    source: str
+    mapping: str = "identity"
+    table: str | None = None
+    name: str | None = None
+    builtin: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.mapping not in ("identity", "lookup"):
+            raise ValueError(
+                f"Unknown confound mapping '{self.mapping}' (expected 'identity' or 'lookup')"
+            )
+        if self.mapping == "lookup" and self.table is None and self.builtin is None:
+            raise ValueError("confound mapping='lookup' requires a 'table' path")
+
+    @property
+    def label(self) -> str:
+        return self.name or self.source
+
+    def to_token(self) -> str:
+        """Serialize to the compact string carried through the training config."""
+        if self.builtin is not None:
+            return self.builtin
+        if self.mapping == "lookup":
+            return f"{self.source}:lookup:{self.table}"
+        return f"{self.source}:identity"
+
+
+# Built-in aliases reproducing the original tRNA-specific confounds.
+BUILTIN_CONFOUNDS: dict[str, ConfoundSpec] = {
+    "trna_id": ConfoundSpec(
+        source="reference_name", mapping="identity", name="trna_id", builtin="trna_id"
+    ),
+    "disc_base": ConfoundSpec(
+        source="label_int", mapping="lookup", name="disc_base", builtin="disc_base"
+    ),
+}
+
+
+def parse_confound_token(token: str) -> ConfoundSpec:
+    """Parse a ``--confound`` string into a :class:`ConfoundSpec`.
+
+    Accepts a built-in alias (``disc_base``, ``trna_id``) or an inline spec
+    ``source:mapping[:table]`` (e.g. ``reference_name:identity`` or
+    ``source_group:lookup:groups.json``).
+    """
+    token = token.strip()
+    if ":" not in token:
+        try:
+            return BUILTIN_CONFOUNDS[token]
+        except KeyError:
+            raise ValueError(
+                f"Unknown confound '{token}'. Use a built-in alias "
+                f"({', '.join(sorted(BUILTIN_CONFOUNDS))}) or an inline spec "
+                "'source:mapping[:table]'."
+            ) from None
+    parts = token.split(":")
+    if len(parts) == 2:
+        source, mapping = parts
+        return ConfoundSpec(source=source, mapping=mapping)
+    if len(parts) == 3:
+        source, mapping, table = parts
+        return ConfoundSpec(source=source, mapping=mapping, table=table)
+    raise ValueError(f"Malformed confound spec '{token}' (expected 'source:mapping[:table]')")
+
+
+def load_confound_config(path: str | Path) -> list[ConfoundSpec]:
+    """Load a list of :class:`ConfoundSpec` from a JSON or YAML config file.
+
+    Accepts a top-level list, or a mapping with a ``confounds:`` key. Each
+    entry is either a built-in alias string or a mapping with ``source`` /
+    ``mapping`` / ``table`` / ``name`` keys.
+    """
+    path = Path(path)
+    text = path.read_text()
+    if path.suffix in (".yaml", ".yml"):
+        import yaml
+
+        data = yaml.safe_load(text)
+    else:
+        data = json.loads(text)
+
+    if isinstance(data, dict):
+        data = data.get("confounds", data)
+    if not isinstance(data, list):
+        raise ValueError(
+            f"Confound config '{path}' must be a list of confounds "
+            "(or a mapping with a 'confounds:' list)."
+        )
+
+    specs: list[ConfoundSpec] = []
+    for entry in data:
+        if isinstance(entry, str):
+            specs.append(parse_confound_token(entry))
+        elif isinstance(entry, dict):
+            if "source" not in entry:
+                raise ValueError(f"Confound config entry missing 'source': {entry}")
+            specs.append(
+                ConfoundSpec(
+                    source=entry["source"],
+                    mapping=entry.get("mapping", "identity"),
+                    table=entry.get("table"),
+                    name=entry.get("name"),
+                )
+            )
+        else:
+            raise ValueError(f"Invalid confound config entry: {entry!r}")
+    return specs
+
+
+@dataclass
+class ConfoundEncoder:
+    """Maps a chunk to a confound class integer (``-1`` = ignore).
+
+    Built once from the training data, then reused for train/val datasets so
+    both share the same value-to-class assignment.
+    """
+
+    name: str
+    source: str
+    value_to_class: dict
+    num_classes: int
+
+    def encode(self, chunk: dict) -> int:
+        return self.value_to_class.get(chunk.get(self.source), -1)
+
+
+def _load_lookup_table(table: str, data_dir: Path | None) -> dict:
+    """Load a ``{raw_value: category}`` sidecar for ``mapping='lookup'``."""
+    path = Path(table)
+    if not path.is_absolute() and data_dir is not None and not path.exists():
+        path = data_dir / table
+    text = Path(path).read_text()
+    if path.suffix in (".yaml", ".yml"):
+        import yaml
+
+        return yaml.safe_load(text)
+    return json.loads(text)
+
+
+def build_confound_encoder(
+    spec: ConfoundSpec,
+    *,
+    source_values: list | None = None,
+    label_map: dict[str, int] | None = None,
+    data_dir: Path | None = None,
+) -> ConfoundEncoder | None:
+    """Construct a :class:`ConfoundEncoder` from a spec and the training data.
+
+    Args:
+        spec: The confound description.
+        source_values: Per-chunk raw values of ``spec.source`` from the training
+            set. Required for ``mapping="identity"``.
+        label_map: ``{class_name: label_int}`` -- required by the ``disc_base``
+            built-in to compose the discriminator-base lookup.
+        data_dir: Training data directory, used to resolve sidecar tables and
+            to locate ``disc_base_map.json``.
+
+    Returns:
+        A ready encoder, or ``None`` (with a warning) when required inputs are
+        missing -- letting the caller disable adversarial training gracefully.
+    """
+    # Built-in discriminator-base confound: label_int -> A/C/G/T class.
+    if spec.builtin == "disc_base":
+        if label_map is None:
+            logger.warning("confound 'disc_base' needs a label_map; disabling adversarial training")
+            return None
+        disc_base_map = load_disc_base_map(data_dir) if data_dir is not None else None
+        confound_map = build_confound_map(label_map, disc_base_map=disc_base_map)
+        logger.info(f"Adversarial confound 'disc_base': {confound_map}")
+        return ConfoundEncoder(
+            name=spec.label,
+            source="label_int",
+            value_to_class=confound_map,
+            num_classes=NUM_DISC_BASES,
+        )
+
+    if spec.mapping == "identity":
+        if not source_values:
+            logger.warning(
+                "confound '%s' (identity on '%s') found no source values; "
+                "disabling adversarial training",
+                spec.label,
+                spec.source,
+            )
+            return None
+        unique = sorted({v for v in source_values if v not in (None, "")})
+        value_to_class = {v: i for i, v in enumerate(unique)}
+        logger.info(
+            "Adversarial confound '%s': identity on '%s', %d classes",
+            spec.label,
+            spec.source,
+            len(value_to_class),
+        )
+        return ConfoundEncoder(spec.label, spec.source, value_to_class, len(value_to_class))
+
+    # mapping == "lookup"
+    assert spec.table is not None
+    table = _load_lookup_table(spec.table, data_dir)
+    categories = sorted(set(table.values()))
+    cat_to_int = {c: i for i, c in enumerate(categories)}
+    value_to_class = {value: cat_to_int[cat] for value, cat in table.items()}
+    logger.info(
+        "Adversarial confound '%s': lookup on '%s' via %s, %d classes",
+        spec.label,
+        spec.source,
+        spec.table,
+        len(categories),
+    )
+    return ConfoundEncoder(spec.label, spec.source, value_to_class, len(categories))

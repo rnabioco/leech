@@ -35,6 +35,7 @@ Example:
 
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import polars as pl
@@ -44,6 +45,9 @@ from torch.utils.data import Dataset
 from leech.chunking import load_chunks
 from leech.features import encode_signal_kmer, sequence_to_int
 from leech.models.inference_wrapper import ModelInferenceWrapper
+
+if TYPE_CHECKING:
+    from leech.confounds import ConfoundEncoder
 
 logger = logging.getLogger("leech.dataset")
 
@@ -193,8 +197,7 @@ class LeechDataset(Dataset):
         signal_kmer_context: tuple[int, int] = (4, 4),
         left_context: int | None = None,
         right_context: int | None = None,
-        confound_map: dict[int, int] | None = None,
-        ref_confound_map: dict[str, int] | None = None,
+        confound_encoder: "ConfoundEncoder | None" = None,
         cl_regression: bool = False,
         signal_mode: str = "both",
         time_mask_bases: int = 0,
@@ -223,10 +226,11 @@ class LeechDataset(Dataset):
                 When both left_context and right_context are provided, crop
                 asymmetrically around the focus base instead of center-cropping.
             right_context: Right signal context (samples after focus base).
-            confound_map: Optional mapping from ``label_int`` to confound class
-                (e.g. discriminator base identity).  When provided, each batch
-                includes a ``confound_label`` tensor for adversarial training.
-                Labels not found in the map get ``-1`` (ignored by CE loss).
+            confound_encoder: Optional :class:`~leech.confounds.ConfoundEncoder`
+                that maps each chunk to an integer confound class. When provided,
+                each batch includes a ``confound_label`` tensor for adversarial
+                training. Chunks whose confound value is unknown get ``-1``
+                (ignored by the CE loss via ``ignore_index=-1``).
             cl_regression: When True, include ``cl_target`` in each batch
                 (cl_value / 255.0 in [0,1]; sentinel -1.0 for missing).
             time_mask_bases: Max width in bases for time masking (0 = disabled).
@@ -284,9 +288,8 @@ class LeechDataset(Dataset):
         self._signals: list[torch.Tensor] = []
         self._features: list[torch.Tensor] = []
         self._needs_features = model_type in FEATURE_MODELS
-        self._confound_map = confound_map
-        self._ref_confound_map = ref_confound_map
-        self._has_confound = confound_map is not None or ref_confound_map is not None
+        self._confound_encoder = confound_encoder
+        self._has_confound = confound_encoder is not None
         self._confound_labels: list[torch.Tensor] = []
         self._cl_regression = cl_regression
         self._cl_targets: list[torch.Tensor] = []
@@ -368,16 +371,10 @@ class LeechDataset(Dataset):
             else:
                 self._features.append(torch.empty(0))
 
-            # Confound label for adversarial training. Two modes:
-            # 1. label-level (disc_base): confound_map maps label_int → class
-            # 2. chunk-level (trna_id): ref_confound_map maps reference_name → class
-            if self._has_confound:
-                if self._ref_confound_map is not None:
-                    ref_name = chunk.get("reference_name", "")
-                    confound_class = self._ref_confound_map.get(ref_name, -1)
-                else:
-                    label_int = chunk["label_int"]
-                    confound_class = confound_map.get(label_int, -1)
+            # Confound label for adversarial training. The encoder reads the
+            # configured chunk field and maps it to a class int (-1 = ignore).
+            if self._confound_encoder is not None:
+                confound_class = self._confound_encoder.encode(chunk)
                 self._confound_labels.append(torch.tensor(confound_class, dtype=torch.long))
 
             # CL regression target (cl_value / 255.0; sentinel -1.0 for missing)
