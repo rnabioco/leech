@@ -1,7 +1,7 @@
 """
 Model architectures for leech.
 
-Available models (24 total):
+Available models (25 total):
 - ConvLSTMBase: Baseline model (signal + sequence only)
 - ConvLSTMBaseAttn: ConvLSTMBase with attention pooling
 - ConvLSTMBaseBN: ConvLSTMBase with batch normalization
@@ -26,6 +26,7 @@ Available models (24 total):
 - TCNDwellSplitResidual: TCN with separate branches for raw signal and kmer residual
 - TCNDwellSplitResidualLN: TCNDwellSplitResidual with layer normalization
 - ResNetDwell: Residual Network with skip connections
+- SignalCNN: Signal-only 1D-CNN classifier (ignores sequence/dwell inputs)
 """
 
 from __future__ import annotations
@@ -71,6 +72,7 @@ _MODEL_SPECS: dict[str, tuple[str, str]] = {
     "TCNDwellSplitResidual": ("leech.models.tcn_dwell_split_residual", "TCNDwellSplitResidual"),
     "TCNDwellSplitResidualLN": ("leech.models.tcn_dwell_split_residual", "TCNDwellSplitResidualLN"),
     "ResNetDwell": ("leech.models.resnet_dwell", "ResNetDwell"),
+    "SignalCNN": ("leech.models.signal_cnn", "SignalCNN"),
 }
 
 # Non-registry classes also re-exported from this package (inference helpers).

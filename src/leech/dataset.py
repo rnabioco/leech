@@ -951,3 +951,28 @@ def collate_fn(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
         result["cl_target"] = torch.stack([item["cl_target"] for item in batch])
 
     return result
+
+
+class SignalDataset(Dataset):
+    """Minimal signal-only dataset for ``SignalCNN``.
+
+    Yields the leech batch contract (``signal``, a dummy ``sequence``, ``label``)
+    so ``collate_fn`` and ``Trainer`` work unchanged for signal-only
+    classification (e.g. barcode demux from the adapter signal). ``X`` is
+    ``(N, L)`` or ``(N, 1, L)``; ``y`` is integer class labels.
+    """
+
+    def __init__(self, X: np.ndarray, y: np.ndarray) -> None:
+        X = np.asarray(X, dtype=np.float32)
+        if X.ndim == 2:
+            X = X[:, None, :]
+        self.X = torch.from_numpy(X)
+        self.y = torch.as_tensor(np.asarray(y), dtype=torch.long)
+        # SignalCNN ignores sequence; a tiny placeholder keeps collate_fn happy.
+        self._dummy_seq = torch.zeros(1, dtype=torch.float32)
+
+    def __len__(self) -> int:
+        return len(self.X)
+
+    def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
+        return {"signal": self.X[idx], "sequence": self._dummy_seq, "label": self.y[idx]}
