@@ -258,15 +258,17 @@ infer_batch_size: 256
 use_grid_search: false    # Set to true to use grid search before training
 
 # Grid search parameters
-# These define the hyperparameter search space
+# `leech model optimize` searches signal context windows and dwell offset --
+# NOT learning rate, batch size, or layer sizes. Values may be given as a list
+# or as a "start:stop:step" range string.
 grid_search:
-  learning_rate: [0.0001, 0.001, 0.01]
-  batch_size: [64, 128, 256]
-  hidden_size: [128, 256, 512]
-  num_layers: [1, 2, 3]
-  dropout: [0.1, 0.2, 0.3]
+  context_grid: "200:1000:200"   # symmetric fallback when left/right unset
+  # left_contexts: [200, 500, 1000]
+  # right_contexts: [200, 500]
+  dwell_offsets: "0"
 
 grid_search_epochs: 20    # Epochs per grid search trial (shorter than full training)
+grid_search_parallel: 1   # Concurrent trials per grid search job
 
 # ============================================================================
 # Cluster-specific settings

@@ -75,13 +75,22 @@ models_to_compare:
 
 ### Grid search
 
+`leech model optimize` searches signal context windows and dwell offset. It does
+not search learning rate, batch size, or layer sizes — set those directly under
+the training hyperparameters above.
+
 ```yaml
 use_grid_search: true
 grid_search:
-  learning_rate: [0.0001, 0.001, 0.01]
-  batch_size: [64, 128, 256]
-  hidden_size: [128, 256, 512]
+  context_grid: "200:1000:200"   # symmetric fallback when left/right unset
+  left_contexts: [200, 500, 1000]
+  right_contexts: [200, 500]
+  dwell_offsets: "0"
+grid_search_epochs: 20
+grid_search_parallel: 1
 ```
+
+Each value may be a list or a `start:stop:step` range string.
 
 ### Pairwise amino acid pairs
 
