@@ -29,6 +29,11 @@ dependencies = [
   "nvitop>=1.6.1",
   "polars>=1.0.0",
   "pysam>=0.22.0",
+  # Release specs (release/spec.py) and `--confound-config x.yaml` + YAML
+  # lookup tables (confounds.py). Both import it lazily so it stays off the
+  # CLI startup path, but both are shipped features, so it is a runtime
+  # dependency -- it previously resolved only by accident, transitively via
+  # snakemake in the `pipeline` extra.
   "pyyaml>=6.0",
   "rich>=13.0.0",
   "rich-click>=1.7.0",
