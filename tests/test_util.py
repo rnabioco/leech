@@ -1543,5 +1543,63 @@ class TestVmapInferenceIntegration:
         assert len(read_probs) == total_chunks
 
 
+class TestResolvePairLabels:
+    """Regression tests for #140 -- class names must not be recovered by splitting."""
+
+    def test_uses_recorded_labels(self):
+        from leech.inference.aggregation import resolve_pair_labels
+
+        pair_labels = {"m6A_site_unmod_site": ["m6A_site", "unmod_site"]}
+        assert resolve_pair_labels("m6A_site_unmod_site", pair_labels) == (
+            "m6A_site",
+            "unmod_site",
+        )
+
+    def test_underscore_class_names_survive_aggregation(self):
+        """Splitting on '_' would yield ('m6A', 'site_unmod_site') -- garbage keys."""
+        from leech.inference import aggregate_pairwise
+
+        pairs = ["m6A_site_unmod_site"]
+        pair_labels = {"m6A_site_unmod_site": ["m6A_site", "unmod_site"]}
+
+        predicted, _, votes = aggregate_pairwise(pairs, [0.1], pair_labels)
+        assert predicted == "m6A_site"
+        assert set(votes) == {"m6A_site", "unmod_site"}
+
+    def test_one_vs_all_respects_recorded_target(self):
+        """Target class is whichever holds label 0, not whichever sorts first."""
+        from leech.inference import aggregate_one_vs_all
+
+        # "notzeta" sorts before "zeta", so the legacy split would pick the
+        # negative class as the target.
+        pairs = ["notzeta_zeta"]
+        pair_labels = {"notzeta_zeta": ["zeta", "notzeta"]}
+
+        predicted, _, scores = aggregate_one_vs_all(pairs, [0.1], pair_labels)
+        assert predicted == "zeta"
+        assert set(scores) == {"zeta"}
+
+    def test_falls_back_to_split_without_metadata(self):
+        from leech.inference.aggregation import resolve_pair_labels
+
+        assert resolve_pair_labels("Ala_Gly", None) == ("Ala", "Gly")
+
+    def test_bundle_records_pair_labels(self, tmp_path):
+        from leech.bundling import _collect_pair_labels
+
+        configs = {
+            "Ala_Gly": {"label_map": {"Ala": 0, "Gly": 1}},
+            "Gly_Ser": {"label_map": {"Ser": 1, "Gly": 0}},
+        }
+        labels = _collect_pair_labels(["Ala_Gly", "Gly_Ser"], configs)
+        assert labels == {"Ala_Gly": ["Ala", "Gly"], "Gly_Ser": ["Gly", "Ser"]}
+
+    def test_bundle_omits_pairs_without_label_map(self):
+        from leech.bundling import _collect_pair_labels
+
+        labels = _collect_pair_labels(["Ala_Gly"], {"Ala_Gly": {}})
+        assert labels == {}
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

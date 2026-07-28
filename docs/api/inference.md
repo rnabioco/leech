@@ -37,8 +37,8 @@ The output BAM file contains the following additional tags. By default `ac`,
 
 | Tag | Type | Description |
 |-----|------|-------------|
-| `aa` | str | Predicted class call (amino acid label, or `unc` if below threshold) |
-| `ac` | uint8 / float | Confidence (max class probability) |
+| `aa` | str | Predicted class call, or `unc` if below threshold |
+| `ac` | uint8 / float | Confidence (max class probability), regardless of whether the read passed the threshold |
 | `am` | uint8 / float | Margin (top probability minus second-highest) |
 | `pn` | str | Comma-separated class names |
 | `pp` | uint8[] / float[] | Full probability distribution over classes |

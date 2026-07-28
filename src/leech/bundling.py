@@ -76,6 +76,43 @@ def _validate_arch_match(model_dir: Path, pair: str, ref_arch_config: dict) -> d
     return pair_full_config
 
 
+def _pair_labels(pair: str, full_config: dict) -> list[str] | None:
+    """Return ``[negative_class, positive_class]`` for a pairwise model.
+
+    Ordered by the integer label the model was trained against, so callers never
+    have to recover class names by splitting the pair string — which is ambiguous
+    whenever a class name itself contains an underscore.
+
+    Returns None when the config predates ``label_map`` or isn't binary.
+    """
+    label_map = full_config.get("label_map")
+    if not isinstance(label_map, dict) or len(label_map) != 2:
+        return None
+    try:
+        ordered = sorted(label_map.items(), key=lambda kv: int(kv[1]))
+    except (TypeError, ValueError):
+        logger.warning(f"{pair}: label_map has non-integer labels, skipping pair_labels")
+        return None
+    return [str(name) for name, _ in ordered]
+
+
+def _collect_pair_labels(pairs: list[str], configs: dict[str, dict]) -> dict[str, list[str]]:
+    """Build the ``pair_labels`` metadata map, omitting pairs we can't resolve."""
+    resolved = {}
+    for pair in pairs:
+        labels = _pair_labels(pair, configs.get(pair, {}))
+        if labels is not None:
+            resolved[pair] = labels
+    missing = [p for p in pairs if p not in resolved]
+    if missing:
+        logger.warning(
+            f"No label_map for {len(missing)} of {len(pairs)} models "
+            f"(e.g. {missing[0]}); aggregation will fall back to splitting the "
+            "pair name on '_' for those."
+        )
+    return resolved
+
+
 def _atomic_save(obj: object, output_path: Path) -> Path:
     """Save ``obj`` to ``output_path`` atomically via a sibling temp file."""
     output_path = Path(output_path)
@@ -131,9 +168,10 @@ def create_bundle(
     pairs, _, ref_arch_config, architecture = _reference_arch_config(model_dirs)
 
     models_dict: dict[str, dict] = {}
+    pair_configs: dict[str, dict] = {}
     for pair in pairs:
         model_dir = Path(model_dirs[pair])
-        _validate_arch_match(model_dir, pair, ref_arch_config)
+        pair_configs[pair] = _validate_arch_match(model_dir, pair, ref_arch_config)
         checkpoint = _load_checkpoint(model_dir)
 
         model_entry = {
@@ -161,6 +199,7 @@ def create_bundle(
             "comparison_type": comparison_type,
             "num_models": len(models_dict),
             "pairs": pairs,
+            "pair_labels": _collect_pair_labels(pairs, pair_configs),
         },
         "config": ref_arch_config,
         "models": models_dict,
@@ -316,9 +355,10 @@ def create_torchscript_bundle(
     requires_features = architecture in ModelInferenceWrapper.FEATURE_MODELS
 
     models_dict: dict[str, dict] = {}
+    pair_configs: dict[str, dict] = {}
     for pair in pairs:
         model_dir = Path(model_dirs[pair])
-        _validate_arch_match(model_dir, pair, ref_arch_config)
+        pair_configs[pair] = _validate_arch_match(model_dir, pair, ref_arch_config)
         model, _, checkpoint = _load_model_for_bundling(model_dir, ref_arch_config)
 
         ep = export_model(model, ref_arch_config)
@@ -335,6 +375,7 @@ def create_torchscript_bundle(
             "comparison_type": comparison_type,
             "num_models": len(models_dict),
             "pairs": pairs,
+            "pair_labels": _collect_pair_labels(pairs, pair_configs),
             "torchscript": True,
             "requires_features": requires_features,
         },
@@ -410,10 +451,11 @@ def create_vmap_bundle(
     models_list: list[nn.Module] = []
     platt_a_list: list[float] = []
     platt_b_list: list[float] = []
+    pair_configs: dict[str, dict] = {}
 
     for pair in pairs:
         model_dir = Path(model_dirs[pair])
-        _validate_arch_match(model_dir, pair, ref_arch_config)
+        pair_configs[pair] = _validate_arch_match(model_dir, pair, ref_arch_config)
         model, _, _ = _load_model_for_bundling(model_dir, ref_arch_config)
         model.eval()
         models_list.append(model)
@@ -440,6 +482,7 @@ def create_vmap_bundle(
             "comparison_type": comparison_type,
             "num_models": len(pairs),
             "pairs": pairs,
+            "pair_labels": _collect_pair_labels(pairs, pair_configs),
             "vmap": True,
             "requires_features": requires_features,
         },
