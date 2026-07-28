@@ -64,7 +64,7 @@ _LAZY_IMPORTS = {
     "extract_move_table": "leech.features",
     "run_inference": "leech.inference",
     "train_model": "leech.training",
-    "load_model_from_checkpoint": "leech.util",
+    "load_model_from_checkpoint": "leech.model_loading",
 }
 
 _version = None

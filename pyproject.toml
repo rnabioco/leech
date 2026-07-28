@@ -29,6 +29,7 @@ dependencies = [
   "nvitop>=1.6.1",
   "polars>=1.0.0",
   "pysam>=0.22.0",
+  "pyyaml>=6.0",
   "rich>=13.0.0",
   "rich-click>=1.7.0",
   "scikit-learn>=1.5.0",
