@@ -31,7 +31,18 @@ jobs:
           python-version-file: "pyproject.toml"
 
       - name: Install linting tools only
-        run: uv pip install --system ruff
+        # Pin to the ruff resolved in uv.lock so CI checks the same formatting
+        # `uv run ruff` applies locally. Unpinned, any ruff release can fail
+        # lint on unrelated PRs -- 0.16.0 started formatting Python code blocks
+        # inside Markdown, which reformats 11 docs/ and dev-notes/ files.
+        run: |
+          RUFF_VERSION=$(python -c "
+          import tomllib
+          lock = tomllib.load(open('uv.lock', 'rb'))
+          print(next(p['version'] for p in lock['package'] if p['name'] == 'ruff'))
+          ")
+          echo "Pinning ruff==${RUFF_VERSION} (from uv.lock)"
+          uv pip install --system "ruff==${RUFF_VERSION}"
 
       - name: Run ruff format check
         run: ruff format --check --exclude vulture_whitelist.py .
