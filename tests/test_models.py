@@ -30,6 +30,22 @@ class TestModelRegistry:
         for name in ("ConvLSTMDwell", "ConvLSTMBase", "ConvLSTMRemora", "TCNDwell", "ResNetDwell"):
             assert name in MODEL_REGISTRY, f"Core model {name} missing from registry"
 
+    def test_registry_listing_is_torch_free(self):
+        """Listing model names must not import torch (keeps CLI help fast).
+
+        The CLI renders `--model` choices from MODEL_REGISTRY.keys(); if that
+        ever pulls in torch again, `leech model train -h` regresses to ~15s.
+        """
+        import subprocess
+        import sys
+
+        code = (
+            "import sys; from leech.models import MODEL_REGISTRY; "
+            "sorted(MODEL_REGISTRY.keys()); "
+            "assert 'torch' not in sys.modules, 'listing model names imported torch'"
+        )
+        subprocess.run([sys.executable, "-c", code], check=True)
+
     def test_get_model_valid(self, model_config):
         """Test getting a model by name."""
         model = get_model("ConvLSTMDwell", **model_config)
