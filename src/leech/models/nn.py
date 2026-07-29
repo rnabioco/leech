@@ -126,6 +126,33 @@ class FeatureBranch(components.FeatureBranch, _RecordsKwargs):
         self._record(kwargs)
 
 
+@register
+class TemporalBlock(components.TemporalBlock, _RecordsKwargs):
+    """Registered wrapper around :class:`leech.models.components.TemporalBlock`."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._record(kwargs)
+
+
+@register
+class TCN(components.TCN, _RecordsKwargs):
+    """Registered wrapper around :class:`leech.models.components.TCN`.
+
+    A 2-D ``(B, T)`` signal is treated as single-channel, matching what the
+    hand-written TCN models did at the top of ``forward()``.
+    """
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._record(kwargs)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.dim() == 2:
+            x = x.unsqueeze(1)
+        return super().forward(x)
+
+
 # ── Leaf layers (thin subclasses so state-dict keys stay flat) ──────────────
 
 
@@ -240,6 +267,75 @@ class MLPHead(nn.Sequential):
         }
 
 
+@register
+class NormMLPHead(nn.Sequential):
+    """Dropout -> (Linear -> ReLU -> Norm -> Dropout)* -> Linear.
+
+    The normalized classification head used by the TCN family.  Layout matches
+    the hand-written ``classifier`` Sequentials exactly, so parameter keys stay
+    ``classifier.1.weight`` / ``classifier.5.weight`` / ``classifier.9.weight``.
+    """
+
+    def __init__(
+        self,
+        in_features: int,
+        hidden_features: list[int],
+        out_features: int,
+        dropout: float = 0.0,
+        norm_type: str = "batchnorm",
+    ) -> None:
+        layers: list[nn.Module] = [nn.Dropout(dropout)]
+        in_ch = in_features
+        for out_ch in hidden_features:
+            layers.append(nn.Linear(in_ch, out_ch))
+            layers.append(nn.ReLU())
+            layers.append(components.make_norm(norm_type, out_ch))
+            layers.append(nn.Dropout(dropout))
+            in_ch = out_ch
+        layers.append(nn.Linear(in_ch, out_features))
+        super().__init__(*layers)
+        self.in_features = in_features
+        self.hidden_features = list(hidden_features)
+        self.out_features = out_features
+        self.dropout_p = dropout
+        self.norm_type = norm_type
+
+    def to_dict(self, include_weights: bool = False) -> dict:
+        if include_weights:
+            raise NotImplementedError
+        return {
+            "in_features": self.in_features,
+            "hidden_features": list(self.hidden_features),
+            "out_features": self.out_features,
+            "dropout": self.dropout_p,
+            "norm_type": self.norm_type,
+        }
+
+
+@register
+class NormProj(nn.Sequential):
+    """Linear -> ReLU -> Norm projection (keys ``<attr>.0.*`` and ``<attr>.2.*``)."""
+
+    def __init__(self, in_features: int, out_features: int, norm_type: str = "batchnorm") -> None:
+        super().__init__(
+            nn.Linear(in_features, out_features),
+            nn.ReLU(),
+            components.make_norm(norm_type, out_features),
+        )
+        self.in_features = in_features
+        self.out_features = out_features
+        self.norm_type = norm_type
+
+    def to_dict(self, include_weights: bool = False) -> dict:
+        if include_weights:
+            raise NotImplementedError
+        return {
+            "in_features": self.in_features,
+            "out_features": self.out_features,
+            "norm_type": self.norm_type,
+        }
+
+
 # ── Parameter-free plumbing ops ────────────────────────────────────────────
 
 
@@ -308,6 +404,82 @@ class Index(nn.Module):
 
     def extra_repr(self) -> str:
         return f"index={self.index}, dim={self.dim}"
+
+
+@register
+class Slice(nn.Module):
+    """Take ``x[..., start:stop, ...]`` along ``dim`` (e.g. the dwell channels)."""
+
+    def __init__(self, start: int = 0, stop: int | None = None, dim: int = 1) -> None:
+        super().__init__()
+        self.start = start
+        self.stop = stop
+        self.dim = dim
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        stop = x.shape[self.dim] if self.stop is None else min(self.stop, x.shape[self.dim])
+        return x.narrow(self.dim, self.start, max(stop - self.start, 0))
+
+    def to_dict(self, include_weights: bool = False) -> dict:
+        return {"start": self.start, "stop": self.stop, "dim": self.dim}
+
+    def extra_repr(self) -> str:
+        return f"start={self.start}, stop={self.stop}, dim={self.dim}"
+
+
+@register
+class SignalChannel(nn.Module):
+    """Pick one channel of the signal input, keeping the channel dimension.
+
+    Mirrors the hand-written split-residual branch: a 2-D ``(B, T)`` signal is
+    treated as single-channel, and asking for a channel the input does not have
+    falls back to channel 0 (so a 1-channel signal feeds both branches).
+    """
+
+    def __init__(self, index: int = 0) -> None:
+        super().__init__()
+        self.index = index
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.dim() == 2:
+            x = x.unsqueeze(1)
+        index = self.index if x.shape[1] > self.index else 0
+        return x.narrow(1, index, 1)
+
+    def to_dict(self, include_weights: bool = False) -> dict:
+        return {"index": self.index}
+
+    def extra_repr(self) -> str:
+        return f"index={self.index}"
+
+
+@register
+class RangeMeanPool(nn.Module):
+    """Mean over a clamped index range along ``dim``; whole axis if the range is empty.
+
+    Used for the motor-region pathway, where ``start``/``stop`` are absolute
+    feature positions that may exceed a short feature window.
+    """
+
+    def __init__(self, start: int, stop: int, dim: int = 2) -> None:
+        super().__init__()
+        self.start = start
+        self.stop = stop
+        self.dim = dim
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        length = x.shape[self.dim]
+        start = min(self.start, length)
+        stop = min(self.stop, length)
+        if stop > start:
+            return x.narrow(self.dim, start, stop - start).mean(dim=self.dim)
+        return x.mean(dim=self.dim)
+
+    def to_dict(self, include_weights: bool = False) -> dict:
+        return {"start": self.start, "stop": self.stop, "dim": self.dim}
+
+    def extra_repr(self) -> str:
+        return f"start={self.start}, stop={self.stop}, dim={self.dim}"
 
 
 @register
@@ -427,6 +599,12 @@ class Graph(components.BaseModel):
     dependencies.  It is otherwise free, which lets configs reproduce the
     module-construction order of the original classes (and hence identical
     random initialisation for a given seed).
+
+    When dataflow order and module-construction order genuinely disagree — a
+    subclass that appended layers *after* its parent's head, say — pass
+    ``build_order``: a permutation of the node names giving the order in which
+    layers are installed on the root module (and therefore the ``state_dict()``
+    key order).  Declaration order still drives execution.
     """
 
     def __init__(
@@ -435,6 +613,7 @@ class Graph(components.BaseModel):
         inputs: list[str] | None = None,
         output: str = "logits",
         attrs: dict[str, Any] | None = None,
+        build_order: list[str] | None = None,
     ) -> None:
         super().__init__()
         self.graph_inputs = list(inputs or ["signal", "sequence", "features"])
@@ -444,16 +623,28 @@ class Graph(components.BaseModel):
         for key, value in (attrs or {}).items():
             setattr(self, key, value)
 
+        by_name: dict[str, dict] = {}
         plan: list[tuple[str, tuple[str, ...], str]] = []
         for node in nodes:
             name = node["name"]
-            layer = node["layer"]
-            if not isinstance(layer, nn.Module):
-                raise TypeError(f"Graph node {name!r} layer must be an nn.Module, got {layer!r}")
-            if name in self._modules:
+            if not isinstance(node["layer"], nn.Module):
+                raise TypeError(
+                    f"Graph node {name!r} layer must be an nn.Module, got {node['layer']!r}"
+                )
+            if name in by_name:
                 raise ValueError(f"Duplicate Graph node name {name!r}")
-            setattr(self, name, layer)
+            by_name[name] = node
             plan.append((name, tuple(node.get("inputs", [])), node.get("out", name)))
+
+        install = list(build_order) if build_order is not None else list(by_name)
+        if sorted(install) != sorted(by_name):
+            raise ValueError(
+                f"build_order must be a permutation of the node names; "
+                f"got {install!r} for nodes {list(by_name)!r}"
+            )
+        self._build_order = install if build_order is not None else None
+        for name in install:
+            setattr(self, name, by_name[name]["layer"])
         self._plan = plan
 
     @classmethod
@@ -478,11 +669,14 @@ class Graph(components.BaseModel):
                     "layer": to_dict(getattr(self, name)),
                 }
             )
-        return {
+        spec: dict[str, Any] = {
             "nodes": nodes,
             "inputs": list(self.graph_inputs),
             "output": self.graph_output,
         }
+        if self._build_order is not None:
+            spec["build_order"] = list(self._build_order)
+        return spec
 
     def forward(
         self,

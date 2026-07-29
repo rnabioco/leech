@@ -247,6 +247,13 @@ uv run leech data prepare --pod5 data.pod5 --bam alignments.bam \
 - TOML values may be expressions: `"${lstm_hidden * 2}"`, `"${DEFAULT_KMER_LEN}"`.
   A node may be conditional (`when = "${has_features}"`), which is how one
   config serves several registry names via `[[variants]]`.
+- Nodes execute in declaration order. When module-construction order must
+  differ from dataflow order (as for the TCN Motor / DwellAttn variants, whose
+  classes appended layers after their parent's head), declare an explicit
+  `build_order` — it fixes the `state_dict()` key order and the seeded-init
+  RNG order without changing execution.
+- The ConvLSTM and TCN families (22 of 29 registry names) are declared this way;
+  `kind = "graph"` is the only config kind.
 - Adding a normalization/pooling variant should be a `[[variants]]` entry, not
   a new class.
 
@@ -328,16 +335,15 @@ src/leech/           # Main package source
     ├── configs/               # TOML-declared architectures
     │   ├── conv_lstm.toml         # ConvLSTMBase/BN, ConvLSTMDwell/BN
     │   ├── conv_lstm_attn.toml    # the six *Attn variants
-    │   └── tcn_*_variants.toml    # TCN norm variants + Motor/DwellAttn
-    ├── components.py          # Reusable model components
+    │   ├── tcn_dwell.toml         # TCNDwell + GN/LN
+    │   ├── tcn_dwell_residual.toml        # TCNDwellResidual + GN/LN
+    │   ├── tcn_dwell_split_residual.toml  # TCNDwellSplitResidual + LN
+    │   ├── tcn_dwell_residual_motor.toml  # + motor-region pooling
+    │   └── tcn_dwell_residual_dwell_attn.toml  # + dwell-only cross-attention
+    ├── components.py          # Reusable components (conv branches, TCN blocks)
     ├── inference_wrapper.py   # Inference wrapper pattern
     ├── conv_lstm_remora.py    # ConvLSTMRemora / ConvLSTMRemoraBase
     ├── transformer_dwell.py   # TransformerDwell architecture
-    ├── tcn_dwell.py           # TCNDwell architecture
-    ├── tcn_dwell_residual.py  # TCNDwellResidual (2-channel signal)
-    ├── tcn_dwell_residual_motor.py      # + motor-region pooling
-    ├── tcn_dwell_residual_dwell_attn.py # + dwell-only cross-attention
-    ├── tcn_dwell_split_residual.py      # split raw / residual branches
     ├── resnet_dwell.py        # ResNetDwell architecture
     ├── conv_only.py           # ConvOnly architecture
     ├── signal_cnn.py          # SignalCNN (signal-only classifier)

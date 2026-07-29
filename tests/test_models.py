@@ -1,9 +1,9 @@
 """
 Tests for model architectures.
 
-Covers the hand-written zoo (TransformerDwell, ConvOnly, TCNDwell,
-ResNetDwell, ...) plus the config-driven layer registry and the TOML-declared
-architectures that replaced the ConvLSTM family.
+Covers the hand-written zoo (TransformerDwell, ConvOnly, ResNetDwell, ...)
+plus the config-driven layer registry and the TOML-declared architectures that
+replaced the ConvLSTM and TCN families.
 """
 
 import pytest
@@ -646,6 +646,50 @@ class TestLayerRegistry:
                 model(signal, sequence, features), rebuilt(signal, sequence, features)
             )
 
+    def test_graph_build_order_round_trip(self):
+        """build_order decouples module-construction order from dataflow order."""
+        from leech.models import nn as leech_nn
+
+        model = get_model(
+            "TCNDwellResidualDwellAttn",
+            signal_len=100,
+            kmer_len=11,
+            num_features=5,
+            hidden_channels=16,
+            num_layers=2,
+        )
+        spec = leech_nn.to_dict(model)
+        assert spec["type"] == "graph"
+        # dwell_* nodes execute before pool_linear but are installed after it
+        exec_order = [node["name"] for node in spec["nodes"]]
+        assert exec_order.index("dwell_attn_norm") < exec_order.index("pool_linear")
+        assert spec["build_order"].index("dwell_attn_norm") > spec["build_order"].index(
+            "pool_linear"
+        )
+
+        rebuilt = leech_nn.from_dict(spec)
+        assert list(rebuilt.state_dict()) == list(model.state_dict())
+        rebuilt.load_state_dict(model.state_dict())
+        model.eval()
+        rebuilt.eval()
+        signal = torch.randn(2, 2, 100)
+        sequence = torch.randn(2, 4, 11)
+        features = torch.randn(2, 5, 21)
+        with torch.no_grad():
+            assert torch.equal(
+                model(signal, sequence, features), rebuilt(signal, sequence, features)
+            )
+
+    def test_graph_build_order_must_be_a_permutation(self):
+        from leech.models import nn as leech_nn
+
+        nodes = [
+            {"name": "a", "layer": leech_nn.Linear(4, 4), "inputs": ["signal"], "out": "x"},
+            {"name": "b", "layer": leech_nn.Linear(4, 4), "inputs": ["x"], "out": "logits"},
+        ]
+        with pytest.raises(ValueError, match="permutation"):
+            leech_nn.Graph(nodes, build_order=["a"])
+
     def test_unknown_layer_type_raises(self):
         from leech.models import nn as leech_nn
 
@@ -803,74 +847,187 @@ class TestConfigDrivenParity:
             )
 
 
-# (registry name, base class import path, norm_type) for kind="class" configs
-_CLASS_VARIANT_PARITY = [
-    ("TCNDwellGN", "leech.models.tcn_dwell:TCNDwell", "groupnorm"),
-    ("TCNDwellLN", "leech.models.tcn_dwell:TCNDwell", "layernorm"),
-    ("TCNDwellResidualGN", "leech.models.tcn_dwell_residual:TCNDwellResidual", "groupnorm"),
-    ("TCNDwellResidualLN", "leech.models.tcn_dwell_residual:TCNDwellResidual", "layernorm"),
-    (
-        "TCNDwellSplitResidualLN",
-        "leech.models.tcn_dwell_split_residual:TCNDwellSplitResidual",
-        "layernorm",
-    ),
-    (
-        "TCNDwellResidualMotor",
-        "leech.models.tcn_dwell_residual_motor:TCNDwellResidualMotor",
-        "batchnorm",
-    ),
-    (
-        "TCNDwellResidualLNMotor",
-        "leech.models.tcn_dwell_residual_motor:TCNDwellResidualMotor",
-        "layernorm",
-    ),
-    (
-        "TCNDwellResidualDwellAttn",
-        "leech.models.tcn_dwell_residual_dwell_attn:TCNDwellResidualDwellAttn",
-        "batchnorm",
-    ),
-    (
-        "TCNDwellResidualLNDwellAttn",
-        "leech.models.tcn_dwell_residual_dwell_attn:TCNDwellResidualDwellAttn",
-        "layernorm",
-    ),
+# Config-built name -> (reference class name, norm_type, signal channels)
+_TCN_PARITY = [
+    ("TCNDwell", "TCNDwell", "batchnorm", 1),
+    ("TCNDwellGN", "TCNDwell", "groupnorm", 1),
+    ("TCNDwellLN", "TCNDwell", "layernorm", 1),
+    ("TCNDwellResidual", "TCNDwellResidual", "batchnorm", 2),
+    ("TCNDwellResidualGN", "TCNDwellResidual", "groupnorm", 2),
+    ("TCNDwellResidualLN", "TCNDwellResidual", "layernorm", 2),
+    ("TCNDwellSplitResidual", "TCNDwellSplitResidual", "batchnorm", 2),
+    ("TCNDwellSplitResidualLN", "TCNDwellSplitResidual", "layernorm", 2),
+    ("TCNDwellResidualMotor", "TCNDwellResidualMotor", "batchnorm", 2),
+    ("TCNDwellResidualLNMotor", "TCNDwellResidualMotor", "layernorm", 2),
+    ("TCNDwellResidualDwellAttn", "TCNDwellResidualDwellAttn", "batchnorm", 2),
+    ("TCNDwellResidualLNDwellAttn", "TCNDwellResidualDwellAttn", "layernorm", 2),
 ]
 
+# The Motor classes rebuilt `self.classifier` after ``super().__init__()`` had
+# already built one; the discarded head consumed random numbers that the graph
+# does not. Key names, key order and forward outputs still match exactly — only
+# the RNG stream differs, and these names were never registered before the
+# config layer existed, so no checkpoint depends on it.
+_TCN_SEEDED_INIT_EXCEPTIONS = {"TCNDwellResidualMotor", "TCNDwellResidualLNMotor"}
 
-class TestClassVariantParity:
-    """kind="class" configs must be exactly the base class + norm_type."""
 
-    @pytest.mark.parametrize("name,target,norm_type", _CLASS_VARIANT_PARITY)
-    def test_matches_base_class(self, name, target, norm_type):
-        import importlib
+class TestTCNConfigDrivenParity:
+    """Config-built TCN models must match the classes they replaced."""
 
-        module_name, _, class_name = target.partition(":")
-        base = getattr(importlib.import_module(module_name), class_name)
+    DWELL_MARGIN = 5
+    BASE = {
+        "signal_len": 100,
+        "kmer_len": 11,
+        "num_features": 5,
+        "hidden_channels": 16,
+        "num_layers": 2,
+        "dwell_margin": DWELL_MARGIN,
+    }
 
-        kwargs = {
-            "signal_len": 100,
-            "kmer_len": 11,
-            "num_features": 5,
-            "dwell_margin": 5,
-            "hidden_channels": 16,
-            "num_layers": 2,
-            "norm_type": norm_type,
-        }
-        reference = base(**kwargs)
+    def _kwargs(self, norm_type):
+        return dict(self.BASE, norm_type=norm_type)
+
+    def _inputs(self, channels, batch=3):
+        signal = torch.randn(batch, channels, 100) if channels > 1 else torch.randn(batch, 100)
+        sequence = torch.randn(batch, 4, self.BASE["kmer_len"])
+        features = torch.randn(batch, 5, self.BASE["kmer_len"] + 2 * self.DWELL_MARGIN)
+        return signal, sequence, features
+
+    @pytest.mark.parametrize("name,ref_name,norm_type,channels", _TCN_PARITY)
+    def test_state_dict_keys_unchanged(self, name, ref_name, norm_type, channels):
+        """Checkpoint compatibility: parameter names and their order must not drift."""
+        import reference_tcn
+
+        kwargs = self._kwargs(norm_type)
+        reference = getattr(reference_tcn, ref_name)(**kwargs)
         built = get_model(name, **kwargs)
-        assert isinstance(built, base)
         assert list(built.state_dict()) == list(reference.state_dict())
 
+    @pytest.mark.parametrize("name,ref_name,norm_type,channels", _TCN_PARITY)
+    def test_numerically_identical(self, name, ref_name, norm_type, channels):
+        """Same weights + same input => bit-identical logits."""
+        import reference_tcn
+
+        kwargs = self._kwargs(norm_type)
+        reference = getattr(reference_tcn, ref_name)(**kwargs)
+        built = get_model(name, **kwargs)
         built.load_state_dict(reference.state_dict())
         reference.eval()
         built.eval()
-        channels = 2 if "Residual" in name else 1
-        signal = torch.randn(3, channels, 100) if channels > 1 else torch.randn(3, 100)
-        sequence = torch.randn(3, 4, 11)
-        features = torch.randn(3, 5, 11 + 2 * 5)
+
+        signal, sequence, features = self._inputs(channels)
         with torch.no_grad():
             assert torch.equal(
                 reference(signal, sequence, features), built(signal, sequence, features)
+            )
+
+    @pytest.mark.parametrize("name,ref_name,norm_type,channels", _TCN_PARITY)
+    def test_same_seed_initialisation_matches(self, name, ref_name, norm_type, channels):
+        """Module construction order is preserved, so seeded init is unchanged."""
+        import reference_tcn
+
+        if name in _TCN_SEEDED_INIT_EXCEPTIONS:
+            pytest.skip("old class discarded a classifier head, perturbing the RNG stream")
+
+        kwargs = self._kwargs(norm_type)
+        torch.manual_seed(1234)
+        reference = getattr(reference_tcn, ref_name)(**kwargs)
+        torch.manual_seed(1234)
+        built = get_model(name, **kwargs)
+        ref_sd, built_sd = reference.state_dict(), built.state_dict()
+        assert list(ref_sd) == list(built_sd)
+        for key in ref_sd:
+            assert torch.equal(ref_sd[key], built_sd[key]), key
+
+    def test_signal_kmer_encoding_parity(self):
+        """The optional seq_pool node must appear only for signal_kmer input."""
+        import reference_tcn
+
+        kwargs = dict(self.BASE, seq_encoding="signal_kmer")
+        reference = reference_tcn.TCNDwell(**kwargs)
+        built = get_model("TCNDwell", **kwargs)
+        built.load_state_dict(reference.state_dict())
+        assert list(built.state_dict()) == list(reference.state_dict())
+        reference.eval()
+        built.eval()
+
+        signal = torch.randn(2, 100)
+        sequence = torch.randn(2, 36, 100)
+        features = torch.randn(2, 5, self.BASE["kmer_len"] + 2 * self.DWELL_MARGIN)
+        with torch.no_grad():
+            assert torch.equal(
+                reference(signal, sequence, features), built(signal, sequence, features)
+            )
+
+    def test_split_residual_single_channel_fallback(self):
+        """A 1-channel signal must still feed both split branches, as before."""
+        import reference_tcn
+
+        kwargs = self._kwargs("layernorm")
+        reference = reference_tcn.TCNDwellSplitResidual(**kwargs)
+        built = get_model("TCNDwellSplitResidualLN", **kwargs)
+        built.load_state_dict(reference.state_dict())
+        reference.eval()
+        built.eval()
+
+        signal, sequence, features = self._inputs(1)
+        with torch.no_grad():
+            assert torch.equal(
+                reference(signal, sequence, features), built(signal, sequence, features)
+            )
+
+    def test_isinstance_and_signature_preserved(self):
+        """model_loading._instantiate_model relies on the explicit signature."""
+        import inspect
+
+        from leech.models import nn as leech_nn
+
+        model = get_model("TCNDwellGN", **self.BASE)
+        assert isinstance(model, leech_nn.Graph)
+        assert type(model).__name__ == "TCNDwellGN"
+
+        sig = inspect.signature(TCNDwell)
+        assert not any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+        assert {"signal_len", "kmer_len", "num_features", "hidden_channels", "norm_type"} <= set(
+            sig.parameters
+        )
+
+    def test_motor_signature_exposes_motor_params(self):
+        """The old **kwargs constructor made _instantiate_model drop these."""
+        import inspect
+
+        sig = inspect.signature(MODEL_REGISTRY["TCNDwellResidualMotor"])
+        assert {"motor_pool_start", "motor_pool_end", "motor_proj_dim"} <= set(sig.parameters)
+
+        sig = inspect.signature(MODEL_REGISTRY["TCNDwellResidualDwellAttn"])
+        assert {"num_dwell_features", "dwell_conv_channels", "num_dwell_attn_heads"} <= set(
+            sig.parameters
+        )
+
+    def test_legacy_checkpoint_still_loads(self, tmp_path):
+        """A checkpoint written by the OLD hand-written class must still load."""
+        import json
+
+        import reference_tcn
+
+        from leech.model_loading import load_model_from_checkpoint
+
+        kwargs = self._kwargs("layernorm")
+        arch = {"model_name": "TCNDwellResidualLN", **kwargs}
+        reference = reference_tcn.TCNDwellResidual(**kwargs)
+        torch.save({"model_state_dict": reference.state_dict()}, tmp_path / "model_best.pt")
+        # config.json as written by training, i.e. with training params mixed in
+        (tmp_path / "config.json").write_text(
+            json.dumps({**arch, "epochs": 3, "batch_size": 8, "device": "cpu", "seed": 1})
+        )
+
+        loaded, _ = load_model_from_checkpoint(tmp_path, device="cpu")
+        reference.eval()
+        loaded.eval()
+        signal, sequence, features = self._inputs(2, batch=2)
+        with torch.no_grad():
+            assert torch.equal(
+                reference(signal, sequence, features), loaded(signal, sequence, features)
             )
 
 
