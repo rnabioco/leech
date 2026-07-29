@@ -187,7 +187,7 @@ def _instantiate_model(config: dict) -> nn.Module:
     sig = inspect.signature(model_class)
     has_var_keyword = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
     if has_var_keyword:
-        # Constructor accepts **kwargs (e.g. TCNDwellGN) — resolve params from
+        # Constructor accepts **kwargs (e.g. TransformerDwellResidual) — resolve params from
         # the parent class that actually defines the signature
         for base in model_class.__mro__[1:]:
             base_sig = inspect.signature(base)

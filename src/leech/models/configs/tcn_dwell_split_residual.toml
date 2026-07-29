@@ -1,0 +1,231 @@
+# TCNDwellSplitResidual family: independent TCN branches for the raw signal
+# and the kmer residual.
+#
+#     signal[:, 0] -> signal_tcn   -> pool -> |
+#     signal[:, 1] -> residual_tcn -> pool -> +-- cat -> cross-attn -> MLP
+#     sequence     -> seq_tcn      -> pool -> |          ^
+#     features     -> FeatureBranch ---------------------+ (K/V, full width)
+#
+# Unlike TCNDwellResidual the two signal channels are never mixed in a shared
+# first Conv1d, so the model cannot trivially recover kmer context from the
+# raw channel.  A 1-channel signal feeds both branches (see nn.SignalChannel).
+
+kind = "graph"
+inputs = ["signal", "sequence", "features"]
+output = "logits"
+
+[params]
+signal_len = "${DEFAULT_SIGNAL_LEN}"
+kmer_len = "${DEFAULT_KMER_LEN}"
+num_features = "${DEFAULT_NUM_FEATURES}"
+dwell_margin = "${DEFAULT_DWELL_MARGIN}"
+signal_in_channels = 2
+hidden_channels = 64
+num_layers = 6
+kernel_size = 3
+num_attn_heads = 4
+dropout = "${DEFAULT_DROPOUT}"
+seq_encoding = "base_onehot"
+signal_kmer_context = "${DEFAULT_SIGNAL_KMER_CONTEXT}"
+norm_type = "batchnorm"
+num_out = 1
+
+[derived]
+seq_in_channels = "${4 * (signal_kmer_context[0] + signal_kmer_context[1] + 1) if seq_encoding == 'signal_kmer' else 4}"
+pooled_seq = "${seq_encoding == 'signal_kmer'}"
+merged_dim = "${hidden_channels * 3}"
+feat_dim = "${DEFAULT_CONV_CHANNELS[-1]}"
+
+# ── split the signal into its two independent branches ────────────────────
+
+[[nodes]]
+name = "split_raw"
+layer = "signalchannel"
+inputs = ["signal"]
+out = "raw_signal"
+[nodes.args]
+index = 0
+
+[[nodes]]
+name = "split_residual"
+layer = "signalchannel"
+inputs = ["signal"]
+out = "resid_signal"
+[nodes.args]
+index = 1
+
+# ── branches ──────────────────────────────────────────────────────────────
+
+[[nodes]]
+name = "signal_tcn"
+layer = "tcn"
+inputs = ["raw_signal"]
+out = "signal_feat"
+[nodes.args]
+in_channels = 1
+hidden_channels = "${hidden_channels}"
+num_layers = "${num_layers}"
+kernel_size = "${kernel_size}"
+dropout = "${dropout}"
+norm_type = "${norm_type}"
+
+[[nodes]]
+name = "signal_pool"
+layer = "adaptiveavgpool1d"
+inputs = ["signal_feat"]
+out = "signal_feat"
+[nodes.args]
+output_size = "${kmer_len}"
+
+[[nodes]]
+name = "residual_tcn"
+layer = "tcn"
+inputs = ["resid_signal"]
+out = "resid_feat"
+[nodes.args]
+in_channels = 1
+hidden_channels = "${hidden_channels}"
+num_layers = "${num_layers}"
+kernel_size = "${kernel_size}"
+dropout = "${dropout}"
+norm_type = "${norm_type}"
+
+[[nodes]]
+name = "residual_pool"
+layer = "adaptiveavgpool1d"
+inputs = ["resid_feat"]
+out = "resid_feat"
+[nodes.args]
+output_size = "${kmer_len}"
+
+[[nodes]]
+name = "seq_tcn"
+layer = "tcn"
+inputs = ["sequence"]
+out = "seq_feat"
+[nodes.args]
+in_channels = "${seq_in_channels}"
+hidden_channels = "${hidden_channels}"
+num_layers = "${num_layers}"
+kernel_size = "${kernel_size}"
+dropout = "${dropout}"
+norm_type = "${norm_type}"
+
+[[nodes]]
+name = "seq_pool"
+layer = "adaptiveavgpool1d"
+when = "${pooled_seq}"
+inputs = ["seq_feat"]
+out = "seq_feat"
+[nodes.args]
+output_size = "${kmer_len}"
+
+[[nodes]]
+name = "feature_branch"
+layer = "featurebranch"
+inputs = ["features"]
+out = "feat_out"
+[nodes.args]
+num_features = "${num_features}"
+conv_channels = "${DEFAULT_CONV_CHANNELS}"
+norm_type = "${norm_type}"
+
+# ── merge + dwell cross-attention ─────────────────────────────────────────
+
+[[nodes]]
+name = "feat_to_time_major"
+layer = "transpose"
+inputs = ["feat_out"]
+out = "feat_kv"
+[nodes.args]
+dim0 = 1
+dim1 = 2
+
+[[nodes]]
+name = "merge"
+layer = "concat"
+inputs = ["signal_feat", "resid_feat", "seq_feat"]
+out = "merged"
+[nodes.args]
+dim = 1
+
+[[nodes]]
+name = "to_time_major"
+layer = "transpose"
+inputs = ["merged"]
+out = "merged"
+[nodes.args]
+dim0 = 1
+dim1 = 2
+
+[[nodes]]
+name = "cross_attn"
+layer = "crossattention"
+inputs = ["merged", "feat_kv", "feat_kv"]
+out = "attn_out"
+[nodes.args]
+embed_dim = "${merged_dim}"
+num_heads = "${num_attn_heads}"
+kdim = "${feat_dim}"
+vdim = "${feat_dim}"
+dropout = "${dropout}"
+batch_first = true
+
+[[nodes]]
+name = "attn_residual"
+layer = "add"
+inputs = ["merged", "attn_out"]
+out = "combined"
+
+[[nodes]]
+name = "attn_norm"
+layer = "layernorm"
+inputs = ["combined"]
+out = "combined"
+[nodes.args]
+normalized_shape = "${merged_dim}"
+
+# ── attention pooling + classifier ────────────────────────────────────────
+
+[[nodes]]
+name = "pool_linear"
+layer = "linear"
+inputs = ["combined"]
+out = "pool_scores"
+[nodes.args]
+in_features = "${merged_dim}"
+out_features = 1
+
+[[nodes]]
+name = "attn_pool"
+layer = "attentionpool"
+inputs = ["pool_scores", "combined"]
+out = "context"
+[nodes.args]
+dim = 1
+
+[[nodes]]
+name = "classifier"
+layer = "normmlphead"
+inputs = ["context"]
+out = "logits"
+[nodes.args]
+in_features = "${merged_dim}"
+hidden_features = [256, 64]
+out_features = "${num_out}"
+dropout = "${dropout}"
+norm_type = "${norm_type}"
+
+# ── registry names ────────────────────────────────────────────────────────
+
+[[variants]]
+name = "TCNDwellSplitResidual"
+doc = "TCN with separate raw-signal and kmer-residual branches."
+[variants.params]
+norm_type = "batchnorm"
+
+[[variants]]
+name = "TCNDwellSplitResidualLN"
+doc = "TCNDwellSplitResidual with LayerNorm instead of BatchNorm."
+[variants.params]
+norm_type = "layernorm"

@@ -4,7 +4,20 @@ Neural network architectures for nanopore signal classification.
 
 ## Overview
 
-The models module contains 24 PyTorch model architectures across 5 families. All models accept a `signal_in_channels` parameter for multi-channel signal input (default: 1).
+The models module contains 29 PyTorch model architectures across 5 families. All models accept a `signal_in_channels` parameter for multi-channel signal input (default: 1).
+
+Architectures come from two places, both reachable via `get_model()` and `MODEL_REGISTRY`:
+
+- **TOML configs** in `leech/models/configs/` — the ConvLSTM and TCN families
+  (22 of the 29 names). Each config is a fully declarative `kind = "graph"`
+  architecture built from the layer registry in `leech.models.nn`, with one
+  `[[variants]]` entry per registry name. Adding a normalization/pooling
+  variant is a `[[variants]]` entry, not a new class.
+- **Hand-written classes** for architectures not yet converted (Remora-compatible
+  ConvLSTM, Transformer, ConvOnly, ResNet, SignalCNN).
+
+Discovery is torch-free, so listing model names (e.g. for CLI `--model` choices)
+does not pay the torch import cost.
 
 ## Model Registry
 
@@ -143,6 +156,30 @@ Temporal Convolutional Network with dilated convolutions.
 TCN with 2-channel signal input (raw + kmer residual).
 
 ::: leech.models.TCNDwellResidual
+    options:
+      show_root_heading: true
+      show_source: false
+
+::: leech.models.TCNDwellResidualGN
+    options:
+      show_root_heading: true
+      show_source: false
+
+::: leech.models.TCNDwellResidualLN
+    options:
+      show_root_heading: true
+      show_source: false
+
+### TCNDwellSplitResidual
+
+TCN with independent branches for the raw signal and the kmer residual.
+
+::: leech.models.TCNDwellSplitResidual
+    options:
+      show_root_heading: true
+      show_source: false
+
+::: leech.models.TCNDwellSplitResidualLN
     options:
       show_root_heading: true
       show_source: false

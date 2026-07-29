@@ -1,0 +1,282 @@
+# TCNDwellResidual with a second cross-attention head that attends only to the
+# dwell feature channels.
+#
+# The main cross-attention sees all features (dwell + signal levels + kmer
+# residuals); the dwell-only head forces the model to extract dwell patterns
+# (especially at motor positions +8..+12) without competition from the other
+# channels.
+#
+# As with the Motor variants, these names were listed in
+# ModelInferenceWrapper.FEATURE_MODELS but were never registered.
+#
+# `build_order` is needed here: the class this replaces appended its dwell
+# layers *after* the parent had installed `classifier`, so construction order
+# (and therefore state_dict key order) is not the dataflow order.
+
+kind = "graph"
+inputs = ["signal", "sequence", "features"]
+output = "logits"
+
+build_order = [
+    "signal_tcn",
+    "signal_pool",
+    "seq_tcn",
+    "seq_pool",
+    "feature_branch",
+    "feat_to_time_major",
+    "merge",
+    "to_time_major",
+    "cross_attn",
+    "attn_residual",
+    "attn_norm",
+    "pool_linear",
+    "attn_pool",
+    "classifier",
+    "dwell_slice",
+    "dwell_branch",
+    "dwell_to_time_major",
+    "dwell_attn",
+    "dwell_attn_residual",
+    "dwell_attn_norm",
+]
+
+[params]
+num_dwell_features = 5
+dwell_conv_channels = "${None}"
+num_dwell_attn_heads = 2
+signal_len = "${DEFAULT_SIGNAL_LEN}"
+kmer_len = "${DEFAULT_KMER_LEN}"
+num_features = "${DEFAULT_NUM_FEATURES}"
+dwell_margin = "${DEFAULT_DWELL_MARGIN}"
+signal_in_channels = 2
+hidden_channels = 64
+num_layers = 6
+kernel_size = 3
+num_attn_heads = 4
+dropout = "${DEFAULT_DROPOUT}"
+seq_encoding = "base_onehot"
+signal_kmer_context = "${DEFAULT_SIGNAL_KMER_CONTEXT}"
+norm_type = "batchnorm"
+num_out = 1
+
+[derived]
+seq_in_channels = "${4 * (signal_kmer_context[0] + signal_kmer_context[1] + 1) if seq_encoding == 'signal_kmer' else 4}"
+pooled_seq = "${seq_encoding == 'signal_kmer'}"
+merged_dim = "${hidden_channels * 2}"
+feat_dim = "${DEFAULT_CONV_CHANNELS[-1]}"
+dwell_channels = "${dwell_conv_channels if dwell_conv_channels else [4, 16, 64]}"
+
+# ── branches ──────────────────────────────────────────────────────────────
+
+[[nodes]]
+name = "signal_tcn"
+layer = "tcn"
+inputs = ["signal"]
+out = "signal_feat"
+[nodes.args]
+in_channels = "${signal_in_channels}"
+hidden_channels = "${hidden_channels}"
+num_layers = "${num_layers}"
+kernel_size = "${kernel_size}"
+dropout = "${dropout}"
+norm_type = "${norm_type}"
+
+[[nodes]]
+name = "signal_pool"
+layer = "adaptiveavgpool1d"
+inputs = ["signal_feat"]
+out = "signal_feat"
+[nodes.args]
+output_size = "${kmer_len}"
+
+[[nodes]]
+name = "seq_tcn"
+layer = "tcn"
+inputs = ["sequence"]
+out = "seq_feat"
+[nodes.args]
+in_channels = "${seq_in_channels}"
+hidden_channels = "${hidden_channels}"
+num_layers = "${num_layers}"
+kernel_size = "${kernel_size}"
+dropout = "${dropout}"
+norm_type = "${norm_type}"
+
+[[nodes]]
+name = "seq_pool"
+layer = "adaptiveavgpool1d"
+when = "${pooled_seq}"
+inputs = ["seq_feat"]
+out = "seq_feat"
+[nodes.args]
+output_size = "${kmer_len}"
+
+[[nodes]]
+name = "feature_branch"
+layer = "featurebranch"
+inputs = ["features"]
+out = "feat_out"
+[nodes.args]
+num_features = "${num_features}"
+conv_channels = "${DEFAULT_CONV_CHANNELS}"
+norm_type = "${norm_type}"
+
+[[nodes]]
+name = "feat_to_time_major"
+layer = "transpose"
+inputs = ["feat_out"]
+out = "feat_kv"
+[nodes.args]
+dim0 = 1
+dim1 = 2
+
+# ── dwell-only branch ─────────────────────────────────────────────────────
+
+[[nodes]]
+name = "dwell_slice"
+layer = "slice"
+inputs = ["features"]
+out = "dwell_in"
+[nodes.args]
+start = 0
+stop = "${num_dwell_features}"
+dim = 1
+
+[[nodes]]
+name = "dwell_branch"
+layer = "featurebranch"
+inputs = ["dwell_in"]
+out = "dwell_out"
+[nodes.args]
+num_features = "${num_dwell_features}"
+conv_channels = "${dwell_channels}"
+norm_type = "${norm_type}"
+
+[[nodes]]
+name = "dwell_to_time_major"
+layer = "transpose"
+inputs = ["dwell_out"]
+out = "dwell_kv"
+[nodes.args]
+dim0 = 1
+dim1 = 2
+
+# ── merge + main cross-attention ──────────────────────────────────────────
+
+[[nodes]]
+name = "merge"
+layer = "concat"
+inputs = ["signal_feat", "seq_feat"]
+out = "merged"
+[nodes.args]
+dim = 1
+
+[[nodes]]
+name = "to_time_major"
+layer = "transpose"
+inputs = ["merged"]
+out = "merged"
+[nodes.args]
+dim0 = 1
+dim1 = 2
+
+[[nodes]]
+name = "cross_attn"
+layer = "crossattention"
+inputs = ["merged", "feat_kv", "feat_kv"]
+out = "attn_out"
+[nodes.args]
+embed_dim = "${merged_dim}"
+num_heads = "${num_attn_heads}"
+kdim = "${feat_dim}"
+vdim = "${feat_dim}"
+dropout = "${dropout}"
+batch_first = true
+
+[[nodes]]
+name = "attn_residual"
+layer = "add"
+inputs = ["merged", "attn_out"]
+out = "combined"
+
+[[nodes]]
+name = "attn_norm"
+layer = "layernorm"
+inputs = ["combined"]
+out = "combined"
+[nodes.args]
+normalized_shape = "${merged_dim}"
+
+# ── dwell-only cross-attention ────────────────────────────────────────────
+
+[[nodes]]
+name = "dwell_attn"
+layer = "crossattention"
+inputs = ["combined", "dwell_kv", "dwell_kv"]
+out = "dwell_attn_out"
+[nodes.args]
+embed_dim = "${merged_dim}"
+num_heads = "${num_dwell_attn_heads}"
+kdim = "${dwell_channels[-1]}"
+vdim = "${dwell_channels[-1]}"
+dropout = "${dropout}"
+batch_first = true
+
+[[nodes]]
+name = "dwell_attn_residual"
+layer = "add"
+inputs = ["combined", "dwell_attn_out"]
+out = "combined"
+
+[[nodes]]
+name = "dwell_attn_norm"
+layer = "layernorm"
+inputs = ["combined"]
+out = "combined"
+[nodes.args]
+normalized_shape = "${merged_dim}"
+
+# ── attention pooling + classifier ────────────────────────────────────────
+
+[[nodes]]
+name = "pool_linear"
+layer = "linear"
+inputs = ["combined"]
+out = "pool_scores"
+[nodes.args]
+in_features = "${merged_dim}"
+out_features = 1
+
+[[nodes]]
+name = "attn_pool"
+layer = "attentionpool"
+inputs = ["pool_scores", "combined"]
+out = "context"
+[nodes.args]
+dim = 1
+
+[[nodes]]
+name = "classifier"
+layer = "normmlphead"
+inputs = ["context"]
+out = "logits"
+[nodes.args]
+in_features = "${merged_dim}"
+hidden_features = [256, 64]
+out_features = "${num_out}"
+dropout = "${dropout}"
+norm_type = "${norm_type}"
+
+# ── registry names ────────────────────────────────────────────────────────
+
+[[variants]]
+name = "TCNDwellResidualDwellAttn"
+doc = "TCNDwellResidual with a separate dwell-only cross-attention head."
+[variants.params]
+norm_type = "batchnorm"
+
+[[variants]]
+name = "TCNDwellResidualLNDwellAttn"
+doc = "TCNDwellResidual dwell-only cross-attention head with LayerNorm."
+[variants.params]
+norm_type = "layernorm"

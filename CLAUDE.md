@@ -238,7 +238,26 @@ uv run leech data prepare --pod5 data.pod5 --bam alignments.bam \
 - Maps motif positions from reference to query coordinates using CIGAR
 - Filters reads with indels in motif regions (optional)
 
-**`ConvLSTMDwell` (models/conv_lstm_dwell.py)**
+**Config-driven models (`models/nn.py`, `models/configs/*.toml`)**
+- `models/nn.py` is a bonito-style layer registry: `register`, `to_dict`,
+  `from_dict`, plus `Serial`, `Stack`, `Parallel` and `Graph`.
+- `Graph` is the multi-branch container: nodes are installed as *direct*
+  attributes of the root module, so a TOML-declared architecture has the same
+  `state_dict()` keys as the hand-written class it replaced.
+- TOML values may be expressions: `"${lstm_hidden * 2}"`, `"${DEFAULT_KMER_LEN}"`.
+  A node may be conditional (`when = "${has_features}"`), which is how one
+  config serves several registry names via `[[variants]]`.
+- Nodes execute in declaration order. When module-construction order must
+  differ from dataflow order (as for the TCN Motor / DwellAttn variants, whose
+  classes appended layers after their parent's head), declare an explicit
+  `build_order` — it fixes the `state_dict()` key order and the seeded-init
+  RNG order without changing execution.
+- The ConvLSTM and TCN families (22 of 29 registry names) are declared this way;
+  `kind = "graph"` is the only config kind.
+- Adding a normalization/pooling variant should be a `[[variants]]` entry, not
+  a new class.
+
+**`ConvLSTMDwell` (models/configs/conv_lstm.toml)**
 - PyTorch model with three branches:
   - Signal branch: Conv1d on raw signal
   - Sequence branch: Conv1d on one-hot encoded k-mers (or signal_kmer encoding)
@@ -311,21 +330,23 @@ src/leech/           # Main package source
 ├── logging_config.py  # Logging setup
 └── models/          # Model architectures
     ├── __init__.py            # Model registry and get_model()
-    ├── components.py          # Reusable model components
+    ├── nn.py                  # Layer registry + composition primitives
+    ├── config_loader.py       # TOML -> model class (torch-free discovery)
+    ├── configs/               # TOML-declared architectures
+    │   ├── conv_lstm.toml         # ConvLSTMBase/BN, ConvLSTMDwell/BN
+    │   ├── conv_lstm_attn.toml    # the six *Attn variants
+    │   ├── tcn_dwell.toml         # TCNDwell + GN/LN
+    │   ├── tcn_dwell_residual.toml        # TCNDwellResidual + GN/LN
+    │   ├── tcn_dwell_split_residual.toml  # TCNDwellSplitResidual + LN
+    │   ├── tcn_dwell_residual_motor.toml  # + motor-region pooling
+    │   └── tcn_dwell_residual_dwell_attn.toml  # + dwell-only cross-attention
+    ├── components.py          # Reusable components (conv branches, TCN blocks)
     ├── inference_wrapper.py   # Inference wrapper pattern
-    ├── conv_lstm_dwell.py     # ConvLSTMDwell architecture
-    ├── conv_lstm_dwell_bn.py  # ConvLSTMDwellBN (batch normalization)
-    ├── conv_lstm_dwell_attn.py  # ConvLSTMDwellAttn (attention pooling)
-    ├── conv_lstm_dwell_bn_attn.py  # ConvLSTMDwellBNAttn (BN + attention)
-    ├── conv_lstm_base.py      # ConvLSTMBase architecture
-    ├── conv_lstm_base_bn.py   # ConvLSTMBaseBN (batch normalization)
-    ├── conv_lstm_base_attn.py # ConvLSTMBaseAttn (attention pooling)
-    ├── conv_lstm_base_bn_attn.py  # ConvLSTMBaseBNAttn (BN + attention)
     ├── conv_lstm_remora.py    # ConvLSTMRemora / ConvLSTMRemoraBase
     ├── transformer_dwell.py   # TransformerDwell architecture
-    ├── tcn_dwell.py           # TCNDwell architecture
     ├── resnet_dwell.py        # ResNetDwell architecture
     ├── conv_only.py           # ConvOnly architecture
+    ├── signal_cnn.py          # SignalCNN (signal-only classifier)
     └── remora_compat.py       # RemoraModelWrapper for Remora model inference
 
 tests/               # pytest tests
@@ -409,7 +430,8 @@ The workflow is designed to integrate with the leech CLI commands and supports b
 
 The codebase is feature-complete (v0.3.1):
 - ✓ Feature extraction with dwell offset tuning and signal map refinement
-- ✓ 24 model architectures: ConvLSTM (Base/Dwell × BN/GN/LN/Attn), TCN (Dwell/DwellGN/DwellLN/DwellResidual/DwellResidualGN/DwellResidualLN/DwellSplitResidual/DwellSplitResidualLN), Transformer (Dwell/DwellResidual), ResNet, ConvOnly
+- ✓ 29 model architectures: ConvLSTM (Base/Dwell × BN/GN/LN/Attn), TCN (Dwell/DwellGN/DwellLN/DwellResidual/DwellResidualGN/DwellResidualLN/DwellResidualMotor/DwellResidualDwellAttn/DwellSplitResidual/DwellSplitResidualLN), Transformer (Dwell/DwellResidual), ResNet, ConvOnly, SignalCNN
+- ✓ Config-driven model layer: bonito-style layer registry (`models/nn.py`) + TOML architecture declarations (`models/configs/`)
 - ✓ CLI organized into 4 command groups: `data` (prepare, merge), `model` (train, optimize, bundle, bundle-info, calibrate, export), `eval` (test, compare, importance, ablation), `predict`
 - ✓ Training with focal loss, mixup augmentation, cosine annealing, gradient clipping, adversarial training, CL regression
 - ✓ Grid search with range syntax, parallel execution, dwell offset tuning

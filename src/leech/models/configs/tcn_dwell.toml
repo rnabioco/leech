@@ -1,0 +1,201 @@
+# TCNDwell family: dilated causal convolutions + dwell cross-attention.
+#
+#     signal   -> TCN -> pool -> |
+#                                +-- cat -> cross-attn (Q) -> attn pool -> MLP
+#     sequence -> TCN -> pool -> |          ^
+#     features -> FeatureBranch ------------+ (K/V, full width)
+#
+# The feature branch is NOT pooled: it sees kmer_len + margin_left +
+# margin_right positions so cross-attention can learn the physical
+# motor-sensor offset.
+#
+# Node declaration order is also module-construction order, and is chosen to
+# match the class this replaces so that a given torch seed yields identical
+# initial weights and identical state_dict() key order.
+
+kind = "graph"
+inputs = ["signal", "sequence", "features"]
+output = "logits"
+
+[params]
+signal_len = "${DEFAULT_SIGNAL_LEN}"
+kmer_len = "${DEFAULT_KMER_LEN}"
+num_features = "${DEFAULT_NUM_FEATURES}"
+dwell_margin = "${DEFAULT_DWELL_MARGIN}"
+hidden_channels = 64
+num_layers = 6
+kernel_size = 3
+num_attn_heads = 4
+dropout = "${DEFAULT_DROPOUT}"
+seq_encoding = "base_onehot"
+signal_kmer_context = "${DEFAULT_SIGNAL_KMER_CONTEXT}"
+norm_type = "batchnorm"
+signal_in_channels = 1
+num_out = 1
+
+[derived]
+seq_in_channels = "${4 * (signal_kmer_context[0] + signal_kmer_context[1] + 1) if seq_encoding == 'signal_kmer' else 4}"
+pooled_seq = "${seq_encoding == 'signal_kmer'}"
+merged_dim = "${hidden_channels * 2}"
+feat_dim = "${DEFAULT_CONV_CHANNELS[-1]}"
+
+# ── branches ──────────────────────────────────────────────────────────────
+
+[[nodes]]
+name = "signal_tcn"
+layer = "tcn"
+inputs = ["signal"]
+out = "signal_feat"
+[nodes.args]
+in_channels = "${signal_in_channels}"
+hidden_channels = "${hidden_channels}"
+num_layers = "${num_layers}"
+kernel_size = "${kernel_size}"
+dropout = "${dropout}"
+norm_type = "${norm_type}"
+
+[[nodes]]
+name = "signal_pool"
+layer = "adaptiveavgpool1d"
+inputs = ["signal_feat"]
+out = "signal_feat"
+[nodes.args]
+output_size = "${kmer_len}"
+
+[[nodes]]
+name = "seq_tcn"
+layer = "tcn"
+inputs = ["sequence"]
+out = "seq_feat"
+[nodes.args]
+in_channels = "${seq_in_channels}"
+hidden_channels = "${hidden_channels}"
+num_layers = "${num_layers}"
+kernel_size = "${kernel_size}"
+dropout = "${dropout}"
+norm_type = "${norm_type}"
+
+[[nodes]]
+name = "seq_pool"
+layer = "adaptiveavgpool1d"
+when = "${pooled_seq}"
+inputs = ["seq_feat"]
+out = "seq_feat"
+[nodes.args]
+output_size = "${kmer_len}"
+
+[[nodes]]
+name = "feature_branch"
+layer = "featurebranch"
+inputs = ["features"]
+out = "feat_out"
+[nodes.args]
+num_features = "${num_features}"
+conv_channels = "${DEFAULT_CONV_CHANNELS}"
+norm_type = "${norm_type}"
+
+# ── merge + dwell cross-attention ─────────────────────────────────────────
+
+[[nodes]]
+name = "feat_to_time_major"
+layer = "transpose"
+inputs = ["feat_out"]
+out = "feat_kv"
+[nodes.args]
+dim0 = 1
+dim1 = 2
+
+[[nodes]]
+name = "merge"
+layer = "concat"
+inputs = ["signal_feat", "seq_feat"]
+out = "merged"
+[nodes.args]
+dim = 1
+
+[[nodes]]
+name = "to_time_major"
+layer = "transpose"
+inputs = ["merged"]
+out = "merged"
+[nodes.args]
+dim0 = 1
+dim1 = 2
+
+[[nodes]]
+name = "cross_attn"
+layer = "crossattention"
+inputs = ["merged", "feat_kv", "feat_kv"]
+out = "attn_out"
+[nodes.args]
+embed_dim = "${merged_dim}"
+num_heads = "${num_attn_heads}"
+kdim = "${feat_dim}"
+vdim = "${feat_dim}"
+dropout = "${dropout}"
+batch_first = true
+
+[[nodes]]
+name = "attn_residual"
+layer = "add"
+inputs = ["merged", "attn_out"]
+out = "combined"
+
+[[nodes]]
+name = "attn_norm"
+layer = "layernorm"
+inputs = ["combined"]
+out = "combined"
+[nodes.args]
+normalized_shape = "${merged_dim}"
+
+# ── attention pooling + classifier ────────────────────────────────────────
+
+[[nodes]]
+name = "pool_linear"
+layer = "linear"
+inputs = ["combined"]
+out = "pool_scores"
+[nodes.args]
+in_features = "${merged_dim}"
+out_features = 1
+
+[[nodes]]
+name = "attn_pool"
+layer = "attentionpool"
+inputs = ["pool_scores", "combined"]
+out = "context"
+[nodes.args]
+dim = 1
+
+[[nodes]]
+name = "classifier"
+layer = "normmlphead"
+inputs = ["context"]
+out = "logits"
+[nodes.args]
+in_features = "${merged_dim}"
+hidden_features = [256, 64]
+out_features = "${num_out}"
+dropout = "${dropout}"
+norm_type = "${norm_type}"
+
+# ── registry names ────────────────────────────────────────────────────────
+
+[[variants]]
+name = "TCNDwell"
+doc = "Temporal Convolutional Network with dwell cross-attention (BatchNorm)."
+[variants.params]
+norm_type = "batchnorm"
+
+[[variants]]
+name = "TCNDwellGN"
+doc = "TCNDwell with GroupNorm instead of BatchNorm."
+[variants.params]
+norm_type = "groupnorm"
+
+[[variants]]
+name = "TCNDwellLN"
+doc = "TCNDwell with LayerNorm instead of BatchNorm."
+[variants.params]
+norm_type = "layernorm"
