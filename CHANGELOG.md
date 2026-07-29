@@ -17,6 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `TCNDwellResidualMotor`, `TCNDwellResidualLNMotor`,
   `TCNDwellResidualDwellAttn` and `TCNDwellResidualLNDwellAttn` are now
   registered models (29 total).
+- `Graph` accepts an optional `build_order`: node declaration order still
+  drives execution, but layers are constructed and installed in `build_order`.
+  This is what lets a config reproduce a class whose module-construction order
+  was not its dataflow order (a subclass appending layers after its parent's
+  head), keeping both `state_dict()` key order and seeded initialization.
+- Layer registry entries for the TCN family: `tcn`, `temporalblock`,
+  `normmlphead`, `normproj`, `slice`, `signalchannel` and `rangemeanpool`.
 - Training-loop features ported from bonito, all off by default:
   `--grad-accum-split N` splits a batch into N sub-batches and steps the
   optimizer once (larger effective batch without the memory);
@@ -58,11 +65,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The ConvLSTM family (10 registry names) is now declared in
   `models/configs/conv_lstm.toml` and `conv_lstm_attn.toml` instead of the
   hand-written `models/conv_lstm.py` / `conv_lstm_attn.py`, which were removed.
-  The TCN normalization variants (`TCNDwellGN`, `TCNDwellLN`,
-  `TCNDwellResidualGN/LN`, `TCNDwellSplitResidualLN`, and the LayerNorm Motor /
-  DwellAttn variants) are likewise TOML parameterizations rather than
-  subclasses. `state_dict()` keys, seeded initialization, and forward outputs
-  are unchanged — existing checkpoints and bundles load as before.
+- The TCN family (12 registry names) is now declared in
+  `models/configs/tcn_dwell.toml`, `tcn_dwell_residual.toml`,
+  `tcn_dwell_split_residual.toml`, `tcn_dwell_residual_motor.toml` and
+  `tcn_dwell_residual_dwell_attn.toml`. The five hand-written modules
+  (`models/tcn_dwell*.py`) were removed; their reusable `TemporalBlock` and
+  `TCN` blocks moved to `models/components.py`. `state_dict()` keys and their
+  order, seeded initialization, and forward outputs are unchanged — existing
+  checkpoints and bundles load as before. (The two `*Motor` names are the one
+  exception to seeded-init parity: their old class built a classifier head and
+  immediately discarded it, consuming random numbers the graph does not. Keys,
+  key order and outputs still match, and those names were never in the registry
+  before this release, so no checkpoint depends on it.)
+- `kind = "class"` configs are gone; `kind = "graph"` is now the only config
+  kind, so there is a single config semantics rather than two.
 - Renamed `leech.features.normalize_signal` to `normalize_read_signal`. The old
   name collided with `escapepod.normalize_signal`, which is a *different*
   transform (int16 input, no 1.4826 scale factor) that would silently rescale

@@ -10,6 +10,7 @@ import torch.nn as nn
 
 from leech.constants import (
     DEFAULT_CONV_CHANNELS,
+    DEFAULT_DROPOUT,
     DEFAULT_FEATURE_KERNEL,
     DEFAULT_SEQ_KERNEL,
     DEFAULT_SIGNAL_KERNEL,
@@ -239,6 +240,149 @@ class FeatureBranch(nn.Module):
         """
         output: torch.Tensor = self.conv_layers(features)
         return output
+
+
+class TemporalBlock(nn.Module):
+    """
+    Temporal convolutional block with dilated causal convolutions and residual connection.
+
+    Args:
+        in_channels: Number of input channels
+        out_channels: Number of output channels
+        kernel_size: Convolution kernel size
+        dilation: Dilation rate
+        dropout: Dropout probability
+        norm_type: Normalization type ("batchnorm", "groupnorm", "layernorm")
+    """
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int = 3,
+        dilation: int = 1,
+        dropout: float = DEFAULT_DROPOUT,
+        norm_type: str = "batchnorm",
+    ):
+        super().__init__()
+
+        # Padding to maintain sequence length
+        # For causal convolutions: padding = (kernel_size - 1) * dilation
+        self.padding = (kernel_size - 1) * dilation
+
+        # Two convolutional layers with normalization and dropout
+        self.conv1 = nn.Conv1d(
+            in_channels,
+            out_channels,
+            kernel_size=kernel_size,
+            dilation=dilation,
+            padding=0,  # We'll manually pad
+        )
+        self.norm1 = make_norm(norm_type, out_channels)
+        self.dropout1 = nn.Dropout(dropout)
+
+        self.conv2 = nn.Conv1d(
+            out_channels,
+            out_channels,
+            kernel_size=kernel_size,
+            dilation=dilation,
+            padding=0,
+        )
+        self.norm2 = make_norm(norm_type, out_channels)
+        self.dropout2 = nn.Dropout(dropout)
+
+        # Residual connection
+        self.downsample = (
+            nn.Conv1d(in_channels, out_channels, kernel_size=1)
+            if in_channels != out_channels
+            else None
+        )
+
+        self.relu = nn.ReLU()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: Input tensor (batch, in_channels, length)
+
+        Returns:
+            Output tensor (batch, out_channels, length)
+        """
+        # Causal padding (left padding only)
+        x_padded = nn.functional.pad(x, (self.padding, 0))
+
+        # First conv block
+        out = self.conv1(x_padded)
+        out = self.norm1(out)
+        out = self.relu(out)
+        out = self.dropout1(out)
+
+        # Causal padding again
+        out = nn.functional.pad(out, (self.padding, 0))
+
+        # Second conv block
+        out = self.conv2(out)
+        out = self.norm2(out)
+        out = self.relu(out)
+        out = self.dropout2(out)
+
+        # Residual connection
+        res = x if self.downsample is None else self.downsample(x)
+        result: torch.Tensor = self.relu(out + res)
+        return result
+
+
+class TCN(nn.Module):
+    """
+    Temporal Convolutional Network with stacked dilated convolutions.
+
+    Args:
+        in_channels: Number of input channels
+        hidden_channels: Number of channels in each layer
+        num_layers: Number of temporal blocks
+        kernel_size: Convolution kernel size
+        dropout: Dropout probability
+        norm_type: Normalization type ("batchnorm", "groupnorm", "layernorm")
+    """
+
+    def __init__(
+        self,
+        in_channels: int,
+        hidden_channels: int = 64,
+        num_layers: int = 6,
+        kernel_size: int = 3,
+        dropout: float = DEFAULT_DROPOUT,
+        norm_type: str = "batchnorm",
+    ):
+        super().__init__()
+
+        layers = []
+        for i in range(num_layers):
+            dilation = 2**i  # Exponentially increasing dilation: 1, 2, 4, 8, 16, 32
+            in_ch = in_channels if i == 0 else hidden_channels
+            layers.append(
+                TemporalBlock(
+                    in_ch,
+                    hidden_channels,
+                    kernel_size=kernel_size,
+                    dilation=dilation,
+                    dropout=dropout,
+                    norm_type=norm_type,
+                )
+            )
+
+        self.network = nn.Sequential(*layers)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: Input tensor (batch, in_channels, length)
+
+        Returns:
+            Output tensor (batch, hidden_channels, length)
+        """
+        out: torch.Tensor = self.network(x)
+        return out
 
 
 class BaseModel(nn.Module):

@@ -1,19 +1,13 @@
 """Load model architectures declared in TOML config files.
 
-Two kinds of config are supported, both declaring one or more registry names:
+A config declares one fully-declarative architecture — a list of nodes wired
+into a :class:`leech.models.nn.Graph` — plus a ``[[variants]]`` block per
+registry name it serves.  Variants pin parameters that are not user-facing
+(``has_features``, ``norm_type``, ...), which is what removes the
+normalisation/pooling subclass explosion: adding a variant is a config entry,
+not a class.
 
-``kind = "graph"``
-    A fully declarative architecture: a list of nodes wired into a
-    :class:`leech.models.nn.Graph`.  Replaces hand-written model classes.
-
-``kind = "class"``
-    A named parameterisation of an existing hand-written class (e.g.
-    ``TCNDwellGN`` == ``TCNDwell`` with ``norm_type="groupnorm"``).  This is
-    what removes the normalisation-variant subclass explosion without
-    touching the architectures — and therefore without touching state-dict
-    key names.
-
-Both kinds are turned into a real ``type`` by :func:`build_model_class`, so
+:func:`build_model_class` turns a declaration into a real ``type``, so
 ``MODEL_REGISTRY[name]`` still yields a class: ``isinstance()`` works and
 ``inspect.signature()`` returns the declared parameters (needed by
 ``leech.model_loading._instantiate_model``).
@@ -26,7 +20,6 @@ parsing configs (used to render CLI ``--model`` choices) touches only
 
 from __future__ import annotations
 
-import importlib
 import inspect
 import re
 import tomllib
@@ -179,32 +172,49 @@ def _signature(doc: dict, fixed: dict) -> inspect.Signature:
 # ── Class construction ─────────────────────────────────────────────────────
 
 
-def _import_target(target: str) -> type:
-    module_name, _, class_name = target.partition(":")
-    return getattr(importlib.import_module(module_name), class_name)
-
-
 def _build_graph_class(name: str, doc: dict, fixed: dict, docstring: str) -> type:
     from leech.models import nn as leech_nn  # torch import happens here
 
     def __init__(self, **kwargs: Any) -> None:  # noqa: N807
         env = resolve_params(doc, fixed, kwargs)
-        nodes = []
-        for spec in doc.get("nodes", []):
-            when = spec.get("when")
-            if when is not None and not resolve(when, env):
-                continue
-            layer_type = spec["layer"]
-            args = resolve(spec.get("args", {}), env)
-            layer = leech_nn.from_dict({"type": layer_type, **args})
-            nodes.append(
+        specs = [
+            spec
+            for spec in doc.get("nodes", [])
+            if spec.get("when") is None or resolve(spec["when"], env)
+        ]
+        by_name = {spec["name"]: spec for spec in specs}
+
+        # Layers are *constructed* in build_order (default: declaration order),
+        # which is what fixes both the RNG draw order and the state_dict key
+        # order.  Execution order stays declaration order.
+        declared_order = doc.get("build_order")
+        build_order = (
+            [node for node in declared_order if node in by_name]
+            if declared_order
+            else list(by_name)
+        )
+        missing = sorted(set(by_name) - set(build_order))
+        if missing:
+            raise ValueError(f"build_order for {name} omits node(s): {missing}")
+        layers = {
+            node_name: leech_nn.from_dict(
                 {
-                    "name": spec["name"],
-                    "layer": layer,
-                    "inputs": resolve(spec.get("inputs", []), env),
-                    "out": spec.get("out", spec["name"]),
+                    "type": by_name[node_name]["layer"],
+                    **resolve(by_name[node_name].get("args", {}), env),
                 }
             )
+            for node_name in build_order
+        }
+
+        nodes = [
+            {
+                "name": spec["name"],
+                "layer": layers[spec["name"]],
+                "inputs": resolve(spec.get("inputs", []), env),
+                "out": spec.get("out", spec["name"]),
+            }
+            for spec in specs
+        ]
         attrs = {k: env[k] for k in doc.get("params", {})}
         attrs.update({k: env[k] for k in doc.get("expose", [])})
         leech_nn.Graph.__init__(
@@ -213,6 +223,7 @@ def _build_graph_class(name: str, doc: dict, fixed: dict, docstring: str) -> typ
             inputs=doc.get("inputs", ["signal", "sequence", "features"]),
             output=doc.get("output", "logits"),
             attrs=attrs,
+            build_order=build_order if declared_order else None,
         )
 
     namespace: dict[str, Any] = {
@@ -225,23 +236,6 @@ def _build_graph_class(name: str, doc: dict, fixed: dict, docstring: str) -> typ
     return type(name, (leech_nn.Graph,), namespace)
 
 
-def _build_class_variant(name: str, doc: dict, fixed: dict, docstring: str) -> type:
-    base = _import_target(doc["target"])
-
-    def __init__(self, **kwargs: Any) -> None:  # noqa: N807
-        env = resolve_params(doc, fixed, kwargs)
-        base.__init__(self, **{k: env[k] for k in doc.get("params", {})})
-
-    namespace: dict[str, Any] = {
-        "__init__": __init__,
-        "__doc__": docstring or f"{name} ({base.__name__} parameterisation).",
-        "__module__": "leech.models",
-        "__signature__": _signature(doc, fixed),
-        "_leech_config": (doc, fixed),
-    }
-    return type(name, (base,), namespace)
-
-
 @cache
 def build_model_class(name: str) -> type:
     """Build (and cache) the model class for a TOML-declared architecture."""
@@ -251,8 +245,6 @@ def build_model_class(name: str) -> type:
     path, variant_name = specs[name]
     doc, fixed, docstring = _variant_doc(path, variant_name)
     kind = doc.get("kind", "graph")
-    if kind == "graph":
-        return _build_graph_class(name, doc, fixed, docstring)
-    if kind == "class":
-        return _build_class_variant(name, doc, fixed, docstring)
-    raise ValueError(f"Unknown config kind {kind!r} in {path}")
+    if kind != "graph":
+        raise ValueError(f"Unknown config kind {kind!r} in {path}")
+    return _build_graph_class(name, doc, fixed, docstring)

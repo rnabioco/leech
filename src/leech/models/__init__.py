@@ -5,11 +5,10 @@ Architectures come from two sources, both reachable through ``get_model()``
 and ``MODEL_REGISTRY``:
 
 1. **TOML configs** under ``leech/models/configs/`` (see
-   :mod:`leech.models.config_loader`).  A config is either a fully
-   declarative ``kind = "graph"`` architecture built from the layer registry
-   in :mod:`leech.models.nn`, or a ``kind = "class"`` parameterisation of an
-   existing class.  This is where the ConvLSTM family and the TCN
-   normalisation variants live.
+   :mod:`leech.models.config_loader`): fully declarative architectures wired
+   from the layer registry in :mod:`leech.models.nn`.  This is where the
+   ConvLSTM and TCN families live, one config per family with a
+   ``[[variants]]`` block per registry name.
 2. **Hand-written classes** listed in ``_MODEL_SPECS`` below, for
    architectures that have not been converted yet.
 
@@ -29,17 +28,17 @@ Registered models:
 - TransformerDwell: Transformer-based model with self-attention
 - TransformerDwellResidual: TransformerDwell with 2-channel signal
 - ConvOnly: Pure CNN baseline with multi-scale convolutions
-- TCNDwell: Temporal Convolutional Network with dilated convolutions
+- TCNDwell: Temporal Convolutional Network with dilated convolutions    [config]
 - TCNDwellGN: TCNDwell with group normalization                        [config]
 - TCNDwellLN: TCNDwell with layer normalization                        [config]
-- TCNDwellResidual: TCNDwell with 2-channel signal (raw + kmer residual)
+- TCNDwellResidual: TCNDwell with 2-channel signal input               [config]
 - TCNDwellResidualGN: TCNDwellResidual with group normalization        [config]
 - TCNDwellResidualLN: TCNDwellResidual with layer normalization        [config]
 - TCNDwellResidualMotor: TCNDwellResidual + motor-region pooling       [config]
 - TCNDwellResidualLNMotor: as above with layer normalization           [config]
 - TCNDwellResidualDwellAttn: TCNDwellResidual + dwell-only attention   [config]
 - TCNDwellResidualLNDwellAttn: as above with layer normalization       [config]
-- TCNDwellSplitResidual: TCN with separate raw-signal / residual branches
+- TCNDwellSplitResidual: separate raw-signal / residual branches       [config]
 - TCNDwellSplitResidualLN: TCNDwellSplitResidual with layer norm       [config]
 - ResNetDwell: Residual Network with skip connections
 - SignalCNN: Signal-only 1D-CNN classifier (ignores sequence/dwell inputs)
@@ -69,9 +68,6 @@ _MODEL_SPECS: dict[str, tuple[str, str]] = {
     "TransformerDwell": ("leech.models.transformer_dwell", "TransformerDwell"),
     "TransformerDwellResidual": ("leech.models.transformer_dwell", "TransformerDwellResidual"),
     "ConvOnly": ("leech.models.conv_only", "ConvOnly"),
-    "TCNDwell": ("leech.models.tcn_dwell", "TCNDwell"),
-    "TCNDwellResidual": ("leech.models.tcn_dwell_residual", "TCNDwellResidual"),
-    "TCNDwellSplitResidual": ("leech.models.tcn_dwell_split_residual", "TCNDwellSplitResidual"),
     "ResNetDwell": ("leech.models.resnet_dwell", "ResNetDwell"),
     "SignalCNN": ("leech.models.signal_cnn", "SignalCNN"),
 }

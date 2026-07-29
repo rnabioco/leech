@@ -1,46 +1,14 @@
-# TCNDwellResidual with an explicit motor-region pooling pathway.
+# TCNDwellResidual family: TCNDwell with a multi-channel signal branch
+# (raw signal + per-sample kmer residual mixed in the first Conv1d).
 #
-# The feature-branch output at the motor positions (+8..+12 by default) is
-# mean-pooled, projected, and concatenated with the attention-pooled context
-# vector before the classifier.  That guarantees the model sees motor-region
-# dwell even when cross-attention settles on the constriction zone.
-#
-# These names were referenced by ModelInferenceWrapper.FEATURE_MODELS but were
-# never in the model registry until they were declared as configs, so
-# get_model() rejected them while the inference path assumed they existed.
-#
-# `build_order` is needed here: the class this replaces added `motor_proj`
-# *after* its parent had already installed `classifier`, so construction order
-# (and therefore state_dict key order) is not the dataflow order.
+# Identical to tcn_dwell.toml apart from the signal branch's input channel
+# count, which is why the two configs differ only in `signal_in_channels`.
 
 kind = "graph"
 inputs = ["signal", "sequence", "features"]
 output = "logits"
 
-build_order = [
-    "signal_tcn",
-    "signal_pool",
-    "seq_tcn",
-    "seq_pool",
-    "feature_branch",
-    "feat_to_time_major",
-    "merge",
-    "to_time_major",
-    "cross_attn",
-    "attn_residual",
-    "attn_norm",
-    "pool_linear",
-    "attn_pool",
-    "motor_pool",
-    "motor_merge",
-    "classifier",
-    "motor_proj",
-]
-
 [params]
-motor_pool_start = 8
-motor_pool_end = 13
-motor_proj_dim = 64
 signal_len = "${DEFAULT_SIGNAL_LEN}"
 kmer_len = "${DEFAULT_KMER_LEN}"
 num_features = "${DEFAULT_NUM_FEATURES}"
@@ -172,6 +140,8 @@ out = "combined"
 [nodes.args]
 normalized_shape = "${merged_dim}"
 
+# ── attention pooling + classifier ────────────────────────────────────────
+
 [[nodes]]
 name = "pool_linear"
 layer = "linear"
@@ -189,43 +159,13 @@ out = "context"
 [nodes.args]
 dim = 1
 
-# ── motor-region pathway (bypasses cross-attention) ───────────────────────
-
-[[nodes]]
-name = "motor_pool"
-layer = "rangemeanpool"
-inputs = ["feat_out"]
-out = "motor_pooled"
-[nodes.args]
-start = "${motor_pool_start}"
-stop = "${motor_pool_end}"
-dim = 2
-
-[[nodes]]
-name = "motor_proj"
-layer = "normproj"
-inputs = ["motor_pooled"]
-out = "motor_vec"
-[nodes.args]
-in_features = "${feat_dim}"
-out_features = "${motor_proj_dim}"
-norm_type = "${norm_type}"
-
-[[nodes]]
-name = "motor_merge"
-layer = "concat"
-inputs = ["context", "motor_vec"]
-out = "context"
-[nodes.args]
-dim = 1
-
 [[nodes]]
 name = "classifier"
 layer = "normmlphead"
 inputs = ["context"]
 out = "logits"
 [nodes.args]
-in_features = "${merged_dim + motor_proj_dim}"
+in_features = "${merged_dim}"
 hidden_features = [256, 64]
 out_features = "${num_out}"
 dropout = "${dropout}"
@@ -234,13 +174,19 @@ norm_type = "${norm_type}"
 # ── registry names ────────────────────────────────────────────────────────
 
 [[variants]]
-name = "TCNDwellResidualMotor"
-doc = "TCNDwellResidual with explicit motor-region pooling (BatchNorm)."
+name = "TCNDwellResidual"
+doc = "TCNDwell with 2-channel signal input (raw + kmer residual)."
 [variants.params]
 norm_type = "batchnorm"
 
 [[variants]]
-name = "TCNDwellResidualLNMotor"
-doc = "TCNDwellResidual with explicit motor-region pooling (LayerNorm)."
+name = "TCNDwellResidualGN"
+doc = "TCNDwellResidual with GroupNorm instead of BatchNorm."
+[variants.params]
+norm_type = "groupnorm"
+
+[[variants]]
+name = "TCNDwellResidualLN"
+doc = "TCNDwellResidual with LayerNorm instead of BatchNorm."
 [variants.params]
 norm_type = "layernorm"
