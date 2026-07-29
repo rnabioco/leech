@@ -197,6 +197,35 @@ leech model train --train-data FILES --val-data FILES --model MODEL --output-dir
 | `--scheduler-factor FLOAT` | `0.5` | Factor to reduce LR by |
 | `--warmup-epochs INT` | `0` | Linear warmup epochs |
 
+With `--scheduler cosine`, warmup is part of the schedule itself: the LR ramps
+linearly for `--warmup-epochs` and then follows a cosine decay down to a floor of
+`1e-6`. Past the epoch budget the LR holds at the floor rather than cycling back
+up. `reduce_on_plateau` keeps its own warmup handling and is driven by
+`--checkpoint-metric`, not validation loss.
+
+**Optimizer loop:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--grad-accum-split INT` | `1` | Split each batch into N sub-batches, accumulating gradients before stepping once (1 = disabled) |
+| `--quantile-grad-clip / --no-quantile-grad-clip` | disabled | Clip at 2x the median of the last 100 gradient norms instead of a fixed threshold |
+| `--save-optim-every INT` | `1` | Write optimizer state only every N epochs (weights are still written on every save) |
+
+Use `--grad-accum-split` to raise the *effective* batch size when a real batch
+will not fit in GPU memory: `--batch-size 64 --grad-accum-split 4` costs the
+memory of 16 samples but takes the optimizer step of 64. Keep `--batch-size`
+divisible by N -- on a ragged final sub-batch, per-sample weighting is slightly
+off.
+
+`--quantile-grad-clip` adapts the clipping threshold to the gradient scale the
+run is actually seeing, which is useful when a fixed `--max-grad-norm` is hard to
+pick. It takes precedence over `--max-grad-norm` if both are given.
+
+`--save-optim-every N` trades resumability for checkpoint size. Note that it
+applies by epoch number, so `model_last.pt` carries optimizer state only if the
+final epoch is a multiple of N; resuming from a checkpoint without it starts
+from a fresh optimizer and logs a warning.
+
 **Loss function:**
 
 | Option | Default | Description |
@@ -253,6 +282,14 @@ leech model train \
   --train-data chunks/train.json --val-data chunks/val.json \
   --model ConvLSTMDwell --output-dir models/ \
   --resume models/model_last.pt
+
+# Large effective batch on a small GPU, with adaptive clipping
+leech model train \
+  --train-data chunks/train.json --val-data chunks/val.json \
+  --model ConvLSTMDwell --output-dir models/ \
+  --batch-size 128 --grad-accum-split 4 \
+  --quantile-grad-clip \
+  --scheduler cosine --warmup-epochs 2
 ```
 
 ### leech model optimize
