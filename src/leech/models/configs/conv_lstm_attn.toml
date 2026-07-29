@@ -1,0 +1,262 @@
+# ConvLSTM family with attention pooling.
+#
+# Base variants (no dwell features):
+#     signal   -> SignalBranch   -> pool -> |
+#                                           +-- cat -> BiLSTM -> attn pool -> FC
+#     sequence -> SequenceBranch ->         |
+#
+# Dwell variants (dwell features supply cross-attention K/V):
+#     signal   -> SignalBranch   -> pool -> |
+#     sequence -> SequenceBranch ->         +-- cat -> BiLSTM -> cross-attn
+#     features -> FeatureBranch  -----------+                 -> attn pool -> FC
+#
+# Six registry names, one graph.  The attention-pool linear is named
+# `pool_linear` for dwell variants and `attn_linear` for base variants, which
+# is what the hand-written classes used — keeping checkpoint keys unchanged.
+
+kind = "graph"
+inputs = ["signal", "sequence", "features"]
+output = "logits"
+
+[params]
+signal_len = "${DEFAULT_SIGNAL_LEN}"
+kmer_len = "${DEFAULT_KMER_LEN}"
+num_features = "${DEFAULT_NUM_FEATURES}"
+dwell_margin = "${DEFAULT_DWELL_MARGIN}"
+conv_channels = "${DEFAULT_CONV_CHANNELS}"
+lstm_hidden = "${DEFAULT_LSTM_HIDDEN}"
+num_attn_heads = 4
+dropout = "${DEFAULT_DROPOUT}"
+seq_encoding = "base_onehot"
+signal_kmer_context = "${DEFAULT_SIGNAL_KMER_CONTEXT}"
+num_out = 1
+signal_in_channels = 1
+
+[derived]
+seq_in_channels = "${4 * (signal_kmer_context[0] + signal_kmer_context[1] + 1) if seq_encoding == 'signal_kmer' else 4}"
+pooled_seq = "${seq_encoding == 'signal_kmer'}"
+lstm_out_dim = "${lstm_hidden * 2}"
+feat_dim = "${conv_channels[2]}"
+
+# ── branches ──────────────────────────────────────────────────────────────
+
+[[nodes]]
+name = "signal_branch"
+layer = "signalbranch"
+inputs = ["signal"]
+out = "signal_feat"
+[nodes.args]
+in_channels = "${signal_in_channels}"
+conv_channels = "${conv_channels}"
+norm_type = "${norm_type}"
+
+[[nodes]]
+name = "sequence_branch"
+layer = "sequencebranch"
+inputs = ["sequence"]
+out = "seq_feat"
+[nodes.args]
+in_channels = "${seq_in_channels}"
+conv_channels = "${conv_channels}"
+norm_type = "${norm_type}"
+
+# Full-width (kmer_len + 2*dwell_margin) dwell features: cross-attention lets
+# every LSTM position attend to any dwell offset, so this branch is NOT pooled.
+[[nodes]]
+name = "feature_branch"
+layer = "featurebranch"
+when = "${has_features}"
+inputs = ["features"]
+out = "feat_out"
+[nodes.args]
+num_features = "${num_features}"
+conv_channels = "${conv_channels}"
+norm_type = "${norm_type}"
+
+# ── temporal alignment for the two pooled branches ────────────────────────
+
+[[nodes]]
+name = "signal_pool"
+layer = "adaptiveavgpool1d"
+inputs = ["signal_feat"]
+out = "signal_feat"
+[nodes.args]
+output_size = "${kmer_len}"
+
+[[nodes]]
+name = "seq_pool"
+layer = "adaptiveavgpool1d"
+when = "${pooled_seq}"
+inputs = ["seq_feat"]
+out = "seq_feat"
+[nodes.args]
+output_size = "${kmer_len}"
+
+# ── merge + BiLSTM body ───────────────────────────────────────────────────
+
+[[nodes]]
+name = "merge"
+layer = "concat"
+inputs = ["signal_feat", "seq_feat"]
+out = "merged"
+[nodes.args]
+dim = 1
+
+[[nodes]]
+name = "to_time_major"
+layer = "transpose"
+inputs = ["merged"]
+out = "merged"
+[nodes.args]
+dim0 = 1
+dim1 = 2
+
+[[nodes]]
+name = "lstm"
+layer = "bilstm"
+inputs = ["merged"]
+out = "lstm_out"
+[nodes.args]
+input_size = "${conv_channels[2] * 2}"
+hidden_size = "${lstm_hidden}"
+num_layers = "${DEFAULT_LSTM_LAYERS}"
+batch_first = true
+bidirectional = true
+dropout = "${dropout}"
+
+# ── dwell cross-attention path ────────────────────────────────────────────
+
+[[nodes]]
+name = "feat_to_time_major"
+layer = "transpose"
+when = "${has_features}"
+inputs = ["feat_out"]
+out = "feat_kv"
+[nodes.args]
+dim0 = 1
+dim1 = 2
+
+[[nodes]]
+name = "cross_attn"
+layer = "crossattention"
+when = "${has_features}"
+inputs = ["lstm_out", "feat_kv", "feat_kv"]
+out = "attn_out"
+[nodes.args]
+embed_dim = "${lstm_out_dim}"
+num_heads = "${num_attn_heads}"
+kdim = "${feat_dim}"
+vdim = "${feat_dim}"
+dropout = "${dropout}"
+batch_first = true
+
+[[nodes]]
+name = "attn_residual"
+layer = "add"
+when = "${has_features}"
+inputs = ["lstm_out", "attn_out"]
+out = "combined"
+
+[[nodes]]
+name = "attn_norm"
+layer = "layernorm"
+when = "${has_features}"
+inputs = ["combined"]
+out = "combined"
+[nodes.args]
+normalized_shape = "${lstm_out_dim}"
+
+[[nodes]]
+name = "pool_linear"
+layer = "linear"
+when = "${has_features}"
+inputs = ["combined"]
+out = "pool_scores"
+[nodes.args]
+in_features = "${lstm_out_dim}"
+out_features = 1
+
+[[nodes]]
+name = "dwell_attn_pool"
+layer = "attentionpool"
+when = "${has_features}"
+inputs = ["pool_scores", "combined"]
+out = "context"
+[nodes.args]
+dim = 1
+
+# ── plain attention pooling (base variants) ───────────────────────────────
+
+[[nodes]]
+name = "attn_linear"
+layer = "linear"
+when = "${not has_features}"
+inputs = ["lstm_out"]
+out = "attn_scores"
+[nodes.args]
+in_features = "${lstm_out_dim}"
+out_features = 1
+
+[[nodes]]
+name = "base_attn_pool"
+layer = "attentionpool"
+when = "${not has_features}"
+inputs = ["attn_scores", "lstm_out"]
+out = "context"
+[nodes.args]
+dim = 1
+
+[[nodes]]
+name = "fc"
+layer = "mlphead"
+inputs = ["context"]
+out = "logits"
+[nodes.args]
+in_features = "${lstm_out_dim}"
+hidden_features = "${DEFAULT_FC_HIDDEN}"
+out_features = "${num_out}"
+dropout = "${dropout}"
+
+# ── registry names ────────────────────────────────────────────────────────
+
+[[variants]]
+name = "ConvLSTMBaseAttn"
+doc = "Baseline model with learned attention pooling over LSTM positions."
+[variants.params]
+has_features = false
+norm_type = "none"
+
+[[variants]]
+name = "ConvLSTMBaseBNAttn"
+doc = "Baseline model with BatchNorm and attention pooling."
+[variants.params]
+has_features = false
+norm_type = "batchnorm"
+
+[[variants]]
+name = "ConvLSTMDwellAttn"
+doc = "Dwell model with cross-attention for learning motor-sensor offset."
+[variants.params]
+has_features = true
+norm_type = "none"
+
+[[variants]]
+name = "ConvLSTMDwellBNAttn"
+doc = "Dwell model with BatchNorm and cross-attention."
+[variants.params]
+has_features = true
+norm_type = "batchnorm"
+
+[[variants]]
+name = "ConvLSTMDwellGNAttn"
+doc = "Dwell model with GroupNorm and cross-attention."
+[variants.params]
+has_features = true
+norm_type = "groupnorm"
+
+[[variants]]
+name = "ConvLSTMDwellLNAttn"
+doc = "Dwell model with LayerNorm and cross-attention."
+[variants.params]
+has_features = true
+norm_type = "layernorm"

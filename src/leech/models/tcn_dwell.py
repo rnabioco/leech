@@ -345,26 +345,6 @@ class TCNDwell(BaseModel):
 
     # predict_proba() is inherited from BaseModel
 
-
-class TCNDwellGN(TCNDwell):
-    """TCN model with GroupNorm instead of BatchNorm.
-
-    Inherits all architecture from TCNDwell, overriding only the default
-    norm_type to "groupnorm".
-    """
-
-    def __init__(self, **kwargs):
-        kwargs.setdefault("norm_type", "groupnorm")
-        super().__init__(**kwargs)
-
-
-class TCNDwellLN(TCNDwell):
-    """TCN model with LayerNorm instead of BatchNorm.
-
-    Inherits all architecture from TCNDwell, overriding only the default
-    norm_type to "layernorm".
-    """
-
-    def __init__(self, **kwargs):
-        kwargs.setdefault("norm_type", "layernorm")
-        super().__init__(**kwargs)
+    # Normalization variants (TCNDwellGN, TCNDwellLN) are declared in
+    # models/configs/tcn_dwell_variants.toml — norm_type is already a
+    # constructor switch, so they need no subclass.

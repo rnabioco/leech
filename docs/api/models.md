@@ -4,7 +4,20 @@ Neural network architectures for nanopore signal classification.
 
 ## Overview
 
-The models module contains 24 PyTorch model architectures across 5 families. All models accept a `signal_in_channels` parameter for multi-channel signal input (default: 1).
+The models module contains 29 PyTorch model architectures across 5 families. All models accept a `signal_in_channels` parameter for multi-channel signal input (default: 1).
+
+Architectures come from two places, both reachable via `get_model()` and `MODEL_REGISTRY`:
+
+- **TOML configs** in `leech/models/configs/` — the ConvLSTM family and the TCN
+  normalization variants. A config is either a fully declarative `kind = "graph"`
+  architecture built from the layer registry in `leech.models.nn`, or a
+  `kind = "class"` parameterization of an existing class. Adding a
+  normalization/pooling variant is a `[[variants]]` entry, not a new class.
+- **Hand-written classes** for architectures not yet converted (Remora-compatible
+  ConvLSTM, Transformer, ConvOnly, TCN bases, ResNet, SignalCNN).
+
+Discovery is torch-free, so listing model names (e.g. for CLI `--model` choices)
+does not pay the torch import cost.
 
 ## Model Registry
 

@@ -111,10 +111,5 @@ class TCNDwellResidualMotor(TCNDwellResidual):
         logits: torch.Tensor = self.classifier(context_vector)
         return logits
 
-
-class TCNDwellResidualLNMotor(TCNDwellResidualMotor):
-    """TCNDwellResidualMotor with LayerNorm."""
-
-    def __init__(self, **kwargs):
-        kwargs.setdefault("norm_type", "layernorm")
-        super().__init__(**kwargs)
+    # Registry names (TCNDwellResidualMotor, TCNDwellResidualLNMotor) are
+    # declared in models/configs/tcn_dwell_residual_motor.toml.

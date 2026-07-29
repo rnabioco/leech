@@ -1,0 +1,39 @@
+# TCNDwellResidual with a second cross-attention head that attends only to
+# the dwell feature channels.
+#
+# As with the Motor variants, these names were listed in
+# ModelInferenceWrapper.FEATURE_MODELS but never registered.
+
+kind = "class"
+target = "leech.models.tcn_dwell_residual_dwell_attn:TCNDwellResidualDwellAttn"
+
+[params]
+num_dwell_features = 5
+dwell_conv_channels = "${None}"
+num_dwell_attn_heads = 2
+signal_len = "${DEFAULT_SIGNAL_LEN}"
+kmer_len = "${DEFAULT_KMER_LEN}"
+num_features = "${DEFAULT_NUM_FEATURES}"
+dwell_margin = "${DEFAULT_DWELL_MARGIN}"
+signal_in_channels = 2
+hidden_channels = 64
+num_layers = 6
+kernel_size = 3
+num_attn_heads = 4
+dropout = "${DEFAULT_DROPOUT}"
+seq_encoding = "base_onehot"
+signal_kmer_context = "${DEFAULT_SIGNAL_KMER_CONTEXT}"
+norm_type = "batchnorm"
+num_out = 1
+
+[[variants]]
+name = "TCNDwellResidualDwellAttn"
+doc = "TCNDwellResidual with a separate dwell-only cross-attention head."
+[variants.params]
+norm_type = "batchnorm"
+
+[[variants]]
+name = "TCNDwellResidualLNDwellAttn"
+doc = "TCNDwellResidual dwell-only cross-attention head with LayerNorm."
+[variants.params]
+norm_type = "layernorm"

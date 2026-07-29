@@ -110,10 +110,5 @@ class TCNDwellResidualDwellAttn(TCNDwellResidual):
         logits: torch.Tensor = self.classifier(context_vector)
         return logits
 
-
-class TCNDwellResidualLNDwellAttn(TCNDwellResidualDwellAttn):
-    """TCNDwellResidualDwellAttn with LayerNorm."""
-
-    def __init__(self, **kwargs):
-        kwargs.setdefault("norm_type", "layernorm")
-        super().__init__(**kwargs)
+    # Registry names (TCNDwellResidualDwellAttn, TCNDwellResidualLNDwellAttn)
+    # are declared in models/configs/tcn_dwell_residual_dwell_attn.toml.

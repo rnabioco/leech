@@ -1,0 +1,37 @@
+# Normalisation variants of TCNDwell.
+#
+# `norm_type` is already a constructor switch (components.make_norm), so these
+# names are pure parameterisations — no subclass needed.  `kind = "class"`
+# keeps the hand-written architecture (and therefore every state-dict key)
+# untouched.
+
+kind = "class"
+target = "leech.models.tcn_dwell:TCNDwell"
+
+[params]
+signal_len = "${DEFAULT_SIGNAL_LEN}"
+kmer_len = "${DEFAULT_KMER_LEN}"
+num_features = "${DEFAULT_NUM_FEATURES}"
+dwell_margin = "${DEFAULT_DWELL_MARGIN}"
+hidden_channels = 64
+num_layers = 6
+kernel_size = 3
+num_attn_heads = 4
+dropout = "${DEFAULT_DROPOUT}"
+seq_encoding = "base_onehot"
+signal_kmer_context = "${DEFAULT_SIGNAL_KMER_CONTEXT}"
+norm_type = "batchnorm"
+signal_in_channels = 1
+num_out = 1
+
+[[variants]]
+name = "TCNDwellGN"
+doc = "TCNDwell with GroupNorm instead of BatchNorm."
+[variants.params]
+norm_type = "groupnorm"
+
+[[variants]]
+name = "TCNDwellLN"
+doc = "TCNDwell with LayerNorm instead of BatchNorm."
+[variants.params]
+norm_type = "layernorm"

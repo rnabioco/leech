@@ -1,8 +1,9 @@
 """
 Tests for model architectures.
 
-Tests all 6 model architectures: ConvLSTMBase, ConvLSTMDwell,
-TransformerDwell, ConvOnly, TCNDwell, ResNetDwell.
+Covers the hand-written zoo (TransformerDwell, ConvOnly, TCNDwell,
+ResNetDwell, ...) plus the config-driven layer registry and the TOML-declared
+architectures that replaced the ConvLSTM family.
 """
 
 import pytest
@@ -18,6 +19,29 @@ from leech.models import (
     TransformerDwell,
     get_model,
 )
+
+
+def small_model_kwargs(model_name: str, signal_len: int = 100, kmer_len: int = 11) -> dict:
+    """Constructor kwargs that build a small instance of any registered model.
+
+    Selection is by architecture *family* (prefix), so newly registered names
+    are covered automatically instead of silently reusing another model's
+    kwargs.
+    """
+    kwargs: dict = {"signal_len": signal_len, "kmer_len": kmer_len}
+    if model_name.startswith("ConvLSTMRemora"):
+        kwargs["size"] = 32
+    elif model_name.startswith("ConvLSTM"):
+        kwargs.update({"conv_channels": [4, 16, 64], "lstm_hidden": 32})
+    elif model_name.startswith("Transformer"):
+        kwargs.update({"d_model": 64, "nhead": 4, "num_layers": 2})
+    elif model_name.startswith("TCN"):
+        kwargs.update({"hidden_channels": 32, "num_layers": 3, "kernel_size": 3})
+    elif model_name in ("ConvOnly", "ResNetDwell"):
+        kwargs["base_channels"] = 8
+    if "Dwell" in model_name or model_name in ("ConvOnly", "ConvLSTMRemora"):
+        kwargs["num_features"] = 5
+    return kwargs
 
 
 class TestModelRegistry:
@@ -514,61 +538,384 @@ class TestModelComparisons:
         assert not torch.isnan(output).any()
         assert not torch.isinf(output).any()
 
-    def test_model_parameter_counts(self):
+    @pytest.mark.parametrize("model_name", sorted(MODEL_REGISTRY.keys()))
+    def test_model_parameter_counts(self, model_name):
         """Test that models have reasonable parameter counts."""
-        base_config = {
-            "signal_len": 400,
-            "kmer_len": 11,
+        model = get_model(model_name, **small_model_kwargs(model_name, signal_len=400))
+        param_count = sum(p.numel() for p in model.parameters())
+
+        # Models should have between 1k and 10M parameters
+        assert 1_000 < param_count < 10_000_000, f"{model_name} has {param_count} parameters"
+
+
+class TestLayerRegistry:
+    """Bonito-style layer registry: to_dict/from_dict round-trips."""
+
+    def test_register_and_lookup(self):
+        from leech.models import nn as leech_nn
+
+        for expected in ("serial", "stack", "parallel", "graph", "concat", "bilstm", "mlphead"):
+            assert expected in leech_nn.layers
+            assert leech_nn.layers[expected].name == expected
+
+    def test_serial_round_trip(self):
+        from leech.models import nn as leech_nn
+
+        model = leech_nn.Serial(
+            [
+                leech_nn.Linear(8, 16),
+                leech_nn.Linear(16, 4),
+            ]
+        )
+        spec = leech_nn.to_dict(model)
+        assert spec["type"] == "serial"
+        rebuilt = leech_nn.from_dict(spec)
+        assert list(rebuilt.state_dict()) == list(model.state_dict())
+        rebuilt.load_state_dict(model.state_dict())
+        x = torch.randn(3, 8)
+        assert torch.equal(model(x), rebuilt(x))
+
+    def test_stack_round_trip(self):
+        from leech.models import nn as leech_nn
+
+        model = leech_nn.Stack([leech_nn.Linear(8, 8) for _ in range(3)])
+        spec = leech_nn.to_dict(model)
+        assert spec == {
+            "type": "stack",
+            "layer": {"type": "linear", "in_features": 8, "out_features": 8, "bias": True},
+            "depth": 3,
         }
+        rebuilt = leech_nn.from_dict(spec)
+        assert len(rebuilt) == 3
+        assert list(rebuilt.state_dict()) == list(model.state_dict())
 
-        for model_name in MODEL_REGISTRY.keys():
-            # Model-specific configs
-            if model_name == "ConvLSTMBase":
-                model_config = {**base_config, "conv_channels": [4, 16, 64], "lstm_hidden": 32}
-            elif model_name == "ConvLSTMDwell":
-                model_config = {
-                    **base_config,
-                    "num_features": 5,
-                    "conv_channels": [4, 16, 64],
-                    "lstm_hidden": 32,
-                }
-            elif model_name == "ConvLSTMRemoraBase":
-                model_config = {**base_config, "size": 32}
-            elif model_name == "ConvLSTMRemora":
-                model_config = {**base_config, "num_features": 5, "size": 32}
-            elif model_name == "TransformerDwell":
-                model_config = {
-                    **base_config,
-                    "num_features": 5,
-                    "d_model": 64,
-                    "nhead": 4,
-                    "num_layers": 2,
-                }
-            elif model_name == "ConvOnly":
-                model_config = {**base_config, "num_features": 5, "base_channels": 8}
-            elif model_name == "ResNetDwell":
-                model_config = {**base_config, "num_features": 5, "base_channels": 8}
-            elif model_name in ("TCNDwell", "TCNDwellGN", "TCNDwellLN"):
-                model_config = {
-                    **base_config,
-                    "num_features": 5,
-                    "hidden_channels": 32,
-                    "num_layers": 3,
-                    "kernel_size": 3,
-                }
-            elif model_name in ("ConvLSTMDwellGNAttn", "ConvLSTMDwellLNAttn"):
-                model_config = {
-                    **base_config,
-                    "num_features": 5,
-                    "conv_channels": [4, 16, 64],
-                    "lstm_hidden": 32,
-                }
+    def test_parallel_fans_out_and_concatenates(self):
+        """Parallel is the nestable multi-branch primitive."""
+        from leech.models import nn as leech_nn
 
-            model = get_model(model_name, **model_config)
-            param_count = sum(p.numel() for p in model.parameters())
+        model = leech_nn.Parallel(
+            {
+                "a": leech_nn.SignalBranch(in_channels=1, conv_channels=[2, 4, 8]),
+                "b": leech_nn.SignalBranch(in_channels=1, conv_channels=[2, 4, 6]),
+            }
+        )
+        x = torch.randn(2, 40)
+        out = model(x)
+        # branches must stay temporally aligned: same length, channels concatenated
+        assert out.shape == (2, 8 + 6, 40)
 
-            # Models should have between 1k and 10M parameters
-            assert 1_000 < param_count < 10_000_000, f"{model_name} has {param_count} parameters"
+        spec = leech_nn.to_dict(model)
+        assert spec["type"] == "parallel"
+        assert set(spec["sublayers"]) == {"a", "b"}
+        rebuilt = leech_nn.from_dict(spec)
+        assert list(rebuilt.state_dict()) == list(model.state_dict())
+        rebuilt.load_state_dict(model.state_dict())
+        assert torch.equal(model(x), rebuilt(x))
+
+    def test_graph_round_trip(self):
+        """A config-built Graph survives to_dict -> from_dict."""
+        from leech.models import nn as leech_nn
+
+        model = get_model(
+            "ConvLSTMDwell",
+            signal_len=100,
+            kmer_len=11,
+            num_features=5,
+            conv_channels=[4, 16, 32],
+            lstm_hidden=16,
+        )
+        spec = leech_nn.to_dict(model)
+        assert spec["type"] == "graph"
+        assert [node["name"] for node in spec["nodes"]][:3] == [
+            "signal_branch",
+            "sequence_branch",
+            "feature_branch",
+        ]
+
+        rebuilt = leech_nn.from_dict(spec)
+        assert list(rebuilt.state_dict()) == list(model.state_dict())
+        rebuilt.load_state_dict(model.state_dict())
+        model.eval()
+        rebuilt.eval()
+
+        signal = torch.randn(2, 100)
+        sequence = torch.randn(2, 4, 11)
+        features = torch.randn(2, 5, 11)
+        with torch.no_grad():
+            assert torch.equal(
+                model(signal, sequence, features), rebuilt(signal, sequence, features)
+            )
+
+    def test_unknown_layer_type_raises(self):
+        from leech.models import nn as leech_nn
+
+        with pytest.raises(KeyError, match="Unknown layer type"):
+            leech_nn.from_dict({"type": "definitely_not_a_layer"})
+
+
+# Config-built name -> (reference class name, has dwell features, wide features)
+_CONVLSTM_PARITY = [
+    ("ConvLSTMBase", False, False),
+    ("ConvLSTMBaseBN", False, False),
+    ("ConvLSTMDwell", True, False),
+    ("ConvLSTMDwellBN", True, False),
+    ("ConvLSTMBaseAttn", False, False),
+    ("ConvLSTMBaseBNAttn", False, False),
+    ("ConvLSTMDwellAttn", True, True),
+    ("ConvLSTMDwellBNAttn", True, True),
+    ("ConvLSTMDwellGNAttn", True, True),
+    ("ConvLSTMDwellLNAttn", True, True),
+]
+
+
+class TestConfigDrivenParity:
+    """Config-built ConvLSTM models must match the classes they replaced."""
+
+    DWELL_MARGIN = 5
+    BASE = {
+        "signal_len": 100,
+        "kmer_len": 11,
+        "conv_channels": [4, 16, 32],
+        "lstm_hidden": 16,
+    }
+
+    def _kwargs(self, has_features, wide):
+        kwargs = dict(self.BASE)
+        if has_features:
+            kwargs["num_features"] = 5
+        if wide:
+            kwargs["dwell_margin"] = self.DWELL_MARGIN
+        return kwargs
+
+    @pytest.mark.parametrize("name,has_features,wide", _CONVLSTM_PARITY)
+    def test_state_dict_keys_unchanged(self, name, has_features, wide):
+        """Checkpoint compatibility: parameter names must not drift."""
+        import reference_conv_lstm
+
+        kwargs = self._kwargs(has_features, wide)
+        reference = getattr(reference_conv_lstm, name)(**kwargs)
+        built = get_model(name, **kwargs)
+        assert list(built.state_dict()) == list(reference.state_dict())
+
+    @pytest.mark.parametrize("name,has_features,wide", _CONVLSTM_PARITY)
+    def test_numerically_identical(self, name, has_features, wide):
+        """Same weights + same input => bit-identical logits."""
+        import reference_conv_lstm
+
+        kwargs = self._kwargs(has_features, wide)
+        reference = getattr(reference_conv_lstm, name)(**kwargs)
+        built = get_model(name, **kwargs)
+        built.load_state_dict(reference.state_dict())
+        reference.eval()
+        built.eval()
+
+        batch = 3
+        signal = torch.randn(batch, self.BASE["signal_len"])
+        sequence = torch.randn(batch, 4, self.BASE["kmer_len"])
+        feat_len = self.BASE["kmer_len"] + (2 * self.DWELL_MARGIN if wide else 0)
+        features = torch.randn(batch, 5, feat_len)
+
+        with torch.no_grad():
+            if has_features:
+                expected = reference(signal, sequence, features)
+                actual = built(signal, sequence, features)
+            else:
+                expected = reference(signal, sequence)
+                actual = built(signal, sequence)
+        assert torch.equal(expected, actual)
+
+    def test_same_seed_initialisation_matches(self):
+        """Module construction order is preserved, so seeded init is unchanged."""
+        import reference_conv_lstm
+
+        kwargs = self._kwargs(True, True)
+        torch.manual_seed(1234)
+        reference = reference_conv_lstm.ConvLSTMDwellGNAttn(**kwargs)
+        torch.manual_seed(1234)
+        built = get_model("ConvLSTMDwellGNAttn", **kwargs)
+        ref_sd, built_sd = reference.state_dict(), built.state_dict()
+        assert list(ref_sd) == list(built_sd)
+        for key in ref_sd:
+            assert torch.equal(ref_sd[key], built_sd[key]), key
+
+    def test_signal_kmer_encoding_parity(self):
+        """The optional seq_pool node must appear only for signal_kmer input."""
+        import reference_conv_lstm
+
+        kwargs = dict(self.BASE, num_features=5, seq_encoding="signal_kmer")
+        reference = reference_conv_lstm.ConvLSTMDwell(**kwargs)
+        built = get_model("ConvLSTMDwell", **kwargs)
+        built.load_state_dict(reference.state_dict())
+        reference.eval()
+        built.eval()
+
+        signal = torch.randn(2, 100)
+        sequence = torch.randn(2, 36, 100)
+        features = torch.randn(2, 5, 11)
+        with torch.no_grad():
+            assert torch.equal(
+                reference(signal, sequence, features), built(signal, sequence, features)
+            )
+
+    def test_isinstance_and_signature_preserved(self):
+        """model_loading._instantiate_model relies on both."""
+        import inspect
+
+        model = get_model("ConvLSTMDwell", **self._kwargs(True, False))
+        assert isinstance(model, ConvLSTMDwell)
+
+        sig = inspect.signature(ConvLSTMDwell)
+        assert not any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+        assert {"signal_len", "kmer_len", "num_features", "conv_channels"} <= set(sig.parameters)
+
+    def test_unknown_kwarg_rejected(self):
+        with pytest.raises(TypeError, match="unexpected keyword argument"):
+            get_model("ConvLSTMDwell", not_a_real_param=1)
+
+    def test_legacy_checkpoint_still_loads(self, tmp_path):
+        """A checkpoint written by the OLD hand-written class must still load."""
+        import json
+
+        import reference_conv_lstm
+
+        from leech.model_loading import load_model_from_checkpoint
+
+        arch = {
+            "model_name": "ConvLSTMDwellGNAttn",
+            **self._kwargs(True, True),
+        }
+        reference = reference_conv_lstm.ConvLSTMDwellGNAttn(**self._kwargs(True, True))
+        torch.save({"model_state_dict": reference.state_dict()}, tmp_path / "model_best.pt")
+        # config.json as written by training, i.e. with training params mixed in
+        (tmp_path / "config.json").write_text(
+            json.dumps({**arch, "epochs": 3, "batch_size": 8, "device": "cpu", "seed": 1})
+        )
+
+        loaded, _ = load_model_from_checkpoint(tmp_path, device="cpu")
+        reference.eval()
+        loaded.eval()
+        signal = torch.randn(2, self.BASE["signal_len"])
+        sequence = torch.randn(2, 4, self.BASE["kmer_len"])
+        features = torch.randn(2, 5, self.BASE["kmer_len"] + 2 * self.DWELL_MARGIN)
+        with torch.no_grad():
+            assert torch.equal(
+                reference(signal, sequence, features), loaded(signal, sequence, features)
+            )
+
+
+# (registry name, base class import path, norm_type) for kind="class" configs
+_CLASS_VARIANT_PARITY = [
+    ("TCNDwellGN", "leech.models.tcn_dwell:TCNDwell", "groupnorm"),
+    ("TCNDwellLN", "leech.models.tcn_dwell:TCNDwell", "layernorm"),
+    ("TCNDwellResidualGN", "leech.models.tcn_dwell_residual:TCNDwellResidual", "groupnorm"),
+    ("TCNDwellResidualLN", "leech.models.tcn_dwell_residual:TCNDwellResidual", "layernorm"),
+    (
+        "TCNDwellSplitResidualLN",
+        "leech.models.tcn_dwell_split_residual:TCNDwellSplitResidual",
+        "layernorm",
+    ),
+    (
+        "TCNDwellResidualMotor",
+        "leech.models.tcn_dwell_residual_motor:TCNDwellResidualMotor",
+        "batchnorm",
+    ),
+    (
+        "TCNDwellResidualLNMotor",
+        "leech.models.tcn_dwell_residual_motor:TCNDwellResidualMotor",
+        "layernorm",
+    ),
+    (
+        "TCNDwellResidualDwellAttn",
+        "leech.models.tcn_dwell_residual_dwell_attn:TCNDwellResidualDwellAttn",
+        "batchnorm",
+    ),
+    (
+        "TCNDwellResidualLNDwellAttn",
+        "leech.models.tcn_dwell_residual_dwell_attn:TCNDwellResidualDwellAttn",
+        "layernorm",
+    ),
+]
+
+
+class TestClassVariantParity:
+    """kind="class" configs must be exactly the base class + norm_type."""
+
+    @pytest.mark.parametrize("name,target,norm_type", _CLASS_VARIANT_PARITY)
+    def test_matches_base_class(self, name, target, norm_type):
+        import importlib
+
+        module_name, _, class_name = target.partition(":")
+        base = getattr(importlib.import_module(module_name), class_name)
+
+        kwargs = {
+            "signal_len": 100,
+            "kmer_len": 11,
+            "num_features": 5,
+            "dwell_margin": 5,
+            "hidden_channels": 16,
+            "num_layers": 2,
+            "norm_type": norm_type,
+        }
+        reference = base(**kwargs)
+        built = get_model(name, **kwargs)
+        assert isinstance(built, base)
+        assert list(built.state_dict()) == list(reference.state_dict())
+
+        built.load_state_dict(reference.state_dict())
+        reference.eval()
+        built.eval()
+        channels = 2 if "Residual" in name else 1
+        signal = torch.randn(3, channels, 100) if channels > 1 else torch.randn(3, 100)
+        sequence = torch.randn(3, 4, 11)
+        features = torch.randn(3, 5, 11 + 2 * 5)
+        with torch.no_grad():
+            assert torch.equal(
+                reference(signal, sequence, features), built(signal, sequence, features)
+            )
+
+
+class TestRegistryCompleteness:
+    """Every registered name must be constructible and exported."""
+
+    @pytest.mark.parametrize("model_name", sorted(MODEL_REGISTRY.keys()))
+    def test_every_registered_name_constructs(self, model_name):
+        model = get_model(model_name, **small_model_kwargs(model_name))
+        assert sum(p.numel() for p in model.parameters()) > 0
+        assert type(model).__name__ == model_name
+
+    def test_previously_orphaned_models_are_registered(self):
+        """These appeared in FEATURE_MODELS but not in the registry (issue fixed)."""
+        from leech.models.inference_wrapper import ModelInferenceWrapper
+
+        orphans = {
+            "TCNDwellResidualMotor",
+            "TCNDwellResidualLNMotor",
+            "TCNDwellResidualDwellAttn",
+            "TCNDwellResidualLNDwellAttn",
+        }
+        assert orphans <= set(MODEL_REGISTRY.keys())
+        # and the inference path's model sets stay consistent with the registry
+        assert ModelInferenceWrapper.FEATURE_MODELS <= set(MODEL_REGISTRY.keys())
+        assert ModelInferenceWrapper.WIDE_FEATURE_MODELS <= set(MODEL_REGISTRY.keys())
+
+    def test_package_attribute_access(self):
+        """`from leech.models import <Name>` works for config-declared names."""
+        import leech.models as models_pkg
+
+        for name in MODEL_REGISTRY.keys():
+            assert getattr(models_pkg, name) is MODEL_REGISTRY[name]
+
+    def test_config_discovery_is_torch_free(self):
+        """Parsing TOML configs must not drag torch into the CLI's import path."""
+        import subprocess
+        import sys
+
+        code = (
+            "import sys; from leech.models.config_loader import discover_configs; "
+            "assert 'ConvLSTMDwell' in discover_configs(); "
+            "assert 'torch' not in sys.modules, 'config discovery imported torch'"
+        )
+        subprocess.run([sys.executable, "-c", code], check=True)
 
 
 if __name__ == "__main__":

@@ -7,7 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Config-driven model layer (bonito-style). `leech/models/nn.py` provides a
+  layer registry with `register` / `to_dict` / `from_dict` and the composition
+  primitives `Serial`, `Stack`, `Parallel` (nestable fan-out + concat) and
+  `Graph` (flat named dataflow for leech's multi-input, multi-branch models).
+  Architectures are declared in TOML under `leech/models/configs/`.
+- `TCNDwellResidualMotor`, `TCNDwellResidualLNMotor`,
+  `TCNDwellResidualDwellAttn` and `TCNDwellResidualLNDwellAttn` are now
+  registered models (29 total).
+
 ### Fixed
+
+- Four architectures listed in `ModelInferenceWrapper.FEATURE_MODELS` were
+  never added to the model registry, so `get_model()` rejected them while the
+  inference path assumed they existed. They are registered now, with explicit
+  constructor signatures — previously their `**kwargs` constructors made
+  `model_loading._instantiate_model` silently drop the `motor_*` /
+  `num_dwell_*` parameters when rebuilding a model from a saved config.
 
 - POD5 read lookups now use escapepod's read-id index. `DatasetReader` was
   constructed but never entered, and entering it is what warms the index — so
@@ -22,6 +40,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The ConvLSTM family (10 registry names) is now declared in
+  `models/configs/conv_lstm.toml` and `conv_lstm_attn.toml` instead of the
+  hand-written `models/conv_lstm.py` / `conv_lstm_attn.py`, which were removed.
+  The TCN normalization variants (`TCNDwellGN`, `TCNDwellLN`,
+  `TCNDwellResidualGN/LN`, `TCNDwellSplitResidualLN`, and the LayerNorm Motor /
+  DwellAttn variants) are likewise TOML parameterizations rather than
+  subclasses. `state_dict()` keys, seeded initialization, and forward outputs
+  are unchanged — existing checkpoints and bundles load as before.
 - Renamed `leech.features.normalize_signal` to `normalize_read_signal`. The old
   name collided with `escapepod.normalize_signal`, which is a *different*
   transform (int16 input, no 1.4826 scale factor) that would silently rescale

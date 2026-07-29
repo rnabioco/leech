@@ -1,0 +1,27 @@
+# Normalisation variants of TCNDwellSplitResidual (independent TCN branches
+# for raw signal and kmer residual).
+
+kind = "class"
+target = "leech.models.tcn_dwell_split_residual:TCNDwellSplitResidual"
+
+[params]
+signal_len = "${DEFAULT_SIGNAL_LEN}"
+kmer_len = "${DEFAULT_KMER_LEN}"
+num_features = "${DEFAULT_NUM_FEATURES}"
+dwell_margin = "${DEFAULT_DWELL_MARGIN}"
+signal_in_channels = 2
+hidden_channels = 64
+num_layers = 6
+kernel_size = 3
+num_attn_heads = 4
+dropout = "${DEFAULT_DROPOUT}"
+seq_encoding = "base_onehot"
+signal_kmer_context = "${DEFAULT_SIGNAL_KMER_CONTEXT}"
+norm_type = "batchnorm"
+num_out = 1
+
+[[variants]]
+name = "TCNDwellSplitResidualLN"
+doc = "TCNDwellSplitResidual with LayerNorm instead of BatchNorm."
+[variants.params]
+norm_type = "layernorm"

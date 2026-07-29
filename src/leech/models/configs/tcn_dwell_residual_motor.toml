@@ -1,0 +1,42 @@
+# TCNDwellResidual with an explicit motor-region pooling pathway.
+#
+# These names were referenced by ModelInferenceWrapper.FEATURE_MODELS but were
+# never added to the model registry, so get_model() rejected them while the
+# inference path assumed they existed.  Declaring them here registers them and
+# gives them an explicit parameter signature (previously the `**kwargs`
+# constructor made model_loading._instantiate_model silently drop the
+# motor_* parameters when rebuilding from a saved config).
+
+kind = "class"
+target = "leech.models.tcn_dwell_residual_motor:TCNDwellResidualMotor"
+
+[params]
+motor_pool_start = 8
+motor_pool_end = 13
+motor_proj_dim = 64
+signal_len = "${DEFAULT_SIGNAL_LEN}"
+kmer_len = "${DEFAULT_KMER_LEN}"
+num_features = "${DEFAULT_NUM_FEATURES}"
+dwell_margin = "${DEFAULT_DWELL_MARGIN}"
+signal_in_channels = 2
+hidden_channels = 64
+num_layers = 6
+kernel_size = 3
+num_attn_heads = 4
+dropout = "${DEFAULT_DROPOUT}"
+seq_encoding = "base_onehot"
+signal_kmer_context = "${DEFAULT_SIGNAL_KMER_CONTEXT}"
+norm_type = "batchnorm"
+num_out = 1
+
+[[variants]]
+name = "TCNDwellResidualMotor"
+doc = "TCNDwellResidual with explicit motor-region pooling (BatchNorm)."
+[variants.params]
+norm_type = "batchnorm"
+
+[[variants]]
+name = "TCNDwellResidualLNMotor"
+doc = "TCNDwellResidual with explicit motor-region pooling (LayerNorm)."
+[variants.params]
+norm_type = "layernorm"
