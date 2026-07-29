@@ -178,7 +178,7 @@ def build_confound_map(
     if disc_base_map is None:
         raise ValueError(
             "disc_base_map is required. Generate disc_base_map.json from the "
-            "reference FASTA using the extract_disc_bases Snakemake rule."
+            "reference FASTA with leech.confounds.extract_disc_bases_from_fasta()."
         )
 
     confound_map: dict[int, int] = {}
@@ -188,36 +188,6 @@ def build_confound_map(
             confound_map[label_int] = DISC_BASE_TO_INT[base]
 
     return confound_map
-
-
-def build_trna_identity_map(
-    reference_names: list[str],
-) -> tuple[dict[str, int], int]:
-    """Build a per-isoacceptor confound map from chunk reference names.
-
-    Each unique tRNA reference name (e.g. ``tRNA-Ser-CGA-1-1``) becomes
-    a distinct confound class. This is a much stronger adversarial target
-    than the 4-class discriminator base, because the model is penalised
-    for encoding *any* tRNA-body information — not just the single
-    nucleotide at Sprinzl position 73.
-
-    Args:
-        reference_names: Array or list of per-chunk reference name strings.
-            Typically read from ``npz["reference_names"]``.
-
-    Returns:
-        (ref_to_int, num_classes) where ``ref_to_int`` maps each unique
-        reference name to a contiguous integer class, and ``num_classes``
-        is the total number of unique tRNAs.
-    """
-    import numpy as np
-
-    unique = sorted(set(np.asarray(reference_names).flat))
-    ref_to_int = {name: i for i, name in enumerate(unique)}
-    logger.info(f"tRNA identity confound: {len(ref_to_int)} unique isoacceptors")
-    for name, idx in ref_to_int.items():
-        logger.debug(f"  {name} -> {idx}")
-    return ref_to_int, len(ref_to_int)
 
 
 # ---------------------------------------------------------------------------

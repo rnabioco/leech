@@ -387,7 +387,7 @@ The workflow is designed to integrate with the leech CLI commands and supports b
 3. **Motif-based extraction**: Training focuses on specific motifs (e.g., "CCAGGC" for tRNA); motif_offset specifies the focus base within the motif
    - **Reference-based search (default)**: Searches for motif in reference sequence, maps to query via CIGAR. Avoids bias from basecalling errors at modification sites.
    - **Basecalled search**: Searches in basecalled sequence (backward compatible). Use `--motif-reference bam` to enable.
-4. **Anchor modes**: `basecall` (default) anchors chunks to basecalled coordinates; `reference` anchors to reference coordinates (matches Remora `--reference-anchored` behavior)
+4. **Anchor modes**: `reference` (default) anchors chunks to reference coordinates via CIGAR (matches Remora `--reference-anchored` behavior); `basecall` anchors to basecalled coordinates
 5. **Reference sequences**: For reference-based motif search, BAM must contain @SQ sequences in header OR provide `--reference-fasta` path
 6. **Signal orientation**: RNA signals are auto-reversed (3'→5' to 5'→3'). Use `--no-reverse-signal` for DNA data
 7. **Edge handling**: Chunks require sufficient context (default: 200 samples left/right for signal, 5 bases for k-mer)

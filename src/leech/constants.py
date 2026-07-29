@@ -108,10 +108,6 @@ DEFAULT_SIGNAL_KMER_CONTEXT = (4, 4)  # Kmer context for signal-level kmer encod
 NORMALIZATION_METHODS = ["median_mad", "zscore", "quantile", "pa_scaling"]
 DEFAULT_NORMALIZATION = "median_mad"
 
-# Anchor modes for data preparation
-ANCHOR_MODES = ["basecall", "reference"]
-DEFAULT_ANCHOR = "basecall"
-
 # Signal map refinement defaults
 DEFAULT_REFINE_HALF_BANDWIDTH = 300
 DEFAULT_REFINE_ROUGH_RESCALE = True
