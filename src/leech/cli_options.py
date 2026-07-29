@@ -18,11 +18,14 @@ from leech.constants import (
     DEFAULT_DEVICE,
     DEFAULT_EPOCHS,
     DEFAULT_FOCAL_GAMMA,
+    DEFAULT_GRAD_ACCUM_SPLIT,
     DEFAULT_LABEL_SMOOTHING,
     DEFAULT_LEARNING_RATE,
     DEFAULT_LOSS_TYPE,
     DEFAULT_MAX_GRAD_NORM,
     DEFAULT_MIXED_PRECISION,
+    DEFAULT_QUANTILE_GRAD_CLIP,
+    DEFAULT_SAVE_OPTIM_EVERY,
     DEFAULT_SCHEDULER,
     DEFAULT_SCHEDULER_FACTOR,
     DEFAULT_SCHEDULER_PATIENCE,
@@ -245,6 +248,42 @@ def training_hyperparams(f):
         type=int,
         default=DEFAULT_EPOCHS,
         help="Number of training epochs",
+    )(f)
+    return f
+
+
+def training_loop_options(f):
+    """Optimizer-loop options ported from bonito (``train`` only).
+
+    Includes: grad-accum-split, quantile-grad-clip, save-optim-every. All
+    defaults reproduce the previous training behavior exactly.
+    """
+    # Applied in reverse order so --help display matches logical ordering.
+    f = click.option(
+        "--save-optim-every",
+        type=int,
+        default=DEFAULT_SAVE_OPTIM_EVERY,
+        help=(
+            "Write optimizer state only every N epochs (weights are still written "
+            "every save). 1 = every checkpoint (default)."
+        ),
+    )(f)
+    f = click.option(
+        "--quantile-grad-clip/--no-quantile-grad-clip",
+        default=DEFAULT_QUANTILE_GRAD_CLIP,
+        help=(
+            "Clip gradients at 2x the median of the last 100 gradient norms "
+            "instead of a fixed threshold (overrides --max-grad-norm)."
+        ),
+    )(f)
+    f = click.option(
+        "--grad-accum-split",
+        type=int,
+        default=DEFAULT_GRAD_ACCUM_SPLIT,
+        help=(
+            "Split each batch into N sub-batches, accumulating gradients before "
+            "stepping the optimizer once (1 = disabled)."
+        ),
     )(f)
     return f
 

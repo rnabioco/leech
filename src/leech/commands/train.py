@@ -50,6 +50,9 @@ def handle_train(
     augment_shift_max_bases: float,
     augment_feature_noise_scale: float,
     num_workers: int,
+    quantile_grad_clip: bool = False,
+    grad_accum_split: int = 1,
+    save_optim_every: int = 1,
     motif: str | None = None,
     motif_offset: int = 0,
     base_justify: str = "center",
@@ -86,6 +89,9 @@ def handle_train(
         resume: Resume from checkpoint file
         weight_decay: L2 weight decay
         max_grad_norm: Gradient clipping norm (0 = disabled)
+        quantile_grad_clip: Clip at a quantile of recent gradient norms (bonito ClipGrad)
+        grad_accum_split: Sub-batches per optimizer step (1 = no accumulation)
+        save_optim_every: Write optimizer state every N epochs (1 = every save)
         scheduler: LR scheduler type
         scheduler_patience: LR scheduler patience
         scheduler_factor: LR scheduler factor
@@ -129,6 +135,9 @@ def handle_train(
         "warmup_epochs",
         "weight_decay",
         "max_grad_norm",
+        "quantile_grad_clip",
+        "grad_accum_split",
+        "save_optim_every",
         "learning_rate",
         "epochs",
         "batch_size",
@@ -183,6 +192,9 @@ def handle_train(
         pos_weight=pos_weight,
         weight_decay=weight_decay,
         max_grad_norm=max_grad_norm,
+        quantile_grad_clip=quantile_grad_clip,
+        grad_accum_split=grad_accum_split,
+        save_optim_every=save_optim_every,
         scheduler=scheduler,
         scheduler_patience=scheduler_patience,
         scheduler_factor=scheduler_factor,

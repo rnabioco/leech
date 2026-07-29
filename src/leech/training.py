@@ -5,7 +5,9 @@ Training loop and utilities for leech models.
 import copy
 import json
 import logging
+import math
 import random
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +47,97 @@ def _seed_worker(worker_id: int) -> None:
     worker_seed = torch.initial_seed() % 2**32
     np.random.seed(worker_seed)
     random.seed(worker_seed)
+
+
+def linear_warmup_cosine_decay(
+    total_epochs: int,
+    warmup_epochs: int = 0,
+    end_ratio: float = 0.0,
+) -> Callable[[int], float]:
+    """Bonito-style LR multiplier: linear warmup then cosine decay to a floor.
+
+    Returns a ``LambdaLR``-compatible function mapping a 0-based scheduler step
+    (one step per epoch here) to a multiplier of the optimizer's initial LR.
+
+    * ``step < warmup_epochs``: linear ramp ``(step + 1) / warmup_epochs`` so the
+      first epoch runs at ``base_lr / warmup_epochs`` and the last warmup epoch
+      runs at ``base_lr`` (matches the previous manual warmup exactly).
+    * afterwards: half-cosine from 1.0 down to ``end_ratio`` over
+      ``total_epochs - warmup_epochs`` steps. With ``warmup_epochs=0`` this is
+      numerically identical to ``CosineAnnealingLR(T_max=total_epochs,
+      eta_min=end_ratio * base_lr)``.
+
+    The cosine index is clamped at ``T_max`` so training past the planned epoch
+    budget holds the floor instead of cycling the LR back up.
+    """
+    decay_epochs = max(1, total_epochs - warmup_epochs)
+    end_ratio = min(1.0, max(0.0, end_ratio))
+
+    def lr_lambda(step: int) -> float:
+        if warmup_epochs > 0 and step < warmup_epochs:
+            return (step + 1) / warmup_epochs
+        k = min(max(0, step - warmup_epochs), decay_epochs)
+        return end_ratio + (1.0 - end_ratio) * (1.0 + math.cos(math.pi * k / decay_epochs)) / 2.0
+
+    return lr_lambda
+
+
+class ClipGrad:
+    """Adaptive gradient clipping at a quantile of recent gradient norms.
+
+    Ported from bonito. Keeps a rolling buffer of the last ``buffer_size``
+    observed gradient norms and clips each step at ``factor * quantile(buffer)``,
+    so the threshold tracks the actual gradient scale instead of needing a
+    hand-tuned constant. The buffer is primed with a large value (1e6) so early
+    steps are effectively unclipped until real norms have filled it.
+    """
+
+    def __init__(self, quantile: float = 0.5, factor: float = 2.0, buffer_size: int = 100) -> None:
+        if buffer_size < 1:
+            raise ValueError("buffer_size must be >= 1")
+        self.buffer = np.full(buffer_size, fill_value=1e6, dtype=np.float64)
+        self.quantile = quantile
+        self.factor = factor
+        self.i = 0
+
+    def append(self, grad_norm: float) -> None:
+        """Record an observed gradient norm in the rolling buffer."""
+        self.buffer[self.i] = grad_norm
+        self.i = (self.i + 1) % len(self.buffer)
+
+    def __call__(self, parameters: Iterable[torch.Tensor]) -> float:
+        """Clip ``parameters`` in place; returns the pre-clip gradient norm."""
+        max_norm = self.factor * float(np.quantile(self.buffer, self.quantile))
+        grad_norm = float(torch.nn.utils.clip_grad_norm_(parameters, max_norm=max_norm))
+        # NaN/inf norms happen with AMP overflow; don't poison the buffer.
+        if np.isfinite(grad_norm):
+            self.append(grad_norm)
+        return grad_norm
+
+
+def split_batch(batch: dict[str, Any], n: int) -> list[dict[str, Any]]:
+    """Split a collated batch dict into up to ``n`` sub-batches along dim 0.
+
+    Uses ``torch.chunk`` semantics, so the final sub-batch may be smaller and
+    fewer than ``n`` sub-batches are returned when the batch is small. Non-tensor
+    values are passed through to every sub-batch unchanged.
+    """
+    if n <= 1:
+        return [batch]
+
+    tensor_keys = [k for k, v in batch.items() if isinstance(v, torch.Tensor)]
+    if not tensor_keys:
+        return [batch]
+
+    batch_size = batch[tensor_keys[0]].shape[0]
+    n = min(n, max(1, batch_size))
+    if n <= 1:
+        return [batch]
+
+    chunked = {k: torch.chunk(batch[k], n, dim=0) for k in tensor_keys}
+    num_splits = len(chunked[tensor_keys[0]])
+    passthrough = {k: v for k, v in batch.items() if not isinstance(v, torch.Tensor)}
+    return [{**passthrough, **{k: chunked[k][i] for k in tensor_keys}} for i in range(num_splits)]
 
 
 def compute_class_weights(dataset: LeechDataset) -> torch.Tensor | None:
@@ -213,6 +306,9 @@ class Trainer:
         pos_weight: torch.Tensor | None = None,
         weight_decay: float = 0.0,
         max_grad_norm: float = 0.0,
+        quantile_grad_clip: bool = False,
+        grad_accum_split: int = 1,
+        save_optim_every: int = 1,
         scheduler_type: str = "none",
         scheduler_patience: int = 5,
         scheduler_factor: float = 0.5,
@@ -242,6 +338,29 @@ class Trainer:
         self.max_grad_norm = max_grad_norm
         self.warmup_epochs = warmup_epochs
         self.base_lr = learning_rate
+
+        # Gradient accumulation: split each batch into N sub-batches, scale each
+        # sub-loss by 1/N, and step the optimizer once per full batch.
+        self.grad_accum_split = max(1, int(grad_accum_split))
+        if self.grad_accum_split > 1:
+            logger.info(f"Gradient accumulation: {self.grad_accum_split} sub-batches per step")
+
+        # Adaptive (quantile) gradient clipping takes precedence over the fixed
+        # --max-grad-norm threshold when enabled.
+        self.clip_grad_fn: ClipGrad | None = None
+        if quantile_grad_clip:
+            self.clip_grad_fn = ClipGrad()
+            if max_grad_norm > 0:
+                logger.warning(
+                    f"quantile_grad_clip enabled; ignoring fixed max_grad_norm={max_grad_norm}"
+                )
+            logger.info("Quantile-based gradient clipping enabled")
+
+        # Optimizer state is bulky (2x model size for AdamW); write it only every
+        # N epochs while weights are written on every save. 1 = every save.
+        self.save_optim_every = max(1, int(save_optim_every))
+        if self.save_optim_every > 1:
+            logger.info(f"Saving optimizer state every {self.save_optim_every} epochs")
 
         # Adversarial training (gradient reversal for confound invariance)
         self.adversarial_head: AdversarialHead | None = None
@@ -353,15 +472,25 @@ class Trainer:
                 f"Using ReduceLROnPlateau scheduler (patience={scheduler_patience}, factor={scheduler_factor})"
             )
         elif scheduler_type == "cosine":
-            # T_max = total epochs minus warmup; eta_min = 1e-6 floor
+            # Unified linear-warmup + cosine-decay schedule (bonito style): one
+            # LambdaLR covering both phases instead of a manual warmup bolted
+            # onto CosineAnnealingLR. With warmup_epochs=0 the multiplier is
+            # numerically identical to CosineAnnealingLR(T_max=epochs,
+            # eta_min=1e-6); with warmup it reproduces the previous manual ramp.
+            eta_min = 1e-6
+            end_ratio = eta_min / learning_rate if learning_rate > 0 else 0.0
             effective_epochs = max(1, epochs - warmup_epochs)
-            self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            self.scheduler = torch.optim.lr_scheduler.LambdaLR(
                 self.optimizer,
-                T_max=effective_epochs,
-                eta_min=1e-6,
+                lr_lambda=linear_warmup_cosine_decay(
+                    total_epochs=epochs,
+                    warmup_epochs=warmup_epochs,
+                    end_ratio=end_ratio,
+                ),
             )
             logger.info(
-                f"Using CosineAnnealingLR scheduler (T_max={effective_epochs}, eta_min=1e-6)"
+                f"Using linear_warmup_cosine_decay scheduler "
+                f"(warmup={warmup_epochs}, T_max={effective_epochs}, eta_min={eta_min})"
             )
 
         # Mixed precision (only on CUDA)
@@ -426,7 +555,17 @@ class Trainer:
         checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
 
         self.model.load_state_dict(checkpoint["model_state_dict"])
-        self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        # Optimizer state is optional: with --save-optim-every N > 1 most
+        # checkpoints carry weights only. Fall back to the fresh optimizer state
+        # rather than crashing (momentum re-warms within a few steps).
+        optimizer_state = checkpoint.get("optimizer_state_dict")
+        if optimizer_state is not None:
+            self.optimizer.load_state_dict(optimizer_state)
+        else:
+            logger.warning(
+                f"Checkpoint {checkpoint_path} has no optimizer state; "
+                "resuming with a freshly initialized optimizer"
+            )
         self.best_val_acc = checkpoint.get("best_val_acc", 0.0)
         self.best_val_f1 = checkpoint.get("best_val_f1", 0.0)
         self.best_val_auc = checkpoint.get("best_val_auc", 0.0)
@@ -498,6 +637,57 @@ class Trainer:
         preds = self.cl_regression_head(repr_vec[mask])
         return nn.functional.mse_loss(preds, cl_targets[mask])
 
+    def _compute_batch_loss(
+        self, batch: dict[str, Any]
+    ) -> tuple[
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None,
+        torch.Tensor | None,
+    ]:
+        """Forward a (sub-)batch and build the combined training loss.
+
+        Returns ``(logits, labels, main_loss, total_loss, adv, cl_loss)`` where
+        ``total_loss`` includes the adversarial (GRL) and CL regression terms
+        when those heads are active, and ``adv`` is
+        ``(adv_loss, adv_preds, adv_labels)`` or None.
+        """
+        labels = batch["label"].to(self.device)
+
+        # Apply label smoothing to binary targets (BCE/focal only;
+        # CrossEntropyLoss handles its own smoothing via constructor arg).
+        # Keep original labels for metrics; smoothed targets are for loss only.
+        if self.label_smoothing > 0 and self.loss_type != "cross_entropy":
+            loss_targets = labels * (1 - self.label_smoothing) + 0.5 * self.label_smoothing
+        else:
+            loss_targets = labels
+
+        # Forward pass (wrapper handles moving tensors and calling model correctly)
+        logits = self.model_wrapper.forward_batch(batch, self.device)
+        if self.loss_type == "cross_entropy":
+            # CrossEntropyLoss wants (B,) integer class labels
+            main_loss = self.criterion(logits, labels.squeeze(-1).long())
+        else:
+            main_loss = self.criterion(logits, loss_targets)
+
+        loss = main_loss
+
+        # Adversarial loss (GRL reverses gradients to encoder)
+        adv: tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None = None
+        if self.adversarial_head is not None and "confound_label" in batch:
+            adv = self._adversarial_loss(batch)
+            loss = loss + adv[0]
+
+        # CL regression loss
+        cl_loss: torch.Tensor | None = None
+        if self.cl_regression_head is not None and "cl_target" in batch:
+            cl_loss = self._cl_regression_loss(batch)
+            loss = loss + self.cl_lambda * cl_loss
+
+        return logits, labels, main_loss, loss, adv, cl_loss
+
     def train_epoch(
         self, progress: Progress | None = None, task_id: TaskID | None = None
     ) -> tuple[float, float]:
@@ -525,109 +715,71 @@ class Trainer:
         all_adv_labels: list[int] = []
 
         for batch in self.train_loader:
-            # Move labels to device
-            labels = batch["label"].to(self.device)
-
-            # Apply label smoothing to binary targets (BCE/focal only;
-            # CrossEntropyLoss handles its own smoothing via constructor arg).
-            # Keep original labels for metrics; smoothed targets are for loss only.
-            if self.label_smoothing > 0 and self.loss_type != "cross_entropy":
-                loss_targets = labels * (1 - self.label_smoothing) + 0.5 * self.label_smoothing
-            else:
-                loss_targets = labels
-
-            # Adapt labels for CrossEntropyLoss
-            if self.loss_type == "cross_entropy":
-                ce_labels = labels.squeeze(-1).long()
-            else:
-                ce_labels = None
-
-            # Forward pass (wrapper handles moving tensors and calling model correctly)
             self.optimizer.zero_grad()
 
-            if self.use_mixed_precision:
-                with torch.amp.autocast("cuda"):
-                    logits = self.model_wrapper.forward_batch(batch, self.device)
-                    if ce_labels is not None:
-                        main_loss = self.criterion(logits, ce_labels)
-                    else:
-                        main_loss = self.criterion(logits, loss_targets)
+            # Gradient accumulation: N sub-batches, each scaled by 1/N, one
+            # optimizer step per full batch. N=1 leaves the graph untouched.
+            sub_batches = split_batch(batch, self.grad_accum_split)
+            num_splits = len(sub_batches)
 
-                    # Adversarial loss (GRL reverses gradients to encoder)
-                    if self.adversarial_head is not None and "confound_label" in batch:
-                        adv_loss, adv_preds, adv_labels = self._adversarial_loss(batch)
-                        loss = main_loss + adv_loss
-                        total_adv_loss += adv_loss.item()
-                        mask = adv_labels != -1
-                        if mask.any():
-                            all_adv_preds.extend(adv_preds[mask].cpu().numpy().tolist())
-                            all_adv_labels.extend(adv_labels[mask].cpu().numpy().tolist())
-                    else:
-                        loss = main_loss
-
-                    # CL regression loss
-                    if self.cl_regression_head is not None and "cl_target" in batch:
-                        cl_loss = self._cl_regression_loss(batch)
-                        loss = loss + self.cl_lambda * cl_loss
-                        total_cl_loss += cl_loss.item()
-
-                # Scaled backward pass
-                self.scaler.scale(loss).backward()
-
-                # Gradient clipping with mixed precision
-                if self.max_grad_norm > 0:
-                    self.scaler.unscale_(self.optimizer)
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
-
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
-            else:
-                logits = self.model_wrapper.forward_batch(batch, self.device)
-                if ce_labels is not None:
-                    main_loss = self.criterion(logits, ce_labels)
+            for sub_batch in sub_batches:
+                if self.use_mixed_precision:
+                    with torch.amp.autocast("cuda"):
+                        logits, labels, main_loss, loss, adv, cl_loss = self._compute_batch_loss(
+                            sub_batch
+                        )
+                    if num_splits > 1:
+                        loss = loss / num_splits
+                    self.scaler.scale(loss).backward()
                 else:
-                    main_loss = self.criterion(logits, loss_targets)
+                    logits, labels, main_loss, loss, adv, cl_loss = self._compute_batch_loss(
+                        sub_batch
+                    )
+                    if num_splits > 1:
+                        loss = loss / num_splits
+                    loss.backward()
 
-                # Adversarial loss (GRL reverses gradients to encoder)
-                if self.adversarial_head is not None and "confound_label" in batch:
-                    adv_loss, adv_preds, adv_labels = self._adversarial_loss(batch)
-                    loss = main_loss + adv_loss
-                    total_adv_loss += adv_loss.item()
+                # Track metrics (sub-batch losses are averaged back to a
+                # per-batch mean so history is comparable across split settings)
+                total_loss += main_loss.item() / num_splits
+                if adv is not None:
+                    adv_loss, adv_preds, adv_labels = adv
+                    total_adv_loss += adv_loss.item() / num_splits
                     mask = adv_labels != -1
                     if mask.any():
                         all_adv_preds.extend(adv_preds[mask].cpu().numpy().tolist())
                         all_adv_labels.extend(adv_labels[mask].cpu().numpy().tolist())
+                if cl_loss is not None:
+                    total_cl_loss += cl_loss.item() / num_splits
+
+                if self.loss_type == "cross_entropy" and self._num_out > 2:
+                    # Multi-class: argmax predictions
+                    preds = torch.argmax(logits, dim=-1).detach().cpu().numpy()
+                    all_preds.extend(preds.flatten())
+                elif self.loss_type == "cross_entropy":
+                    # Binary CE: probabilities via softmax, take class 1
+                    probs = torch.softmax(logits, dim=-1)[:, 1].detach().cpu().numpy()
+                    all_preds.extend(probs.flatten())
                 else:
-                    loss = main_loss
+                    preds = torch.sigmoid(logits).detach().cpu().numpy()
+                    all_preds.extend(preds.flatten())
+                all_labels.extend(labels.cpu().numpy().flatten())
 
-                # CL regression loss
-                if self.cl_regression_head is not None and "cl_target" in batch:
-                    cl_loss = self._cl_regression_loss(batch)
-                    loss = loss + self.cl_lambda * cl_loss
-                    total_cl_loss += cl_loss.item()
-
-                loss.backward()
-
-                # Gradient clipping
-                if self.max_grad_norm > 0:
+            # Gradient clipping + optimizer step (once per full batch)
+            needs_clip = self.clip_grad_fn is not None or self.max_grad_norm > 0
+            if needs_clip:
+                if self.use_mixed_precision:
+                    self.scaler.unscale_(self.optimizer)
+                if self.clip_grad_fn is not None:
+                    self.clip_grad_fn(self.model.parameters())
+                else:
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
 
-                self.optimizer.step()
-
-            # Track metrics
-            total_loss += main_loss.item()
-            if self.loss_type == "cross_entropy" and self._num_out > 2:
-                # Multi-class: argmax predictions
-                preds = torch.argmax(logits, dim=-1).detach().cpu().numpy()
-                all_preds.extend(preds.flatten())
-            elif self.loss_type == "cross_entropy":
-                # Binary CE: probabilities via softmax, take class 1
-                probs = torch.softmax(logits, dim=-1)[:, 1].detach().cpu().numpy()
-                all_preds.extend(probs.flatten())
+            if self.use_mixed_precision:
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
             else:
-                preds = torch.sigmoid(logits).detach().cpu().numpy()
-                all_preds.extend(preds.flatten())
-            all_labels.extend(labels.cpu().numpy().flatten())
+                self.optimizer.step()
 
             # Update progress if provided
             if progress is not None and task_id is not None:
@@ -830,8 +982,14 @@ class Trainer:
 
             for epoch in range(self.start_epoch, epochs + 1):
                 last_epoch = epoch
-                # LR warmup
-                if self.warmup_epochs > 0 and epoch <= self.warmup_epochs:
+                # LR warmup. The cosine schedule folds warmup into its own
+                # LambdaLR multiplier, so only the plateau/none paths need the
+                # manual ramp here.
+                if (
+                    self.scheduler_type != "cosine"
+                    and self.warmup_epochs > 0
+                    and epoch <= self.warmup_epochs
+                ):
                     warmup_lr = self.base_lr * (epoch / self.warmup_epochs)
                     for param_group in self.optimizer.param_groups:
                         param_group["lr"] = warmup_lr
@@ -874,7 +1032,11 @@ class Trainer:
                     # selection runs off F1/AUC, LR can drop because loss
                     # plateaued on easy examples even though the ranking metric
                     # is still improving — burning the schedule prematurely.
-                    if self.scheduler is not None and epoch > self.warmup_epochs:
+                    # The cosine LambdaLR owns warmup itself, so it steps every
+                    # epoch; plateau keeps the original post-warmup guard.
+                    if self.scheduler is not None and (
+                        self.scheduler_type == "cosine" or epoch > self.warmup_epochs
+                    ):
                         old_lr = self.optimizer.param_groups[0]["lr"]
                         if self.scheduler_type == "reduce_on_plateau":
                             if self._checkpoint_metric == "val_f1":
@@ -978,9 +1140,8 @@ class Trainer:
 
         if self._best_model_state is not None:
             # Save best model from stored state dict
-            best_checkpoint = {
+            best_checkpoint: dict[str, Any] = {
                 "model_state_dict": self._best_model_state,
-                "optimizer_state_dict": self.optimizer.state_dict(),
                 "best_val_acc": self.best_val_acc,
                 "best_val_f1": self.best_val_f1,
                 "best_val_auc": self.best_val_auc,
@@ -990,6 +1151,8 @@ class Trainer:
                 "scaler_state_dict": self.scaler.state_dict() if self.scaler else None,
                 "best_model_state_dict": self._best_model_state,
             }
+            if self._should_save_optimizer(self.best_epoch):
+                best_checkpoint["optimizer_state_dict"] = self.optimizer.state_dict()
             torch.save(best_checkpoint, best_path)
             logger.info(
                 f"Restored model_best.pt from stored best weights (epoch {self.best_epoch})"
@@ -999,15 +1162,25 @@ class Trainer:
             self.save_checkpoint("model_best.pt", epoch=self.best_epoch)
             logger.info("Saved model_best.pt from current model weights (no stored best)")
 
+    def _should_save_optimizer(self, epoch: int) -> bool:
+        """Whether this save should include optimizer state.
+
+        With ``save_optim_every=1`` (default) every checkpoint carries optimizer
+        state, matching the historical behavior. Larger values write weights on
+        every save but optimizer state only every N epochs.
+        """
+        if self.save_optim_every <= 1:
+            return True
+        return epoch % self.save_optim_every == 0
+
     def save_checkpoint(self, filename: str, epoch: int = 0) -> None:
         """Save model checkpoint."""
         if self.output_dir is None:
             return
 
         checkpoint_path = self.output_dir / filename
-        checkpoint = {
+        checkpoint: dict[str, Any] = {
             "model_state_dict": self.model.state_dict(),
-            "optimizer_state_dict": self.optimizer.state_dict(),
             "best_val_acc": self.best_val_acc,
             "best_val_f1": self.best_val_f1,
             "best_val_auc": self.best_val_auc,
@@ -1017,6 +1190,8 @@ class Trainer:
             "scaler_state_dict": self.scaler.state_dict() if self.scaler else None,
             "best_model_state_dict": self._best_model_state,
         }
+        if self._should_save_optimizer(epoch):
+            checkpoint["optimizer_state_dict"] = self.optimizer.state_dict()
         if self.cl_regression_head is not None:
             checkpoint["cl_regression_head_state_dict"] = self.cl_regression_head.state_dict()
         torch.save(checkpoint, checkpoint_path)
@@ -1078,6 +1253,9 @@ def train_model(
     val_chunks: list[dict] | None = None,
     weight_decay: float = 0.0,
     max_grad_norm: float = 0.0,
+    quantile_grad_clip: bool = False,
+    grad_accum_split: int = 1,
+    save_optim_every: int = 1,
     scheduler: str = "none",
     scheduler_patience: int = 5,
     scheduler_factor: float = 0.5,
@@ -1137,6 +1315,9 @@ def train_model(
         val_chunks: Pre-loaded validation chunks (skips loading from val_data_path)
         weight_decay: L2 regularization weight (0 = disabled)
         max_grad_norm: Max gradient norm for clipping (0 = disabled)
+        quantile_grad_clip: Clip gradients at a quantile of recent norms (bonito ClipGrad)
+        grad_accum_split: Sub-batches per optimizer step (1 = no accumulation)
+        save_optim_every: Write optimizer state every N epochs (1 = every save)
         scheduler: LR scheduler type ("none" or "reduce_on_plateau")
         scheduler_patience: Epochs to wait before reducing LR
         scheduler_factor: Factor to reduce LR by
@@ -1580,6 +1761,9 @@ def train_model(
         else (pos_weight_tensor.tolist() if pos_weight_tensor is not None else None),
         "weight_decay": weight_decay,
         "max_grad_norm": max_grad_norm,
+        "quantile_grad_clip": quantile_grad_clip,
+        "grad_accum_split": grad_accum_split,
+        "save_optim_every": save_optim_every,
         "scheduler": scheduler,
         "scheduler_patience": scheduler_patience,
         "scheduler_factor": scheduler_factor,
@@ -1644,6 +1828,9 @@ def train_model(
         pos_weight=pos_weight_tensor,
         weight_decay=weight_decay,
         max_grad_norm=max_grad_norm,
+        quantile_grad_clip=quantile_grad_clip,
+        grad_accum_split=grad_accum_split,
+        save_optim_every=save_optim_every,
         scheduler_type=scheduler,
         scheduler_patience=scheduler_patience,
         scheduler_factor=scheduler_factor,
