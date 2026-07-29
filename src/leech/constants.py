@@ -59,6 +59,9 @@ DEFAULT_EPOCHS = 50
 # Advanced training defaults
 DEFAULT_WEIGHT_DECAY = 0.0
 DEFAULT_MAX_GRAD_NORM = 0.0  # 0 = disabled
+DEFAULT_QUANTILE_GRAD_CLIP = False  # Adaptive clipping at a quantile of recent grad norms
+DEFAULT_GRAD_ACCUM_SPLIT = 1  # Sub-batches per optimizer step (1 = no accumulation)
+DEFAULT_SAVE_OPTIM_EVERY = 1  # Write optimizer state every N epochs (1 = every checkpoint)
 DEFAULT_SCHEDULER = "none"  # "none", "reduce_on_plateau", or "cosine"
 DEFAULT_SCHEDULER_PATIENCE = 5
 DEFAULT_SCHEDULER_FACTOR = 0.5
