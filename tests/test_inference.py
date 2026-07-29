@@ -615,7 +615,7 @@ class TestWritePredictionTagsMargin:
 class TestWritePredictionTagsMinConfidence:
     """Tests for --min-confidence threshold gating."""
 
-    def test_above_threshold_is_charged(self):
+    def test_above_threshold_is_called(self):
         aln = _make_bare_alignment()
         # conf=0.9 → uint8=230, threshold=200
         _write_prediction_tags(
@@ -644,11 +644,11 @@ class TestWritePredictionTagsMinConfidence:
             min_confidence=200,
         )
         assert aln.get_tag("aa") == "unc"
-        # ac should encode 1 - conf when unc
-        assert aln.get_tag("ac") == round(0.4 * 255)
+        # ac keeps the winning class probability; it is not inverted
+        assert aln.get_tag("ac") == round(0.6 * 255)
 
     def test_unc_raw_mode(self):
-        """In raw mode, unc reads get ac = 1 - conf as float."""
+        """In raw mode, filtered reads still report the winning probability."""
         aln = _make_bare_alignment()
         _write_prediction_tags(
             aln,
@@ -660,7 +660,28 @@ class TestWritePredictionTagsMinConfidence:
             min_confidence=200,
         )
         assert aln.get_tag("aa") == "unc"
-        assert aln.get_tag("ac") == pytest.approx(0.7)
+        assert aln.get_tag("ac") == pytest.approx(0.3)
+
+    def test_below_threshold_multiclass_ac_is_not_inverted(self):
+        """Regression for #139.
+
+        With more than two classes, 1-conf is not the probability of anything.
+        A filtered 5-class read must not report a *higher* ac than its own
+        winning probability, or `ac` becomes unfilterable.
+        """
+        aln = _make_bare_alignment()
+        probs = [0.4, 0.3, 0.15, 0.1, 0.05]
+        _write_prediction_tags(
+            aln,
+            "ClassA",
+            0.4,
+            "ClassA,ClassB,ClassC,ClassD,ClassE",
+            probs,
+            raw=True,
+            min_confidence=200,
+        )
+        assert aln.get_tag("aa") == "unc"
+        assert aln.get_tag("ac") == pytest.approx(0.4)
 
     def test_threshold_zero_passes_all(self):
         """min_confidence=0 means every read is called."""
@@ -680,7 +701,7 @@ class TestWritePredictionTagsMinConfidence:
 class TestWritePredictionTagsMinMargin:
     """Tests for --min-margin threshold gating."""
 
-    def test_above_margin_threshold_is_charged(self):
+    def test_above_margin_threshold_is_called(self):
         aln = _make_bare_alignment()
         # margin = 0.9 - 0.1 = 0.8 → uint8=204, threshold=128
         _write_prediction_tags(
@@ -998,8 +1019,12 @@ class TestRunInferenceTagsIntegration:
         for read in tagged:
             assert read.get_tag("aa") == "unc"
 
-    def test_unc_ac_is_inverted(self, tmp_path):
-        """When unc, ac reports 1-max_prob (distance from decision boundary)."""
+    def test_ac_is_independent_of_threshold(self, tmp_path):
+        """ac reports max_prob whether or not the read passed (#139).
+
+        Previously a filtered read got 1-max_prob, so `ac` meant different
+        things depending on the `aa` tag and could not be filtered on directly.
+        """
         from leech.bundling import load_model_from_multiclass_bundle
         from leech.inference import run_inference
 
@@ -1026,15 +1051,19 @@ class TestRunInferenceTagsIntegration:
             with pysam.AlignmentFile(str(out), "rb") as bam:
                 return {r.query_name: r for r in bam if r.has_tag("aa")}
 
-        unc_by_id = _run("unc", min_confidence=255)
-        chg_by_id = _run("chg", min_confidence=0)
-        common = set(unc_by_id) & set(chg_by_id)
+        filtered_by_id = _run("filtered", min_confidence=255)
+        called_by_id = _run("called", min_confidence=0)
+        common = set(filtered_by_id) & set(called_by_id)
         assert len(common) > 0
 
         for rid in list(common)[:5]:
-            ac_unc = unc_by_id[rid].get_tag("ac")
-            ac_chg = chg_by_id[rid].get_tag("ac")
-            assert ac_unc + ac_chg == pytest.approx(1.0, abs=1e-5)
+            filtered, called = filtered_by_id[rid], called_by_id[rid]
+            assert filtered.get_tag("aa") == "unc"
+            assert called.get_tag("aa") != "unc"
+            # Same weights, same read -> same confidence regardless of threshold
+            assert filtered.get_tag("ac") == pytest.approx(called.get_tag("ac"), abs=1e-5)
+            # ...and it matches the winning class probability in pp
+            assert filtered.get_tag("ac") == pytest.approx(max(filtered.get_tag("pp")), abs=1e-5)
 
     def test_margin_consistency(self, tmp_path):
         """Margin am = max_prob - 2nd_prob, verified against pp distribution."""

@@ -3,6 +3,7 @@
 import logging
 import math
 import multiprocessing as mp
+from functools import partial
 from pathlib import Path
 
 import numpy as np
@@ -202,6 +203,11 @@ def run_bundle_inference(
         logger.info(f"Pairwise aggregation method: {aggregation}")
     else:
         aggregate_fn = aggregate_one_vs_all
+
+    # Bind the bundle's recorded class names so aggregation never has to recover
+    # them by splitting pair strings. Absent on bundles built before this was
+    # stored; resolve_pair_labels() warns and falls back in that case.
+    aggregate_fn = partial(aggregate_fn, pair_labels=metadata.get("pair_labels"))
 
     # Load all models (skip for vmap bundles -- stacked params loaded in vmap setup)
     wrappers: dict[str, ModelInferenceWrapper | TracedModelWrapper] = {}

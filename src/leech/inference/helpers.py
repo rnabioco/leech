@@ -9,6 +9,7 @@ import numpy as np
 import pysam
 import torch
 
+from leech.constants import BELOW_THRESHOLD_LABEL
 from leech.features import encode_signal_kmer, sequence_to_int
 from leech.model_loading import load_model_from_checkpoint
 from leech.models.inference_wrapper import ModelInferenceWrapper, TracedModelWrapper
@@ -33,8 +34,9 @@ def _write_prediction_tags(
 
     Args:
         aln: pysam alignment to tag
-        predicted_aa: predicted amino acid label
-        conf: max class probability (0.0-1.0)
+        predicted_aa: predicted class label
+        conf: max class probability (0.0-1.0); written to ``ac`` unchanged,
+            including for reads that fail the thresholds below
         class_names_str: comma-separated class names for pn tag
         probs: full probability distribution
         raw: if True, write float tags; otherwise compact uint8
@@ -46,20 +48,19 @@ def _write_prediction_tags(
     margin = sorted_probs[0] - sorted_probs[1] if len(sorted_probs) > 1 else 1.0
     margin_uint8 = int(min(255, max(0, round(margin * 255))))
     ac_uint8 = int(min(255, max(0, round(conf * 255))))
-    is_charged = ac_uint8 >= min_confidence and margin_uint8 >= min_margin
+    passed_threshold = ac_uint8 >= min_confidence and margin_uint8 >= min_margin
 
-    if is_charged:
-        aln.set_tag("aa", predicted_aa)
-        ac_val = conf
-    else:
-        aln.set_tag("aa", "unc")
-        ac_val = 1.0 - conf
+    # `ac` always carries the winning class probability, whether or not the call
+    # passed. Reporting 1-conf for filtered reads only makes sense when there are
+    # exactly two classes; for N-way models it is not the probability of anything,
+    # and it makes `ac` unfilterable because its meaning depends on the class tag.
+    aln.set_tag("aa", predicted_aa if passed_threshold else BELOW_THRESHOLD_LABEL)
 
     if raw:
-        aln.set_tag("ac", ac_val)
+        aln.set_tag("ac", conf)
         aln.set_tag("am", margin)
     else:
-        aln.set_tag("ac", int(min(255, max(0, round(ac_val * 255)))), value_type="C")
+        aln.set_tag("ac", ac_uint8, value_type="C")
         aln.set_tag("am", margin_uint8, value_type="C")
 
     aln.set_tag("pn", class_names_str)
