@@ -17,6 +17,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `TCNDwellResidualMotor`, `TCNDwellResidualLNMotor`,
   `TCNDwellResidualDwellAttn` and `TCNDwellResidualLNDwellAttn` are now
   registered models (29 total).
+- Training-loop features ported from bonito, all off by default:
+  `--grad-accum-split N` splits a batch into N sub-batches and steps the
+  optimizer once (larger effective batch without the memory);
+  `--quantile-grad-clip` clips at 2x the median of the last 100 gradient norms
+  instead of a fixed threshold; `--save-optim-every N` writes optimizer state
+  only every N epochs while still writing weights on every save.
+
+### Changed
+
+- `--scheduler cosine` is now a single `LambdaLR` warmup-plus-cosine schedule
+  that owns its own warmup, replacing a manual linear warmup bolted onto
+  `CosineAnnealingLR`. The LR now holds at the `1e-6` floor past the epoch
+  budget instead of cycling back up. `reduce_on_plateau` is unchanged.
+- Resuming from a checkpoint with no optimizer state now warns and continues
+  with a fresh optimizer instead of raising `KeyError`.
 
 ### Fixed
 

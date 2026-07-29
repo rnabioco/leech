@@ -11,7 +11,13 @@ from pathlib import Path
 import rich_click as click
 
 from leech.cli_config import configure_rich_click, console
-from leech.cli_options import LazyChoice, get_model_choices, model_provenance, training_hyperparams
+from leech.cli_options import (
+    LazyChoice,
+    get_model_choices,
+    model_provenance,
+    training_hyperparams,
+    training_loop_options,
+)
 from leech.constants import DEFAULT_DEVICE, DEFAULT_SEED
 from leech.logging_config import setup_logging
 
@@ -545,6 +551,7 @@ def merge(
     help="Output directory for model and logs",
 )
 @training_hyperparams
+@training_loop_options
 @model_provenance
 @click.option(
     "--use-class-weights/--no-class-weights",
@@ -672,6 +679,9 @@ def train(
     resume,
     weight_decay,
     max_grad_norm,
+    quantile_grad_clip,
+    grad_accum_split,
+    save_optim_every,
     scheduler,
     scheduler_patience,
     scheduler_factor,
@@ -727,6 +737,9 @@ def train(
         resume=resume,
         weight_decay=weight_decay,
         max_grad_norm=max_grad_norm,
+        quantile_grad_clip=quantile_grad_clip,
+        grad_accum_split=grad_accum_split,
+        save_optim_every=save_optim_every,
         scheduler=scheduler,
         scheduler_patience=scheduler_patience,
         scheduler_factor=scheduler_factor,
