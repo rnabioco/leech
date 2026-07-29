@@ -28,16 +28,19 @@ rule grid_search_pairwise_aa:
         ),
     params:
         output_dir=MODELS_DIR + "/grid_search/pairwise/{pair}",
-        param_grid=config.get(
-            "grid_search",
-            {
-                "learning_rate": [0.0001, 0.001, 0.01],
-                "batch_size": [64, 128, 256],
-                "hidden_size": [128, 256, 512],
-                "num_layers": [1, 2, 3],
-            },
+        # `leech model optimize` searches signal context windows and dwell
+        # offset -- not learning rate / batch size / layer sizes.
+        context_grid=get_grid_search_setting("context_grid", "200:1000:200"),
+        left_contexts=optional_flag(
+            "--left-contexts", get_grid_search_setting("left_contexts", None)
         ),
-        max_epochs=config.get("grid_search_epochs", 20),
+        right_contexts=optional_flag(
+            "--right-contexts", get_grid_search_setting("right_contexts", None)
+        ),
+        dwell_offsets=get_grid_search_setting("dwell_offsets", "0"),
+        model=config.get("model", "ConvLSTMDwell"),
+        epochs=config.get("grid_search_epochs", 20),
+        parallel=config.get("grid_search_parallel", 1),
         device="cpu" if config.get("use_cpu_training", False) else "cuda",
     shell:
         """
@@ -45,8 +48,13 @@ rule grid_search_pairwise_aa:
             --train-data {input.train} \
             --val-data {input.val} \
             --output-dir {params.output_dir} \
-            --max-epochs {params.max_epochs} \
-            --param-grid '{params.param_grid}' \
+            --model {params.model} \
+            --epochs {params.epochs} \
+            --context-grid '{params.context_grid}' \
+            {params.left_contexts} \
+            {params.right_contexts} \
+            --dwell-offsets '{params.dwell_offsets}' \
+            --parallel {params.parallel} \
             --device {params.device} \
             2>&1 | tee {log}
         """

@@ -25,8 +25,8 @@ rule prepare_chunks:
     threads: config.get("workers", 4)  # Match threads to workers from config
     params:
         output_dir=CHUNKS_DIR + "/{sample}",
-        motif=config.get("motif", "CCA"),
-        motif_offset=config.get("motif_offset", 2),
+        motif=require_config("motif"),
+        motif_offset=config.get("motif_offset", 0),
         motif_reference=config.get("motif_reference", "fasta"),
         reference_fasta=config.get("reference_fasta", None),
         skip_motif_indels=config.get("skip_motif_indels", True),

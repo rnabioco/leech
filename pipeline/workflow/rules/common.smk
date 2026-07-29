@@ -5,6 +5,8 @@ Common variables and functions for the leech pipeline.
 import itertools
 from pathlib import Path
 
+from snakemake.exceptions import WorkflowError
+
 
 def get_project_path(base_dir):
     """Insert project_name into directory path if configured.
@@ -228,3 +230,36 @@ def get_project_root():
 # Project root directory for run documentation
 PROJECT_ROOT = get_project_root()
 RUN_SUMMARY_FILE = str(Path(PROJECT_ROOT) / "run_summary.md")
+
+
+def get_grid_search_setting(key, default):
+    """Read a key from the `grid_search:` config block, falling back to default."""
+    grid = config.get("grid_search") or {}
+    if not isinstance(grid, dict):
+        return default
+    value = grid.get(key, default)
+    if isinstance(value, (list, tuple)):
+        return ",".join(str(v) for v in value)
+    return value
+
+
+def optional_flag(flag, value):
+    """Render `--flag value` when value is set, otherwise an empty string."""
+    if value is None or value == "":
+        return ""
+    return f"{flag} '{value}'"
+
+
+def require_config(key):
+    """Read a required config key, failing loudly instead of guessing a default.
+
+    Used for values that decide what the run extracts (e.g. `motif`). A silent
+    fallback here produces a full run's worth of chunks centered on the wrong
+    base, which is far more expensive than a startup error.
+    """
+    if key not in config or config[key] in (None, ""):
+        raise WorkflowError(
+            f"Required config key '{key}' is not set. "
+            f"Add it to your config file or pass --config {key}=<value>."
+        )
+    return config[key]

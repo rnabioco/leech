@@ -51,7 +51,6 @@ include: "rules/train.smk"
 include: "rules/inference.smk"
 include: "rules/evaluate.smk"
 include: "rules/compare_models.smk"
-include: "rules/diagnose.smk"
 
 
 # ============================================================================
@@ -218,14 +217,3 @@ rule all_inspect_pod5:
     input:
         "results/pod5_inspection/pod5_inspection_master_report.tsv.gz",
         "results/pod5_inspection/pod5_inspection_summary.txt",
-
-
-rule all_diagnose:
-    """Run signal orientation diagnostics on all AA synthetic samples."""
-    input:
-        expand(
-            METRICS_DIR + "/diagnostics/{sample}/signal_orientation.png",
-            sample=[
-                s for s in SAMPLES if config["samples"][s].get("label") != "uncharged"
-            ],
-        ),
