@@ -26,79 +26,64 @@ does not pay the torch import cost.
       show_root_heading: true
       show_source: true
 
-## ConvLSTM Architectures
+## Config-Driven Architectures (ConvLSTM and TCN)
 
-### ConvLSTMDwell
+The ConvLSTM and TCN families are declared in TOML configs, not Python
+classes. `build_model_class()` turns each declaration into a real class on
+first access, so `get_model("ConvLSTMDwell")`, `isinstance()` checks, and
+checkpoint loading all behave as if the class were hand-written.
 
-Multi-branch Conv-LSTM with dwell time features (recommended).
+| Registry names | Config |
+|---|---|
+| `ConvLSTMBase`, `ConvLSTMBaseBN`, `ConvLSTMDwell`, `ConvLSTMDwellBN` | `configs/conv_lstm.toml` |
+| `ConvLSTMBaseAttn`, `ConvLSTMBaseBNAttn`, `ConvLSTMDwellAttn`, `ConvLSTMDwellBNAttn`, `ConvLSTMDwellGNAttn`, `ConvLSTMDwellLNAttn` | `configs/conv_lstm_attn.toml` |
+| `TCNDwell`, `TCNDwellGN`, `TCNDwellLN` | `configs/tcn_dwell.toml` |
+| `TCNDwellResidual`, `TCNDwellResidualGN`, `TCNDwellResidualLN` | `configs/tcn_dwell_residual.toml` |
+| `TCNDwellResidualMotor`, `TCNDwellResidualLNMotor` | `configs/tcn_dwell_residual_motor.toml` |
+| `TCNDwellResidualDwellAttn`, `TCNDwellResidualLNDwellAttn` | `configs/tcn_dwell_residual_dwell_attn.toml` |
+| `TCNDwellSplitResidual`, `TCNDwellSplitResidualLN` | `configs/tcn_dwell_split_residual.toml` |
 
-::: leech.models.ConvLSTMDwell
+**`ConvLSTMDwell`** (multi-branch Conv-LSTM with dwell time features) is the
+recommended default. It has three branches — signal (Conv1d on raw signal),
+sequence (Conv1d on one-hot k-mers), and features (Conv1d on dwell + level
+statistics) — merged into a BiLSTM followed by a fully connected head.
+**`ConvLSTMBase`** is the same architecture without the feature branch; compare
+the two to measure the impact of dwell features.
+
+The TCN family replaces the BiLSTM with stacks of dilated causal convolutions.
+`Residual` variants take a 2-channel signal input (raw + k-mer model residual),
+`SplitResidual` keeps separate branches for the raw signal and the residual,
+`Motor` adds motor-region pooling, and `DwellAttn` adds dwell-only
+cross-attention.
+
+### Config Loader
+
+::: leech.models.config_loader
     options:
       show_root_heading: true
-      show_source: true
+      show_source: false
       members:
-        - __init__
-        - forward
+        - discover_configs
+        - build_model_class
 
-### ConvLSTMBase
+### Layer Registry
 
-Baseline Conv-LSTM without dwell features (for comparison).
-
-::: leech.models.ConvLSTMBase
+::: leech.models.nn
     options:
       show_root_heading: true
-      show_source: true
+      show_source: false
       members:
-        - __init__
-        - forward
+        - register
+        - to_dict
+        - from_dict
+        - Serial
+        - Stack
+        - Parallel
+        - Graph
 
-### Normalization and Attention Variants
+## Remora-compatible Architectures
 
-Batch normalization (BN), group normalization (GN), layer normalization (LN), and attention pooling variants:
-
-::: leech.models.ConvLSTMDwellBN
-    options:
-      show_root_heading: true
-      show_source: false
-
-::: leech.models.ConvLSTMDwellAttn
-    options:
-      show_root_heading: true
-      show_source: false
-
-::: leech.models.ConvLSTMDwellBNAttn
-    options:
-      show_root_heading: true
-      show_source: false
-
-::: leech.models.ConvLSTMDwellGNAttn
-    options:
-      show_root_heading: true
-      show_source: false
-
-::: leech.models.ConvLSTMDwellLNAttn
-    options:
-      show_root_heading: true
-      show_source: false
-
-::: leech.models.ConvLSTMBaseBN
-    options:
-      show_root_heading: true
-      show_source: false
-
-::: leech.models.ConvLSTMBaseAttn
-    options:
-      show_root_heading: true
-      show_source: false
-
-::: leech.models.ConvLSTMBaseBNAttn
-    options:
-      show_root_heading: true
-      show_source: false
-
-### Remora-compatible
-
-::: leech.models.ConvLSTMRemora
+::: leech.models.conv_lstm_remora.ConvLSTMRemora
     options:
       show_root_heading: true
       show_source: false
@@ -114,7 +99,7 @@ Batch normalization (BN), group normalization (GN), layer normalization (LN), an
 
 Transformer with multi-head self-attention and dwell features.
 
-::: leech.models.TransformerDwell
+::: leech.models.transformer_dwell.TransformerDwell
     options:
       show_root_heading: true
       show_source: false
@@ -123,63 +108,7 @@ Transformer with multi-head self-attention and dwell features.
 
 Transformer with 2-channel signal input (raw + kmer residual).
 
-::: leech.models.TransformerDwellResidual
-    options:
-      show_root_heading: true
-      show_source: false
-
-## Temporal Convolutional Networks
-
-### TCNDwell
-
-Temporal Convolutional Network with dilated convolutions.
-
-::: leech.models.TCNDwell
-    options:
-      show_root_heading: true
-      show_source: false
-
-### TCN Normalization Variants
-
-::: leech.models.TCNDwellGN
-    options:
-      show_root_heading: true
-      show_source: false
-
-::: leech.models.TCNDwellLN
-    options:
-      show_root_heading: true
-      show_source: false
-
-### TCNDwellResidual
-
-TCN with 2-channel signal input (raw + kmer residual).
-
-::: leech.models.TCNDwellResidual
-    options:
-      show_root_heading: true
-      show_source: false
-
-::: leech.models.TCNDwellResidualGN
-    options:
-      show_root_heading: true
-      show_source: false
-
-::: leech.models.TCNDwellResidualLN
-    options:
-      show_root_heading: true
-      show_source: false
-
-### TCNDwellSplitResidual
-
-TCN with independent branches for the raw signal and the kmer residual.
-
-::: leech.models.TCNDwellSplitResidual
-    options:
-      show_root_heading: true
-      show_source: false
-
-::: leech.models.TCNDwellSplitResidualLN
+::: leech.models.transformer_dwell.TransformerDwellResidual
     options:
       show_root_heading: true
       show_source: false
@@ -190,7 +119,7 @@ TCN with independent branches for the raw signal and the kmer residual.
 
 Pure convolutional network with multi-scale convolutions.
 
-::: leech.models.ConvOnly
+::: leech.models.conv_only.ConvOnly
     options:
       show_root_heading: true
       show_source: false
@@ -199,19 +128,28 @@ Pure convolutional network with multi-scale convolutions.
 
 Deep residual network with skip connections.
 
-::: leech.models.ResNetDwell
+::: leech.models.resnet_dwell.ResNetDwell
+    options:
+      show_root_heading: true
+      show_source: false
+
+### SignalCNN
+
+Signal-only 1D-CNN classifier (ignores sequence and dwell inputs).
+
+::: leech.models.signal_cnn.SignalCNN
     options:
       show_root_heading: true
       show_source: false
 
 ## Inference Wrappers
 
-::: leech.models.ModelInferenceWrapper
+::: leech.models.inference_wrapper.ModelInferenceWrapper
     options:
       show_root_heading: true
       show_source: false
 
-::: leech.models.RemoraModelWrapper
+::: leech.models.remora_compat.RemoraModelWrapper
     options:
       show_root_heading: true
       show_source: false

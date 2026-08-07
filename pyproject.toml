@@ -106,6 +106,12 @@ python_functions = "test_*"
 testpaths = ["tests"]
 markers = ["slow: slow tests (torch.export, bundles) — run with --slow"]
 
+[tool.uv]
+# plotnine pins statsmodels<=0.14.4 on emscripten (pyodide), which conflicts
+# with the notebook extra's statsmodels>=0.14.6 and makes the lock
+# unresolvable. leech never targets wasm, so exclude it from resolution.
+environments = ["sys_platform != 'emscripten'"]
+
 [tool.uv.workspace]
 members = ["rust"]
 
