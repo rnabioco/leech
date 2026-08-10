@@ -29,10 +29,12 @@ logger = logging.getLogger("leech.signal_refine")
 try:
     from leech._rust_accel import (
         HAS_RUST,
+        _rs_rough_rescale_quantile,
         _rs_seq_banded_dp,
     )
 except ImportError:
     HAS_RUST = False
+    _rs_rough_rescale_quantile = None
     _rs_seq_banded_dp = None
 
 
@@ -198,7 +200,28 @@ def rough_rescale_quantile(
 
     Returns:
         Rescaled signal
+
+    For float32 inputs this delegates to escapepod-signal's canonical
+    implementation via leech_core (rnabioco/escapepod-rs#204), which is
+    pinned bit-for-bit against this NumPy version by escapepod's golden
+    tests. The NumPy body below remains the fallback for rust-less
+    installs and non-float32 dtypes.
     """
+    if (
+        HAS_RUST
+        and _rs_rough_rescale_quantile is not None
+        and signal.dtype == np.float32
+        and expected_levels.dtype == np.float32
+    ):
+        return np.asarray(
+            _rs_rough_rescale_quantile(
+                np.ascontiguousarray(signal),
+                np.ascontiguousarray(expected_levels),
+                np.ascontiguousarray(seq_to_sig_map, dtype=np.int64),
+                clip_bases,
+            )
+        )
+
     centers = (seq_to_sig_map[:-1] + seq_to_sig_map[1:]) // 2
     center_signal = signal[centers].astype(np.float64)
     levels = expected_levels.copy()
