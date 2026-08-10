@@ -34,6 +34,7 @@ from leech.signal_refine import (
     extract_levels,
     load_kmer_table,
     refine_signal_mapping,
+    rough_rescale_quantile,
     seq_banded_dp,
 )
 
@@ -43,7 +44,7 @@ pytest.importorskip("leech_core")
 from leech._rust_accel import (  # noqa: E402
     _rs_extract_inference_chunks,
     _rs_extract_levels,
-    _rs_rough_rescale,
+    _rs_rough_rescale_quantile,
     _rs_seq_banded_dp,
 )
 
@@ -191,26 +192,43 @@ class TestExtractLevelsParity:
 # ---------------------------------------------------------------------------
 
 
-class TestRoughRescaleParity:
-    """Verify rough_rescale matches between Rust and Python."""
+class TestRoughRescaleQuantileParity:
+    """Verify the quantile rough rescale matches between the Rust path
+    (escapepod-signal's canonical implementation, rnabioco/escapepod-rs#204)
+    and the pure NumPy fallback."""
 
-    def test_rough_rescale_lstsq(self):
-        """Test the linear rough_rescale (used in signal_refine.rough_rescale_inner)."""
-        rng = np.random.RandomState(42)
-        sig_len = 500
-        num_bases = 50
-        signal = rng.randn(sig_len).astype(np.float64)
-        expected = rng.randn(num_bases).astype(np.float64)
-        sig_map = np.sort(rng.choice(sig_len, num_bases + 1, replace=False)).astype(np.int64)
-        sig_map[0] = 0
-        sig_map[-1] = sig_len
+    @pytest.mark.parametrize("seed", [42, 77, 999])
+    def test_rough_rescale_quantile_identical(self, seed):
+        rng = np.random.RandomState(seed)
+        num_bases = 60
+        dwells = rng.randint(8, 14, size=num_bases)
+        sig_map = np.zeros(num_bases + 1, dtype=np.int64)
+        sig_map[1:] = np.cumsum(dwells)
+        signal = (rng.randn(int(sig_map[-1]) + 5) * 1.2 + 0.3).astype(np.float32)
+        centers = (sig_map[:-1] + sig_map[1:]) // 2
+        expected = (
+            0.9 * signal[centers].astype(np.float64) + rng.normal(scale=0.3, size=num_bases)
+        ).astype(np.float32)
 
-        py_rescaled = np.asarray(_rs_rough_rescale(signal, expected, sig_map))
-        # The Rust rough_rescale is a linear rescale, not quantile — it matches
-        # the rough_rescale_inner used in signal_refine.py for inter-iteration
-        # rescaling, not the quantile-based rough_rescale_quantile.
-        # We test that the Rust function is self-consistent.
-        assert py_rescaled.shape == signal.shape
+        rs = np.asarray(_rs_rough_rescale_quantile(signal, expected, sig_map, 10))
+
+        # Force the pure NumPy fallback (rough_rescale_quantile dispatches to
+        # Rust for float32 inputs when leech_core is available).
+        import leech.signal_refine as sr
+
+        old_has_rust = sr.HAS_RUST
+        sr.HAS_RUST = False
+        try:
+            py = rough_rescale_quantile(signal, expected, sig_map, clip_bases=10)
+        finally:
+            sr.HAS_RUST = old_has_rust
+
+        assert rs.dtype == np.float32
+        assert py.dtype == np.float32
+        # escapepod's golden tests pin the two implementations bit-for-bit up
+        # to the documented least-squares substitution (closed form vs SVD,
+        # ~1e-13 relative → at most rare 1-ulp float32 differences).
+        np.testing.assert_allclose(rs, py, rtol=1e-6, atol=1e-9)
 
 
 # ---------------------------------------------------------------------------

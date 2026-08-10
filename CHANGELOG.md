@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The k-mer level mechanics moved down to escapepod-signal
+  (rnabioco/escapepod-rs#204/#205), which is now their canonical home:
+  `leech_core`'s `extract_levels` delegates there (same f64 numerics), the
+  dead `rough_rescale` binding (per-base-mean variant, no callers) is
+  removed, and a new `rough_rescale_quantile` binding delegates the quantile
+  rough rescale — `leech.signal_refine.rough_rescale_quantile` now dispatches
+  to it for float32 inputs when `leech_core` is available. escapepod pins the
+  parity with leech's NumPy implementations bit-for-bit in golden-vector
+  tests, so leech and `escpod` can no longer drift on the k-mer residual's
+  definition. Pure-Python fallbacks are unchanged. escapepod-signal is
+  pinned by rev until the next escapepod release.
+
 ### Added
 
 - Config-driven model layer (bonito-style). `leech/models/nn.py` provides a
