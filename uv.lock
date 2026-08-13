@@ -1156,7 +1156,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.16.1" },
     { name = "scikit-learn", specifier = ">=1.5.0" },
     { name = "snakefmt", marker = "extra == 'pipeline'", specifier = ">=0.10.3" },
-    { name = "snakemake", marker = "extra == 'pipeline'", specifier = ">=9.0.0" },
+    { name = "snakemake", marker = "extra == 'pipeline'", specifier = ">=9.24.0" },
     { name = "snakemake-executor-plugin-lsf", marker = "extra == 'pipeline'", specifier = ">=0.2.5" },
     { name = "snakemake-executor-plugin-slurm", marker = "extra == 'pipeline'", specifier = ">=1.9.2" },
     { name = "statsmodels", marker = "extra == 'notebook'", specifier = ">=0.14.6" },
@@ -2775,7 +2775,7 @@ wheels = [
 
 [[package]]
 name = "snakemake"
-version = "9.23.1"
+version = "9.24.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "conda-inject" },
@@ -2810,9 +2810,9 @@ dependencies = [
     { name = "wrapt" },
     { name = "yte" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/9e/c2/45aa858e55edbb7dbc243ed60859f4f3d92d63ecdd67a80632aa3659fe6b/snakemake-9.23.1.tar.gz", hash = "sha256:ef8d698bfce66a6669cc29df7e344b0b367fd90956c725e5ae0a79a556e8e93f", size = 6802587, upload-time = "2026-06-18T09:42:57.653Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/3c/4b/6ca3ef78b8b6b2f76079a2dc260cb48aa58e7b6eeeb1278e6d200128ba1b/snakemake-9.24.0.tar.gz", hash = "sha256:0561a41594c4955f705d1811ebed5e23020a5f26c4724e6cf102c5bd31804acd", size = 6805824, upload-time = "2026-07-30T11:50:34.81Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/7e/65/2cb1c99117746bea8aff34dc434703f8f23d3876860e2ff3ebeccb754b0f/snakemake-9.23.1-py3-none-any.whl", hash = "sha256:9fdbfff25f1b442cdf7906ca06b465fc24b9bf72e2d51514fb93d83e3f8aeb35", size = 1162133, upload-time = "2026-06-18T09:42:55.541Z" },
+    { url = "https://files.pythonhosted.org/packages/9b/08/21618f1d98db080ecc5aeb7ed51685fb9908a1e330759f77782d38363ac9/snakemake-9.24.0-py3-none-any.whl", hash = "sha256:cf5a056eef5ac92970c2ee9e26fcd5f8138cf38a0a6db8904185f7ba2e317307", size = 1163443, upload-time = "2026-07-30T11:50:32.568Z" },
 ]
 
 [[package]]
