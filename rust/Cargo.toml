@@ -12,7 +12,10 @@ pyo3 = { version = "0.28", features = ["extension-module"] }
 numpy = "0.28"
 # Not on crates.io; pulled straight from the public GitHub repo. Pin by tag so
 # the build is reproducible — bump the tag to take a new escapepod release.
-escapepod-signal = { git = "https://github.com/rnabioco/escapepod-rs", tag = "v0.6.3" }
+# Temporarily pinned by rev to the commit that moved the kmer-level primitives
+# down from leech (rnabioco/escapepod-rs#205, unreleased); return to a tag pin
+# at the next escapepod release.
+escapepod-signal = { git = "https://github.com/rnabioco/escapepod-rs", rev = "1c55668f40f2e9af3f48ba6161aa481c07a02031" }
 rayon = "1"
 
 [profile.release]

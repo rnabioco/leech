@@ -27,7 +27,7 @@ dependencies = [
   "escapepod>=0.6.3",
   "numpy>=2.0.0",
   "nvitop>=1.6.1",
-  "polars>=1.0.0",
+  "polars>=1.43.2",
   "pysam>=0.22.0",
   # Release specs (release/spec.py) and `--confound-config x.yaml` + YAML
   # lookup tables (confounds.py). Both import it lazily so it stays off the
@@ -59,14 +59,16 @@ test = [
 # Full local dev env: test runners + lint/type/QA tooling.
 dev = [
   "leech[test]",
-  "ruff>=0.16.0",  # Modern linter/formatter (replaces black + flake8)
+  "ruff>=0.16.1",  # Modern linter/formatter (replaces black + flake8)
   "ty>=0.0.66",
+  "ruff>=0.16.1",  # Modern linter/formatter (replaces black + flake8)
+  "ty>=0.0.64",
   "nbqa>=1.7.0",  # Quality assurance for Jupyter notebooks
   "vulture>=2.15",  # Dead code detection
 ]
 pipeline = [
   "snakefmt>=0.10.3",
-  "snakemake>=9.0.0",
+  "snakemake>=9.24.0",
   "snakemake-executor-plugin-lsf>=0.2.5",
   "snakemake-executor-plugin-slurm>=1.9.2",
 ]
