@@ -27,7 +27,7 @@ dependencies = [
   "escapepod>=0.6.3",
   "numpy>=2.0.0",
   "nvitop>=1.6.1",
-  "polars>=1.0.0",
+  "polars>=1.43.2",
   "pysam>=0.22.0",
   # Release specs (release/spec.py) and `--confound-config x.yaml` + YAML
   # lookup tables (confounds.py). Both import it lazily so it stays off the
