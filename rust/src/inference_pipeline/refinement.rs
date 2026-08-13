@@ -17,8 +17,14 @@ use escapepod_signal::resquiggle::{
 
 use crate::signal_refine::extract_levels_inner;
 
-/// Preferred dwell time (signal samples/base) for the asymmetric dwell penalty.
-const DWELL_TARGET: f32 = 4.0;
+/// Dwell target (signal samples/base) for the asymmetric dwell penalty.
+///
+/// A non-positive target tells escapepod to resolve the target from this read's
+/// own move-table median dwell, which is the only value that can be right
+/// across chemistries and translocation speeds. The previous fixed 4.0 was
+/// roughly 8x too fast for RNA004 (130 bps at 4 kHz is ~31 samples/base), so
+/// the penalty pushed every base toward implausibly short dwells.
+const DWELL_TARGET: f32 = 0.0;
 /// Strength of the dwell penalty.
 const DWELL_WEIGHT: f32 = 0.5;
 /// Max points sampled for the Theil-Sen inter-iteration rescale.
@@ -61,12 +67,13 @@ fn build_settings(half_bandwidth: i32, scale_iters: i32) -> RefineSettings {
 
 /// Full signal refinement pipeline (delegates to escapepod-signal).
 ///
-/// Mutates `signal` (rescaled to the level model) and `seq_to_sig_map`
-/// (refined boundaries) in place. On any failure the inputs are left
-/// unchanged, matching the previous pipeline's early-return behaviour.
+/// Refines `seq_to_sig_map` (base boundaries) in place; `signal` is read but
+/// never rewritten, so the caller's normalization is preserved — see the note
+/// at the end of this function. On any failure the map is left unchanged,
+/// matching the previous pipeline's early-return behaviour.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn refine_signal_map_pipeline(
-    signal: &mut [f32],
+    signal: &[f32],
     seq_to_sig_map: &mut Vec<i64>,
     sequence: &str,
     kmer_to_level: &HashMap<String, f64>,
@@ -107,13 +114,22 @@ pub(super) fn refine_signal_map_pipeline(
         return;
     }
 
-    // Rescale the signal by the final (shift, scale, drift) so downstream
-    // per-base stats and residuals are on the level model's scale — the same
-    // signal escapepod used in its final DP pass.
-    if result.scale.abs() > 1e-10 {
-        for (i, s) in signal.iter_mut().enumerate() {
-            *s = (*s - result.shift - result.drift * i as f32) / result.scale;
-        }
-    }
+    // Take the refined boundaries, keep our own normalization.
+    //
+    // Deliberately do NOT rescale `signal` by the fitted (shift, scale, drift).
+    // The caller hands in a median-MAD normalized signal — one transform shared
+    // by every read — and that is what per-base stats, k-mer residuals and the
+    // trained models are calibrated against. Re-normalizing here replaces it
+    // with a *per-read* transform fitted on this chunk alone, which only helps
+    // if the fit is reliable for every read.
+    //
+    // It is not. These chunks sit largely in a constant 3' adapter, so the
+    // expected levels barely vary and the fit is weakly identified: observed
+    // scales ranged from 15 to 1084 and were frequently negative. escapepod now
+    // rejects the worst of those, but rejection is itself per-read, so the reads
+    // that still fit end up on a different scale from the reads that do not —
+    // and cross-read comparability is exactly what k-mer residuals depend on.
+    // Measured on tRNA-Met chunks, per-base level vs expected k-mer level:
+    // r = +0.72 keeping our normalization, +0.03 applying the fitted one.
     *seq_to_sig_map = result.seq_to_signal_map.iter().map(|&v| v as i64).collect();
 }
