@@ -81,7 +81,7 @@ pub(super) fn process_read_signal(
         && let Some(ref kt) = cfg.kmer_table
     {
         refine_signal_map_pipeline(
-            &mut norm_signal,
+            &norm_signal,
             &mut seq_to_sig,
             &use_sequence,
             kt,
