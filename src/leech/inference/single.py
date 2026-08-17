@@ -859,7 +859,9 @@ def run_inference(
             _rs_extract_inference_chunks,
             _rs_preload_pod5_signals,
             _rs_extract_chunks_from_preloaded,
-        ) = check_rust_extraction_available(backend)
+        ) = check_rust_extraction_available(
+            backend, norm_method, seq_chunk_config.recover_softclip_signal
+        )
         if _use_rust_extraction:
             logger.info("Using Rust monolithic extraction (escapepod-rs + leech_core)")
         else:

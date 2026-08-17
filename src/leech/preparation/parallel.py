@@ -18,7 +18,13 @@ from pathlib import Path
 import numpy as np
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 
-from leech._rust_accel import HAS_RUST, _rs_extract_training_chunks
+from leech._rust_accel import (
+    HAS_RUST,
+    RUST_NORM_METHOD,
+    _rs_extract_training_chunks,
+    rust_supports_norm_method,
+    rust_supports_softclip_recovery,
+)
 from leech.chunking import extract_training_chunks
 from leech.configs import PrepareConfig
 from leech.io import ReadInfo, get_motif_searcher, iter_read_info_batches
@@ -281,6 +287,48 @@ def _prepare_batch_rust(
 
 
 # ---------------------------------------------------------------------------
+# Backend selection
+# ---------------------------------------------------------------------------
+
+
+def rust_prepare_unsupported_reason(config: PrepareConfig) -> str | None:
+    """Why the Rust prepare pipeline cannot serve ``config``, or ``None``.
+
+    Kept as a pure function (no I/O, no ``HAS_RUST`` check) so the capability
+    rules can be tested without running a preparation pass. The caller ANDs the
+    result with actual Rust availability.
+
+    The Rust path is bypassed when:
+
+    - ``labeling.focus_map`` is set. ``_prepare_batch_rust`` skips
+      ``extract_training_chunks`` entirely and stamps the file-level
+      ``label_int`` on every chunk, and it hands Rust a single POD5 path
+      string, which fails on a directory source with os error 19. Focus mode
+      needs per-read labels and typically a directory of POD5s.
+    - ``signal.norm_method`` is anything but median-MAD.
+      ``rust/src/inference_pipeline/processing.rs`` normalizes
+      unconditionally and its ``PipelineConfig`` has no normalization field,
+      so another method would be silently ignored.
+    - ``chunk.recover_softclip_signal`` is set. Recovery reads from the full
+      pre-crop signal, which the Rust ``ProcessedRead`` discards when it crops
+      to the aligned region, so the flag would silently degrade to zero-padding.
+    """
+    if config.labeling.focus_map is not None:
+        return "focus_map is set (no per-read label or multi-POD5 support in Rust yet)"
+    if not rust_supports_norm_method(config.signal.norm_method):
+        return (
+            f"signal normalization {config.signal.norm_method!r} is not implemented "
+            f"in the Rust pipeline, which always applies {RUST_NORM_METHOD!r}"
+        )
+    if not rust_supports_softclip_recovery(config.chunk.recover_softclip_signal):
+        return (
+            "recover_softclip_signal is not implemented in the Rust pipeline "
+            "(it discards the pre-crop signal the recovery reads from)"
+        )
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -312,22 +360,10 @@ def prepare_training_data_parallel(
     Returns:
         Tuple of (chunks, statistics)
     """
-    # The Rust-accelerated path (_prepare_batch_rust) bypasses
-    # extract_training_chunks entirely and applies the file-level
-    # labeling.label_int to every chunk. It also passes a single POD5 path
-    # string to Rust, which fails on a directory source with os error 19.
-    # Both are incompatible with LabelConfig.focus_map (per-read labels +
-    # externally-anchored chunks, typically sourced from a directory of
-    # POD5s). Force the Python multiprocessing path in that case — it
-    # honors focus_map via extract_training_chunks and uses
-    # read_pod5_signals_batch_cached, which dispatches across files.
-    _focus_mode = config.labeling.focus_map is not None
-    use_rust = HAS_RUST and _rs_extract_training_chunks is not None and not _focus_mode
-    if _focus_mode and HAS_RUST:
-        logger.info(
-            "focus_map set: bypassing Rust pipeline (no per-read label or "
-            "multi-POD5 support there yet) and using Python workers."
-        )
+    reason = rust_prepare_unsupported_reason(config)
+    use_rust = HAS_RUST and _rs_extract_training_chunks is not None and reason is None
+    if reason is not None and HAS_RUST:
+        logger.warning(f"Using Python workers instead of the Rust pipeline: {reason}")
     backend = "Rust (rayon)" if use_rust else "Python (multiprocessing)"
     logger.info(f"Starting parallel data preparation with {num_workers} workers [{backend}]")
 

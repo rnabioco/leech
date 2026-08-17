@@ -132,10 +132,10 @@ def handle_prepare(
     if workers > 1:
         logger.info(f"Parallel mode: {workers} workers, {chunk_size} reads per batch")
         if recover_softclip_signal:
-            logger.warning(
+            logger.info(
                 "--recover-softclip-signal is not implemented in the Rust extraction "
-                "path used by --workers > 1. Pass --workers 1 to use it, or chunks "
-                "will be extracted with the default zero-padding at alignment edges."
+                "path, so preparation will use the Python multiprocessing workers. "
+                "Chunks are correct either way; this only costs throughput."
             )
 
     output_dir.mkdir(parents=True, exist_ok=True)
