@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-17
+
+### Added
+
+- Config-driven model layer (bonito-style). `leech/models/nn.py` provides a
+  layer registry with `register` / `to_dict` / `from_dict` and the composition
+  primitives `Serial`, `Stack`, `Parallel` (nestable fan-out + concat) and
+  `Graph` (flat named dataflow for leech's multi-input, multi-branch models).
+  Architectures are declared in TOML under `leech/models/configs/`.
+- `Graph` accepts an optional `build_order`: node declaration order still
+  drives execution, but layers are constructed and installed in `build_order`.
+  This is what lets a config reproduce a class whose module-construction order
+  was not its dataflow order (a subclass appending layers after its parent's
+  head), keeping both `state_dict()` key order and seeded initialization.
+- Layer registry entries for the TCN family: `tcn`, `temporalblock`,
+  `normmlphead`, `normproj`, `slice`, `signalchannel` and `rangemeanpool`.
+- `TCNDwellResidualMotor`, `TCNDwellResidualLNMotor`,
+  `TCNDwellResidualDwellAttn` and `TCNDwellResidualLNDwellAttn` are now
+  registered models (29 total).
+- `SignalCNN`, a signal-only classifier for tasks where only the raw signal
+  carries the label (e.g. barcode demultiplexing from adapter signal). It
+  ignores the sequence and feature inputs in `forward()` while still honoring
+  the standard batch contract, so it reuses the existing
+  Trainer / `collate_fn` / `ModelInferenceWrapper` stack rather than
+  duplicating it. Adds `SignalDataset` and
+  `compute_class_weights_from_labels`.
+- Model release workflow: `leech model release`, `leech model list` and
+  `leech model fetch` publish trained bundles to GitHub Releases, browse
+  what is available, and download them. Release metadata comes from a YAML
+  spec that merges editorial fields (description, organism, metrics) with
+  technical bundle metadata (architecture, pairs) into generated release
+  notes. Tag convention: `model-{name}-v{version}`. Implemented in the new
+  `leech/release/` subpackage over the `gh` CLI, so no new Python
+  dependency.
+- Training-loop features ported from bonito, all off by default:
+  `--grad-accum-split N` splits a batch into N sub-batches and steps the
+  optimizer once (larger effective batch without the memory);
+  `--quantile-grad-clip` clips at 2x the median of the last 100 gradient norms
+  instead of a fixed threshold; `--save-optim-every N` writes optimizer state
+  only every N epochs while still writing weights on every save.
+- `--confound` now accepts an inline `source:mapping[:table]` spec (e.g.
+  `source_group:lookup:groups.json`) in addition to the built-in aliases, and
+  a new `--confound-config` reads a JSON/YAML confound definition. Both
+  resolve to one canonical token at the CLI boundary.
+
 ### Changed
 
 - The k-mer level mechanics moved down to escapepod-signal
@@ -20,62 +65,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tests, so leech and `escpod` can no longer drift on the k-mer residual's
   definition. Pure-Python fallbacks are unchanged. escapepod-signal is
   pinned by rev until the next escapepod release.
-
-### Added
-
-- Config-driven model layer (bonito-style). `leech/models/nn.py` provides a
-  layer registry with `register` / `to_dict` / `from_dict` and the composition
-  primitives `Serial`, `Stack`, `Parallel` (nestable fan-out + concat) and
-  `Graph` (flat named dataflow for leech's multi-input, multi-branch models).
-  Architectures are declared in TOML under `leech/models/configs/`.
-- `TCNDwellResidualMotor`, `TCNDwellResidualLNMotor`,
-  `TCNDwellResidualDwellAttn` and `TCNDwellResidualLNDwellAttn` are now
-  registered models (29 total).
-- `Graph` accepts an optional `build_order`: node declaration order still
-  drives execution, but layers are constructed and installed in `build_order`.
-  This is what lets a config reproduce a class whose module-construction order
-  was not its dataflow order (a subclass appending layers after its parent's
-  head), keeping both `state_dict()` key order and seeded initialization.
-- Layer registry entries for the TCN family: `tcn`, `temporalblock`,
-  `normmlphead`, `normproj`, `slice`, `signalchannel` and `rangemeanpool`.
-- Training-loop features ported from bonito, all off by default:
-  `--grad-accum-split N` splits a batch into N sub-batches and steps the
-  optimizer once (larger effective batch without the memory);
-  `--quantile-grad-clip` clips at 2x the median of the last 100 gradient norms
-  instead of a fixed threshold; `--save-optim-every N` writes optimizer state
-  only every N epochs while still writing weights on every save.
-
-### Changed
-
-- `--scheduler cosine` is now a single `LambdaLR` warmup-plus-cosine schedule
-  that owns its own warmup, replacing a manual linear warmup bolted onto
-  `CosineAnnealingLR`. The LR now holds at the `1e-6` floor past the epoch
-  budget instead of cycling back up. `reduce_on_plateau` is unchanged.
-- Resuming from a checkpoint with no optimizer state now warns and continues
-  with a fresh optimizer instead of raising `KeyError`.
-
-### Fixed
-
-- Four architectures listed in `ModelInferenceWrapper.FEATURE_MODELS` were
-  never added to the model registry, so `get_model()` rejected them while the
-  inference path assumed they existed. They are registered now, with explicit
-  constructor signatures — previously their `**kwargs` constructors made
-  `model_loading._instantiate_model` silently drop the `motor_*` /
-  `num_dwell_*` parameters when rebuilding a model from a saved config.
-
-- POD5 read lookups now use escapepod's read-id index. `DatasetReader` was
-  constructed but never entered, and entering it is what warms the index — so
-  every `reads(selection=...)` call re-scanned the whole reads table, making a
-  per-read lookup O(reads-in-file). Affects both the cached module-level reader
-  and `POD5Reader`.
-- `median_mad` normalization no longer returns an all-`NaN` signal for a
-  constant (dead-pore or flat) read. It now delegates to
-  `escapepod.mad_normalize`, the same routine `leech_core` already used, so the
-  Python and Rust normalization paths agree by construction rather than by two
-  parallel implementations.
-
-### Changed
-
 - The ConvLSTM family (10 registry names) is now declared in
   `models/configs/conv_lstm.toml` and `conv_lstm_attn.toml` instead of the
   hand-written `models/conv_lstm.py` / `conv_lstm_attn.py`, which were removed.
@@ -100,11 +89,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `median_mad` normalization now returns `float32` rather than `float64`,
   matching the Rust path. Values agree with the previous output to f32 precision
   (~7e-8 relative).
+- The `ac` BAM tag now always carries the winning class probability. It
+  previously carried `1.0 - conf` for reads filtered by `--min-confidence` /
+  `--min-margin`, so a filtered read at `max_prob=0.4` reported `ac=0.6` and
+  read as *more* confident than a read that passed at 0.5. The
+  below-threshold sentinel in the `aa` tag is now the only signal that a call
+  was filtered, and it moved to `constants.BELOW_THRESHOLD_LABEL`.
+- Bundles now record `pair_labels` (pair → `[negative, positive]`), derived
+  from each model's own `label_map`. `resolve_pair_labels()` prefers that map
+  and falls back — warning once — to the old `pair.split("_", 1)` for bundles
+  built before the field existed.
+- The adversarial (gradient-reversal) training path is now config-driven. A
+  new `confounds.py` describes a confound as `source` (which chunk field) ×
+  `mapping` (`identity` or `lookup`), replacing the hardcoded `disc_base` /
+  `trna_id` branch in `training.py` and the two parallel maps in `dataset.py`.
+  `--confound disc_base` and `--confound trna_id` behave exactly as before.
+- The model registry is now a torch-free `_MODEL_SPECS` table
+  (name → submodule, class). Model classes — and therefore torch — load only
+  on actual access, so `leech model train -h` no longer pays a ~10s torch
+  import just to render its `--model` choices.
+- Training now uses fused SDPA attention (`need_weights=False` at every
+  `nn.MultiheadAttention` call site, which is what lets PyTorch 2.x dispatch
+  to the flash / memory-efficient kernel), fused AdamW on CUDA, and TF32
+  matmuls (`torch.set_float32_matmul_precision("high")`, matching the eval
+  and inference paths). Behavior-preserving; existing checkpoints load and
+  run identically. The training `DataLoader` generator is also seeded from
+  the run seed, so shuffle order and per-worker augmentation RNG are
+  reproducible regardless of how much global RNG model init consumed.
+- `--scheduler cosine` is now a single `LambdaLR` warmup-plus-cosine schedule
+  that owns its own warmup, replacing a manual linear warmup bolted onto
+  `CosineAnnealingLR`. The LR now holds at the `1e-6` floor past the epoch
+  budget instead of cycling back up. `reduce_on_plateau` is unchanged.
+- Resuming from a checkpoint with no optimizer state now warns and continues
+  with a fresh optimizer instead of raising `KeyError`.
 - `escapepod` moved from the optional `pod5` extra into required dependencies —
   `leech.io.pod5_reader` and `leech.features` both import it unconditionally, so
   a base install previously failed on `import leech.io`. The `pod5` extra is
   retained as a no-op alias.
-
 - Dropped the `escapepod-rs` git submodule. Now that the repository is public,
   `escapepod-signal` is a tag-pinned git dependency in `rust/Cargo.toml` and the
   `escapepod` Python package installs from PyPI as a prebuilt wheel, so a plain
@@ -113,6 +134,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (dead-pore or flat) signal that could kill a long run on a single bad read.
 - CI no longer needs the `ESCAPEPOD_PAT` secret, so dependabot now tracks GitHub
   Actions and the `rust/` cargo manifest too.
+- The pipeline's `motif` config key is now required rather than defaulting to
+  `"CCA"`. A wrong motif does not fail — it silently produces a whole run of
+  chunks centered on the wrong base — and the shipped config, `prepare.smk`
+  and `diagnose.smk` disagreed on the default. The motif offset default drops
+  to 0.
+
+### Removed
+
+- The `diagnose` Snakemake rule and its `all_diagnose` target. Both referenced
+  files removed in a60eb09 (`../envs/leech.yaml`,
+  `scripts/diagnose_signal_orientation.py`) and could not run. This also
+  retires the `label != "uncharged"` filter, the one place the DAG branched on
+  a hardcoded class name.
+
+### Fixed
+
+- Signal-map refinement corrupted every level-derived feature, in two ways.
+  `DWELL_TARGET` was hardcoded to 4.0 samples/base while RNA004 at 130 bps and
+  4 kHz sits near 31, so the asymmetric penalty treated every base as ~8x too
+  long; the target now resolves from the read's own move-table median. And
+  rough rescale rewrote the signal with escapepod's affine fit, discarding the
+  shared median-MAD normalization the per-base stats, k-mer residuals and
+  trained models are calibrated against — the fit is estimated on a chunk
+  sitting largely in a constant 3' adapter, where it is weakly identified
+  (observed scales from 15 to 1084, frequently negative, i.e. sign-flipping
+  the read). Refinement now takes only the refined boundaries. Measured on
+  tRNA-Met chunks, per-base level vs the expected 9-mer level went from
+  r = -0.03 to r = +0.82, and Met/HPG discrimination recovered from AUC 0.681
+  to 0.822.
+- Four architectures listed in `ModelInferenceWrapper.FEATURE_MODELS` were
+  never added to the model registry, so `get_model()` rejected them while the
+  inference path assumed they existed. They are registered now, with explicit
+  constructor signatures — previously their `**kwargs` constructors made
+  `model_loading._instantiate_model` silently drop the `motor_*` /
+  `num_dwell_*` parameters when rebuilding a model from a saved config.
+- POD5 read lookups now use escapepod's read-id index. `DatasetReader` was
+  constructed but never entered, and entering it is what warms the index — so
+  every `reads(selection=...)` call re-scanned the whole reads table, making a
+  per-read lookup O(reads-in-file). Affects both the cached module-level reader
+  and `POD5Reader`.
+- `median_mad` normalization no longer returns an all-`NaN` signal for a
+  constant (dead-pore or flat) read. It now delegates to
+  `escapepod.mad_normalize`, the same routine `leech_core` already used, so the
+  Python and Rust normalization paths agree by construction rather than by two
+  parallel implementations.
+- Class names containing `_` no longer produce garbage aggregation keys.
+  The aggregators recovered class names with `pair.split("_", 1)`, but class
+  names are free-form (they come from directory names and `label_map`), so
+  `aggregate_one_vs_all` silently inverted the prediction for e.g.
+  `notzeta_zeta`.
+- The `grid_search` pipeline rule passed `--param-grid` and `--max-epochs`,
+  neither of which `leech model optimize` accepts, so it failed at argument
+  parsing every time it was scheduled. The rule, its config block and
+  `docs/pipeline.md` now match what `optimize` actually searches (signal
+  context windows and dwell offset), and a `grid_search_parallel` rule makes
+  the existing `--parallel` option reachable.
 
 ## [0.4.1] - 2026-07-20
 
