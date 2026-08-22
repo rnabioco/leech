@@ -249,6 +249,7 @@ class ReferenceMotifSearcher(MotifSearcher):
         allow_edge_indels: bool = False,
         debug: bool = False,
         anchor: str = "reference",
+        require_query_mapping: bool = True,
     ):
         """
         Initialize reference-based motif searcher.
@@ -259,12 +260,35 @@ class ReferenceMotifSearcher(MotifSearcher):
             allow_edge_indels: If True, only reject indels in core motif (not ±1bp edges)
             debug: If True, collect and log detailed statistics
             anchor: "reference" (return ref-relative coords, default) or "basecall" (query coords)
+            require_query_mapping: If True (default), a motif is accepted only when
+                it also maps cleanly to query coordinates through the CIGAR. Under
+                ``anchor="reference"`` that mapping is used ONLY to accept or
+                reject -- the returned coordinate is reference-relative and the
+                query coordinates are discarded -- so the check is a quality gate
+                rather than a requirement of window placement, and reads failing
+                it can be kept without changing where any chunk is cut. Set False
+                to keep them.
+
+                This matters when the modification under study perturbs the
+                basecall at the motif itself: on aminoacyl-tRNA the adduct
+                mis-calls the CCA junction, and the resulting CIGAR indels drop
+                28% of charged reads against 6% of uncharged. That is selection
+                on the label, applied before any model sees the data.
+
+                Only valid with ``anchor="reference"``; see ``find_motif_positions``.
         """
+        if require_query_mapping is False and anchor != "reference":
+            raise ValueError(
+                "require_query_mapping=False is only valid with anchor='reference'. "
+                f"Got anchor={anchor!r}: under 'basecall' the returned coordinate "
+                "IS the query start, so the mapping cannot be skipped."
+            )
         self.reference_sequences = reference_sequences
         self.skip_indels = skip_indels
         self.allow_edge_indels = allow_edge_indels
         self.debug = debug
         self.anchor = anchor
+        self.require_query_mapping = require_query_mapping
 
         # Debug statistics
         self.stats = {
@@ -272,6 +296,7 @@ class ReferenceMotifSearcher(MotifSearcher):
             "failed_cigar_mapping": 0,
             "failed_indels": 0,
             "failed_length_check": 0,
+            "accepted_without_query_mapping": 0,
             "successful": 0,
         }
 
@@ -329,6 +354,19 @@ class ReferenceMotifSearcher(MotifSearcher):
         motif_len = len(motif)
 
         for ref_motif_start in motif_positions:
+            # Keep the motif without consulting the CIGAR. Legal only under
+            # anchor="reference" (enforced in __init__), because there the
+            # returned coordinate is reference-relative and LeechRead maps it to
+            # signal through `compute_ref_to_signal`, which interpolates across
+            # indels. Nothing downstream needs the query coordinates, so a read
+            # whose motif basecalled badly is still positioned correctly.
+            if not self.require_query_mapping:
+                query_positions.append(ref_motif_start - alignment.reference_start)
+                if self.debug:
+                    self.stats["accepted_without_query_mapping"] += 1
+                    self.stats["successful"] += 1
+                continue
+
             # Map the motif region to query
             ref_motif_end = ref_motif_start + motif_len
             query_coords = map_reference_to_query_coords(
@@ -394,6 +432,7 @@ def get_motif_searcher(
     allow_edge_indels: bool = False,
     debug: bool = False,
     anchor: str = "reference",
+    require_query_mapping: bool = True,
 ) -> MotifSearcher:
     """
     Factory function for creating motif searchers.
@@ -405,6 +444,9 @@ def get_motif_searcher(
         allow_edge_indels: If True, only reject indels in core motif (for "fasta" mode)
         debug: If True, enable detailed statistics collection
         anchor: "reference" (default) or "basecall" — controls coordinate system of returned positions
+        require_query_mapping: If False, keep reference motifs that do not map
+            cleanly to query coordinates (for "fasta" mode with anchor="reference"
+            only). See ReferenceMotifSearcher.
 
     Returns:
         MotifSearcher instance
@@ -426,7 +468,12 @@ def get_motif_searcher(
         if reference_sequences is None:
             raise ValueError("reference_sequences required for reference-based motif search")
         return ReferenceMotifSearcher(
-            reference_sequences, skip_indels, allow_edge_indels, debug, anchor=anchor
+            reference_sequences,
+            skip_indels,
+            allow_edge_indels,
+            debug,
+            anchor=anchor,
+            require_query_mapping=require_query_mapping,
         )
     else:
         raise ValueError(f"Invalid motif search mode: {mode}. Must be 'bam' or 'fasta'")

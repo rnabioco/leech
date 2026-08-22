@@ -146,6 +146,20 @@ data.command_order = ("prepare", "merge")
     help="Skip reads with indels in motif region (for motif-reference=fasta)",
 )
 @click.option(
+    "--require-query-mapping/--no-require-query-mapping",
+    default=True,
+    help=(
+        "Require a reference motif to also map cleanly to query coordinates "
+        "(motif-reference=fasta, anchor=reference). That mapping is a quality "
+        "gate whose result is discarded -- the chunk is positioned from the "
+        "reference through CIGAR interpolation -- so --no-require-query-mapping "
+        "keeps reads whose motif basecalled badly without moving any chunk. Use "
+        "it when the modification under study mis-calls the motif itself, "
+        "otherwise those reads are dropped for carrying the very signal being "
+        "measured."
+    ),
+)
+@click.option(
     "--label",
     type=str,
     default=None,
@@ -315,6 +329,7 @@ def prepare(
     motif_reference,
     reference_fasta,
     skip_motif_indels,
+    require_query_mapping,
     label,
     min_mapq,
     feature_set,
@@ -365,6 +380,7 @@ def prepare(
         motif_reference=motif_reference,
         reference_fasta=reference_fasta,
         skip_motif_indels=skip_motif_indels,
+        require_query_mapping=require_query_mapping,
         label=label,
         min_mapq=min_mapq,
         feature_set=feature_set,

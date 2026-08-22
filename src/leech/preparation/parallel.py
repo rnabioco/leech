@@ -50,6 +50,7 @@ def _process_read_chunk_worker(
             mode=config.motif.motif_reference,
             reference_sequences=config.motif.reference_sequences,
             skip_indels=config.motif.skip_motif_indels,
+            require_query_mapping=config.motif.require_query_mapping,
             anchor=config.signal.anchor,
         )
     else:
@@ -358,6 +359,7 @@ def prepare_training_data_parallel(
                 mode=config.motif.motif_reference,
                 reference_sequences=config.motif.reference_sequences,
                 skip_indels=config.motif.skip_motif_indels,
+                require_query_mapping=config.motif.require_query_mapping,
                 anchor=config.signal.anchor,
             )
         else:

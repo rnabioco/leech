@@ -51,6 +51,11 @@ class MotifConfig:
     motif_reference: str = "fasta"
     reference_sequences: dict[str, str] | None = None
     skip_motif_indels: bool = False
+    #: Accept a reference motif only if it also maps cleanly to query
+    #: coordinates. Under anchor="reference" that mapping is a quality gate
+    #: whose result is discarded, so setting this False keeps reads whose motif
+    #: basecalled badly without moving any chunk. See ReferenceMotifSearcher.
+    require_query_mapping: bool = True
 
 
 @dataclass
@@ -130,6 +135,7 @@ class PrepareConfig:
             "motif_offset": self.motif.motif_offset,
             "motif_reference": self.motif.motif_reference,
             "skip_motif_indels": self.motif.skip_motif_indels,
+            "require_query_mapping": self.motif.require_query_mapping,
             "base_justify": self.chunk.base_justify,
             "feature_start": self.chunk.feature_start,
             "feature_end": self.chunk.feature_end,
