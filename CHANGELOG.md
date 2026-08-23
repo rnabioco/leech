@@ -61,6 +61,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- escapepod bumped to **v0.14.0** — `rust/Cargo.toml` returns to a tag pin
+  (from the `1c55668f` rev that took the unreleased kmer-level primitives) and
+  the `escapepod` floor moves to `>=0.14.0`. v0.14.0 fixes the upstream half of
+  #176 (escapepod-rs#251): `reads_by_ids`, `find_signal_rows_by_ids` and
+  `find_signal_rows_with_calibration_by_ids` used to take the indexed path only
+  when a `.p5s` sidecar existed on disk, and otherwise ran a full 22-column
+  scan of the reads table that never built the index it declined — so even a
+  cached reader re-scanned on every call. The scan variants are gone and all
+  three route through `read_index()`. `escapepod-pod5` also gained `tracing`,
+  so an index build now reports that it is happening and what it cost.
+  `rust/src/pod5_cache.rs` keeps its reader cache, which is what makes the
+  index survive across batches, but its index warm-up is now belt-and-braces
+  rather than load-bearing; its docs no longer describe the removed scan
+  fallback as current behaviour.
 - Rust prepare-backend selection moved into
   `preparation.parallel.rust_prepare_unsupported_reason()`, a pure function
   returning the reason Rust cannot serve a given `PrepareConfig` (or `None`).

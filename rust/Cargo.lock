@@ -427,8 +427,8 @@ dependencies = [
 
 [[package]]
 name = "escapepod-pod5"
-version = "0.9.0"
-source = "git+https://github.com/rnabioco/escapepod-rs?rev=1c55668f40f2e9af3f48ba6161aa481c07a02031#1c55668f40f2e9af3f48ba6161aa481c07a02031"
+version = "0.14.0"
+source = "git+https://github.com/rnabioco/escapepod-rs?tag=v0.14.0#59d5115c1d4c4bd3cfb41d2d3014ff790a768c8e"
 dependencies = [
  "anyhow",
  "arrow",
@@ -441,14 +441,15 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror",
+ "tracing",
  "uuid",
  "zstd",
 ]
 
 [[package]]
 name = "escapepod-signal"
-version = "0.9.0"
-source = "git+https://github.com/rnabioco/escapepod-rs?rev=1c55668f40f2e9af3f48ba6161aa481c07a02031#1c55668f40f2e9af3f48ba6161aa481c07a02031"
+version = "0.14.0"
+source = "git+https://github.com/rnabioco/escapepod-rs?tag=v0.14.0#59d5115c1d4c4bd3cfb41d2d3014ff790a768c8e"
 dependencies = [
  "anyhow",
  "escapepod-pod5",
@@ -858,6 +859,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "42f5e15c9953c5e4ccceeb2e7382a716482c34515315f7b03532b8b4e8393d2d"
 
 [[package]]
+name = "pin-project-lite"
+version = "0.2.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
+
+[[package]]
 name = "pkg-config"
 version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1206,6 +1213,37 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2c9d3793400a45f954c52e73d068316d76b6f4e36977e3fcebb13a2721e80237"
 dependencies = [
  "crunchy",
+]
+
+[[package]]
+name = "tracing"
+version = "0.1.44"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "63e71662fa4b2a2c3a26f570f037eb95bb1f85397f3cd8076caed2f026a6d100"
+dependencies = [
+ "pin-project-lite",
+ "tracing-attributes",
+ "tracing-core",
+]
+
+[[package]]
+name = "tracing-attributes"
+version = "0.1.31"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7490cfa5ec963746568740651ac6781f701c9c5ea257c58e057f3ba8cf69e8da"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "tracing-core"
+version = "0.1.36"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
+dependencies = [
+ "once_cell",
 ]
 
 [[package]]
