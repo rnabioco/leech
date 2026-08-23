@@ -87,11 +87,27 @@ pub(super) fn compute_dwell_features(dwells: &[f32]) -> Vec<Vec<f32>> {
     vec![dwell_raw, dwell_log, dwell_mean, dwell_std, dwell_ratio]
 }
 
+/// Per-base k-mer residual features, all three rows `observed_means.len()` wide.
+///
+/// `expected_levels` is indexed by *sequence* base and `observed_means` by
+/// *mapped* base; under `anchor="reference"` an alignment ending in a
+/// non-match CIGAR op makes the second shorter (see `LeechRead.num_mapped_bases`
+/// and `levels_for_mapped_bases` on the Python side). Fitting the levels to the
+/// mapped-base grid up front is what keeps all three rows the same width as
+/// every other feature row: `kmer_expected` used to be emitted at the full
+/// sequence length while the two derived rows were zipped down to the shorter
+/// one, so a single read could produce feature rows of two different lengths
+/// and the `safe_end <= feat_row.len()` guard in chunk extraction would zero
+/// some of them and not others.
 pub(super) fn compute_kmer_residual_features(
     observed_means: &[f32],
     expected_levels: &[f64],
 ) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
-    let kmer_expected: Vec<f32> = expected_levels.iter().map(|&v| v as f32).collect();
+    let num_bases = observed_means.len();
+    let mut kmer_expected = vec![0.0f32; num_bases];
+    for (dst, &src) in kmer_expected.iter_mut().zip(expected_levels.iter()) {
+        *dst = src as f32;
+    }
     let kmer_residual: Vec<f32> = observed_means
         .iter()
         .zip(kmer_expected.iter())
@@ -114,7 +130,11 @@ pub(super) fn compute_signal_residual(
         let start = sig_map[i].max(0) as usize;
         let end = sig_map[i + 1].max(0) as usize;
         let end = end.min(sig_len);
-        let expected = expected_levels[i] as f32;
+        // `.get` rather than `[i]`: this runs inside a rayon worker under
+        // `py.detach`, where an out-of-range index is a panic that takes the
+        // whole batch with it. Levels are per sequence base and `num_bases` is
+        // per mapped base; they are only equal by construction today.
+        let expected = expected_levels.get(i).copied().unwrap_or(0.0) as f32;
         if expected.abs() > 1e-12 {
             for s in start..end {
                 residual[s] = signal[s] - expected;
