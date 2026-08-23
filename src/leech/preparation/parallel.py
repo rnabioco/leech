@@ -286,15 +286,27 @@ def _prepare_batch_rust(
     sig_ctx = config.chunk.signal_context or DEFAULT_SIGNAL_CONTEXT
     signal_len = sig_ctx[0] + sig_ctx[1]
 
-    # Resolve kmer table for signal refinement
+    # Resolve kmer table for signal refinement.
+    #
+    # Read every setting off the refiner object, which is what the Python
+    # backend actually runs — not off SignalConfig, whose refine_* fields are
+    # provenance for the sidecar and can only agree with the refiner by
+    # convention. The attribute is `center_idx`; `kmer_center_idx` does not
+    # exist on SigMapRefiner, so the old getattr default silently pinned the
+    # Rust path to -1 (escapepod's "use kmer_len / 2") no matter what was
+    # configured. inference/helpers.py had this right.
     kmer_table_dict: dict[str, float] | None = None
     kmer_len = 9
     kmer_center_idx = -1
+    half_bandwidth = config.signal.refine_half_bandwidth
+    scale_iters = config.signal.refine_scale_iters
     if config.signal.refine_signal_map and config.signal.signal_refiner is not None:
         refiner = config.signal.signal_refiner
         kmer_table_dict = refiner.kmer_to_level
         kmer_len = refiner.kmer_len
-        kmer_center_idx = getattr(refiner, "kmer_center_idx", -1)
+        kmer_center_idx = refiner.center_idx
+        half_bandwidth = refiner.half_bandwidth
+        scale_iters = refiner.scale_iters
 
     # Call Rust: POD5 I/O + normalize + anchor + refine + features + chunk extraction
     rust_chunks = _rs_extract_training_chunks(
@@ -321,8 +333,8 @@ def _prepare_batch_rust(
         kmer_table=kmer_table_dict,
         kmer_len=kmer_len,
         kmer_center_idx=kmer_center_idx,
-        refine_half_bandwidth=config.signal.refine_half_bandwidth,
-        refine_scale_iters=config.signal.refine_scale_iters,
+        refine_half_bandwidth=half_bandwidth,
+        refine_scale_iters=scale_iters,
         signal_in_channels=2 if (config.signal.refine_signal_map and kmer_table_dict) else 1,
         base_justify=config.chunk.base_justify,
     )
