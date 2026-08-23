@@ -57,8 +57,7 @@ def test_gate_on_rejects_a_badly_called_motif():
 
 
 def test_gate_off_keeps_it_and_returns_the_reference_coordinate():
-    s = ReferenceMotifSearcher(REFS, skip_indels=False, debug=True,
-                               require_query_mapping=False)
+    s = ReferenceMotifSearcher(REFS, skip_indels=False, debug=True, require_query_mapping=False)
     pos = s.find_motif_positions("read0", "", _aln_with_insertion_in_motif(), MOTIF)
     # 110 - 100: reference-relative, exactly what anchor="reference" returns on
     # the clean path. The window therefore lands in the same place.
@@ -90,7 +89,6 @@ def test_gate_off_is_refused_under_basecall_anchoring():
 
 
 def test_factory_threads_the_flag():
-    s = get_motif_searcher("fasta", reference_sequences=REFS,
-                           require_query_mapping=False)
+    s = get_motif_searcher("fasta", reference_sequences=REFS, require_query_mapping=False)
     assert s.require_query_mapping is False
     assert get_motif_searcher("fasta", reference_sequences=REFS).require_query_mapping
