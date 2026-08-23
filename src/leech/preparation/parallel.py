@@ -535,7 +535,16 @@ def prepare_training_data_parallel(
     if reason is not None and HAS_RUST:
         logger.warning(f"Using Python workers instead of the Rust pipeline: {reason}")
     backend = "Rust (rayon)" if use_rust else "Python (multiprocessing)"
-    logger.info(f"Starting parallel data preparation with {num_workers} workers [{backend}]")
+    # Name the dispatch, not just the backend. `leech_core` is a separate
+    # package from `leech`, so a freshly built extension can sit alongside a
+    # stale `leech` — new Rust, old serial driver — and the only symptom is
+    # being slow. A build that does not print "batches in flight" is that
+    # pairing (#176).
+    dispatch = "threads" if use_rust else "processes"
+    logger.info(
+        f"Starting parallel data preparation with {num_workers} workers "
+        f"[{backend}, {num_workers} batches in flight via {dispatch}]"
+    )
 
     # Estimate total reads from BAM index for progress bar (O(1), may be None)
     try:

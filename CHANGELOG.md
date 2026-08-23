@@ -83,6 +83,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   6% of uncharged, before any model sees the data. Only valid with
   `--anchor reference`; combining it with `--anchor basecall` raises, since
   there the returned coordinate *is* the query start.
+- `data prepare`'s startup line now names the dispatch, not just the backend:
+  `[Rust (rayon), 32 batches in flight via threads]`. `leech_core` is a separate
+  package from `leech`, so `maturin develop` can leave a freshly built extension
+  beside a stale `leech` — new Rust, old serial driver — and the only symptom is
+  being slow. `[Rust (rayon)]` alone predates #178 and does not distinguish the
+  two; a build without "batches in flight" is the stale pairing.
 - `data prepare` logs achieved reads/s on every progress line and in the final
   summary, on both backends, and names the backend in each. The #176 regression
   was invisible in the logs until the allocation ran out; a rate to compare
