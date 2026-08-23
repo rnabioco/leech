@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `data prepare` on the Rust path was 10-80x slower than the Python
+  multiprocessing fallback on a large POD5 (#176), so installing `leech_core`
+  made the step slower with nothing in the log to say so. Three compounding
+  causes, all fixed:
+  - **The POD5 reader was opened once per batch.** `escapepod_signal::Reader`
+    caches its read-id index in a `OnceLock` on itself, so a fresh reader threw
+    the index away every time, and `reads_by_ids` fell back to a
+    single-threaded scan of the whole reads table — all 22 columns, stopping
+    only once every target was found. Reads arrive in BAM order, which is
+    unrelated to POD5 storage order, so that scan ran to end-of-file on each
+    batch. On a 145 GB POD5 on BeeGFS a single 1000-read batch had not finished
+    after 13.5 minutes, spending it in uninterruptible sleep in
+    `folio_wait_bit_common` at 0.006 of a core and ~119 major faults/s. The new
+    `rust/src/pod5_cache.rs` opens each POD5 once per process and warms its
+    index once, in memory, from a read_id-only projected scan; it writes no
+    `.p5s` sidecar and needs none. All four `Reader::open` sites now use it.
+  - **Phase 1 held the GIL.** `py.detach` wrapped only per-read processing, so
+    POD5 I/O serialized every caller thread and no caller could overlap
+    batches. Phase 1 now runs GIL-free in both `training.rs` and `inference.rs`.
+  - **Batches were dispatched from a serial `for` loop.** `--workers` selected
+    a rayon pool size but nothing dispatched batches concurrently, leaving one
+    POD5 read outstanding at a time while the Python fallback had `--workers` of
+    them. Both backends now expose the same `(n_reads, chunks)` iterator, with
+    `num_workers` batches in flight — threads for Rust, processes for Python —
+    and a bounded window so the BAM is not pulled into memory up front.
+    `tests/test_prepare_dispatch.py` fails if the loop comes back.
+
 - `--signal-norm` is no longer silently ignored when the Rust extraction path
   is active. `rust/src/inference_pipeline/processing.rs` always applies
   median-MAD — its `PipelineConfig` carries no normalization field — but
@@ -44,6 +71,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `data prepare` logs achieved reads/s on every progress line and in the final
+  summary, on both backends, and names the backend in each. The #176 regression
+  was invisible in the logs until the allocation ran out; a rate to compare
+  against would have surfaced it in the first minute.
 - Rust/Python chunk parity is now tested for `anchor="reference"`, not just
   `anchor="basecall"`. The test helper already accepted the parameter but no
   call site ever passed it, leaving the reference-anchored path — the default,

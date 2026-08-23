@@ -65,6 +65,24 @@ Use parallel processing: `--workers 8 --chunk-size 100`. Set workers to
 your core count and adjust chunk size based on read length (smaller for
 long reads, larger for short reads).
 
+Check the reported rate before tuning anything else. Every progress line
+carries the backend and the achieved reads/s:
+
+```text
+Progress [Rust (rayon)]: 40 batches, 40000 reads | 38112 chunks extracted | 1064 reads/s
+```
+
+If that number is far below what the same data managed before, the problem is
+not your `--workers` setting. Compare the two backends directly by setting
+`LEECH_DISABLE_RUST=1` to force the Python worker pool for one run.
+
+Preparation on a large POD5 over a network filesystem (BeeGFS, Lustre, NFS) is
+usually latency-bound on POD5 reads rather than CPU-bound, so a run can crawl
+while the cores sit idle. `--workers` is the lever that helps: it sets how many
+read batches are in flight, and therefore how many POD5 reads are outstanding
+at once. Watching CPU alone will mislead you here -- sample it as a delta over
+an interval, since `sstat`'s `AveCPU` is cumulative and hides an idle pool.
+
 ### Memory errors during preparation
 
 Reduce `--chunk-size` (fewer reads per batch) or `--workers` (fewer

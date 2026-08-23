@@ -185,7 +185,7 @@ uv sync --upgrade
 
 ### Parallel Processing
 
-The `prepare` command supports multiprocessing for large datasets:
+The `prepare` command processes batches of reads concurrently on either backend:
 
 **Implementation** (`preparation/parallel.py`, `preparation/orchestrator.py`):
 - `collect_read_infos_from_bam()`: First pass to collect lightweight read metadata from BAM
@@ -208,9 +208,48 @@ uv run leech data prepare --pod5 data.pod5 --bam alignments.bam \
 
 **Implementation details**:
 - Two-pass design: (1) collect read metadata from BAM, (2) parallel POD5 + feature extraction
-- Each worker opens POD5 independently for thread-safe access
 - Batching via `chunk_size` prevents memory issues with large datasets
 - Reference sequences are passed to workers for reference-based motif search
+
+**Two backends, both concurrent across batches.** `prepare` picks one in
+`prepare_training_data_parallel()`:
+
+| | dispatch | why |
+|---|---|---|
+| Rust (`leech_core` present, config supported) | `_iter_rust_batches` — `ThreadPoolExecutor(num_workers)` | the Rust call releases the GIL for the whole call, POD5 I/O included, so threads give real parallelism without pickling chunks back |
+| Python (fallback) | `_iter_python_batches` — `mp.Pool(num_workers)` | each process holds its own cached POD5 reader |
+
+`--workers` sets the number of batches in flight on **both**. Both iterators
+yield `(n_reads, chunks)`; the caller does progress and accounting once.
+
+**Do not turn either dispatcher back into a serial `for` loop.** This is the
+single easiest mistake to make in this module and it has been made before
+(issue #176): the Rust call looks self-parallelizing because per-read work
+inside it is rayon-parallel, but nearly all the wall clock on a large POD5 is
+POD5 I/O, which is one sequential stream of page faults per call. Driving it
+serially leaves one read outstanding at a time and loses ~10-80x to the process
+pool. `tests/test_prepare_dispatch.py` fails if this regresses.
+
+### POD5 access from Rust
+
+`rust/src/pod5_cache.rs` holds a process-global cache of open `escapepod_signal::Reader`s.
+**Always go through `cached_reader(path)`; never call `Reader::open` directly.**
+
+A `Reader` caches its read-id index in a `OnceLock` on itself, and
+`reads_by_ids` without an index falls back to a single-threaded scan of the
+entire reads table (all 22 columns) that can only stop once every target is
+found. Reads arrive in BAM order, which is unrelated to POD5 storage order, so
+that scan effectively runs to end-of-file — per batch. `cached_reader` opens
+each POD5 once per process and warms the index once, in memory, from a scan
+projected to the read_id column. It writes no `.p5s` sidecar and does not
+require one.
+
+The Python side does the equivalent in `io/pod5_reader.py`, which caches an
+entered `DatasetReader` per process (entering is what warms the index).
+
+Phase 1 (POD5 I/O) in `inference.rs` and `training.rs` runs inside `py.detach`.
+Keep it that way — holding the GIL across the I/O serializes every caller
+thread and makes batch-level concurrency impossible.
 
 ### Key Classes and Functions
 

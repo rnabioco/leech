@@ -1,18 +1,38 @@
 """
-Parallel data preparation using multiprocessing.
+Parallel data preparation.
 
-This module provides parallel processing capabilities for extracting
-training chunks from large datasets using multiple worker processes.
+Extracts training chunks from a BAM + POD5 pair by streaming the BAM in
+batches and processing several batches at once. Two interchangeable backends:
 
-When leech_core Rust acceleration is available, uses a single-call Rust
-pipeline (POD5 I/O + normalize + anchor + refine + features + chunk
-extraction) with rayon parallelism. Falls back to Python multiprocessing
-workers otherwise.
+- **Rust** (``leech_core`` installed and the config is supported): each batch
+  is one call into a pipeline that does POD5 I/O, normalization, anchoring,
+  refinement, feature computation, and chunk extraction. Batches are dispatched
+  across a ``ThreadPoolExecutor``; within a batch, per-read work runs on rayon.
+- **Python** (fallback): each batch goes to a worker process from an
+  ``mp.Pool``.
+
+**Both backends run batches concurrently.** The Rust one is threads rather than
+processes only because it releases the GIL for the whole call, so it does not
+need separate address spaces to get real parallelism.
+
+If you are changing this module, the trap to know about: the Rust call *looks*
+self-parallelizing, because per-read work inside it is rayon-parallel and the
+docstrings used to say so. It is not. Roughly all of the wall clock on a large
+POD5 is phase 1 — resolving read IDs and faulting signal in through an mmap on
+a network filesystem — which is one sequential stream of page faults per call.
+Driving those calls from a serial ``for`` loop leaves exactly one read
+outstanding at a time and gives up an order of magnitude against the process
+pool, which was issue #176. Concurrency across batches is the whole ballgame;
+do not collapse ``_iter_rust_batches`` back into a loop.
 """
 
 import logging
 import multiprocessing as mp
 import sys
+import time
+from collections import deque
+from collections.abc import Iterator
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -134,6 +154,19 @@ def _process_read_chunk_worker(
     return all_chunks
 
 
+def _process_read_chunk_worker_seq(
+    args: tuple[int, list[ReadInfo], PrepareConfig],
+) -> tuple[int, list[dict[str, np.ndarray | str | int | None]]]:
+    """``_process_read_chunk_worker`` tagged with its batch sequence number.
+
+    ``imap_unordered`` returns results out of order, so the caller needs the tag
+    to attribute a result back to the batch it came from. Module-level (not a
+    closure or lambda) because it has to be picklable for ``mp.Pool``.
+    """
+    seq, read_infos, config = args
+    return seq, _process_read_chunk_worker((read_infos, config))
+
+
 # ---------------------------------------------------------------------------
 # Rust-accelerated batch preparation
 # ---------------------------------------------------------------------------
@@ -169,11 +202,20 @@ def _prepare_batch_rust(
     motif_searcher: MotifSearcher | None,
 ) -> list[dict[str, np.ndarray | str | int | None]]:
     """
-    Process a batch of reads using the Rust pipeline.
+    Process ONE batch of reads using the Rust pipeline.
 
     Collects BAM metadata, finds motif positions in Python, then delegates
-    all signal processing + chunk extraction to Rust (rayon-parallel, GIL
-    released).  Attaches Python-side labels/metadata to the returned chunks.
+    signal processing + chunk extraction to Rust. Attaches Python-side
+    labels/metadata to the returned chunks.
+
+    This handles a single batch and does not parallelize across batches. Rust
+    releases the GIL for the whole call, so callers get real parallelism from
+    plain threads — call it from ``_iter_rust_batches``, which does exactly
+    that, rather than in a loop of your own.
+
+    Inside the call, per-read work is rayon-parallel, but the POD5 I/O that
+    dominates it is a single sequential stream of reads. Do not read
+    "rayon-parallel" as "this call already saturates the machine".
     """
     # Collect per-read BAM metadata arrays for the Rust call
     read_ids: list[str] = []
@@ -330,6 +372,129 @@ def rust_prepare_unsupported_reason(config: PrepareConfig) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# Batch dispatch
+#
+# Both backends expose the same shape: an iterator of ``(n_reads, chunks)``,
+# one item per BAM batch, with several batches in flight at once. Neither is a
+# serial loop, and neither should be turned back into one — see the module
+# docstring for why the Rust path in particular looks like it could be.
+# ---------------------------------------------------------------------------
+
+
+def _iter_rust_batches(
+    bam_path: Path,
+    config: PrepareConfig,
+    motif_searcher: MotifSearcher | None,
+    chunk_size: int,
+    min_mapq: int,
+    num_workers: int,
+) -> Iterator[tuple[int, list[dict]]]:
+    """Yield ``(n_reads, chunks)`` per batch, ``num_workers`` batches in flight.
+
+    Threads, not processes: ``_prepare_batch_rust`` releases the GIL for the
+    entire Rust call — POD5 I/O included — so ``num_workers`` OS threads give
+    ``num_workers`` genuinely concurrent readers, the same concurrency the
+    multiprocessing fallback gets from its pool, without paying to pickle
+    chunks back across a process boundary.
+
+    Concurrency is the point, not a bonus. Most of the wall clock is spent in
+    uninterruptible sleep waiting on page faults against an mmapped POD5 on a
+    network filesystem, and the only lever on fault latency is having more of
+    them outstanding at once.
+
+    Batches are drained in submission order, so chunks come out in BAM order.
+    At most ``2 * num_workers`` batches are queued, bounding resident signal to
+    roughly ``2 * num_workers * chunk_size`` reads' worth.
+    """
+    batches = iter_read_info_batches(bam_path, batch_size=chunk_size, min_mapq=min_mapq)
+    max_in_flight = max(1, num_workers)
+    window = 2 * max_in_flight
+
+    with ThreadPoolExecutor(max_workers=max_in_flight, thread_name_prefix="leech-rust") as pool:
+        pending: deque[tuple[int, Future]] = deque()
+        exhausted = False
+
+        while True:
+            while not exhausted and len(pending) < window:
+                try:
+                    read_batch = next(batches)
+                except StopIteration:
+                    exhausted = True
+                    break
+                pending.append(
+                    (
+                        len(read_batch),
+                        pool.submit(_prepare_batch_rust, read_batch, config, motif_searcher),
+                    )
+                )
+
+            if not pending:
+                return
+
+            n_reads, future = pending.popleft()
+            try:
+                yield n_reads, future.result()
+            except Exception as e:
+                logger.warning(f"Rust batch failed, skipping: {e}")
+                yield n_reads, []
+
+
+def _iter_python_batches(
+    bam_path: Path,
+    config: PrepareConfig,
+    chunk_size: int,
+    min_mapq: int,
+    num_workers: int,
+) -> Iterator[tuple[int, list[dict]]]:
+    """Yield ``(n_reads, chunks)`` per batch from a pool of worker processes.
+
+    Each worker keeps its own cached POD5 dataset reader (see
+    ``leech.io.pod5_reader``), so the pool is also ``num_workers`` concurrent
+    readers. Results arrive as they complete, not in BAM order.
+    """
+    batch_sizes: dict[int, int] = {}
+
+    def _worker_arg_stream():
+        for seq, read_batch in enumerate(
+            iter_read_info_batches(bam_path, batch_size=chunk_size, min_mapq=min_mapq)
+        ):
+            batch_sizes[seq] = len(read_batch)
+            yield (seq, read_batch, config)
+
+    with mp.Pool(processes=num_workers) as pool:
+        for seq, chunk_results in pool.imap_unordered(
+            _process_read_chunk_worker_seq, _worker_arg_stream()
+        ):
+            yield batch_sizes.pop(seq, 0), chunk_results
+
+
+class _ThroughputMonitor:
+    """Reports achieved reads/s so a backend regression is visible immediately.
+
+    Issue #176 cost a 12-hour cluster allocation to a backend that was ~10-80x
+    slower than the one it replaced, because nothing in the log reported a rate
+    to compare against.
+    """
+
+    def __init__(self, backend: str) -> None:
+        self.backend = backend
+        self.start = time.monotonic()
+
+    def elapsed(self) -> float:
+        return max(time.monotonic() - self.start, 1e-9)
+
+    def reads_per_second(self, total_reads: int) -> float:
+        return total_reads / self.elapsed()
+
+    def log_progress(self, batches: int, total_reads: int, total_chunks: int) -> None:
+        logger.info(
+            f"Progress [{self.backend}]: {batches} batches, {total_reads} reads | "
+            f"{total_chunks} chunks extracted | "
+            f"{self.reads_per_second(total_reads):.0f} reads/s"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -344,12 +509,16 @@ def prepare_training_data_parallel(
     """
     Prepare training data from BAM and POD5 files using multiprocessing.
 
-    Streams BAM reads in mega-batches so worker processing overlaps with
-    BAM iteration rather than waiting for the entire BAM to be read first.
+    Streams BAM reads in mega-batches so processing overlaps with BAM
+    iteration rather than waiting for the entire BAM to be read first.
 
-    When leech_core Rust acceleration is available, uses the Rust pipeline
-    for signal processing + chunk extraction (rayon-parallel, GIL released).
-    Falls back to Python multiprocessing workers otherwise.
+    ``num_workers`` sets the number of batches in flight on either backend:
+    threads for Rust, worker processes for the Python fallback. It is not
+    advisory on either path.
+
+    Logs achieved reads/s as it goes, so a backend that is slower than the one
+    it replaced shows up in the first progress line rather than at the end of
+    the allocation.
 
     Args:
         bam_path: Path to BAM file with alignments
@@ -379,14 +548,14 @@ def prepare_training_data_parallel(
 
     all_chunks: list[dict[str, np.ndarray | str | int | None]] = []
     total_reads = 0
-    batches_submitted = 0
     batches_completed = 0
 
     use_progress_bar = sys.stdout.isatty()
+    monitor = _ThroughputMonitor(backend)
 
     if use_rust:
-        # Rust path: collect BAM metadata in Python, delegate heavy work to Rust.
-        # Each mega-batch is processed in a single Rust call with rayon parallelism.
+        # Rust path. Batches are dispatched CONCURRENTLY (see _iter_rust_batches);
+        # the Rust call releases the GIL for POD5 I/O and for per-read work.
         logger.info("Streaming BAM reads with Rust-accelerated chunk extraction...")
 
         # Setup motif searcher (Python-side, needed for position finding)
@@ -401,103 +570,63 @@ def prepare_training_data_parallel(
         else:
             motif_searcher = None
 
-        if use_progress_bar:
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                BarColumn(),
-                TaskProgressColumn(),
-                TextColumn("[cyan]{task.fields[chunks_extracted]} chunks extracted"),
-            ) as progress:
-                task = progress.add_task(
-                    "Processing reads (Rust)",
-                    total=estimated_batches,
-                    chunks_extracted=0,
+        results = _iter_rust_batches(
+            bam_path,
+            config,
+            motif_searcher,
+            chunk_size=chunk_size,
+            min_mapq=min_mapq,
+            num_workers=num_workers,
+        )
+    else:
+        # Python multiprocessing fallback: one worker process per batch, each
+        # holding its own cached POD5 dataset reader.
+        logger.info("Streaming BAM reads and processing in parallel...")
+        results = _iter_python_batches(
+            bam_path,
+            config,
+            chunk_size=chunk_size,
+            min_mapq=min_mapq,
+            num_workers=num_workers,
+        )
+
+    if use_progress_bar:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TextColumn("[cyan]{task.fields[chunks_extracted]} chunks extracted"),
+            TextColumn("[magenta]{task.fields[rate]}"),
+        ) as progress:
+            task = progress.add_task(
+                f"Processing reads [{backend}]",
+                total=estimated_batches,
+                chunks_extracted=0,
+                rate="",
+            )
+
+            for n_reads, batch_chunks in results:
+                total_reads += n_reads
+                batches_completed += 1
+                all_chunks.extend(batch_chunks)
+                progress.update(
+                    task,
+                    completed=batches_completed,
+                    chunks_extracted=len(all_chunks),
+                    rate=f"{monitor.reads_per_second(total_reads):.0f} reads/s",
                 )
 
-                for read_batch in iter_read_info_batches(
-                    bam_path, batch_size=chunk_size, min_mapq=min_mapq
-                ):
-                    total_reads += len(read_batch)
-                    batches_completed += 1
-                    try:
-                        batch_chunks = _prepare_batch_rust(read_batch, config, motif_searcher)
-                        all_chunks.extend(batch_chunks)
-                    except Exception as e:
-                        logger.warning(f"Rust batch failed, skipping: {e}")
-                    progress.update(
-                        task, completed=batches_completed, chunks_extracted=len(all_chunks)
-                    )
-
-                progress.update(task, total=batches_completed, completed=batches_completed)
-        else:
-            log_interval = max(1, (estimated_batches or 50) // 20)
-            for read_batch in iter_read_info_batches(
-                bam_path, batch_size=chunk_size, min_mapq=min_mapq
-            ):
-                total_reads += len(read_batch)
-                batches_completed += 1
-                try:
-                    batch_chunks = _prepare_batch_rust(read_batch, config, motif_searcher)
-                    all_chunks.extend(batch_chunks)
-                except Exception as e:
-                    logger.warning(f"Rust batch failed, skipping: {e}")
-                if batches_completed % log_interval == 0:
-                    logger.info(
-                        f"Progress: {batches_completed} batches, "
-                        f"{total_reads} reads | {len(all_chunks)} chunks extracted"
-                    )
+            # Fix total if estimate was off
+            progress.update(task, total=batches_completed, completed=batches_completed)
     else:
-        # Python multiprocessing fallback
-        logger.info("Streaming BAM reads and processing in parallel...")
-
-        def _worker_arg_stream():
-            nonlocal total_reads, batches_submitted
-            for read_batch in iter_read_info_batches(
-                bam_path, batch_size=chunk_size, min_mapq=min_mapq
-            ):
-                total_reads += len(read_batch)
-                batches_submitted += 1
-                yield (read_batch, config)
-
-        with mp.Pool(processes=num_workers) as pool:
-            if use_progress_bar:
-                with Progress(
-                    SpinnerColumn(),
-                    TextColumn("[progress.description]{task.description}"),
-                    BarColumn(),
-                    TaskProgressColumn(),
-                    TextColumn("[cyan]{task.fields[chunks_extracted]} chunks extracted"),
-                ) as progress:
-                    task = progress.add_task(
-                        "Processing reads",
-                        total=estimated_batches,
-                        chunks_extracted=0,
-                    )
-
-                    for chunk_results in pool.imap_unordered(
-                        _process_read_chunk_worker, _worker_arg_stream()
-                    ):
-                        all_chunks.extend(chunk_results)
-                        batches_completed += 1
-                        progress.update(
-                            task, completed=batches_completed, chunks_extracted=len(all_chunks)
-                        )
-
-                    # Fix total if estimate was off
-                    progress.update(task, total=batches_completed, completed=batches_completed)
-            else:
-                log_interval = max(1, (estimated_batches or 50) // 20)
-                for chunk_results in pool.imap_unordered(
-                    _process_read_chunk_worker, _worker_arg_stream()
-                ):
-                    all_chunks.extend(chunk_results)
-                    batches_completed += 1
-                    if batches_completed % log_interval == 0:
-                        logger.info(
-                            f"Progress: {batches_completed} batches, "
-                            f"{total_reads} reads | {len(all_chunks)} chunks extracted"
-                        )
+        log_interval = max(1, (estimated_batches or 50) // 20)
+        for n_reads, batch_chunks in results:
+            total_reads += n_reads
+            batches_completed += 1
+            all_chunks.extend(batch_chunks)
+            if batches_completed % log_interval == 0:
+                monitor.log_progress(batches_completed, total_reads, len(all_chunks))
 
     if total_reads == 0:
         return [], {
@@ -515,7 +644,9 @@ def prepare_training_data_parallel(
     }
 
     logger.info(
-        f"Parallel processing complete: extracted {len(all_chunks)} chunks from {total_reads} reads"
+        f"Parallel processing complete [{backend}]: extracted {len(all_chunks)} chunks "
+        f"from {total_reads} reads in {monitor.elapsed():.1f}s "
+        f"({monitor.reads_per_second(total_reads):.0f} reads/s)"
     )
 
     return all_chunks, stats

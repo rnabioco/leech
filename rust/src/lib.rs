@@ -2,6 +2,7 @@ use pyo3::prelude::*;
 
 mod encoding;
 mod inference_pipeline;
+mod pod5_cache;
 mod pod5_io;
 mod signal_refine;
 mod signal_stats;

@@ -449,26 +449,32 @@ pub fn extract_inference_chunks<'py>(
         base_justify,
     );
 
-    // --- Phase 1: POD5 I/O (scan reads, UUID filter, early termination, bulk extract) ---
+    // --- Phase 1: POD5 I/O (indexed read lookup + bulk extract), GIL released ---
+    // Pure Rust I/O over no Python objects, so the GIL is dropped for the whole
+    // phase; see `crate::pod5_cache` for why the reader must be shared.
     let target_uuids: HashSet<escapepod_signal::Uuid> = read_ids
         .iter()
         .filter_map(|s| escapepod_signal::Uuid::parse_str(s).ok())
         .collect();
-    let reader = escapepod_signal::Reader::open(pod5_path)
-        .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("Failed to open POD5: {e}")))?;
 
-    let matched_reads = reader.reads_by_ids(&target_uuids).map_err(|e| {
-        pyo3::exceptions::PyIOError::new_err(format!("Failed to look up reads: {e}"))
-    })?;
-    let to_extract: Vec<(String, Vec<u64>)> = matched_reads
-        .into_iter()
-        .map(|r| (r.read_id.to_string(), r.signal_rows))
-        .collect();
+    let signal_map: HashMap<String, Vec<i16>> = py
+        .detach(|| -> Result<HashMap<String, Vec<i16>>, String> {
+            let reader = crate::pod5_cache::cached_reader(pod5_path)?;
 
-    let bulk_signals = reader.get_signal_bulk(&to_extract).map_err(|e| {
-        pyo3::exceptions::PyIOError::new_err(format!("Signal extraction failed: {e}"))
-    })?;
-    let signal_map: HashMap<String, Vec<i16>> = bulk_signals.into_iter().collect();
+            let matched_reads = reader
+                .reads_by_ids(&target_uuids)
+                .map_err(|e| format!("Failed to look up reads: {e}"))?;
+            let to_extract: Vec<(String, Vec<u64>)> = matched_reads
+                .into_iter()
+                .map(|r| (r.read_id.to_string(), r.signal_rows))
+                .collect();
+
+            let bulk_signals = reader
+                .get_signal_bulk(&to_extract)
+                .map_err(|e| format!("Signal extraction failed: {e}"))?;
+            Ok(bulk_signals.into_iter().collect())
+        })
+        .map_err(pyo3::exceptions::PyIOError::new_err)?;
 
     _process_and_convert(
         py,
