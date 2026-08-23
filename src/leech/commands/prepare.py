@@ -53,6 +53,7 @@ def handle_prepare(
     motif_reference: str = "fasta",
     reference_fasta: Path | None = None,
     skip_motif_indels: bool = False,
+    require_query_mapping: bool = True,
     label: str | None = None,
     min_mapq: int = 0,
     feature_set: str = "signal+dwell+levels",
@@ -91,6 +92,9 @@ def handle_prepare(
         motif_reference: Where to search for motif ("fasta" or "bam")
         reference_fasta: External reference FASTA file
         skip_motif_indels: Skip reads with indels in motif region
+        require_query_mapping: Require the reference motif to map cleanly to
+            query coords. False keeps reads whose motif basecalled badly
+            (anchor='reference' only); the chunk position is unchanged.
         label: Label identifier for this sample
         min_mapq: Minimum mapping quality
         feature_set: Feature set to extract
@@ -177,6 +181,7 @@ def handle_prepare(
             motif_reference=motif_reference,
             reference_sequences=reference_sequences,
             skip_motif_indels=skip_motif_indels,
+            require_query_mapping=require_query_mapping,
         ),
         chunk=ChunkConfig(
             base_justify=base_justify,

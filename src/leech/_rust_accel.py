@@ -6,10 +6,38 @@ to the pure Python/numpy implementations.
 """
 
 import logging
+import os
 
 logger = logging.getLogger("leech._rust_accel")
 
+#: Set ``LEECH_DISABLE_RUST=1`` to take the pure-Python paths even when
+#: ``leech_core`` is installed.
+#:
+#: "Rust is available" and "Rust is faster here" are different claims, and
+#: without a switch there is no way to measure the second. They came apart on
+#: reference-anchored ``data prepare`` over a 145 GB merged POD5: 13 reads/s on
+#: the Rust path against 130 at 8 workers and 234 at 32 on the Python one.
+#:
+#: The cause is not the Rust code. That step is bound by random-read LATENCY
+#: into the POD5 -- a coordinate-sorted BAM visits reads in an order unrelated
+#: to how they are stored -- so throughput is set by how many reads are in
+#: flight. ``preparation.parallel`` fans batches across ``--workers`` processes
+#: on the Python path, but drives Rust from a serial batch loop in one thread,
+#: which leaves exactly one read outstanding. Installing the extension made the
+#: step ~10x slower, with nothing in the log to say so.
+#:
+#: A workaround and a measuring tool, not a recommendation. Leave it unset
+#: unless you have timed both on your own data.
+DISABLE_RUST = os.environ.get("LEECH_DISABLE_RUST", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+}
+
 try:
+    if DISABLE_RUST:
+        raise ImportError("leech_core disabled by LEECH_DISABLE_RUST")
+
     from leech_core import _test_process_read as _rs_test_process_read
     from leech_core import compute_signal_stats as _rs_compute_signal_stats
     from leech_core import encode_signal_kmer as _rs_encode_signal_kmer
@@ -26,6 +54,8 @@ try:
     logger.debug("Rust acceleration available (leech_core)")
 except ImportError:
     HAS_RUST = False
+    if DISABLE_RUST:
+        logger.info("Rust acceleration disabled by LEECH_DISABLE_RUST")
     _rs_test_process_read = None
     _rs_compute_signal_stats = None
     _rs_encode_signal_kmer = None
