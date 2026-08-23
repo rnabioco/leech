@@ -467,7 +467,7 @@ The workflow is designed to integrate with the leech CLI commands and supports b
 
 ## Current Status
 
-The codebase is feature-complete (v0.3.1):
+The codebase is feature-complete (v0.5.0):
 - ✓ Feature extraction with dwell offset tuning and signal map refinement
 - ✓ 29 model architectures: ConvLSTM (Base/Dwell × BN/GN/LN/Attn), TCN (Dwell/DwellGN/DwellLN/DwellResidual/DwellResidualGN/DwellResidualLN/DwellResidualMotor/DwellResidualDwellAttn/DwellSplitResidual/DwellSplitResidualLN), Transformer (Dwell/DwellResidual), ResNet, ConvOnly, SignalCNN
 - ✓ Config-driven model layer: bonito-style layer registry (`models/nn.py`) + TOML architecture declarations (`models/configs/`)
@@ -489,6 +489,11 @@ The codebase is feature-complete (v0.3.1):
 - ✓ `--min-confidence` / `--min-margin` predict thresholds
 - ✓ Cross-layer augmentation (time mask, shift, feature noise)
 - ✓ Auto-read anchor and reference_fasta from model config at predict time
+- ✓ `--backend auto|rust|python` on predict; `auto` falls back to Python (with a
+  warning) for options the Rust pipeline cannot honor, `rust` raises instead
+- ✓ `--no-require-query-mapping` for modifications that mis-call the motif
+- ✓ Process-global POD5 reader cache in Rust (`rust/src/pod5_cache.rs`) and
+  concurrent batch dispatch on both prepare backends
 
 All core functionality is implemented and ready for use.
 
