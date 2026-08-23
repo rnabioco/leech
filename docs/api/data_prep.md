@@ -57,6 +57,17 @@ Container for a single read's data with all features.
         - __init__
         - get_chunk
 
+### Extraction Sequence
+
+The single definition of which sequence chunks are cut from, and that focus
+base indices refer to: the aligned reference slice under `anchor="reference"`,
+the basecall otherwise. Both `data prepare` and `leech predict` go through it.
+
+::: leech.chunking.extractor.extraction_sequence
+    options:
+      show_root_heading: true
+      show_source: false
+
 ### Find Focus Bases
 
 The single definition of which bases a read contributes chunks at. Both prepare

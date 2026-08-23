@@ -48,6 +48,17 @@ The features module provides functions for extracting dwell times from move tabl
 
 ## Helper Functions
 
+### Levels for Mapped Bases
+
+Fits a per-sequence expected-level array to the per-mapped-base feature grid.
+The two counts differ under `anchor="reference"` when an alignment ends in a
+non-match CIGAR op; see `LeechRead.num_mapped_bases`.
+
+::: leech.features.levels_for_mapped_bases
+    options:
+      show_root_heading: true
+      show_source: false
+
 ::: leech.features.extract_move_table
     options:
       show_root_heading: true

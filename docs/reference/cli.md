@@ -70,12 +70,38 @@ leech data prepare --pod5 FILE --bam FILE --output-dir DIR [OPTIONS]
     Otherwise those reads are dropped for carrying the very signal being
     measured.
 
+    The setting is recorded in `prepare_config.json`, carried into the model
+    config by `leech model train`, and applied again by `leech predict`, so a
+    model is scored on the same read population it was trained on.
+
 **Signal handling:**
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--base-justify STR` | `center` | Where to center signal chunk within the focus base: `start`, `center`, or `end` |
 | `--no-reverse-signal` | *(off)* | Do NOT reverse raw signal. By default signal is reversed for direct RNA (POD5 stores 3'->5'). Use this flag for DNA data. |
+
+**Signal map refinement:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--refine-signal-map / --no-refine-signal-map` | enabled | Refine move-table base boundaries against expected k-mer levels. Use `--no-refine-signal-map` for DNA. |
+| `--kmer-table FILE` | *(bundled)* | K-mer level table; defaults to the table shipped with leech |
+| `--scale-iters INT` | `2` | `-1` = no refinement; `0` = one banded-DP pass without rescaling; `N` = N passes with Theil-Sen rescaling between them |
+| `--rough-rescale / --no-rough-rescale` | enabled | **Not honored.** Refinement is delegated to escapepod, whose `refine_signal_map` always applies its own least-squares rough rescale and exposes no switch. Passing `--no-rough-rescale` logs a warning. |
+
+!!! note "Refinement changes chunk contents"
+
+    Refinement is **on by default** and moves base boundaries, so it changes
+    every dwell and every level-derived feature. A corpus prepared with it on
+    is not interchangeable with one prepared with it off.
+
+    The refined boundaries are taken; the affine `(scale, shift, drift)` fit
+    that escapepod returns alongside them is deliberately discarded. Applying
+    it would replace one median-MAD transform shared by every read with a
+    per-read fit estimated on a near-constant 3' adapter, where it is weakly
+    identified -- and cross-read comparability is what k-mer residual features
+    depend on.
 
 **Splitting and parallelism:**
 

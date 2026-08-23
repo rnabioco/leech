@@ -107,6 +107,13 @@ If you switch backends and the yield moves, that is a bug, not a tuning knob.
 The same number is in the returned statistics as `reads_with_motif`, which
 counts reads -- not chunks.
 
+The yield is a necessary check, not a sufficient one: the backends can agree on
+which reads produced chunks and still disagree on what is *in* them. Since
+v0.6.3 CI compares every field of a serialized corpus across both backends --
+signals, dwells, features, the stored feature window, the `signal_kmer` fields
+-- over a matrix of anchors, refinement settings, justifications and feature
+windows, and fails on any chunk field it has not been told how to compare.
+
 ## Motif search strategies
 
 Leech supports two strategies for locating modification sites.
@@ -277,6 +284,23 @@ warns if the corpora being merged disagree on the resolved window.
     inference then sliced the k-mer window five bases off, silently. Chunk
     files written before v0.6.2 with an explicit `--feature-start 0` need
     re-preparing (or `feature_starts` rewritten in the `.npz`).
+
+!!! warning "Re-prepare refined corpora built on the Python backend before v0.6.3"
+
+    Signal-map refinement is on by default, and until v0.6.3 the two backends
+    refined differently. The Python refiner took escapepod's fixed
+    `dwell_target=4.0` -- roughly 8x too fast for RNA004, which sits near 31
+    samples/base -- and then rewrote the signal with the per-read affine fit
+    that the Rust path deliberately discards. Every dwell and every
+    level-derived feature differed between backends.
+
+    You are affected if you prepared with refinement on **and** the run used
+    the Python backend: no `leech_core` installed, or `--workers 1`, a
+    `--signal-norm` other than `median_mad`, `--recover-softclip-signal`, or a
+    focus TSV. The startup line names the backend that ran.
+
+    `--scale-iters -1` was also split: Python skipped refinement, Rust ran one
+    DP pass. It now means "no refinement" on both.
 
 ## Troubleshooting
 

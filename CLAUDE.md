@@ -309,6 +309,30 @@ prepare` now logs the resolved window and records it in `prepare_config.json`.
 this regresses; the backends are held to chunk-set equality (not overlap), to
 identical `signal_kmer` encodings, and to the same stored feature window.
 
+**`tests/test_backend_parity.py` is the net that catches what those miss.** It
+serializes both backends through `save_chunks` and compares *every array in the
+npz*, over a matrix of anchors, refinement settings, `base_justify` values,
+feature windows, `scale_iters` and signal contexts. It fails on any chunk field
+it has not been told how to compare, so adding a field to the chunk format
+without classifying it is a test failure rather than a silent gap. That
+property is the point: every divergence so far (#185 counts, #186 signal_kmer,
+#189 window width, #193 values) was invisible to the check written for the
+previous one. Dwells and int/string fields compare exactly; float feature rows
+get a tolerance, because Python accumulates per-base statistics in float64 and
+casts while Rust accumulates in float32 — real noise of ~1e-7, against
+divergences that have all moved values by 0.5% or more.
+
+**Refinement is on by default and both backends must drive escapepod
+identically.** `signal_refine.py` and `rust/src/inference_pipeline/refinement.rs`
+each pass their own settings to escapepod's `refine_signal_map`, and escapepod's
+Python binding defaults `dwell_target` to 4.0 while leech wants 0.0 (resolve it
+from the read's own median dwell). Passing that explicitly on both sides is not
+optional — leaving the default in place on the Python side made every dwell and
+every level-derived feature differ between backends for four releases (#193).
+`--scale-iters -1` means "no refinement" on both; do not clamp it to 0, which
+escapepod reads as one DP pass. Upstream `rnabioco/escapepod-rs#257` asks for a
+shared preset so this cannot drift again.
+
 ### Key Classes and Functions
 
 **`MoveTable` (features.py)**
@@ -525,7 +549,7 @@ The workflow is designed to integrate with the leech CLI commands and supports b
 
 ## Current Status
 
-The codebase is feature-complete (v0.6.1):
+The codebase is feature-complete (v0.6.3):
 - ✓ Feature extraction with dwell offset tuning and signal map refinement
 - ✓ 29 model architectures: ConvLSTM (Base/Dwell × BN/GN/LN/Attn), TCN (Dwell/DwellGN/DwellLN/DwellResidual/DwellResidualGN/DwellResidualLN/DwellResidualMotor/DwellResidualDwellAttn/DwellSplitResidual/DwellSplitResidualLN), Transformer (Dwell/DwellResidual), ResNet, ConvOnly, SignalCNN
 - ✓ Config-driven model layer: bonito-style layer registry (`models/nn.py`) + TOML architecture declarations (`models/configs/`)
@@ -556,6 +580,10 @@ The codebase is feature-complete (v0.6.1):
   `find_focus_bases`, and a logged read yield on both
 - ✓ Identical `signal_kmer` encodings across backends (shared
   `chunk_signal_kmer_inputs`)
+- ✓ Field-by-field backend parity enforced in CI (`tests/test_backend_parity.py`)
+- ✓ One extraction-sequence rule (`chunking.extraction_sequence`) shared by
+  prepare and predict; `base_justify`, `dwell_offset` and
+  `require_query_mapping` reach the Rust inference path
 
 All core functionality is implemented and ready for use.
 

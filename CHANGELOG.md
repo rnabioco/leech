@@ -5,7 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.3] - 2026-08-23
+
+Backend parity. An audit of the Rust/Python boundary found eight divergences,
+one of them on a code path that is **on by default**. Read the first entry
+below before reusing any prepared corpus.
 
 ### Fixed
 
