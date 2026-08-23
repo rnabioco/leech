@@ -140,6 +140,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   produced two different model inputs depending on which encoder the path
   reached.
 
+### Added
+
+- `tests/test_backend_parity.py`: a field-by-field comparison of the two
+  `data prepare` backends over the fixtures, across a matrix of anchors,
+  refinement settings, `base_justify` values, feature windows, `scale_iters`
+  values and signal contexts — including the exact flag set from #193.
+
+  It serializes both backends through `save_chunks` and compares **every array
+  in the npz**, failing on any field it has not been told how to compare. Every
+  divergence so far was invisible to the check that caught the previous one
+  (#185 counts, #186 signal_kmer fields, #189 window width, #193 values),
+  because each check was written one field at a time. This one extends itself:
+  adding a field to the chunk format without classifying it is a test failure.
+
 ### Changed
 
 - The backend parity test (`tests/test_parallel_prep.py`) now parametrizes
