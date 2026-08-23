@@ -56,6 +56,19 @@ leech data prepare --pod5 FILE --bam FILE --output-dir DIR [OPTIONS]
 | `--motif-reference STR` | `fasta` | Search in `fasta` (reference) or `bam` (basecalled sequence) |
 | `--reference-fasta FILE` | -- | Reference FASTA if not in BAM header |
 | `--skip-motif-indels` | `False` | Skip motif sites with indels in alignment |
+| `--require-query-mapping / --no-require-query-mapping` | enabled | Require a reference motif to also map cleanly to query coordinates (`--motif-reference fasta`, `--anchor reference`). See note below. |
+
+!!! note "When to use `--no-require-query-mapping`"
+
+    By default a motif found in the reference must also map cleanly to query
+    coordinates. That mapping is only a quality gate -- its result is discarded,
+    because the chunk is positioned from the reference through CIGAR
+    interpolation -- so turning it off keeps reads whose motif basecalled badly
+    without moving any chunk.
+
+    Use it when the modification under study mis-calls the motif itself.
+    Otherwise those reads are dropped for carrying the very signal being
+    measured.
 
 **Signal handling:**
 
@@ -555,6 +568,19 @@ leech predict --pod5 FILE --bam FILE --output FILE (--model DIR | --bundle FILE 
 | `--device STR` | auto | `cuda` or `cpu` |
 | `--base-justify STR` | `center` | Signal chunk centering |
 | `--no-reverse-signal` | *(off)* | Disable signal reversal (use for DNA data) |
+
+**Backend:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--backend STR` | `auto` | Chunk-extraction backend: `auto` (Rust when available), `rust` (force Rust, error if unavailable), `python` (force Python). Useful for comparing the two paths. |
+
+!!! note "When `auto` falls back"
+
+    Some options cannot be honored by the Rust pipeline -- non-median-MAD
+    `--signal-norm` and softclip signal recovery among them. Under `auto` those
+    fall back to Python with a warning; under `--backend rust` they raise rather
+    than silently producing different chunks.
 
 **Examples:**
 

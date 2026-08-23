@@ -71,6 +71,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `--no-require-query-mapping` on `data prepare`, for modifications that
+  mis-call the motif they are measured at (#175). By default a motif found in
+  the reference is accepted only if it also maps cleanly to query coordinates
+  through the CIGAR. Under `--anchor reference` that mapping is used *only* to
+  accept or reject — the returned coordinate is reference-relative and the query
+  coordinates are discarded — so the check is a quality gate, not a requirement
+  of window placement, and reads failing it can be kept without moving any
+  chunk. This matters because the gate selects on the label: on aminoacyl-tRNA
+  the adduct mis-calls the CCA junction, dropping 28% of charged reads against
+  6% of uncharged, before any model sees the data. Only valid with
+  `--anchor reference`; combining it with `--anchor basecall` raises, since
+  there the returned coordinate *is* the query start.
 - `data prepare` logs achieved reads/s on every progress line and in the final
   summary, on both backends, and names the backend in each. The #176 regression
   was invisible in the logs until the allocation ran out; a rate to compare
