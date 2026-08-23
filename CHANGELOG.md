@@ -91,6 +91,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   least-squares rough rescale and exposes no switch, so neither backend could
   act on the flag.
 
+- `predict` dropped `base_justify` on the Rust extraction path.
+  `build_rust_extraction_kwargs` carried no such key, so the Rust signature's
+  `"center"` default silently overrode a model trained with
+  `--base-justify start`/`end` — which moves the focus sample within the base
+  and so shifts every signal window. `data prepare` passed it correctly; only
+  `predict` lost it, and nothing validates it, so the symptom was degraded
+  accuracy with no error.
+
+- `dwell_offset` was inert on the Rust `predict` path, and a wide feature
+  window was passed to the model at full width. The Rust extractor returns
+  features over the whole requested window, exactly as a Python chunk does, but
+  the Rust consumers appended them to the batch without the narrowing the
+  Python path applies. `validate_inference_shapes` checks feature *count*, not
+  *width*, so this did not raise.
+
+- The bundle's Python path appended dwell template channels *after* narrowing
+  to the k-mer window, while training (`dataset.py`) appends before. The
+  templates were keyed to the stored window's column 0 but applied to an array
+  that had already been shifted out from under them.
+
+  All four copies of this transform are now one function,
+  `prepare_inference_features`, which mirrors `ChunkDataset._prepare_features`
+  and raises when the requested window does not fit the stored one — training
+  already raised for the same condition rather than sliding the window.
+
 ### Changed
 
 - The backend parity test (`tests/test_parallel_prep.py`) now parametrizes

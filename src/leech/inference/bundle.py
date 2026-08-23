@@ -27,6 +27,7 @@ from leech.inference.helpers import (
     cap_rayon_threads_for_slurm,
     check_rust_extraction_available,
     collect_bam_metadata_for_rust,
+    prepare_inference_features,
     validate_inference_shapes,
 )
 from leech.io.bam_reader import ReadInfo, count_bam_reads, iter_bam_batches
@@ -494,6 +495,7 @@ def run_bundle_inference(
             refine_half_bandwidth=config.get("refine_half_bandwidth", 5),
             refine_scale_iters=config.get("refine_scale_iters", 2),
             signal_in_channels=bundle_signal_in_channels,
+            base_justify=base_justify,
         )
 
     # Build InferenceConfig for parallel workers (reused across mega-batches).
@@ -599,20 +601,19 @@ def run_bundle_inference(
                         if bundle_signal_in_channels > 1 and sig.ndim == 1:
                             sig = sig.reshape(bundle_signal_in_channels, -1)
 
-                        # If the bundle was trained with dwell templates,
-                        # append the N_AA channels here — the model expects
-                        # them. feat_start comes from _feature_start (the
-                        # whole-pipeline setting, identical to training).
-                        if needs_features and feat is not None and dwell_templates_arr is not None:
-                            from leech.dataset import (
-                                append_dwell_template_channels,
-                            )
-
-                            feat = append_dwell_template_channels(
+                        # Rust hands back the full requested feature window,
+                        # exactly as a Python chunk's `features` does, so it
+                        # needs the same preparation: templates appended
+                        # against the stored window, then narrowed to the
+                        # model's k-mer window. This loop used to append but
+                        # never narrow.
+                        if needs_features and feat is not None:
+                            feat = prepare_inference_features(
                                 feat,
-                                feat_start=_feature_start
-                                if _feature_start is not None
-                                else -_kmer_context,
+                                kmer_len=kmer_len,
+                                feature_start=_feature_start,
+                                dwell_offset=dwell_offset,
+                                wide_features=wide_features,
                                 dwell_templates=dwell_templates_arr,
                                 template_min_pos=dwell_template_min_pos,
                             )
@@ -955,26 +956,20 @@ def run_bundle_inference(
                     if needs_features:
                         features_array = chunk["features"]
                         assert isinstance(features_array, np.ndarray)
-                        features_array = features_array.astype(np.float32)
-                        if wide_features:
-                            pass
-                        elif features_array.size > 0 and features_array.shape[1] > kmer_len:
-                            fs = chunk.get("feature_start", -_kmer_context)
-                            feat_start_slice = (-_kmer_context - fs) + dwell_offset
-                            features_array = features_array[
-                                :, feat_start_slice : feat_start_slice + kmer_len
-                            ]
-                        if dwell_templates_arr is not None:
-                            from leech.dataset import (
-                                append_dwell_template_channels,
-                            )
-
-                            features_array = append_dwell_template_channels(
-                                features_array,
-                                feat_start=int(chunk.get("feature_start", -_kmer_context)),
-                                dwell_templates=dwell_templates_arr,
-                                template_min_pos=dwell_template_min_pos,
-                            )
+                        # Templates first, then narrowing -- the order
+                        # `dataset.py` used at training time. This site had it
+                        # the other way round, so the template channels were
+                        # keyed to the pre-narrowing column 0 while the array
+                        # had already been shifted out from under them.
+                        features_array = prepare_inference_features(
+                            features_array.astype(np.float32),
+                            kmer_len=kmer_len,
+                            feature_start=chunk.get("feature_start"),
+                            dwell_offset=dwell_offset,
+                            wide_features=wide_features,
+                            dwell_templates=dwell_templates_arr,
+                            template_min_pos=dwell_template_min_pos,
+                        )
                         batch_features.append(torch.from_numpy(features_array))
 
                     if not _shape_validated:

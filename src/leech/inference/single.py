@@ -25,6 +25,7 @@ from leech.inference.helpers import (
     check_rust_extraction_available,
     collect_bam_metadata_for_rust,
     load_model_auto,
+    prepare_inference_features,
     validate_inference_shapes,
 )
 from leech.io.bam_reader import count_bam_reads, iter_bam_batches
@@ -163,15 +164,13 @@ def _inference_worker(
                 if config.requires_features:
                     feat_arr = chunk["features"]
                     if feat_arr.size > 0:
-                        feat_arr = feat_arr.astype(np.float32)
-                        if config.wide_features:
-                            pass
-                        elif feat_arr.shape[1] > config.kmer_len:
-                            kmer_ctx = config.kmer_len // 2
-                            fs = int(chunk.get("feature_start", -kmer_ctx))
-                            s = (-kmer_ctx - fs) + config.dwell_offset
-                            feat_arr = feat_arr[:, s : s + config.kmer_len]
-                        feat = feat_arr
+                        feat = prepare_inference_features(
+                            feat_arr.astype(np.float32),
+                            kmer_len=config.kmer_len,
+                            feature_start=chunk.get("feature_start"),
+                            dwell_offset=config.dwell_offset,
+                            wide_features=config.wide_features,
+                        )
 
                 if not _shape_validated:
                     # config is InferenceConfig dataclass; build dict for validator
@@ -971,13 +970,13 @@ def run_inference(
                 if requires_features:
                     features_array = chunk["features"]
                     assert isinstance(features_array, np.ndarray)
-                    feat = features_array.astype(np.float32)
-                    if wide_features:
-                        pass
-                    elif feat.size > 0 and feat.shape[1] > kmer_len:
-                        fs = chunk.get("feature_start", -_kmer_context)
-                        s = (-_kmer_context - fs) + dwell_offset
-                        feat = feat[:, s : s + kmer_len]
+                    feat = prepare_inference_features(
+                        features_array.astype(np.float32),
+                        kmer_len=kmer_len,
+                        feature_start=chunk.get("feature_start"),
+                        dwell_offset=dwell_offset,
+                        wide_features=wide_features,
+                    )
 
                 results.append((sig, seq_arr, feat, (read_id, base_idx)))
             return results
@@ -1003,6 +1002,7 @@ def run_inference(
             refine_half_bandwidth=config.get("refine_half_bandwidth", 5),
             refine_scale_iters=config.get("refine_scale_iters", 2),
             signal_in_channels=signal_in_channels,
+            base_justify=base_justify,
         )
 
         def _collect_bam_metadata(aln_batch: list) -> tuple:
@@ -1066,6 +1066,18 @@ def run_inference(
             for sig, seq_arr, feat, read_id, base_idx in chunks:
                 if signal_in_channels > 1 and sig.ndim == 1:
                     sig = sig.reshape(signal_in_channels, -1)
+                # Rust returns features at the full requested window width, the
+                # same as a Python chunk's `features`. Both need the same
+                # narrowing to the model's k-mer window -- this loop used to
+                # skip it, so a wide-window corpus fed the model the wrong
+                # width and `dwell_offset` was inert on the Rust path.
+                feat = prepare_inference_features(
+                    feat,
+                    kmer_len=kmer_len,
+                    feature_start=_feature_start,
+                    dwell_offset=dwell_offset,
+                    wide_features=wide_features,
+                )
                 if not _shape_validated:
                     validate_inference_shapes(sig, feat, config)
                     _shape_validated = True

@@ -193,6 +193,87 @@ def validate_inference_shapes(
                 )
 
 
+def prepare_inference_features(
+    features: np.ndarray | None,
+    *,
+    kmer_len: int,
+    feature_start: int | None,
+    dwell_offset: int = 0,
+    wide_features: bool = False,
+    dwell_templates: np.ndarray | None = None,
+    template_min_pos: int = 0,
+) -> np.ndarray | None:
+    """Put a chunk's feature array into the shape the model was trained on.
+
+    The single definition of that transform for inference. It mirrors
+    ``ChunkDataset._prepare_features`` in ``dataset.py``, which is what ran at
+    training time, and the two must not drift: the model sees whatever comes
+    out of here.
+
+    Two things happen, in this order, because that is the order training used:
+
+    1. Dwell template channels are appended, keyed to the *stored* feature
+       window (``feat_start`` is the coordinate of column 0). Appending after a
+       narrowing would key them to the wrong columns.
+    2. The array is narrowed to the model's k-mer window and shifted by
+       ``dwell_offset``.
+
+    Before this existed there were four copies of step 2 and none of them
+    agreed with training on all of it. The Rust extraction paths in ``single``
+    and ``bundle`` skipped it entirely, so a model trained on a wide feature
+    window was handed the full window at predict time and ``dwell_offset`` did
+    nothing; the bundle's Python path did step 2 before step 1.
+
+    Args:
+        features: ``(num_features, feat_width)`` array, or None.
+        kmer_len: The model's k-mer width; the returned window is this wide.
+        feature_start: Signed offset of column 0 from the focus base. ``None``
+            means the k-mer window, i.e. ``-(kmer_len // 2)``.
+        dwell_offset: Shift the window toward the 3' end, in bases.
+        wide_features: Model consumes the full window; skip step 2.
+        dwell_templates: ``(n_aa, n_positions)`` template table, or None.
+        template_min_pos: First position covered by ``dwell_templates``.
+
+    Returns:
+        The prepared array, or ``features`` unchanged when there is nothing to
+        do (None, empty, or already at the target width).
+
+    Raises:
+        InferenceConfigError: The requested window falls outside the stored
+            one. Training raises for the same condition rather than sliding the
+            window to fit, because a window that does not fit means the model
+            config and the corpus disagree about the feature geometry.
+    """
+    if features is None or features.size == 0:
+        return features
+
+    kmer_context = kmer_len // 2
+    start_offset = feature_start if feature_start is not None else -kmer_context
+
+    if dwell_templates is not None:
+        from leech.dataset import append_dwell_template_channels
+
+        features = append_dwell_template_channels(
+            features,
+            feat_start=start_offset,
+            dwell_templates=dwell_templates,
+            template_min_pos=template_min_pos,
+        )
+
+    if wide_features or features.shape[1] <= kmer_len:
+        return features
+
+    start = (-kmer_context - start_offset) + dwell_offset
+    if start < 0 or start + kmer_len > features.shape[1]:
+        raise InferenceConfigError(
+            f"feature window [{start}, {start + kmer_len}) does not fit the "
+            f"stored width {features.shape[1]} "
+            f"(kmer_len={kmer_len}, feature_start={start_offset}, "
+            f"dwell_offset={dwell_offset})"
+        )
+    return features[:, start : start + kmer_len]
+
+
 def _extract_remora_metadata(model_path: Path) -> dict:
     """Extract metadata from a Remora TorchScript model's embedded meta.txt."""
     import json as _json
@@ -653,11 +734,19 @@ def build_rust_extraction_kwargs(
     refine_half_bandwidth: int,
     refine_scale_iters: int,
     signal_in_channels: int,
+    base_justify: str,
 ) -> dict:
     """Build the kwargs dict passed to the rust extraction functions.
 
     Extracts kmer table + kmer length + kmer center from ``signal_refiner``
     when refinement is enabled; otherwise fills in inert defaults.
+
+    Every key the Rust entry points accept and the Python extraction path
+    honors belongs here. ``base_justify`` did not, so the Rust signature's
+    ``"center"`` default silently overrode a model trained with
+    ``--base-justify end`` -- which moves the focus sample within the base and
+    so shifts every signal window. ``data prepare`` passed it; only predict
+    dropped it.
     """
     kmer_table_dict = None
     kmer_table_len = 9
@@ -686,6 +775,7 @@ def build_rust_extraction_kwargs(
         "refine_half_bandwidth": refine_half_bandwidth,
         "refine_scale_iters": refine_scale_iters,
         "signal_in_channels": signal_in_channels,
+        "base_justify": base_justify,
     }
 
 
