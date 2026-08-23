@@ -15,19 +15,27 @@ logger = logging.getLogger("leech._rust_accel")
 #:
 #: "Rust is available" and "Rust is faster here" are different claims, and
 #: without a switch there is no way to measure the second. They came apart on
-#: reference-anchored ``data prepare`` over a 145 GB merged POD5: 13 reads/s on
-#: the Rust path against 130 at 8 workers and 234 at 32 on the Python one.
+#: reference-anchored ``data prepare`` over a 145 GB merged POD5 (#176):
+#: 13 reads/s on the Rust path against 130 at 8 workers and 234 at 32 on the
+#: Python one.
 #:
-#: The cause is not the Rust code. That step is bound by random-read LATENCY
-#: into the POD5 -- a coordinate-sorted BAM visits reads in an order unrelated
-#: to how they are stored -- so throughput is set by how many reads are in
-#: flight. ``preparation.parallel`` fans batches across ``--workers`` processes
-#: on the Python path, but drives Rust from a serial batch loop in one thread,
-#: which leaves exactly one read outstanding. Installing the extension made the
-#: step ~10x slower, with nothing in the log to say so.
+#: That step is bound by random-read LATENCY into the POD5 -- a
+#: coordinate-sorted BAM visits reads in an order unrelated to how they are
+#: stored -- so throughput is set by how many reads are in flight. The Rust
+#: path used to leave exactly one: it re-opened (and so re-scanned) the POD5
+#: per batch, held the GIL across the I/O, and was driven from a serial batch
+#: loop. #178 fixed all three, and ``prepare`` now logs achieved reads/s on
+#: every progress line so the two paths can be compared without this switch.
 #:
-#: A workaround and a measuring tool, not a recommendation. Leave it unset
-#: unless you have timed both on your own data.
+#: Still useful for measuring, and as an escape hatch on data where the
+#: Python path happens to win. Leave it unset unless you have timed both on
+#: your own data.
+#:
+#: If you are comparing the two paths, check that both halves of your install
+#: are current: ``leech_core`` is a separate package from ``leech``, and a
+#: freshly built extension paired with a stale ``leech`` gives the new Rust
+#: with the old serial driver. The startup line names the dispatch, so a
+#: build without "batches in flight" in it is the stale pairing.
 DISABLE_RUST = os.environ.get("LEECH_DISABLE_RUST", "").strip().lower() in {
     "1",
     "true",
