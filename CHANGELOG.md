@@ -134,6 +134,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   label-correlated one (the adduct mis-calls the CCA junction, dropping 28% of
   charged reads against 6% of uncharged).
 
+- `encode_kmer` mapped only ACGT, so a `U` encoded as an all-zero column while
+  every other base encoder in the tree — `features.sequence_to_int`,
+  `encoding.seq_to_int`, and both Rust encoders — folds U onto T. The same base
+  produced two different model inputs depending on which encoder the path
+  reached.
+
 ### Changed
 
 - The backend parity test (`tests/test_parallel_prep.py`) now parametrizes
