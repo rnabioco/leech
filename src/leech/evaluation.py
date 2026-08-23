@@ -28,6 +28,47 @@ from leech.models.inference_wrapper import ModelInferenceWrapper
 logger = logging.getLogger("leech.evaluation")
 
 
+def _save_scores(
+    path: Path,
+    test_data_path: Path,
+    labels: np.ndarray,
+    probs: np.ndarray,
+) -> None:
+    """Write per-chunk scores, keyed by read id where the test set has them.
+
+    Order is the join. The evaluation loader is built with ``shuffle=False``
+    and no ``drop_last``, so row i of ``probs`` is chunk i of the test ``.npz``
+    and lines up with its ``read_ids``. That assumption is CHECKED rather than
+    trusted: a length mismatch means the dataset filtered or reordered chunks,
+    which would silently mislabel every score, so it raises instead.
+    """
+    read_ids = None
+    try:
+        with np.load(test_data_path, allow_pickle=False) as data:
+            if "read_ids" in data:
+                read_ids = data["read_ids"]
+    except (OSError, ValueError) as exc:  # not an npz, or unreadable
+        logger.warning(f"Could not read read_ids from {test_data_path}: {exc}")
+
+    if read_ids is not None and len(read_ids) != len(probs):
+        raise ValueError(
+            f"Scored {len(probs)} chunks but {test_data_path} holds "
+            f"{len(read_ids)} read_ids. Row order is the only key here, so a "
+            "mismatch would misattribute every score."
+        )
+
+    arrays = {"labels": labels, "probs": probs}
+    if read_ids is not None:
+        arrays["read_ids"] = read_ids
+    else:
+        logger.warning(f"{test_data_path} has no read_ids; scores are positional only")
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(path, **arrays)
+    logger.info(f"Wrote {len(probs)} per-chunk scores to {path}")
+
+
 def evaluate_model(
     model_path: Path,
     test_data_path: Path,
@@ -36,6 +77,7 @@ def evaluate_model(
     kmer_len: int | None = None,
     batch_size: int = 512,
     device: str = "cuda",
+    emit_scores: Path | None = None,
 ) -> dict:
     """
     Evaluate a trained model on test data.
@@ -48,6 +90,12 @@ def evaluate_model(
         kmer_len: K-mer length (if None, read from model config)
         batch_size: Batch size for evaluation
         device: Device for inference
+        emit_scores: If set, also write per-chunk scores to this .npz. A
+            confusion matrix is a summary at ONE threshold; the scores behind
+            it answer questions the summary cannot -- per-group error
+            breakdowns, paired model comparisons, calibration, and any
+            operating point other than the one that was reported. They are
+            computed either way, so this only decides whether they survive.
 
     Returns:
         Dictionary with evaluation metrics
@@ -213,6 +261,14 @@ def evaluate_model(
         logger.info(f"Top-3 accuracy: {top3_acc:.4f}")
         logger.info(f"Top-5 accuracy: {top5_acc:.4f}")
 
+        if emit_scores is not None:
+            _save_scores(
+                emit_scores,
+                test_data_path,
+                all_labels_arr,
+                torch.softmax(logits_t, dim=-1).numpy(),
+            )
+
         save_metrics(metrics, output_path)
         return metrics
 
@@ -259,6 +315,9 @@ def evaluate_model(
     metrics["test_data_path"] = str(test_data_path)
     metrics["num_samples"] = len(all_labels_arr)
     metrics["model_type"] = model_type
+
+    if emit_scores is not None:
+        _save_scores(emit_scores, test_data_path, all_labels_arr, all_probs_arr)
 
     # Print and save
     print_metrics(metrics)

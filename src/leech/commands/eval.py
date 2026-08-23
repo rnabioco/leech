@@ -19,6 +19,7 @@ def handle_test(
     output: Path,
     device: str = "cuda",
     batch_size: int = 512,
+    emit_scores: Path | None = None,
 ) -> None:
     """
     Handle the test command logic.
@@ -29,6 +30,7 @@ def handle_test(
         output: Output metrics file (JSON)
         device: Device for inference
         batch_size: Batch size for evaluation
+        emit_scores: Optional .npz for per-chunk scores
     """
     from leech.evaluation import evaluate_model
 
@@ -42,7 +44,10 @@ def handle_test(
         output_path=output,
         device=device,
         batch_size=batch_size,
+        emit_scores=emit_scores,
     )
 
     console.print("[bold green]Testing complete![/bold green]")
     logger.info(f"Results saved to {output}")
+    if emit_scores is not None:
+        logger.info(f"Per-chunk scores saved to {emit_scores}")
