@@ -276,8 +276,21 @@ Which bases a read contributes chunks at is `chunking.find_focus_bases`, one
 function, called by both backends. `parallel.py` used to carry its own copy and
 it drifted. Do not add a second one.
 
-`tests/test_parallel_prep.py::TestEdgeWindowParity` fails if any of this
-regresses; the backends are held to chunk-set equality, not overlap.
+**`seq_to_sig_map` and `sequence_with_kmer_context` come from the SIGNAL
+window, not the k-mer window.** `get_chunk` locates the covered bases with two
+`searchsorted` calls over the read's map, then snaps the partially overlapping
+first and last bases to the window edges (`[0] = 0`, `[-1] = chunk_len`). The
+k-mer window spans a different number of bases, so building these from
+`kmer_start`/`kmer_end` disagrees on every chunk — that was issue #186, and it
+went unnoticed because nothing compared the fields. Rust does it in
+`signal_mapping::chunk_signal_kmer_inputs`, used by both `training.rs` and
+`inference.rs`. Only `--seq-encoding signal_kmer` reads them, which is why a
+full divergence was invisible.
+
+`tests/test_parallel_prep.py::TestEdgeWindowParity` and
+`::TestSignalKmerFieldParity` fail if any of this regresses; the backends are
+held to chunk-set equality (not overlap) and to identical `signal_kmer`
+encodings.
 
 ### Key Classes and Functions
 
@@ -524,6 +537,8 @@ The codebase is feature-complete (v0.6.0):
   concurrent batch dispatch on both prepare backends
 - ✓ Chunk-set parity between the prepare backends, one shared
   `find_focus_bases`, and a logged read yield on both
+- ✓ Identical `signal_kmer` encodings across backends (shared
+  `chunk_signal_kmer_inputs`)
 
 All core functionality is implemented and ready for use.
 

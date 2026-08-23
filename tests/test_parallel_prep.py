@@ -331,6 +331,183 @@ class TestEdgeWindowParity:
         assert {len(str(c["sequence"])) for c in rs.values()} == expected
 
 
+class TestSignalKmerFieldParity:
+    """The two fields `--seq-encoding signal_kmer` runs on must agree too.
+
+    `seq_to_sig_map` and `sequence_with_kmer_context` are derived from the
+    SIGNAL window in Python (two `searchsorted` calls over the read's map) and
+    used to be derived from the k-mer window in Rust. Those select different
+    numbers of bases, so the backends disagreed on every chunk, not just edge
+    ones -- issue #186. Nothing compared them, because the other parity tests
+    check signal/sequence/dwell/features only.
+
+    Asserted at three levels: the raw fields, their shapes, and the encoding
+    they produce, which is what the model actually consumes.
+    """
+
+    @pytest.fixture
+    def read_infos(self):
+        return collect_read_infos(TRNA_BAM, min_mapq=0)
+
+    @pytest.mark.parametrize("anchor", ["basecall", "reference"])
+    @pytest.mark.parametrize("motif_offset", [2, 40, -85])
+    def test_fields_and_encoding_match(self, read_infos, anchor, motif_offset):
+        pytest.importorskip("leech_core")
+        from leech._rust_accel import HAS_RUST, _rs_extract_training_chunks
+
+        if not HAS_RUST or _rs_extract_training_chunks is None:
+            pytest.skip("leech_core Rust acceleration not available")
+
+        from leech.constants import DEFAULT_SIGNAL_KMER_CONTEXT
+        from leech.features import encode_signal_kmer, sequence_to_int
+        from leech.io import get_motif_searcher
+        from leech.preparation.parallel import _prepare_batch_rust, _process_read_chunk_worker
+
+        config = _trna_config(anchor)
+        config.motif.motif_offset = motif_offset
+        signal_len = sum(config.chunk.signal_context)
+        motif_searcher = get_motif_searcher(
+            mode=config.motif.motif_reference,
+            reference_sequences=config.motif.reference_sequences,
+            skip_indels=config.motif.skip_motif_indels,
+            anchor=config.signal.anchor,
+        )
+        py = _chunks_by_key(_process_read_chunk_worker((read_infos, config)))
+        rs = _chunks_by_key(_prepare_batch_rust(read_infos, config, motif_searcher))
+        assert py and set(py) == set(rs)
+
+        def encode(chunk):
+            seq_ints = sequence_to_int(str(chunk["sequence_with_kmer_context"])).astype(np.int8)
+            s2s = np.asarray(chunk["seq_to_sig_map"]).astype(np.int64)
+            return encode_signal_kmer(seq_ints, s2s, signal_len, DEFAULT_SIGNAL_KMER_CONTEXT)
+
+        for key in py:
+            pc, rc = py[key], rs[key]
+            assert str(pc["sequence_with_kmer_context"]) == str(rc["sequence_with_kmer_context"]), (
+                f"context sequence {key}"
+            )
+            np.testing.assert_array_equal(
+                np.asarray(pc["seq_to_sig_map"]),
+                np.asarray(rc["seq_to_sig_map"]),
+                err_msg=f"seq_to_sig_map {key}",
+            )
+            # The encoder's two inputs must stay dimensionally consistent:
+            # len(context) == n + before + after and len(map) == n + 1.
+            before, after = DEFAULT_SIGNAL_KMER_CONTEXT
+            n_bases = len(np.asarray(rc["seq_to_sig_map"])) - 1
+            assert len(str(rc["sequence_with_kmer_context"])) == n_bases + before + after, key
+            # And the encoding itself, which is what reaches the model.
+            np.testing.assert_array_equal(encode(pc), encode(rc), err_msg=f"encoding {key}")
+
+    @pytest.mark.parametrize("anchor", ["basecall", "reference"])
+    def test_inference_path_encodes_the_same(self, read_infos, anchor):
+        """The Rust *inference* path uses the same helper — check it agrees.
+
+        It builds the encoding in-process instead of returning the two fields,
+        so it is compared against the encoding Python's inference path produces
+        from `get_chunk`'s output. Same divergence lived here (#186).
+        """
+        pytest.importorskip("leech_core")
+        from leech._rust_accel import HAS_RUST, _rs_extract_inference_chunks
+
+        if not HAS_RUST or _rs_extract_inference_chunks is None:
+            pytest.skip("leech_core Rust acceleration not available")
+
+        from leech.constants import DEFAULT_SIGNAL_KMER_CONTEXT
+        from leech.features import encode_signal_kmer, sequence_to_int
+        from leech.io import get_motif_searcher
+        from leech.preparation.parallel import (
+            _extraction_sequence,
+            _find_motif_positions,
+            _process_read_chunk_worker,
+        )
+
+        config = _trna_config(anchor)
+        signal_len = sum(config.chunk.signal_context)
+        motif_searcher = get_motif_searcher(
+            mode=config.motif.motif_reference,
+            reference_sequences=config.motif.reference_sequences,
+            skip_indels=config.motif.skip_motif_indels,
+            anchor=config.signal.anchor,
+        )
+
+        # Reference: encode Python's get_chunk output, as inference/single.py does.
+        py_enc = {}
+        for chunk in _process_read_chunk_worker((read_infos, config)):
+            seq_ints = sequence_to_int(str(chunk["sequence_with_kmer_context"])).astype(np.int8)
+            s2s = np.asarray(chunk["seq_to_sig_map"]).astype(np.int64)
+            py_enc[(chunk["read_id"], int(chunk["base_idx"]))] = encode_signal_kmer(
+                seq_ints, s2s, signal_len, DEFAULT_SIGNAL_KMER_CONTEXT
+            )
+
+        # Rust inference, signal_kmer encoding, over the same reads.
+        kept = [ri for ri in read_infos if _find_motif_positions(ri, motif_searcher, config)]
+        assert kept
+        mts = [ri.to_move_table() for ri in kept]
+        rs_chunks = _rs_extract_inference_chunks(
+            str(TRNA_POD5),
+            read_ids=[ri.read_id for ri in kept],
+            sequences=[_extraction_sequence(ri, config) for ri in kept],
+            mv_strides=[mt.stride for mt in mts],
+            mv_arrays=[mt.moves.tolist() for mt in mts],
+            num_samples_list=[mt.num_samples for mt in mts],
+            trim_offsets=[mt.trim_offset for mt in mts],
+            motif_positions=[_find_motif_positions(ri, motif_searcher, config) for ri in kept],
+            signal_context_left=config.chunk.signal_context[0],
+            signal_context_right=config.chunk.signal_context[1],
+            kmer_context=config.chunk.kmer_context,
+            signal_len=signal_len,
+            compute_features=config.signal.compute_features,
+            reverse_signal=config.signal.reverse_signal,
+            anchor=anchor,
+            cigar_tuples=(
+                [ri.cigar_tuples or [] for ri in kept] if anchor == "reference" else None
+            ),
+            reference_sequences=(
+                [ri.reference_sequence for ri in kept] if anchor == "reference" else None
+            ),
+            seq_encoding="signal_kmer",
+            base_justify=config.chunk.base_justify,
+        )
+
+        assert rs_chunks
+        for _sig, seq_enc, _feat, read_id, base_idx in rs_chunks:
+            key = (read_id, int(base_idx))
+            assert key in py_enc, f"rust produced a chunk python did not: {key}"
+            np.testing.assert_array_equal(
+                np.asarray(seq_enc), py_enc[key], err_msg=f"signal_kmer encoding {key}"
+            )
+
+    def test_map_spans_the_whole_chunk(self, read_infos):
+        """The map runs edge to edge: first entry 0, last the chunk width.
+
+        Python snaps the partially-overlapping first and last bases to the
+        window edges. A map built from k-mer bounds does not, and can even go
+        negative -- which `encode_signal_kmer_inner` silently turns into a
+        skipped base rather than a clamped one.
+        """
+        pytest.importorskip("leech_core")
+        from leech.io import get_motif_searcher
+        from leech.preparation.parallel import _prepare_batch_rust
+
+        config = _trna_config("reference")
+        signal_len = sum(config.chunk.signal_context)
+        motif_searcher = get_motif_searcher(
+            mode=config.motif.motif_reference,
+            reference_sequences=config.motif.reference_sequences,
+            skip_indels=config.motif.skip_motif_indels,
+            anchor=config.signal.anchor,
+        )
+        rs = _prepare_batch_rust(read_infos, config, motif_searcher)
+        assert rs
+        for chunk in rs:
+            s2s = np.asarray(chunk["seq_to_sig_map"])
+            assert s2s[0] == 0, chunk["read_id"]
+            assert s2s[-1] == signal_len, chunk["read_id"]
+            assert np.all(s2s >= 0) and np.all(s2s <= signal_len), chunk["read_id"]
+            assert np.all(np.diff(s2s) >= 0), chunk["read_id"]
+
+
 # ---------------------------------------------------------------------------
 # End-to-end prepare_training_data_parallel (Rust path only — avoids mp.Pool
 # fork inside pytest, which deadlocks with BAM iteration on some environments)

@@ -7,6 +7,7 @@ use pyo3::prelude::*;
 use rayon::prelude::*;
 
 use super::processing::process_read_signal;
+use super::signal_mapping::chunk_signal_kmer_inputs;
 use super::types::{BaseJustify, PipelineConfig, ProcessedRead, TrainingChunkResult};
 
 /// Extract training-format chunks from a processed read.
@@ -45,9 +46,6 @@ fn extract_training_chunks_from_read(
         let kmer_start = base_idx - cfg.kmer_ctx;
         let kmer_end = base_idx + cfg.kmer_ctx + 1;
         let kmer_len = (kmer_end - kmer_start) as usize;
-        // Clamped copies, for the slicing that cannot see past the sequence.
-        let kmer_start_u = kmer_start.clamp(0, seq_bytes.len() as i64) as usize;
-        let kmer_end_u = kmer_end.clamp(0, seq_bytes.len() as i64) as usize;
 
         // Signal chunk (same logic as inference)
         let focus_sig = cfg
@@ -143,25 +141,20 @@ fn extract_training_chunks_from_read(
         // offset regardless of edge padding.
         let focus_signal_pos = cfg.signal_context_left;
 
-        // Chunk-local seq_to_sig_map
-        let map_start = kmer_start_u;
-        let map_end = (kmer_end_u + 1).min(seq_to_sig.len());
-        let chunk_sig_map: Vec<i64> = if map_start < map_end {
-            seq_to_sig[map_start..map_end]
-                .iter()
-                .map(|&v| v - sig_start_pos)
-                .collect()
-        } else {
-            vec![]
-        };
-
-        // Extended sequence with kmer context (always computed to match Python)
-        let (kmer_before, kmer_after) = cfg.skmer_ctx;
-        let ctx_start = kmer_start_u.saturating_sub(kmer_before);
-        let ctx_end = (kmer_end_u + kmer_after).min(seq_bytes.len());
-        let seq_with_ctx = std::str::from_utf8(&seq_bytes[ctx_start..ctx_end])
-            .unwrap_or("")
-            .to_string();
+        // Chunk-local seq_to_sig_map and its context sequence, the two inputs
+        // signal_kmer encoding consumes. Both key off the SIGNAL window, not
+        // the k-mer window -- see `chunk_signal_kmer_inputs`. Always computed,
+        // as Python does, so a chunk can be re-encoded either way later.
+        let (chunk_sig_map, ctx_bytes) = chunk_signal_kmer_inputs(
+            seq_to_sig,
+            seq_bytes,
+            sig_start_pos,
+            sig_end_pos,
+            norm_signal.len(),
+            cfg.signal_len,
+            cfg.skmer_ctx,
+        );
+        let seq_with_ctx = String::from_utf8(ctx_bytes).unwrap_or_default();
 
         results.push(TrainingChunkResult {
             signal: sig_chunk,
