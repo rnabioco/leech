@@ -232,12 +232,15 @@ def compare_chunks(
 
     summary = (
         f"Compared {len(py_sorted)} Python vs {len(rs_sorted)} Rust chunks: "
-        f"{matched} matched, {mismatched} mismatched, {missing} missing (edge-reads)"
+        f"{matched} matched, {mismatched} mismatched, {missing} missing from Rust"
     )
     diffs.insert(0, summary)
 
-    # Edge-missing chunks (Rust skips, Python pads with "N") are expected
-    return mismatched == 0, diffs
+    # A chunk Python produced and Rust did not is a defect, not a tolerance.
+    # This used to pass `missing` through as expected, because Rust dropped
+    # focus bases whose k-mer window overhung the sequence while Python padded
+    # them with "N" -- on production data ~1% of reads, silently (issue #185).
+    return mismatched == 0 and missing == 0, diffs
 
 
 def compare_npz(

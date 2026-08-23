@@ -20,6 +20,8 @@ from leech.constants import (
 from leech.io.motif_search import MotifSearcher
 
 if TYPE_CHECKING:
+    import pysam
+
     from leech.configs import ChunkConfig, LabelConfig, MotifConfig
 
 logger = logging.getLogger("leech.chunking.extractor")
@@ -84,6 +86,25 @@ class LeechRead:
         return len(self.sequence)
 
     @property
+    def num_mapped_bases(self) -> int:
+        """Number of bases that have signal boundaries in ``seq_to_sig_map``.
+
+        Usually equal to :attr:`num_bases`, but not always: under
+        ``anchor="reference"`` the sequence is the aligned reference slice
+        ``[reference_start:reference_end]`` while the map comes from
+        ``compute_ref_to_signal``, which strips trailing non-match CIGAR ops
+        first. An alignment ending in a deletion therefore yields a map
+        shorter than the sequence, and a focus base in the gap has no
+        ``seq_to_sig_map[base_idx + 1]``.
+
+        This is the bound a focus base must satisfy; :attr:`num_bases` is the
+        bound for reading *sequence* (which pads with ``N`` past the end).
+        The Rust pipeline draws the same distinction — see
+        ``extract_training_chunks_from_read``.
+        """
+        return max(0, len(self.seq_to_sig_map) - 1)
+
+    @property
     def num_samples(self) -> int:
         """Number of signal samples."""
         return len(self.signal)
@@ -129,8 +150,13 @@ class LeechRead:
             feature_end = config.feature_end
             recover_softclip_signal = config.recover_softclip_signal
 
-        # Check boundaries: base_idx must be valid for seq_to_sig_map access
-        if base_idx < 0 or base_idx >= self.num_bases:
+        # Check boundaries: base_idx must be valid for seq_to_sig_map access.
+        # Bound on the map, not the sequence — they can differ (see
+        # `num_mapped_bases`), and guarding on the sequence lets
+        # `seq_to_sig_map[base_idx + 1]` below raise IndexError, which the
+        # prepare workers turn into dropping the whole read rather than this
+        # one chunk.
+        if base_idx < 0 or base_idx >= self.num_mapped_bases:
             return None
 
         # Extract signal chunk (remora-compatible: pad with zeros at boundaries)
@@ -307,6 +333,53 @@ class LeechRead:
         return chunk_dict
 
 
+def find_focus_bases(
+    read_id: str,
+    sequence: str,
+    alignment: pysam.AlignedSegment | None,
+    motif_config: MotifConfig,
+    motif_searcher: MotifSearcher | None,
+) -> list[int]:
+    """Which bases of a read contribute chunks.
+
+    The single definition of that rule. Both prepare backends call it: the
+    Python one from :func:`extract_training_chunks` with a built
+    :class:`LeechRead`, the Rust one from
+    ``leech.preparation.parallel._find_motif_positions`` with the ``ReadInfo``
+    it has not yet turned into a read. They used to carry a copy each, which
+    drifted — the Rust copy fell back to all-bases over the *query* sequence
+    while this one used the reference (issue #185).
+
+    Args:
+        read_id: Read identifier, for the searcher's diagnostics.
+        sequence: The sequence chunks are cut from — the aligned reference
+            slice under ``anchor="reference"``, the basecall otherwise. Must
+            be the same string both backends extract against, since the
+            returned indices are positions in it.
+        alignment: BAM alignment (or mock), required for reference search.
+        motif_config: Motif, offset, and search mode.
+        motif_searcher: Searcher strategy; required when a motif is set.
+
+    Returns:
+        Focus base indices into ``sequence``, motif offset already applied.
+        Out-of-range indices are possible and are the caller's to reject.
+    """
+    if motif_config.motif is None:
+        # No motif: every base, minus the edges that cannot hold a k-mer.
+        return list(range(5, max(5, len(sequence) - 5)))
+
+    if motif_searcher is None:
+        raise ValueError("motif_searcher required when motif is provided")
+
+    positions = motif_searcher.find_motif_positions(
+        read_id=read_id,
+        sequence=sequence,
+        alignment=alignment,
+        motif=motif_config.motif,
+    )
+    return [pos + motif_config.motif_offset for pos in positions]
+
+
 def extract_training_chunks(
     leech_read: LeechRead,
     motif_config: MotifConfig,
@@ -354,28 +427,17 @@ def extract_training_chunks(
         if labeling.label_int is not None:
             leech_read.labels = np.full(leech_read.num_bases, labeling.label_int, dtype=np.int64)
 
-        # Find focus bases (either all or motif matches)
-        if motif_config.motif is None:
-            # No motif - use all bases (avoiding edges)
-            focus_bases = list(range(5, leech_read.num_bases - 5))
-        else:
-            # Motif-based search
-            if motif_searcher is None:
-                raise ValueError("motif_searcher required when motif is provided")
-
-            # Get alignment from metadata (may be None for basecalled search)
-            alignment = leech_read.metadata.get("alignment")
-
-            # Find motif positions using the searcher strategy
-            motif_positions = motif_searcher.find_motif_positions(
-                read_id=leech_read.read_id,
-                sequence=leech_read.sequence,
-                alignment=alignment,
-                motif=motif_config.motif,
-            )
-
-            # Apply offset to get focus bases
-            focus_bases = [pos + motif_config.motif_offset for pos in motif_positions]
+        # Find focus bases (either all or motif matches). Shared with the
+        # Rust backend — see find_focus_bases.
+        focus_bases = find_focus_bases(
+            read_id=leech_read.read_id,
+            # The extraction sequence: reference slice under anchor="reference".
+            sequence=leech_read.sequence,
+            # Alignment from metadata (may be None for basecalled search).
+            alignment=leech_read.metadata.get("alignment"),
+            motif_config=motif_config,
+            motif_searcher=motif_searcher,
+        )
 
     # Extract chunks
     cl_value = leech_read.metadata.get("cl_value")

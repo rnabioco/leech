@@ -45,7 +45,7 @@ from leech._rust_accel import (
     rust_supports_norm_method,
     rust_supports_softclip_recovery,
 )
-from leech.chunking import extract_training_chunks
+from leech.chunking import extract_training_chunks, find_focus_bases
 from leech.configs import PrepareConfig
 from leech.io import ReadInfo, get_motif_searcher, iter_read_info_batches
 from leech.io.bam_reader import count_bam_reads
@@ -172,28 +172,46 @@ def _process_read_chunk_worker_seq(
 # ---------------------------------------------------------------------------
 
 
+def _extraction_sequence(read_info: ReadInfo, config: PrepareConfig) -> str:
+    """The sequence Rust will cut chunks from, and index focus bases into.
+
+    Must track ``build_leech_read``'s choice exactly: under
+    ``anchor="reference"`` with both a reference sequence and a CIGAR to map
+    through, chunks are cut from the aligned reference slice; otherwise from
+    the basecall. Feeding the motif searcher the other one returns positions
+    in the wrong coordinate system.
+    """
+    if (
+        config.signal.anchor == "reference"
+        and read_info.reference_sequence is not None
+        and read_info.cigar_tuples is not None
+    ):
+        return read_info.reference_sequence
+    return read_info.sequence
+
+
 def _find_motif_positions(
     read_info: ReadInfo,
     motif_searcher: MotifSearcher | None,
     config: PrepareConfig,
 ) -> list[int]:
-    """Find motif positions for a single read, returning focus base indices."""
-    if motif_searcher is None:
-        # All bases mode (skip edges)
-        num_bases = len(read_info.sequence)
-        return list(range(5, max(5, num_bases - 5)))
+    """Find focus base indices for a single read.
 
+    A thin adapter around :func:`leech.chunking.find_focus_bases`, which is
+    also what the Python backend goes through — the rule itself lives in one
+    place. Do not reimplement it here.
+    """
     alignment = None
     if config.motif.motif_reference == "fasta" and config.motif.reference_sequences is not None:
         alignment = read_info.to_mock_alignment()
 
-    positions = motif_searcher.find_motif_positions(
+    return find_focus_bases(
         read_id=read_info.read_id,
-        sequence=read_info.sequence,
+        sequence=_extraction_sequence(read_info, config),
         alignment=alignment,
-        motif=config.motif.motif,
+        motif_config=config.motif,
+        motif_searcher=motif_searcher,
     )
-    return [p + config.motif.motif_offset for p in positions]
 
 
 def _prepare_batch_rust(
@@ -468,6 +486,18 @@ def _iter_python_batches(
             yield batch_sizes.pop(seq, 0), chunk_results
 
 
+def _count_reads_with_chunks(batch_chunks: list[dict]) -> int:
+    """How many distinct reads in one batch produced at least one chunk.
+
+    Distinct read ids rather than ``len(batch_chunks)``: all-bases mode emits
+    many chunks per read, and the figure this feeds is a read yield. Counted
+    per batch, so a read split across two batches by a supplementary alignment
+    counts once per batch — close enough for a yield, and the alternative is
+    holding every read id of the run in memory.
+    """
+    return len({c["read_id"] for c in batch_chunks})
+
+
 class _ThroughputMonitor:
     """Reports achieved reads/s so a backend regression is visible immediately.
 
@@ -557,6 +587,7 @@ def prepare_training_data_parallel(
 
     all_chunks: list[dict[str, np.ndarray | str | int | None]] = []
     total_reads = 0
+    reads_with_chunks = 0
     batches_completed = 0
 
     use_progress_bar = sys.stdout.isatty()
@@ -618,6 +649,7 @@ def prepare_training_data_parallel(
             for n_reads, batch_chunks in results:
                 total_reads += n_reads
                 batches_completed += 1
+                reads_with_chunks += _count_reads_with_chunks(batch_chunks)
                 all_chunks.extend(batch_chunks)
                 progress.update(
                     task,
@@ -633,6 +665,7 @@ def prepare_training_data_parallel(
         for n_reads, batch_chunks in results:
             total_reads += n_reads
             batches_completed += 1
+            reads_with_chunks += _count_reads_with_chunks(batch_chunks)
             all_chunks.extend(batch_chunks)
             if batches_completed % log_interval == 0:
                 monitor.log_progress(batches_completed, total_reads, len(all_chunks))
@@ -645,10 +678,14 @@ def prepare_training_data_parallel(
             "total_chunks": 0,
         }
 
+    # `reads_with_motif` counts READS that yielded at least one chunk, the same
+    # thing it counts in the sequential orchestrator. It used to be
+    # `len(all_chunks)`, which is chunks, and which therefore reported a yield
+    # of 100% no matter how many reads the backend had dropped.
     stats = {
         "total_reads": total_reads,
-        "reads_with_motif": len(all_chunks),
-        "reads_without_motif": total_reads - len(all_chunks),
+        "reads_with_motif": reads_with_chunks,
+        "reads_without_motif": total_reads - reads_with_chunks,
         "total_chunks": len(all_chunks),
     }
 
@@ -656,6 +693,15 @@ def prepare_training_data_parallel(
         f"Parallel processing complete [{backend}]: extracted {len(all_chunks)} chunks "
         f"from {total_reads} reads in {monitor.elapsed():.1f}s "
         f"({monitor.reads_per_second(total_reads):.0f} reads/s)"
+    )
+    # Read yield, always, on both backends. The backends must agree on this
+    # number; when they did not, the Rust one silently dropped ~1% of reads and
+    # it took a performance comparison to notice (issue #185). A figure in the
+    # log is what makes the next such divergence a one-line diff.
+    logger.info(
+        f"Read yield [{backend}]: {reads_with_chunks}/{total_reads} reads produced chunks "
+        f"({100.0 * reads_with_chunks / total_reads:.2f}%); "
+        f"{total_reads - reads_with_chunks} produced none"
     )
 
     return all_chunks, stats

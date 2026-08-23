@@ -18,6 +18,7 @@ import pytest
 from conftest import TRNA_BAM, TRNA_FIXTURES_AVAILABLE, TRNA_POD5, TRNA_REF
 
 from leech.configs import ChunkConfig, LabelConfig, MotifConfig, PrepareConfig, SignalConfig
+from leech.constants import DEFAULT_KMER_CONTEXT
 from leech.io import collect_read_infos, get_reference_sequences
 from leech.io.pod5_reader import (
     _DATASET_CACHE,
@@ -169,13 +170,19 @@ class TestRustPythonWorkerParity:
 
         py_by_key = _chunks_by_key(py_chunks)
         rs_by_key = _chunks_by_key(rs_chunks)
-        common = sorted(set(py_by_key) & set(rs_by_key))
-        # Rust path skips edge reads that Python pads with "N"; require substantial overlap.
-        assert len(common) >= min(len(py_chunks), len(rs_chunks)) * 0.5, (
-            f"Too little overlap: {len(common)} common (py={len(py_chunks)}, rs={len(rs_chunks)})"
+        # The backends must agree on the chunk SET, not merely overlap on it.
+        # This used to allow a 50% overlap because the Rust path dropped focus
+        # bases whose k-mer window ran off the end of the sequence while Python
+        # padded them with "N"; on production data that was ~1% of reads,
+        # silently, biased toward supplementary and indel-heavy alignments
+        # (issue #185).
+        assert set(py_by_key) == set(rs_by_key), (
+            f"chunk sets differ: {len(set(py_by_key) - set(rs_by_key))} python-only, "
+            f"{len(set(rs_by_key) - set(py_by_key))} rust-only "
+            f"(py={len(py_chunks)}, rs={len(rs_chunks)})"
         )
 
-        for key in common:
+        for key in sorted(py_by_key):
             pc, rc = py_by_key[key], rs_by_key[key]
             rid = key[0][:8]
             # Signal must match within float32 tolerance.
@@ -201,6 +208,127 @@ class TestRustPythonWorkerParity:
             np.testing.assert_allclose(
                 py_feat, rs_feat, atol=1e-3, rtol=1e-3, err_msg=f"features {rid}"
             )
+
+
+class TestEdgeWindowParity:
+    """A focus base near either end of the sequence still yields a chunk.
+
+    The fixture motif sits mid-reference, so ordinary parity never reaches the
+    k-mer margin. Shifting ``motif_offset`` walks the focus base into it, which
+    is what a real read does when its aligned region stops near the motif --
+    the supplementary-aligned and indel-heavy population that issue #185 found
+    the Rust backend silently discarding.
+
+    Python's rule (``LeechRead.get_chunk``) is that a k-mer window overhanging
+    the sequence is padded with "N"; only a focus base with no signal
+    boundaries is dropped. Rust must do the same.
+    """
+
+    @pytest.fixture
+    def read_infos(self):
+        return collect_read_infos(TRNA_BAM, min_mapq=0)
+
+    @staticmethod
+    def _both_backends(read_infos, anchor, motif_offset):
+        from leech.io import get_motif_searcher
+        from leech.preparation.parallel import _prepare_batch_rust, _process_read_chunk_worker
+
+        config = _trna_config(anchor)
+        config.motif.motif_offset = motif_offset
+        motif_searcher = get_motif_searcher(
+            mode=config.motif.motif_reference,
+            reference_sequences=config.motif.reference_sequences,
+            skip_indels=config.motif.skip_motif_indels,
+            anchor=config.signal.anchor,
+        )
+        py = _chunks_by_key(_process_read_chunk_worker((read_infos, config)))
+        rs = _chunks_by_key(_prepare_batch_rust(read_infos, config, motif_searcher))
+        return py, rs
+
+    # Offsets chosen to push the focus base off the right end (+38/+40) and
+    # off the left end (-85) of the ~130 bp aligned reference slice.
+    @pytest.mark.parametrize("anchor", ["basecall", "reference"])
+    @pytest.mark.parametrize("motif_offset", [38, 40, -85])
+    def test_edge_focus_bases_are_padded_not_dropped(self, read_infos, anchor, motif_offset):
+        pytest.importorskip("leech_core")
+        from leech._rust_accel import HAS_RUST, _rs_extract_training_chunks
+
+        if not HAS_RUST or _rs_extract_training_chunks is None:
+            pytest.skip("leech_core Rust acceleration not available")
+
+        py, rs = self._both_backends(read_infos, anchor, motif_offset)
+
+        # The offset must actually reach the margin, or the test proves nothing.
+        padded = [k for k, c in py.items() if "N" in str(c["sequence"])]
+        assert padded, f"motif_offset={motif_offset} produced no edge chunks to test"
+
+        assert set(py) == set(rs), (
+            f"anchor={anchor} motif_offset={motif_offset}: "
+            f"{len(set(py) - set(rs))} chunks dropped by Rust that Python kept"
+        )
+        for key in padded:
+            assert str(py[key]["sequence"]) == str(rs[key]["sequence"]), f"padding differs at {key}"
+            np.testing.assert_allclose(
+                np.asarray(py[key]["signal"], dtype=np.float32),
+                np.asarray(rs[key]["signal"], dtype=np.float32),
+                atol=1e-5,
+                rtol=1e-4,
+                err_msg=f"signal {key}",
+            )
+            np.testing.assert_array_equal(
+                np.asarray(py[key]["dwell"], dtype=np.float32),
+                np.asarray(rs[key]["dwell"], dtype=np.float32),
+                err_msg=f"dwell {key}",
+            )
+            py_feat = np.asarray(py[key]["features"], dtype=np.float32)
+            rs_feat = np.asarray(rs[key]["features"], dtype=np.float32)
+            assert py_feat.shape == rs_feat.shape, f"features shape {key}"
+            np.testing.assert_allclose(
+                py_feat, rs_feat, atol=1e-3, rtol=1e-3, err_msg=f"features {key}"
+            )
+
+    def test_basecalled_search_under_reference_anchor(self, read_infos):
+        """`--motif-reference bam --anchor reference` searches the reference.
+
+        A legal but unusual pairing: the searcher takes whatever sequence it is
+        handed, and under `anchor="reference"` the sequence chunks are cut from
+        is the aligned reference slice, so that is what the motif must be found
+        in for the returned position to mean anything. The Rust path used to
+        hand it the basecall and index the result into the reference anyway.
+        """
+        pytest.importorskip("leech_core")
+        from leech.io import get_motif_searcher, get_reference_sequences
+        from leech.preparation.parallel import _prepare_batch_rust, _process_read_chunk_worker
+
+        config = _trna_config("reference")
+        # Reference anchoring (so chunks are cut from the reference slice) with
+        # basecalled motif search.
+        config.motif.motif_reference = "bam"
+        config.motif.reference_sequences = get_reference_sequences(TRNA_BAM, TRNA_REF)
+        motif_searcher = get_motif_searcher(mode="bam")
+
+        py = _chunks_by_key(_process_read_chunk_worker((read_infos, config)))
+        rs = _chunks_by_key(_prepare_batch_rust(read_infos, config, motif_searcher))
+
+        assert py, "fixture should yield chunks in this mode"
+        assert set(py) == set(rs), (
+            f"{len(set(py) - set(rs))} python-only, {len(set(rs) - set(py))} rust-only"
+        )
+        for key in py:
+            assert str(py[key]["sequence"]) == str(rs[key]["sequence"]), key
+
+    def test_kmer_window_is_full_width_at_the_edge(self, read_infos):
+        """An N-padded k-mer is padded, not truncated: width is invariant.
+
+        Checked on both backends -- a Rust k-mer built by slicing a clamped
+        range would come back short rather than absent, which the set-equality
+        assertion above would not catch.
+        """
+        pytest.importorskip("leech_core")
+        py, rs = self._both_backends(read_infos, "reference", 40)
+        expected = {2 * DEFAULT_KMER_CONTEXT + 1}
+        assert {len(str(c["sequence"])) for c in py.values()} == expected
+        assert {len(str(c["sequence"])) for c in rs.values()} == expected
 
 
 # ---------------------------------------------------------------------------

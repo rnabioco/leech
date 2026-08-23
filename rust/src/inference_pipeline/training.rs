@@ -30,15 +30,24 @@ fn extract_training_chunks_from_read(
     let mut results = Vec::new();
 
     for &base_idx in positions {
+        // The ONLY reason to drop a focus base is that it has no signal
+        // boundaries -- `seq_to_sig[bi + 1]` below must exist. A k-mer window
+        // that overhangs either end of the sequence is padded with 'N', which
+        // is what `LeechRead.get_chunk` does; skipping it instead silently
+        // loses whole reads whose aligned region stops within `kmer_ctx` of
+        // the motif (issue #185). In reference-anchored mode the sequence is
+        // the aligned reference slice, so that is the supplementary-aligned
+        // and indel-heavy population, not a random ~1%.
+        if base_idx < 0 || base_idx as usize >= num_bases {
+            continue;
+        }
         let bi = base_idx as usize;
         let kmer_start = base_idx - cfg.kmer_ctx;
         let kmer_end = base_idx + cfg.kmer_ctx + 1;
-        if kmer_start < 0 || kmer_end > seq_bytes.len() as i64 || bi >= num_bases {
-            continue;
-        }
-        let kmer_start_u = kmer_start as usize;
-        let kmer_end_u = kmer_end as usize;
-        let kmer_len = kmer_end_u - kmer_start_u;
+        let kmer_len = (kmer_end - kmer_start) as usize;
+        // Clamped copies, for the slicing that cannot see past the sequence.
+        let kmer_start_u = kmer_start.clamp(0, seq_bytes.len() as i64) as usize;
+        let kmer_end_u = kmer_end.clamp(0, seq_bytes.len() as i64) as usize;
 
         // Signal chunk (same logic as inference)
         let focus_sig = cfg
@@ -88,10 +97,14 @@ fn extract_training_chunks_from_read(
             vec![]
         };
 
-        // Kmer sequence
-        let kmer_seq = std::str::from_utf8(&seq_bytes[kmer_start_u..kmer_end_u])
-            .unwrap_or("")
-            .to_string();
+        // Kmer sequence, 'N'-padded past either end of the sequence so the
+        // window is always `kmer_len` wide (matches `LeechRead.get_chunk`).
+        let kmer_seq: String = (kmer_start..kmer_end)
+            .map(|i| match usize::try_from(i) {
+                Ok(u) if u < seq_bytes.len() => seq_bytes[u] as char,
+                _ => 'N',
+            })
+            .collect();
 
         // Dwell slice for this kmer window
         let dwell_fs = (base_idx + cfg.feat_start).max(0) as usize;
