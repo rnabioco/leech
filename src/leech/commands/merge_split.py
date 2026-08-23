@@ -58,12 +58,19 @@ def _propagate_prepare_config(input_paths: list[Path], output_dir: Path) -> None
         return
 
     # Validate consistency on critical fields
+    # Resolved, not requested: `feature_start=None` and `feature_start=-5`
+    # describe the same window at kmer_context=5, and merging corpora whose
+    # feature geometry actually differs is a silent shape/alignment error
+    # downstream (issue #189). Old sidecars lack these keys, which compares
+    # equal (None == None) rather than warning.
     critical_keys = [
         "anchor",
         "refine_signal_map",
         "signal_norm",
         "reverse_signal",
         "motif_reference",
+        "feature_start_resolved",
+        "feature_end_resolved",
     ]
     first = configs[0]
     for i, cfg in enumerate(configs[1:], start=1):
