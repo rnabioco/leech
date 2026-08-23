@@ -5,6 +5,52 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- The Python and Rust `data prepare` backends refined signal maps differently
+  whenever `--refine-signal-map` was on, which is the **default**. Both halves
+  of #168 had been applied to `leech_core` only:
+
+  - `SigMapRefiner.refine` called escapepod's `refine_signal_map` without
+    `dwell_target`, taking its fixed `4.0` default. RNA004 at 130 bps and 4 kHz
+    sits near 31 samples/base, so the asymmetric dwell penalty treated every
+    base as ~8x too long and moved the boundaries accordingly. leech_core has
+    passed `0.0` (resolve the target from the read's own median dwell) since
+    #168.
+  - `SigMapRefiner.refine` then rewrote the signal with the fitted
+    `(scale, shift, drift)`. That replaces one shared median-MAD transform with
+    a per-read fit estimated on a chunk that sits largely in a constant 3'
+    adapter, where the fit is weakly identified — observed scales ran from 15 to
+    1084 and were frequently negative. leech_core stopped applying it in #168.
+
+  Measured on the tRNA fixtures, the two backends disagreed on every chunk:
+  max |signal delta| 3.44 in normalized units, every dwell different, max
+  |feature delta| 3.57. After the fix: signal delta 0, dwells identical,
+  features within float32 rounding.
+
+  Which backend ran was decided by whether `leech_core` was installed and by
+  `rust_prepare_unsupported_reason`, so a corpus's features depended on the
+  install; `predict` splits the same way via `check_rust_extraction_available`,
+  so a model could be trained and served on different transforms.
+  **Re-prepare any corpus built with the Python backend and refinement on**
+  (that is: without `leech_core` installed, or with `--workers 1`, a non
+  median-MAD `--signal-norm`, `--recover-softclip-signal`, or a focus TSV).
+
+- `--scale-iters -1` meant two different things. Python skipped the banded DP
+  and rough-rescaled the signal instead; Rust clamped to `0`, which escapepod
+  reads as "one DP pass without rescaling", so it refined the map. With the
+  fitted rescale no longer applied, the Python behaviour is a no-op on both
+  outputs, so `-1` now means "no refinement" on both backends.
+
+### Changed
+
+- The backend parity test (`tests/test_parallel_prep.py`) now parametrizes
+  `refine_signal_map` and `base_justify` instead of pinning them to `False` and
+  `"center"`. Pinning them is why the divergence above survived four releases:
+  the only test comparing the backends opted out of the default configuration.
+
 ## [0.6.2] - 2026-08-23
 
 Two silent correctness bugs, both of the same shape: a value that looked like

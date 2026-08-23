@@ -56,6 +56,20 @@ MAX_POINTS_FOR_THEIL_SEN = 1000
 # on long reads. Must match leech_core's REFINE_SUBSAMPLE_SEED (Rust path).
 REFINE_SUBSAMPLE_SEED = 42
 
+#: Dwell target (signal samples/base) for escapepod's asymmetric dwell penalty.
+#:
+#: Non-positive tells escapepod to resolve the target from *this read's* own
+#: move-table median dwell, which is the only value that can be right across
+#: chemistries and translocation speeds. escapepod's Python binding defaults
+#: this to a fixed 4.0, which is ~8x too fast for RNA004 (130 bps at 4 kHz is
+#: ~31 samples/base) and pushes every base toward an implausibly short dwell.
+#:
+#: Must match leech_core's ``DWELL_TARGET``
+#: (``rust/src/inference_pipeline/refinement.rs``). It was set there by #168 and
+#: not here, so the two backends refined to different boundaries for four
+#: releases — see :meth:`SigMapRefiner.refine`.
+REFINE_DWELL_TARGET = 0.0
+
 
 # ============================================================================
 # Kmer level table loading
@@ -953,7 +967,7 @@ class SigMapRefiner:
             Remora default is 5; larger values explore more.
         do_rough_rescale: Whether to rough-rescale signal before refinement
         scale_iters: Number of rescaling iterations during refinement.
-            -1 = no banded DP (rough rescale only).
+            -1 = no refinement (map returned unchanged).
             0 = one round of banded DP without rescaling.
             >0 = N rounds of banded DP with rescaling between rounds.
         algo: Refinement algorithm ("Viterbi" or "dwell_penalty")
@@ -1020,13 +1034,20 @@ class SigMapRefiner:
             seq_to_sig_map: Initial base-to-signal mapping (from move table)
 
         Returns:
-            Tuple of (rescaled_signal, refined_seq_to_sig_map).
+            Tuple of ``(signal, refined_seq_to_sig_map)``. The signal is
+            returned **unchanged** — only the boundaries are taken.
 
         Delegates to escapepod-signal's ``refine_signal_map`` (the same canonical
-        implementation and settings leech_core's Rust path uses), so the Python
-        fallback and the Rust path agree. escapepod runs rough rescale + iterative
-        banded DP with Theil-Sen rescaling internally; the returned
-        (scale, shift, drift) reconstruct the level-matched signal.
+        implementation leech_core's Rust path uses). Two settings have to be
+        stated explicitly for the two paths to agree, because escapepod's Python
+        binding and ``rust/src/inference_pipeline/refinement.rs`` each carry
+        their own copy of "leech's refinement configuration" and the copies
+        differ:
+
+        - ``dwell_target``: escapepod's binding defaults to 4.0; leech_core
+          passes 0.0 (auto). See :data:`REFINE_DWELL_TARGET`.
+        - the fitted ``(scale, shift, drift)``: leech_core deliberately discards
+          them. See the note at the end of this method.
         """
         from escapepod import refine_signal_map as _epod_refine_signal_map
 
@@ -1034,12 +1055,16 @@ class SigMapRefiner:
         if expected.size == 0 or len(seq_to_sig_map) != expected.size + 1:
             return signal, seq_to_sig_map
 
-        # scale_iters < 0: rough-rescale-only mode (no banded DP), mapping left
-        # unchanged. escapepod's refine always runs >=1 DP pass, so this niche
-        # mode keeps leech's quantile rough rescale.
+        # scale_iters < 0: no refinement at all.
+        #
+        # This used to mean "rough rescale the signal, leave the map alone".
+        # Since the fitted rescale is no longer applied (see below), that is now
+        # a no-op on both outputs, so it is spelled as one. leech_core does the
+        # same — `process_read_signal` skips `refine_signal_map_pipeline` for a
+        # negative `refine_scale_iters` — rather than clamping to 0, which is
+        # escapepod's "one DP pass, no rescale" and would have refined the map
+        # on the Rust path while Python left it untouched.
         if self.scale_iters < 0:
-            if self.do_rough_rescale:
-                signal = rough_rescale_quantile(signal, expected, seq_to_sig_map)
             return signal, seq_to_sig_map
 
         sig_f32 = signal.astype(np.float32, copy=False)
@@ -1052,12 +1077,15 @@ class SigMapRefiner:
         # to n_refinement_iters the same way leech_core does: max(0, scale_iters).
         levels_f32 = np.nan_to_num(expected.astype(np.float32, copy=False), nan=0.0)
         try:
-            refined_map, scale, shift, drift = _epod_refine_signal_map(
+            refined_map, _scale, _shift, _drift = _epod_refine_signal_map(
                 sig_f32,
                 map_list,
                 levels_f32,
                 half_bandwidth=self.half_bandwidth,
                 scale_iters=max(0, self.scale_iters),
+                # Resolve the dwell target from this read's own median dwell
+                # instead of escapepod's fixed 4.0 default.
+                dwell_target=REFINE_DWELL_TARGET,
                 # Fixed seed so the Theil-Sen subsample (on long reads) is
                 # reproducible; must match leech_core's REFINE_SUBSAMPLE_SEED.
                 seed=REFINE_SUBSAMPLE_SEED,
@@ -1069,11 +1097,23 @@ class SigMapRefiner:
         if len(refined_map) != len(seq_to_sig_map):
             return signal, seq_to_sig_map
 
-        # Reconstruct the level-matched signal from the returned rescale params
-        # (matches leech_core: (signal[i] - shift - drift*i) / scale).
-        if abs(scale) > 1e-10:
-            idx = np.arange(sig_f32.size, dtype=np.float32)
-            rescaled = (sig_f32 - shift - drift * idx) / scale
-        else:
-            rescaled = sig_f32
-        return rescaled, np.asarray(refined_map)
+        # Take the refined boundaries, keep our own normalization.
+        #
+        # Deliberately do NOT rescale the signal by the fitted (scale, shift,
+        # drift). The caller hands in a median-MAD normalized signal — one
+        # transform shared by every read — and that is what per-base stats,
+        # k-mer residuals and the trained models are calibrated against.
+        # Applying the fit replaces it with a *per-read* transform estimated on
+        # a chunk that sits largely in a constant 3' adapter, where expected
+        # levels barely vary and the fit is weakly identified: observed scales
+        # ran from 15 to 1084 and were frequently negative, i.e. sign-flipping
+        # the read. escapepod rejects the worst of those now, but rejection is
+        # itself per-read, so the reads that still fit end up on a different
+        # scale from the reads that do not — and cross-read comparability is
+        # exactly what k-mer residuals depend on.
+        #
+        # This is the same call leech_core's `refine_signal_map_pipeline`
+        # makes, and for the same measured reason (#168): on tRNA-Met chunks,
+        # per-base level vs expected k-mer level was r = +0.72 keeping our
+        # normalization against +0.03 applying the fitted one.
+        return signal, np.asarray(refined_map)
