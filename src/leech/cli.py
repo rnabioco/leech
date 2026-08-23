@@ -282,7 +282,7 @@ data.command_order = ("prepare", "merge")
     "--scale-iters",
     type=int,
     default=2,
-    help="Signal map refinement iterations: -1=rescale only (no DP), 0=one round of banded DP, >0=N rounds with rescaling",
+    help="Signal map refinement iterations: -1=no refinement, 0=one round of banded DP, >0=N rounds with rescaling",
 )
 @click.option(
     "--rough-rescale/--no-rough-rescale",

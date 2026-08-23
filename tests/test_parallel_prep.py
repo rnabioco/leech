@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from conftest import TRNA_BAM, TRNA_FIXTURES_AVAILABLE, TRNA_POD5, TRNA_REF
+from conftest import LEVELS_FILE, TRNA_BAM, TRNA_FIXTURES_AVAILABLE, TRNA_POD5, TRNA_REF
 
 from leech.configs import ChunkConfig, LabelConfig, MotifConfig, PrepareConfig, SignalConfig
 from leech.constants import DEFAULT_KMER_CONTEXT
@@ -88,13 +88,28 @@ def _trna_config(
     anchor: str = "basecall",
     feature_start: int | None = None,
     feature_end: int | None = None,
+    refine: bool = False,
+    base_justify: str = "center",
 ) -> PrepareConfig:
-    """Build a PrepareConfig that matches the tRNA fixtures."""
+    """Build a PrepareConfig that matches the tRNA fixtures.
+
+    ``refine`` and ``base_justify`` are parameters rather than constants
+    because pinning them at ``False``/``"center"`` is what let the two
+    backends diverge under refinement for four releases: refinement is the
+    *default* for ``data prepare``, and the only parity test covering the
+    backends opted out of it.
+    """
     reference_sequences = None
     motif_reference = "bam"
     if anchor == "reference":
         reference_sequences = get_reference_sequences(TRNA_BAM, TRNA_REF)
         motif_reference = "fasta"
+
+    signal_refiner = None
+    if refine:
+        from leech.signal_refine import SigMapRefiner
+
+        signal_refiner = SigMapRefiner.from_table(LEVELS_FILE, scale_iters=2)
 
     return PrepareConfig(
         pod5_path=TRNA_POD5,
@@ -102,7 +117,8 @@ def _trna_config(
             reverse_signal=True,
             anchor=anchor,
             norm_method="median_mad",
-            refine_signal_map=False,
+            refine_signal_map=refine,
+            signal_refiner=signal_refiner,
         ),
         motif=MotifConfig(
             motif="CCAGGC",
@@ -112,7 +128,7 @@ def _trna_config(
             skip_motif_indels=False,
         ),
         chunk=ChunkConfig(
-            base_justify="center",
+            base_justify=base_justify,
             signal_context=(200, 200),
             feature_start=feature_start,
             feature_end=feature_end,
@@ -143,13 +159,27 @@ class TestRustPythonWorkerParity:
             assert key in c, f"missing key: {key}"
 
     @pytest.mark.parametrize("anchor", ["basecall", "reference"])
-    def test_rust_worker_matches_python(self, read_infos, anchor):
+    @pytest.mark.parametrize("refine", [False, True])
+    @pytest.mark.parametrize("base_justify", ["center", "start", "end"])
+    def test_rust_worker_matches_python(self, read_infos, anchor, refine, base_justify):
         """Both anchor modes must agree across backends.
 
         ``reference`` is the default and the one that crops the normalized
         signal to the aligned region before refinement, so it exercises
         ``compute_ref_to_signal`` and the crop arithmetic that ``basecall``
         never reaches.
+
+        ``refine=True`` is likewise the default for ``data prepare``, and this
+        test opted out of it until #168's fix was carried across to the Python
+        refiner. With the two backends passing escapepod different dwell
+        targets, and only one of them applying the fitted rescale, every chunk
+        differed: max |signal delta| 3.4 in normalized units, every dwell
+        different. Parametrize it, or the next divergence in refinement is
+        invisible here too.
+
+        ``base_justify`` moves the focus sample within the base, so it shifts
+        every signal window; the non-default values are cheap to cover and
+        guard the one config key `predict` used to drop on the Rust path.
         """
         pytest.importorskip("leech_core")
         from leech._rust_accel import HAS_RUST, _rs_extract_training_chunks
@@ -160,7 +190,7 @@ class TestRustPythonWorkerParity:
         from leech.io import get_motif_searcher
         from leech.preparation.parallel import _prepare_batch_rust, _process_read_chunk_worker
 
-        config = _trna_config(anchor)
+        config = _trna_config(anchor, refine=refine, base_justify=base_justify)
         motif_searcher = get_motif_searcher(
             mode=config.motif.motif_reference,
             reference_sequences=config.motif.reference_sequences,

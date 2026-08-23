@@ -80,16 +80,24 @@ pub(super) fn process_read_signal(
     if cfg.refine_signal_map
         && let Some(ref kt) = cfg.kmer_table
     {
-        refine_signal_map_pipeline(
-            &norm_signal,
-            &mut seq_to_sig,
-            &use_sequence,
-            kt,
-            cfg.kmer_len,
-            cfg.kmer_center_idx,
-            cfg.refine_half_bandwidth,
-            cfg.refine_scale_iters,
-        );
+        // A negative `refine_scale_iters` means "no refinement", matching
+        // `SigMapRefiner.refine`. Do not clamp it to 0 and call through:
+        // escapepod reads 0 as "one DP pass without rescaling", so clamping
+        // would move the boundaries here while Python left them alone.
+        if cfg.refine_scale_iters >= 0 {
+            refine_signal_map_pipeline(
+                &norm_signal,
+                &mut seq_to_sig,
+                &use_sequence,
+                kt,
+                cfg.kmer_len,
+                cfg.kmer_center_idx,
+                cfg.refine_half_bandwidth,
+                cfg.refine_scale_iters,
+            );
+        }
+        // Levels are extracted either way: the k-mer residual features and the
+        // signal-residual channel need them whether or not boundaries moved.
         expected_levels_f64 = Some(extract_levels_inner(
             &use_sequence,
             kt,
