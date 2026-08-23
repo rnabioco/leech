@@ -14,12 +14,88 @@ from sklearn.metrics import (
     precision_score,
     recall_score,
     roc_auc_score,
+    roc_curve,
 )
 
 from leech.cli_config import make_console
 
 logger = logging.getLogger("leech.metrics")
 console = make_console()
+
+
+def sweep_thresholds(y_true: np.ndarray, y_prob: np.ndarray) -> dict:
+    """Best operating points over every distinct score, not just 0.5.
+
+    A confusion matrix reports ONE threshold. That is a choice, not a property
+    of the model, and it is the wrong choice whenever training and evaluation
+    see different class ratios: a model trained with ``--oversample-minority``
+    emits scores calibrated for a 50/50 prior and is then thresholded on data
+    that is not 50/50, which shows up as a collapsed precision that says more
+    about the class ratio than about the model.
+
+    Three criteria, because they disagree and the disagreement is the point:
+
+    * ``at_youden`` maximises TPR - FPR. Both terms condition on a single true
+      class, so it is INVARIANT to prevalence -- the right default when the
+      deployment class ratio is unknown, varies per sample, or is itself the
+      quantity being measured.
+    * ``at_mcc`` and ``at_f1`` maximise prevalence-DEPENDENT quantities, so the
+      threshold each picks is a property of this test set's class ratio as much
+      as of the model. They are reported because they are what most callers
+      compare against, with ``prevalence`` beside them so the dependence is
+      visible rather than implied.
+
+    Every point is exact: ``roc_curve`` already enumerates the distinct
+    thresholds, and the counts follow from (TPR, FPR) and the class totals, so
+    nothing here is a grid approximation.
+
+    Returns ``{}`` when only one class is present, where no threshold is
+    defined.
+    """
+    y_true = np.asarray(y_true).astype(int).ravel()
+    y_prob = np.asarray(y_prob, dtype=float).ravel()
+    pos = int(y_true.sum())
+    neg = int(y_true.size - pos)
+    if pos == 0 or neg == 0:
+        return {}
+
+    fpr, tpr, thr = roc_curve(y_true, y_prob)
+    # roc_curve prepends a "call everything negative" point whose threshold is
+    # infinite. It is a real operating point but not a reportable score.
+    if thr.size and not np.isfinite(thr[0]):
+        fpr, tpr, thr = fpr[1:], tpr[1:], thr[1:]
+    if thr.size == 0:
+        return {}
+
+    tp = tpr * pos
+    fn = pos - tp
+    fp = fpr * neg
+    tn = neg - fp
+    with np.errstate(invalid="ignore", divide="ignore"):
+        den = np.sqrt((tp + fp) * (tp + fn) * (tn + fp) * (tn + fn))
+        mcc = np.where(den > 0, (tp * tn - fp * fn) / den, 0.0)
+        f1_den = 2 * tp + fp + fn
+        f1 = np.where(f1_den > 0, 2 * tp / f1_den, 0.0)
+    youden = tpr - fpr
+
+    def _at(i: int) -> dict:
+        i = int(i)
+        return {
+            "threshold": float(thr[i]),
+            "tpr": float(tpr[i]),
+            "fpr": float(fpr[i]),
+            "mcc": float(mcc[i]),
+            "f1": float(f1[i]),
+            "youden_j": float(youden[i]),
+            "called_positive_frac": float((tp[i] + fp[i]) / y_true.size),
+        }
+
+    return {
+        "prevalence": pos / y_true.size,
+        "at_youden": _at(np.argmax(youden)),
+        "at_mcc": _at(np.argmax(mcc)),
+        "at_f1": _at(np.argmax(f1)),
+    }
 
 
 def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray, y_prob: np.ndarray) -> dict:
@@ -64,6 +140,8 @@ def compute_metrics(y_true: np.ndarray, y_pred: np.ndarray, y_prob: np.ndarray) 
     if len(np.unique(y_true)) > 1:
         metrics["auroc"] = float(roc_auc_score(y_true, y_prob))
         metrics["auprc"] = float(average_precision_score(y_true, y_prob))
+        # The metrics above this line are all read at one fixed threshold.
+        metrics["threshold_sweep"] = sweep_thresholds(y_true, y_prob)
     else:
         metrics["auroc"] = 0.0
         metrics["auprc"] = 0.0

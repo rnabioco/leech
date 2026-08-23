@@ -17,7 +17,7 @@ from leech.bundling import (
     list_bundle_models,
     load_model_from_bundle,
 )
-from leech.metrics import compute_metrics, print_metrics, save_metrics
+from leech.metrics import compute_metrics, print_metrics, save_metrics, sweep_thresholds
 from leech.model_export import (
     deserialize_exported_model,
     deserialize_traced_model,
@@ -134,6 +134,87 @@ class TestComputeMetrics:
         # Metrics should still be computed correctly
         assert 0 <= metrics["precision"] <= 1
         assert 0 <= metrics["recall"] <= 1
+
+
+class TestSweepThresholds:
+    """Test sweep_thresholds, which reports operating points other than 0.5."""
+
+    # Overlapping scores: neither class is separable, so the criteria can
+    # disagree and the choice of threshold actually matters.
+    NEG = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+    POS = [0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+
+    def _sweep(self, neg_repeat: int = 1):
+        y_prob = np.array(self.NEG * neg_repeat + self.POS)
+        y_true = np.array([0] * len(self.NEG) * neg_repeat + [1] * len(self.POS))
+        return sweep_thresholds(y_true, y_prob)
+
+    def test_separable_scores_reach_a_perfect_point(self):
+        """A separable problem has a threshold with TPR 1 and FPR 0."""
+        y_true = np.array([0, 0, 0, 1, 1, 1])
+        y_prob = np.array([0.1, 0.2, 0.3, 0.7, 0.8, 0.9])
+
+        sweep = sweep_thresholds(y_true, y_prob)
+
+        assert sweep["at_youden"]["tpr"] == 1.0
+        assert sweep["at_youden"]["fpr"] == 0.0
+        assert sweep["at_youden"]["youden_j"] == 1.0
+        assert 0.3 < sweep["at_youden"]["threshold"] <= 0.7
+
+    def test_youden_is_invariant_to_prevalence(self):
+        """Duplicating the negatives must not move the Youden threshold.
+
+        This is the property the criterion exists for. Replicating one class
+        leaves TPR and FPR unchanged at every threshold -- both condition on a
+        single true class -- so an implementation that is genuinely
+        prevalence-free returns the identical point. One that mixes in a
+        prevalence-weighted term does not.
+        """
+        balanced = self._sweep(neg_repeat=1)
+        imbalanced = self._sweep(neg_repeat=10)
+
+        assert balanced["prevalence"] == pytest.approx(0.5)
+        assert imbalanced["prevalence"] < 0.11
+
+        assert imbalanced["at_youden"]["threshold"] == balanced["at_youden"]["threshold"]
+        assert imbalanced["at_youden"]["youden_j"] == pytest.approx(
+            balanced["at_youden"]["youden_j"]
+        )
+        assert imbalanced["at_youden"]["tpr"] == pytest.approx(balanced["at_youden"]["tpr"])
+        assert imbalanced["at_youden"]["fpr"] == pytest.approx(balanced["at_youden"]["fpr"])
+
+    def test_mcc_is_not_invariant_to_prevalence(self):
+        """The counterpart: MCC moves with the class ratio, so it is reported
+        with `prevalence` beside it rather than as a property of the model."""
+        balanced = self._sweep(neg_repeat=1)
+        imbalanced = self._sweep(neg_repeat=10)
+
+        assert abs(imbalanced["at_mcc"]["mcc"] - balanced["at_mcc"]["mcc"]) > 1e-3
+
+    def test_single_class_has_no_threshold(self):
+        """No threshold is defined when only one class is present."""
+        assert sweep_thresholds(np.array([1, 1, 1]), np.array([0.2, 0.5, 0.9])) == {}
+        assert sweep_thresholds(np.array([0, 0, 0]), np.array([0.2, 0.5, 0.9])) == {}
+
+    def test_counts_are_consistent_with_the_reported_rates(self):
+        """called_positive_frac must agree with TPR, FPR and prevalence."""
+        sweep = self._sweep(neg_repeat=3)
+        prev = sweep["prevalence"]
+        for key in ("at_youden", "at_mcc", "at_f1"):
+            pt = sweep[key]
+            expected = pt["tpr"] * prev + pt["fpr"] * (1 - prev)
+            assert pt["called_positive_frac"] == pytest.approx(expected)
+
+    def test_compute_metrics_attaches_the_sweep(self):
+        """compute_metrics carries the sweep, so callers get it for free."""
+        y_true = np.array([0, 0, 1, 1, 0, 1])
+        y_pred = np.array([0, 0, 1, 1, 0, 1])
+        y_prob = np.array([0.1, 0.2, 0.9, 0.8, 0.1, 0.95])
+
+        metrics = compute_metrics(y_true, y_pred, y_prob)
+
+        assert "threshold_sweep" in metrics
+        assert metrics["threshold_sweep"]["at_youden"]["youden_j"] == 1.0
 
 
 class TestSaveLoadMetrics:
