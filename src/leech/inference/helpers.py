@@ -14,6 +14,7 @@ from leech._rust_accel import (
     rust_supports_norm_method,
     rust_supports_softclip_recovery,
 )
+from leech.chunking import extraction_sequence
 from leech.constants import BELOW_THRESHOLD_LABEL
 from leech.features import encode_signal_kmer, sequence_to_int
 from leech.model_loading import load_model_from_checkpoint
@@ -837,10 +838,39 @@ def collect_bam_metadata_for_rust(
             continue
         try:
             mt = extract_move_table(aln)
+
+            # Resolve the reference slice BEFORE searching. Motif positions are
+            # indices into whatever sequence chunks are cut from, which under
+            # anchor="reference" is that slice and not the basecall. This
+            # searched `aln.query_sequence` unconditionally, so a
+            # BasecalledMotifSearcher -- which `predict` selects whenever there
+            # is no reference FASTA -- returned query coordinates for windows
+            # cut in reference coordinates.
+            ref_seq = None
+            cigar_list: list[tuple[int, int]] = []
+            if anchor == "reference":
+                cigar_list = list(aln.cigartuples) if aln.cigartuples else []
+                if reference_sequences and aln.reference_name in reference_sequences:
+                    full_ref = reference_sequences[aln.reference_name]
+                    ref_seq = full_ref[aln.reference_start : aln.reference_end]
+                else:
+                    try:
+                        ref_seq = aln.get_reference_sequence()
+                    except Exception:
+                        ref_seq = None
+
             positions = [
                 pos + motif_offset
                 for pos in motif_searcher.find_motif_positions(
-                    aln.query_name, aln.query_sequence, aln, motif
+                    aln.query_name,
+                    extraction_sequence(
+                        anchor=anchor,
+                        basecall=aln.query_sequence,
+                        reference_sequence=ref_seq,
+                        cigar_tuples=cigar_list or None,
+                    ),
+                    aln,
+                    motif,
                 )
             ]
             if not positions:
@@ -855,19 +885,6 @@ def collect_bam_metadata_for_rust(
             rs_ns.append(mt.num_samples)
             rs_trims.append(mt.trim_offset)
             rs_motifs.append(positions)
-
-            ref_seq = None
-            cigar_list: list[tuple[int, int]] = []
-            if anchor == "reference":
-                cigar_list = list(aln.cigartuples) if aln.cigartuples else []
-                if reference_sequences and aln.reference_name in reference_sequences:
-                    full_ref = reference_sequences[aln.reference_name]
-                    ref_seq = full_ref[aln.reference_start : aln.reference_end]
-                else:
-                    try:
-                        ref_seq = aln.get_reference_sequence()
-                    except Exception:
-                        ref_seq = None
             rs_cigars.append(cigar_list)
             rs_refs.append(ref_seq)
         except Exception as e:

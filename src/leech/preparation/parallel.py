@@ -45,7 +45,12 @@ from leech._rust_accel import (
     rust_supports_norm_method,
     rust_supports_softclip_recovery,
 )
-from leech.chunking import extract_training_chunks, find_focus_bases, resolve_feature_window
+from leech.chunking import (
+    extract_training_chunks,
+    extraction_sequence,
+    find_focus_bases,
+    resolve_feature_window,
+)
 from leech.configs import PrepareConfig
 from leech.io import ReadInfo, get_motif_searcher, iter_read_info_batches
 from leech.io.bam_reader import count_bam_reads
@@ -175,19 +180,15 @@ def _process_read_chunk_worker_seq(
 def _extraction_sequence(read_info: ReadInfo, config: PrepareConfig) -> str:
     """The sequence Rust will cut chunks from, and index focus bases into.
 
-    Must track ``build_leech_read``'s choice exactly: under
-    ``anchor="reference"`` with both a reference sequence and a CIGAR to map
-    through, chunks are cut from the aligned reference slice; otherwise from
-    the basecall. Feeding the motif searcher the other one returns positions
-    in the wrong coordinate system.
+    A thin adapter around :func:`leech.chunking.extraction_sequence`, which
+    inference goes through too -- the rule itself lives in one place.
     """
-    if (
-        config.signal.anchor == "reference"
-        and read_info.reference_sequence is not None
-        and read_info.cigar_tuples is not None
-    ):
-        return read_info.reference_sequence
-    return read_info.sequence
+    return extraction_sequence(
+        anchor=config.signal.anchor,
+        basecall=read_info.sequence,
+        reference_sequence=read_info.reference_sequence,
+        cigar_tuples=read_info.cigar_tuples,
+    )
 
 
 def _find_motif_positions(

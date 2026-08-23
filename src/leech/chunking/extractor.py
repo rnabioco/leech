@@ -357,6 +357,35 @@ class LeechRead:
         return chunk_dict
 
 
+def extraction_sequence(
+    *,
+    anchor: str,
+    basecall: str,
+    reference_sequence: str | None,
+    cigar_tuples: list[tuple[int, int]] | None,
+) -> str:
+    """The sequence chunks are cut from, and that focus bases index into.
+
+    Must track ``build_leech_read``'s choice exactly: under
+    ``anchor="reference"``, with both a reference sequence and a CIGAR to map
+    through, chunks come from the aligned reference slice; otherwise from the
+    basecall. Motif positions are indices into this string, so handing the
+    searcher the other one returns coordinates in the wrong frame.
+
+    Only observable with a ``BasecalledMotifSearcher`` --
+    ``ReferenceMotifSearcher`` ignores the sequence argument and reads the
+    alignment instead -- which is why two of the three inference paths could
+    pass the basecall under ``anchor="reference"`` without anyone noticing.
+    That combination is reachable: `predict` selects the searcher with
+    ``mode="fasta" if reference_sequences else "bam"``, so a run without a
+    reference FASTA gets the basecalled searcher while chunks are still cut in
+    reference coordinates.
+    """
+    if anchor == "reference" and reference_sequence is not None and cigar_tuples is not None:
+        return reference_sequence
+    return basecall
+
+
 def find_focus_bases(
     read_id: str,
     sequence: str,

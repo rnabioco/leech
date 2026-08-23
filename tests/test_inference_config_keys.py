@@ -195,3 +195,78 @@ class TestPrepareInferenceFeatures:
         # fallback. Appending after narrowing would have put the covered
         # columns here instead.
         np.testing.assert_allclose(out[3], np.ones(kmer_len, dtype=np.float32))
+
+
+class TestExtractionSequence:
+    """Motif positions index the sequence chunks are cut from.
+
+    ``ReferenceMotifSearcher`` ignores its ``sequence`` argument and reads the
+    alignment, which is why two of the three inference paths could pass the
+    basecall under ``anchor="reference"`` unnoticed. But `predict` picks the
+    searcher with ``mode="fasta" if reference_sequences else "bam"``, so a run
+    without a reference FASTA gets the *basecalled* searcher while chunks are
+    still cut in reference coordinates -- and there the argument decides the
+    answer.
+    """
+
+    def test_reference_anchor_uses_the_reference_slice(self):
+        from leech.chunking import extraction_sequence
+
+        assert (
+            extraction_sequence(
+                anchor="reference",
+                basecall="AAAA",
+                reference_sequence="CCCC",
+                cigar_tuples=[(0, 4)],
+            )
+            == "CCCC"
+        )
+
+    def test_basecall_anchor_uses_the_basecall(self):
+        from leech.chunking import extraction_sequence
+
+        assert (
+            extraction_sequence(
+                anchor="basecall",
+                basecall="AAAA",
+                reference_sequence="CCCC",
+                cigar_tuples=[(0, 4)],
+            )
+            == "AAAA"
+        )
+
+    @pytest.mark.parametrize(
+        ("ref", "cigar"),
+        [(None, [(0, 4)]), ("CCCC", None), (None, None)],
+    )
+    def test_falls_back_to_basecall_without_both_inputs(self, ref, cigar):
+        """Matches ``build_leech_read``: it needs a reference *and* a CIGAR to
+        map through before it will anchor to reference coordinates."""
+        from leech.chunking import extraction_sequence
+
+        assert (
+            extraction_sequence(
+                anchor="reference", basecall="AAAA", reference_sequence=ref, cigar_tuples=cigar
+            )
+            == "AAAA"
+        )
+
+    def test_prepare_and_inference_agree(self):
+        """The prepare adapter and the shared rule must not drift apart."""
+        from types import SimpleNamespace
+
+        from leech.chunking import extraction_sequence
+        from leech.configs import PrepareConfig, SignalConfig
+        from leech.preparation.parallel import _extraction_sequence
+
+        read_info = SimpleNamespace(
+            sequence="AAAA", reference_sequence="CCCC", cigar_tuples=[(0, 4)]
+        )
+        for anchor in ("reference", "basecall"):
+            config = PrepareConfig(pod5_path="unused.pod5", signal=SignalConfig(anchor=anchor))
+            assert _extraction_sequence(read_info, config) == extraction_sequence(
+                anchor=anchor,
+                basecall=read_info.sequence,
+                reference_sequence=read_info.reference_sequence,
+                cigar_tuples=read_info.cigar_tuples,
+            )
