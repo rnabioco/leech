@@ -240,6 +240,13 @@ signal from that molecule.
 Leech always splits at the *read* level: all chunks from a given read go into
 the same split.
 
+The assignment depends only on `--seed`. Read IDs are sorted before shuffling,
+so the same reads at the same seed land in the same split regardless of how the
+corpus was prepared -- worker count, backend, or chunk arrival order. Note that
+seeds do not reproduce splits generated before v0.6.2, which were sensitive to
+that ordering; re-splitting an older corpus moves reads across the train/test
+boundary.
+
 ## Widening the feature window for offset tuning
 
 If you plan to search over dwell offsets during grid search, prepare data with a
@@ -256,6 +263,20 @@ Storing extra bases on each side of the dwell/feature arrays allows
 `leech model optimize --dwell-offsets` to shift the window at runtime without
 re-preparing data. For a right-only window, use e.g. `--feature-start 0
 --feature-end 20`.
+
+`prepare` echoes the window it resolved -- `Feature window: [+0, +20] relative
+to the focus base, 21 bases wide` -- and records `feature_start_resolved`,
+`feature_end_resolved`, and `feature_width` in `prepare_config.json`. Check
+those rather than the requested values, which are null when unset. `data merge`
+warns if the corpora being merged disagree on the resolved window.
+
+!!! warning "Re-prepare `--feature-start 0` corpora built before v0.6.2"
+
+    On the Rust backend, a falsy `--feature-start 0` was stored as the default
+    `-5` even though the arrays held the requested window. Training and
+    inference then sliced the k-mer window five bases off, silently. Chunk
+    files written before v0.6.2 with an explicit `--feature-start 0` need
+    re-preparing (or `feature_starts` rewritten in the `.npz`).
 
 ## Troubleshooting
 

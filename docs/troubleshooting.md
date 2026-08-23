@@ -104,6 +104,27 @@ about your data rather than your install: reads whose motif is absent, or whose
 focus base falls outside the aligned region, legitimately produce no chunk. See
 [No chunks extracted](#no-chunks-extracted).
 
+### The feature window is not the one I asked for
+
+`prepare` logs the window it resolved:
+
+```text
+Feature window: [+0, +20] relative to the focus base, 21 bases wide (kmer_context=5)
+```
+
+`--feature-start` / `--feature-end` are optional and fall back to
++/-`kmer_context` when unset, so a window that looks ignored is usually one
+that was never passed through. `prepare_config.json` records the same values as
+`feature_start_resolved` / `feature_end_resolved` / `feature_width`; the plain
+`feature_start` / `feature_end` keys are null when unset, and are the request
+rather than the result.
+
+Up to v0.6.1 the Rust backend stored `-5` for a requested `--feature-start 0`
+even though the arrays held the requested window (issue #189). The corpus is
+not visibly wrong -- the shapes are right -- but training and inference then
+slice the k-mer window `kmer_context` bases off. Chunk files written before
+v0.6.2 with an explicit `--feature-start 0` should be re-prepared.
+
 ### Memory errors during preparation
 
 Reduce `--chunk-size` (fewer reads per batch) or `--workers` (fewer

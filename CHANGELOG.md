@@ -5,7 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.2] - 2026-08-23
+
+Two silent correctness bugs, both of the same shape: a value that looked like
+an absent default but wasn't. **Re-prepare any Rust-backend corpus built with
+an explicit `--feature-start 0`**, and note that read-level splits no longer
+reproduce from pre-0.6.2 seeds.
 
 ### Fixed
 
