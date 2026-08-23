@@ -31,6 +31,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   holds them to the same stored metadata and the same array widths across four
   windows.
 
+- Read-level splits depended on the order chunks happened to arrive in, not
+  just on the seed. `split_chunks_by_read` shuffled `list(read_to_chunks)` —
+  chunk arrival order — and the merge and k-fold splitters shuffled a list
+  built from a `set`, whose iteration order is PYTHONHASHSEED-dependent. The
+  Python `data prepare` backend returns batches through `imap_unordered`, so a
+  seeded split was already not reproducible run to run on that path. All five
+  sites now sort before shuffling, which is what `_split_by_group` already did.
+
+  **Splits change for existing seeds.** A split regenerated after this fix will
+  not match one generated before it, so do not re-split a corpus whose models
+  are already trained without re-training — the previous train/test boundary is
+  not recoverable.
+
 ### Changed
 
 - `data prepare` logs the resolved feature window (`[+0, +20] relative to the

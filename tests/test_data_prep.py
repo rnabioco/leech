@@ -612,6 +612,47 @@ class TestSplitChunksByRead:
         train_ids2 = {c["read_id"] for c in train2}
         assert train_ids1 == train_ids2
 
+    def test_split_is_independent_of_chunk_order(self):
+        """Same seed, same reads, shuffled arrival order -> same split.
+
+        `split_chunks_by_read` used to shuffle `list(read_to_chunks.keys())`,
+        i.e. chunk arrival order, so the assignment depended on how the corpus
+        happened to be prepared. The Python prepare backend already returns
+        batches through `imap_unordered`, which means a seeded split was not
+        actually reproducible on that path -- and any future reordering of
+        reads (e.g. POD5 storage order) would silently move reads between
+        train and test.
+        """
+        import random as _random
+
+        chunks = []
+        for read_num in range(60):
+            read_id = f"read_{read_num:03d}"
+            for chunk_num in range(2):
+                chunks.append(
+                    {
+                        "read_id": read_id,
+                        "signal": np.random.randn(400),
+                        "sequence": "ACGT" * 3,
+                        "dwell": np.random.randn(11),
+                        "features": np.random.randn(3, 11),
+                        "label": 0,
+                        "base_idx": chunk_num,
+                    }
+                )
+
+        shuffled = list(chunks)
+        _random.Random(7).shuffle(shuffled)
+        assert [c["read_id"] for c in shuffled] != [c["read_id"] for c in chunks]
+
+        def split_ids(cs):
+            return [
+                {c["read_id"] for c in part}
+                for part in split_chunks_by_read(cs, train_frac=0.7, val_frac=0.15, seed=123)
+            ]
+
+        assert split_ids(chunks) == split_ids(shuffled)
+
     def test_split_chunks_by_read_invalid_fractions(self):
         """Test that invalid fractions raise ValueError."""
         chunks = [{"read_id": "read_1", "signal": np.random.randn(400)}]
