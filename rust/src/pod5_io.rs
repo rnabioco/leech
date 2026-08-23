@@ -1,23 +1,29 @@
 //! Batch POD5 reading via escapepod-rs.
 //!
 //! Replaces Python pod5 library's `DatasetReader.reads()` with escapepod's
-//! memory-mapped reader and bulk signal extraction for ~25-43x faster I/O.
-//! Uses `.p5i` sidecar index for O(n) lookup when available; falls back to
-//! linear scan otherwise.
+//! memory-mapped reader and bulk signal extraction.
+//!
+//! Read lookup goes through [`crate::pod5_cache`], which opens each POD5 once
+//! per process and builds its read-id index once. That is load-bearing, not an
+//! optimization: without an index every lookup degrades to a single-threaded
+//! scan of the entire reads table, which on a large POD5 costs minutes per
+//! batch. Never call `Reader::open` directly from this crate.
 
 use std::collections::{HashMap, HashSet};
 
 use numpy::{IntoPyArray, PyArray1};
 use pyo3::prelude::*;
 
+use crate::pod5_cache::cached_reader;
+
 /// One read's POD5 result: (signal_i16, calibration_offset, calibration_scale).
 type Pod5ReadResult = (Py<PyArray1<i16>>, f32, f32);
 
 /// Read raw DAC signals for a batch of reads from a POD5 file.
 ///
-/// Opens the file once, looks up matching read IDs (using `.p5i` index
-/// when available), and bulk-extracts all signals via escapepod's
-/// LRU-cached signal decompression.
+/// Resolves the read IDs against the shared indexed reader, then bulk-extracts
+/// every signal in one batch-grouped pass. The GIL is released for the whole
+/// call, so several Python threads may read concurrently.
 ///
 /// Returns a dict mapping `read_id` → `(signal_i16, cal_offset, cal_scale)`.
 #[pyfunction]
@@ -31,37 +37,44 @@ pub fn read_pod5_batch<'py>(
         .filter_map(|s| escapepod_signal::Uuid::parse_str(s).ok())
         .collect();
 
-    let reader = escapepod_signal::Reader::open(pod5_path).map_err(|e| {
-        pyo3::exceptions::PyIOError::new_err(format!("Failed to open POD5 {pod5_path}: {e}"))
-    })?;
+    type RawBatch = Vec<(String, Vec<i16>, f32, f32)>;
+    let raw: RawBatch = py
+        .detach(|| -> Result<RawBatch, String> {
+            let reader = cached_reader(pod5_path)?;
 
-    // Use reads_by_ids which auto-detects .p5i index for fast lookup
-    let matched_reads = reader.reads_by_ids(&target_uuids).map_err(|e| {
-        pyo3::exceptions::PyIOError::new_err(format!("Failed to look up reads: {e}"))
-    })?;
+            let matched_reads = reader
+                .reads_by_ids(&target_uuids)
+                .map_err(|e| format!("Failed to look up reads: {e}"))?;
 
-    let mut to_extract: Vec<(String, Vec<u64>)> = Vec::with_capacity(matched_reads.len());
-    let mut calibrations: Vec<(f32, f32)> = Vec::with_capacity(matched_reads.len());
-    let mut rid_to_idx: HashMap<String, usize> = HashMap::with_capacity(matched_reads.len());
-    for (idx, read) in matched_reads.into_iter().enumerate() {
-        let rid = read.read_id.to_string();
-        rid_to_idx.insert(rid.clone(), idx);
-        calibrations.push((read.calibration_offset, read.calibration_scale));
-        to_extract.push((rid, read.signal_rows));
-    }
+            let mut to_extract: Vec<(String, Vec<u64>)> = Vec::with_capacity(matched_reads.len());
+            let mut calibrations: HashMap<String, (f32, f32)> =
+                HashMap::with_capacity(matched_reads.len());
+            for read in matched_reads {
+                let rid = read.read_id.to_string();
+                calibrations.insert(
+                    rid.clone(),
+                    (read.calibration_offset, read.calibration_scale),
+                );
+                to_extract.push((rid, read.signal_rows));
+            }
 
-    // Bulk extract all signals (batched decompression, much faster than per-read)
-    let signals = reader.get_signal_bulk(&to_extract).map_err(|e| {
-        pyo3::exceptions::PyIOError::new_err(format!("Signal extraction failed: {e}"))
-    })?;
+            // Bulk extract all signals (batched decompression, much faster than per-read)
+            let signals = reader
+                .get_signal_bulk(&to_extract)
+                .map_err(|e| format!("Signal extraction failed: {e}"))?;
 
-    let mut results = HashMap::with_capacity(signals.len());
-    for (rid, signal) in signals {
-        let (cal_offset, cal_scale) = rid_to_idx
-            .get(&rid)
-            .and_then(|&idx| calibrations.get(idx))
-            .copied()
-            .unwrap_or((0.0, 1.0));
+            Ok(signals
+                .into_iter()
+                .map(|(rid, signal)| {
+                    let (off, scale) = calibrations.get(&rid).copied().unwrap_or((0.0, 1.0));
+                    (rid, signal, off, scale)
+                })
+                .collect())
+        })
+        .map_err(pyo3::exceptions::PyIOError::new_err)?;
+
+    let mut results = HashMap::with_capacity(raw.len());
+    for (rid, signal, cal_offset, cal_scale) in raw {
         let arr = signal.into_pyarray(py).unbind();
         results.insert(rid, (arr, cal_offset, cal_scale));
     }
@@ -107,13 +120,10 @@ pub fn preload_pod5_signals(
         .filter_map(|s| escapepod_signal::Uuid::parse_str(s).ok())
         .collect();
 
-    let pod5_path_owned = pod5_path.to_string();
-
     // Release GIL during I/O-heavy POD5 reading so other Python threads
     // (e.g. main thread doing BAM metadata extraction) can proceed.
-    let result: Result<HashMap<String, Vec<i16>>, String> = py.detach(move || {
-        let reader = escapepod_signal::Reader::open(&pod5_path_owned)
-            .map_err(|e| format!("Failed to open POD5 {pod5_path_owned}: {e}"))?;
+    let result: Result<HashMap<String, Vec<i16>>, String> = py.detach(|| {
+        let reader = cached_reader(pod5_path)?;
 
         let matched_reads = reader
             .reads_by_ids(&target_uuids)

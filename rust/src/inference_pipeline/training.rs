@@ -412,26 +412,35 @@ pub fn extract_training_chunks<'py>(
         base_justify: BaseJustify::from_str(base_justify),
     };
 
-    // Phase 1: POD5 I/O
+    // Phase 1: POD5 I/O. The GIL is released for the whole phase — it is pure
+    // Rust I/O touching no Python objects, and holding it here would serialize
+    // every caller thread against the slowest network read in the batch,
+    // making it impossible to overlap batches (issue #176).
     let target_uuids: HashSet<escapepod_signal::Uuid> = read_ids
         .iter()
         .filter_map(|s| escapepod_signal::Uuid::parse_str(s).ok())
         .collect();
-    let reader = escapepod_signal::Reader::open(pod5_path)
-        .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("Failed to open POD5: {e}")))?;
 
-    let matched_reads = reader.reads_by_ids(&target_uuids).map_err(|e| {
-        pyo3::exceptions::PyIOError::new_err(format!("Failed to look up reads: {e}"))
-    })?;
-    let to_extract: Vec<(String, Vec<u64>)> = matched_reads
-        .into_iter()
-        .map(|r| (r.read_id.to_string(), r.signal_rows))
-        .collect();
+    let signal_map: HashMap<String, Vec<i16>> = py
+        .detach(|| -> Result<HashMap<String, Vec<i16>>, String> {
+            // Shared, already-indexed reader. Opening one per call instead
+            // would re-scan the whole reads table on every batch.
+            let reader = crate::pod5_cache::cached_reader(pod5_path)?;
 
-    let bulk_signals = reader.get_signal_bulk(&to_extract).map_err(|e| {
-        pyo3::exceptions::PyIOError::new_err(format!("Signal extraction failed: {e}"))
-    })?;
-    let signal_map: HashMap<String, Vec<i16>> = bulk_signals.into_iter().collect();
+            let matched_reads = reader
+                .reads_by_ids(&target_uuids)
+                .map_err(|e| format!("Failed to look up reads: {e}"))?;
+            let to_extract: Vec<(String, Vec<u64>)> = matched_reads
+                .into_iter()
+                .map(|r| (r.read_id.to_string(), r.signal_rows))
+                .collect();
+
+            let bulk_signals = reader
+                .get_signal_bulk(&to_extract)
+                .map_err(|e| format!("Signal extraction failed: {e}"))?;
+            Ok(bulk_signals.into_iter().collect())
+        })
+        .map_err(pyo3::exceptions::PyIOError::new_err)?;
 
     _process_and_convert_training(
         py,

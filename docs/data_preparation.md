@@ -53,7 +53,39 @@ Expected speedup: 3--6x on typical multi-core machines. CPU-bound tasks
 (feature extraction) scale near-linearly; I/O-bound tasks (POD5 reading)
 see 2--4x improvement.
 
+`--workers` sets how many read batches are processed at once, and it applies to
+both backends (see below): worker processes without `leech_core`, threads with
+it. It is not advisory on either path.
+
 If you run into memory issues, reduce `--chunk-size` or `--workers`.
+
+### Backends, and checking which one you got
+
+`prepare` runs on one of two interchangeable backends. If the optional
+`leech_core` Rust extension is installed and your options are all supported, it
+handles each batch in a single call; otherwise the work goes to a pool of
+Python worker processes. Both produce identical chunks.
+
+The backend is named in the log and in the progress bar, along with the
+achieved rate:
+
+```text
+Starting parallel data preparation with 32 workers [Rust (rayon)]
+Progress [Rust (rayon)]: 40 batches, 40000 reads | 38112 chunks extracted | 1064 reads/s
+```
+
+Watch the reads/s figure on a new dataset or after changing your install. It is
+the quickest way to notice that a run is heading somewhere much worse than the
+last one -- a 12-hour cluster allocation was once lost to a backend regression
+that showed no other symptom (issue #176).
+
+Some options force the Python backend because the Rust pipeline cannot honor
+them (`--focus-map`, non-median-MAD normalization, softclip signal recovery).
+When that happens the log says so explicitly:
+
+```text
+Using Python workers instead of the Rust pipeline: focus_map is set (...)
+```
 
 ## Motif search strategies
 
