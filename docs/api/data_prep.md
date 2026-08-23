@@ -57,6 +57,16 @@ Container for a single read's data with all features.
         - __init__
         - get_chunk
 
+### Find Focus Bases
+
+The single definition of which bases a read contributes chunks at. Both prepare
+backends call it.
+
+::: leech.chunking.extractor.find_focus_bases
+    options:
+      show_root_heading: true
+      show_source: false
+
 ### Extract Training Chunks
 
 Extract training chunks centered on motifs.

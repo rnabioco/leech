@@ -5,6 +5,47 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- The Rust `data prepare` backend silently dropped ~1% of reads that the Python
+  backend kept — non-randomly, biased toward supplementary-aligned and
+  indel-heavy reads (#185). On a 1,052,751-read production corpus the two
+  backends differed by 9,772 reads, Rust's output a strict subset of Python's,
+  with nothing logged and exit 0.
+
+  `extract_training_chunks_from_read` skipped any focus base whose k-mer window
+  ran off either end of the sequence, where `LeechRead.get_chunk` pads it with
+  `N`. Under `--anchor reference` the sequence is the *aligned reference slice*,
+  so a read whose alignment stops within `--kmer-context` (default 5) of the
+  motif lost its only chunk — exactly the population produced by supplementary
+  alignments and by the elevated indels that `--no-require-query-mapping`
+  exists to keep. Rust now pads instead of skipping, and drops a focus base only
+  when it has no signal boundaries, which is the Python rule.
+
+  The same guard sat in `inference.rs`, so the same reads got no prediction on
+  the Rust predict backend. Fixed alongside.
+
+- `LeechRead.get_chunk` bounded the focus base on the sequence length while
+  indexing `seq_to_sig_map`, which is shorter whenever `compute_ref_to_signal`
+  strips trailing non-match CIGAR ops. The resulting `IndexError` made the
+  prepare workers drop the whole read rather than the one chunk. It now bounds
+  on `num_mapped_bases`, the same quantity Rust uses.
+
+### Changed
+
+- Both prepare backends now go through one `find_focus_bases`, instead of the
+  Rust path carrying a second copy of the rule in `parallel.py`. The copies had
+  drifted: the Rust one searched the *basecall* under `--anchor reference`,
+  where positions are reference-relative, and its all-bases fallback ranged over
+  the basecall's length rather than the reference slice's.
+
+- `data prepare` logs a read yield — reads that produced chunks over reads seen
+  — on both backends, and `stats["reads_with_motif"]` counts reads rather than
+  chunks, which is what it counts in the sequential path. A backend that yields
+  less than the other now says so in the log.
+
 ## [0.6.0] - 2026-08-23
 
 ### Fixed

@@ -74,12 +74,18 @@ fn process_one_read(
     let mut results = Vec::new();
 
     for &base_idx in positions {
+        // Same rule as training extraction and as `LeechRead.get_chunk`: only
+        // a focus base without signal boundaries is dropped. A k-mer window
+        // overhanging the sequence is 'N'-padded, which both encoders below
+        // already handle (all-zero column / -1 skipped). Skipping it instead
+        // silently withheld predictions for reads whose aligned region stops
+        // near the motif -- the training-side half of this was issue #185.
+        if base_idx < 0 || base_idx as usize >= num_bases {
+            continue;
+        }
         let bi = base_idx as usize;
         let kmer_start = base_idx - cfg.kmer_ctx;
         let kmer_end = base_idx + cfg.kmer_ctx + 1;
-        if kmer_start < 0 || kmer_end > seq_bytes.len() as i64 || bi >= num_bases {
-            continue;
-        }
 
         let focus_sig = cfg
             .base_justify
@@ -133,8 +139,10 @@ fn process_one_read(
 
         // Sequence encoding
         let (seq_flat, seq_rows, seq_cols) = if cfg.use_signal_kmer {
-            let chunk_kmer_start = (base_idx - cfg.kmer_ctx) as usize;
-            let chunk_kmer_end = (base_idx + cfg.kmer_ctx + 1) as usize;
+            // Clamped into the sequence: `kmer_start` may now be negative and
+            // `kmer_end` past the end.
+            let chunk_kmer_start = kmer_start.clamp(0, seq_bytes.len() as i64) as usize;
+            let chunk_kmer_end = kmer_end.clamp(0, seq_bytes.len() as i64) as usize;
             let (kmer_before, kmer_after) = cfg.skmer_ctx;
             let seq_with_ctx_start = chunk_kmer_start.saturating_sub(kmer_before);
             let seq_with_ctx_end = (chunk_kmer_end + kmer_after).min(seq_bytes.len());
@@ -159,8 +167,15 @@ fn process_one_read(
             );
             (flat, enc_dim, cfg.signal_len)
         } else {
-            let kmer_seq = &seq_bytes[kmer_start as usize..kmer_end as usize];
-            let flat = encode_base_onehot(kmer_seq);
+            // 'N' past either end, so the window is always `kmer_win` wide and
+            // the encoder emits an all-zero column there.
+            let kmer_seq: Vec<u8> = (kmer_start..kmer_end)
+                .map(|i| match usize::try_from(i) {
+                    Ok(u) if u < seq_bytes.len() => seq_bytes[u],
+                    _ => b'N',
+                })
+                .collect();
+            let flat = encode_base_onehot(&kmer_seq);
             (flat, 4, cfg.kmer_win)
         };
 

@@ -251,6 +251,34 @@ Phase 1 (POD5 I/O) in `inference.rs` and `training.rs` runs inside `py.detach`.
 Keep it that way — holding the GIL across the I/O serializes every caller
 thread and makes batch-level concurrency impossible.
 
+### Backend parity: when a chunk is dropped
+
+**The only reason to drop a focus base is that it has no signal boundaries** —
+`base_idx < 0` or `base_idx >= num_bases`, where `num_bases` is
+`len(seq_to_sig_map) - 1`, *not* the sequence length. Everything else pads:
+the k-mer window with `N`, dwell/features/signal with zeros. That rule lives in
+`LeechRead.get_chunk`, and `extract_training_chunks_from_read` (`training.rs`)
+and its twin in `inference.rs` must match it exactly.
+
+Adding a `continue` to either Rust loop is how issue #185 happened. The guard
+there also rejected a k-mer window overhanging the sequence, which under
+`anchor="reference"` is the *aligned reference slice* — so every read whose
+alignment stopped within `kmer_context` of the motif lost its only chunk. That
+was ~1% of a production corpus, silently, and skewed toward supplementary and
+indel-heavy alignments: the population the classifier most needs.
+
+The two definitions of `num_bases` are not interchangeable.
+`compute_ref_to_signal` strips trailing non-match CIGAR ops, so the map can be
+shorter than the reference slice; `LeechRead.num_mapped_bases` is the focus
+bound, `num_bases` is the sequence bound.
+
+Which bases a read contributes chunks at is `chunking.find_focus_bases`, one
+function, called by both backends. `parallel.py` used to carry its own copy and
+it drifted. Do not add a second one.
+
+`tests/test_parallel_prep.py::TestEdgeWindowParity` fails if any of this
+regresses; the backends are held to chunk-set equality, not overlap.
+
 ### Key Classes and Functions
 
 **`MoveTable` (features.py)**
@@ -494,6 +522,8 @@ The codebase is feature-complete (v0.6.0):
 - ✓ `--no-require-query-mapping` for modifications that mis-call the motif
 - ✓ Process-global POD5 reader cache in Rust (`rust/src/pod5_cache.rs`) and
   concurrent batch dispatch on both prepare backends
+- ✓ Chunk-set parity between the prepare backends, one shared
+  `find_focus_bases`, and a logged read yield on both
 
 All core functionality is implemented and ready for use.
 
