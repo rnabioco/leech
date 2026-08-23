@@ -255,8 +255,13 @@ def split_chunks_by_read(
             read_to_chunks[read_id] = []
         read_to_chunks[read_id].append(chunk)
 
-    # Get list of unique read IDs and shuffle
-    read_ids = list(read_to_chunks.keys())
+    # Sort before shuffling. `read_to_chunks` is keyed in chunk arrival order,
+    # which is a property of how the corpus was prepared, not of the data: the
+    # Python prepare backend returns batches through `imap_unordered`, so the
+    # same POD5/BAM at the same seed lands reads in different splits run to
+    # run. Sorting makes the seed the only input to the assignment. Same
+    # reason `_split_by_group` sorts its groups first.
+    read_ids = sorted(read_to_chunks)
     random.shuffle(read_ids)
 
     # Split read IDs
@@ -400,7 +405,7 @@ def merge_and_split_chunks(
     if seed is not None:
         random.seed(seed)
 
-    read_ids_list = list(all_read_ids)
+    read_ids_list = sorted(all_read_ids)  # set order is PYTHONHASHSEED-dependent
     random.shuffle(read_ids_list)
 
     n_reads = len(read_ids_list)
@@ -594,7 +599,7 @@ def merge_and_kfold_split_chunks(
     if seed is not None:
         random.seed(seed)
 
-    read_ids_list = list(all_read_ids)
+    read_ids_list = sorted(all_read_ids)  # set order is PYTHONHASHSEED-dependent
     random.shuffle(read_ids_list)
 
     # Partition into k groups
@@ -784,7 +789,7 @@ def merge_and_split_multiclass(
             val_frac=val_frac,
         )
     else:
-        read_ids_list = list(all_read_ids)
+        read_ids_list = sorted(all_read_ids)  # set order is PYTHONHASHSEED-dependent
         random.shuffle(read_ids_list)
 
         n_reads = len(read_ids_list)
@@ -888,7 +893,7 @@ def merge_and_kfold_split_multiclass(
     # Partition reads into folds
     if seed is not None:
         random.seed(seed)
-    read_ids_list = list(all_read_ids)
+    read_ids_list = sorted(all_read_ids)  # set order is PYTHONHASHSEED-dependent
     random.shuffle(read_ids_list)
 
     partitions = np.array_split(read_ids_list, k_fold)
