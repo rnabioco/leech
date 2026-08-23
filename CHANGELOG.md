@@ -116,6 +116,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and raises when the requested window does not fit the stored one — training
   already raised for the same condition rather than sliding the window.
 
+- Two of `predict`'s three extraction paths searched for the motif in the
+  basecall while cutting chunks in reference coordinates. Motif positions index
+  whatever sequence chunks come from, which under `anchor="reference"` is the
+  aligned reference slice. `ReferenceMotifSearcher` ignores its `sequence`
+  argument, which is why this was invisible — but `predict` picks the searcher
+  with `mode="fasta" if reference_sequences else "bam"`, so a run without a
+  reference FASTA gets the *basecalled* searcher, where the argument decides
+  the answer. The rule now lives in one place, `chunking.extraction_sequence`,
+  which `data prepare` also goes through.
+
+- `require_query_mapping` did not reach `predict`. It is recorded in
+  `prepare_config.json` but was neither copied into the model config by `model
+  train` nor read by either inference entry point, so a corpus prepared with
+  `--no-require-query-mapping` was scored with the gate back on — a different
+  read population than the model was trained on, and on aminoacyl-tRNA a
+  label-correlated one (the adduct mis-calls the CCA junction, dropping 28% of
+  charged reads against 6% of uncharged).
+
 ### Changed
 
 - The backend parity test (`tests/test_parallel_prep.py`) now parametrizes

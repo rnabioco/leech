@@ -8,6 +8,7 @@ processed reads and saving/loading them to disk.
 from leech.chunking.extractor import (
     LeechRead,
     extract_training_chunks,
+    extraction_sequence,
     find_focus_bases,
     resolve_feature_window,
 )
@@ -17,6 +18,7 @@ __all__ = [
     # Extraction
     "LeechRead",
     "extract_training_chunks",
+    "extraction_sequence",
     "find_focus_bases",
     "resolve_feature_window",
     # Serialization

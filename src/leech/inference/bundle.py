@@ -272,6 +272,11 @@ def run_bundle_inference(
         reference_sequences=reference_sequences,
         skip_indels=config.get("skip_motif_indels", False),
         anchor=anchor,
+        # Recorded by `data prepare` and carried through `model train`. Without
+        # it, a corpus prepared with --no-require-query-mapping was scored at
+        # predict time with the gate back on, i.e. on a different read
+        # population than the model was trained on.
+        require_query_mapping=config.get("require_query_mapping", True),
     )
 
     # Open BAM for header only
@@ -519,6 +524,7 @@ def run_bundle_inference(
                 motif_offset=motif_offset,
                 reference_sequences=reference_sequences,
                 skip_motif_indels=config.get("skip_motif_indels", False),
+                require_query_mapping=config.get("require_query_mapping", True),
             ),
             chunk=ChunkConfig(
                 base_justify=base_justify,

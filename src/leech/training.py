@@ -1802,6 +1802,12 @@ def train_model(
         "pa_mean": prepare_metadata.get("pa_mean"),
         "pa_stdev": prepare_metadata.get("pa_stdev"),
         "skip_motif_indels": prepare_metadata.get("skip_motif_indels", False),
+        # Which reads the corpus was built from. `predict` must apply the same
+        # rule or it scores a different population than the model was trained
+        # on -- on aminoacyl-tRNA the adduct mis-calls the CCA junction, and
+        # requiring a clean query mapping drops 28% of charged reads against
+        # 6% of uncharged. See ReferenceMotifSearcher.
+        "require_query_mapping": prepare_metadata.get("require_query_mapping", True),
         "refine_half_bandwidth": prepare_metadata.get("refine_half_bandwidth", 5),
         "refine_do_rough_rescale": prepare_metadata.get("refine_do_rough_rescale", True),
         "refine_kmer_center_idx": prepare_metadata.get("refine_kmer_center_idx", -1),

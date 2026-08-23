@@ -99,12 +99,21 @@ def _inference_worker(
                     reference_sequences=config.motif.reference_sequences,
                     skip_indels=config.motif.skip_motif_indels,
                     anchor=config.signal.anchor,
+                    require_query_mapping=config.motif.require_query_mapping,
                 )
                 aln = read_info.to_mock_alignment()
                 positions = [
                     pos + config.motif.motif_offset
                     for pos in searcher.find_motif_positions(
-                        read_info.read_id, read_info.sequence, aln, config.motif.motif
+                        read_info.read_id,
+                        # The sequence chunks are cut from -- under
+                        # anchor="reference" that is the aligned reference
+                        # slice, which `leech_read.sequence` already is.
+                        # `read_info.sequence` is the basecall, a different
+                        # coordinate frame.
+                        leech_read.sequence,
+                        aln,
+                        config.motif.motif,
                     )
                 ]
             else:
@@ -557,6 +566,11 @@ def run_inference(
         reference_sequences=reference_sequences,
         skip_indels=config.get("skip_motif_indels", False),
         anchor=anchor,
+        # Recorded by `data prepare` and carried through `model train`. Without
+        # it, a corpus prepared with --no-require-query-mapping was scored at
+        # predict time with the gate back on, i.e. on a different read
+        # population than the model was trained on.
+        require_query_mapping=config.get("require_query_mapping", True),
     )
 
     # Prepare class_names_str for multiclass (shared across mega-batches)
@@ -627,6 +641,8 @@ def run_inference(
                 motif=motif,
                 motif_offset=motif_offset,
                 reference_sequences=reference_sequences,
+                skip_motif_indels=config.get("skip_motif_indels", False),
+                require_query_mapping=config.get("require_query_mapping", True),
             ),
             chunk=ChunkConfig(
                 base_justify=base_justify,
