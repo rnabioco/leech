@@ -87,6 +87,26 @@ When that happens the log says so explicitly:
 Using Python workers instead of the Rust pipeline: focus_map is set (...)
 ```
 
+### Read yield
+
+Every run ends with the fraction of reads that produced at least one chunk:
+
+```text
+Read yield [Rust (rayon)]: 992576/1052751 reads produced chunks (94.28%); 60175 produced none
+```
+
+Reads produce no chunk when the motif is absent, or when the focus base has no
+signal boundaries. That is normal and the figure is usually stable for a given
+sample and motif -- which is what makes it useful: **the two backends must
+agree on it.** They once did not. The Rust path silently discarded ~1% of reads
+that the Python path kept, biased toward supplementary-aligned and indel-heavy
+alignments, and nothing in the output said so; it took a performance comparison
+to notice (issue #185).
+
+If you switch backends and the yield moves, that is a bug, not a tuning knob.
+The same number is in the returned statistics as `reads_with_motif`, which
+counts reads -- not chunks.
+
 ## Motif search strategies
 
 Leech supports two strategies for locating modification sites.

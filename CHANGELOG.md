@@ -5,7 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.1] - 2026-08-23
+
+Two silent parity bugs between the `data prepare` backends. **If you built a
+corpus with the Rust backend on 0.6.0 or earlier, re-prepare it** — it is
+missing ~1% of reads, non-randomly, and if you trained with
+`--seq-encoding signal_kmer` the sequence context differed from what the Python
+backend would have produced.
 
 ### Fixed
 
@@ -58,6 +64,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   — on both backends, and `stats["reads_with_motif"]` counts reads rather than
   chunks, which is what it counts in the sequential path. A backend that yields
   less than the other now says so in the log.
+
+### Documentation
+
+- Document the read yield line in the data preparation guide, and add a
+  troubleshooting entry for a run that produces fewer chunks than a previous one
+  or than the other backend.
 
 ## [0.6.0] - 2026-08-23
 

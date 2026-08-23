@@ -83,6 +83,27 @@ read batches are in flight, and therefore how many POD5 reads are outstanding
 at once. Watching CPU alone will mislead you here -- sample it as a delta over
 an interval, since `sstat`'s `AveCPU` is cumulative and hides an idle pool.
 
+### Fewer chunks than a previous run, or than the other backend
+
+Compare the read yield line at the end of each run:
+
+```text
+Read yield [Rust (rayon)]: 992576/1052751 reads produced chunks (94.28%); 60175 produced none
+```
+
+The two backends must report the same number on the same input. Force the
+Python worker pool for one run with `LEECH_DISABLE_RUST=1` and compare.
+
+A yield that differs by backend is a bug -- please report it. Up to v0.6.0 the
+Rust path dropped ~1% of reads the Python path kept, non-randomly, and said
+nothing (issue #185); a corpus prepared with the Rust backend before v0.6.1
+should be re-prepared.
+
+A yield that is simply lower than you expected, equally on both backends, is
+about your data rather than your install: reads whose motif is absent, or whose
+focus base falls outside the aligned region, legitimately produce no chunk. See
+[No chunks extracted](#no-chunks-extracted).
+
 ### Memory errors during preparation
 
 Reduce `--chunk-size` (fewer reads per batch) or `--workers` (fewer
