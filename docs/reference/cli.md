@@ -478,6 +478,26 @@ leech eval test --model FILE --test-data FILES --output FILE [OPTIONS]
 | `--test-data FILES` | *(required)* | Test data JSON files |
 | `--output FILE` | *(required)* | Output metrics JSON |
 | `--device STR` | auto | `cuda` or `cpu` |
+| `--emit-scores PATH` | *(off)* | Also write per-chunk `read_ids`, `labels`, `probs` to an `.npz` |
+
+!!! note "Why `--emit-scores` exists"
+
+    The metrics JSON is a summary at **one** threshold. The per-chunk scores
+    behind it are computed either way; this flag only decides whether they
+    survive the run. Without them, AUPRC for the minority class, per-group
+    error breakdowns (per barcode, per isotype), paired model comparison
+    (McNemar), calibration, and any operating point other than the reported one
+    cannot be answered without re-running inference.
+
+    The join to read ids is positional and is verified: if the test `.npz` holds
+    a different number of `read_ids` than there are scored chunks, it raises
+    rather than writing a well-formed file with every score attached to the
+    wrong read. Multiclass emits the full `(N, C)` softmax.
+
+    The metrics JSON also carries a `threshold_sweep` with the best operating
+    points (`at_youden`, `at_mcc`, `at_f1`) alongside `prevalence`. Prefer
+    `at_youden` when the deployment class ratio is unknown or varies per
+    sample -- it is the only one of the three that is prevalence-invariant.
 
 ### leech eval compare
 

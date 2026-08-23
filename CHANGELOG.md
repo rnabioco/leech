@@ -83,6 +83,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   6% of uncharged, before any model sees the data. Only valid with
   `--anchor reference`; combining it with `--anchor basecall` raises, since
   there the returned coordinate *is* the query start.
+- `--emit-scores PATH` on `leech eval test` writes the per-chunk `read_ids`,
+  `labels` and `probs` behind the metrics to an `.npz` (#181). `evaluate_model`
+  already computed a probability for every chunk and then dropped it, leaving
+  the confusion matrix — a summary at ONE threshold — as the only artifact.
+  That made AUPRC for the minority class, per-group error breakdowns, paired
+  model comparison, calibration, and any other operating point unanswerable
+  without re-running inference. Off by default. The join to read ids is
+  positional and is checked, not trusted: a length mismatch raises rather than
+  writing a well-formed file full of misattributed scores.
+- `compute_metrics` now attaches a `threshold_sweep` reporting the best
+  operating point rather than only the caller's implied 0.5 (#180). Three
+  points — `at_youden`, `at_mcc`, `at_f1` — each with threshold, TPR, FPR, MCC,
+  F1, Youden's J and called-positive fraction, plus `prevalence` beside them.
+  The default threshold is the wrong choice whenever training and evaluation
+  see different class ratios, which `--oversample-minority` guarantees: on a
+  tRNA charging corpus at 13.0% positive, the same predictions scored 0.6066
+  precision at observed prevalence against 0.9114 at 50/50, so the model was
+  being blamed for the class ratio. `at_youden` is prevalence-invariant and is
+  the right default when the deployment ratio is unknown or is itself what is
+  being measured.
 - `data prepare`'s startup line now names the dispatch, not just the backend:
   `[Rust (rayon), 32 batches in flight via threads]`. `leech_core` is a separate
   package from `leech`, so `maturin develop` can leave a freshly built extension
