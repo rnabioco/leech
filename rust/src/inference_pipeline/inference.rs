@@ -15,7 +15,9 @@ use super::features::{
 };
 use super::numeric::normalize_median_mad;
 use super::processing::process_read_signal;
-use super::signal_mapping::{build_seq_to_sig_map, compute_ref_to_signal};
+use super::signal_mapping::{
+    build_seq_to_sig_map, chunk_signal_kmer_inputs, compute_ref_to_signal,
+};
 use super::types::{BaseJustify, ChunkResult, PipelineConfig, ProcessedRead};
 
 /// One inference chunk returned to Python: (signal, seq_encoding, features?, read_id, base_idx).
@@ -139,24 +141,24 @@ fn process_one_read(
 
         // Sequence encoding
         let (seq_flat, seq_rows, seq_cols) = if cfg.use_signal_kmer {
-            // Clamped into the sequence: `kmer_start` may now be negative and
-            // `kmer_end` past the end.
-            let chunk_kmer_start = kmer_start.clamp(0, seq_bytes.len() as i64) as usize;
-            let chunk_kmer_end = kmer_end.clamp(0, seq_bytes.len() as i64) as usize;
+            // Derived from the SIGNAL window, matching `LeechRead.get_chunk`,
+            // which is what the Python inference path feeds the same encoder.
+            // Deriving them from the k-mer window disagreed with it on every
+            // chunk (issue #186).
             let (kmer_before, kmer_after) = cfg.skmer_ctx;
-            let seq_with_ctx_start = chunk_kmer_start.saturating_sub(kmer_before);
-            let seq_with_ctx_end = (chunk_kmer_end + kmer_after).min(seq_bytes.len());
-            let seq_with_ctx = &seq_bytes[seq_with_ctx_start..seq_with_ctx_end];
-            let seq_ints = sequence_to_int(seq_with_ctx);
-            let map_start = chunk_kmer_start;
-            let map_end = (chunk_kmer_end + 1).min(seq_to_sig.len());
-            if map_start >= map_end {
+            let (chunk_sig_map, ctx_bytes) = chunk_signal_kmer_inputs(
+                seq_to_sig,
+                seq_bytes,
+                sig_start_pos,
+                sig_end_pos,
+                norm_signal.len(),
+                cfg.signal_len,
+                cfg.skmer_ctx,
+            );
+            if chunk_sig_map.is_empty() {
                 continue;
             }
-            let chunk_sig_map: Vec<i64> = seq_to_sig[map_start..map_end]
-                .iter()
-                .map(|&v| v - sig_start_pos)
-                .collect();
+            let seq_ints = sequence_to_int(&ctx_bytes);
             let enc_dim = 4 * (kmer_before + 1 + kmer_after);
             let flat = encode_signal_kmer_inner(
                 &seq_ints,

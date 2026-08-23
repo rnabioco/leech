@@ -27,6 +27,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The same guard sat in `inference.rs`, so the same reads got no prediction on
   the Rust predict backend. Fixed alongside.
 
+- `seq_to_sig_map` and `sequence_with_kmer_context` — the two chunk fields that
+  drive `--seq-encoding signal_kmer` — never agreed between the prepare
+  backends (#186). Not at edges: on every chunk, at every focus position.
+  `LeechRead.get_chunk` derives them from the **signal** window, locating bases
+  with two `searchsorted` calls over the read's map, and snaps the partially
+  overlapping first and last bases to the window edges; Rust derived them from
+  the **k-mer** window, which spans a different number of bases, and truncated
+  rather than `N`-padding. Rust now uses the Python definition — the one every
+  trained `signal_kmer` model has seen — via a shared
+  `chunk_signal_kmer_inputs`, in both `training.rs` and `inference.rs`. The
+  `(4 * kmer_len, signal_len)` encodings the model consumes are now identical
+  between backends.
+
 - `LeechRead.get_chunk` bounded the focus base on the sequence length while
   indexing `seq_to_sig_map`, which is shorter whenever `compute_ref_to_signal`
   strips trailing non-match CIGAR ops. The resulting `IndexError` made the
