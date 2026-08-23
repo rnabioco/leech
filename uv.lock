@@ -2832,7 +2832,7 @@ wheels = [
 
 [[package]]
 name = "snakemake-executor-plugin-slurm"
-version = "2.7.1"
+version = "2.8.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy" },
@@ -2843,9 +2843,9 @@ dependencies = [
     { name = "snakemake-interface-executor-plugins" },
     { name = "throttler" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/08/1f/62228ec30dc6138fbc6b30dc519d4a7ea87b9e3d91849b01a9883d234c10/snakemake_executor_plugin_slurm-2.7.1.tar.gz", hash = "sha256:b78bc1fe6de633c281fbb9c122af7c838656083df076a5860271a68b6ecba5b3", size = 39391, upload-time = "2026-06-01T09:41:15.958Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/8c/74/56d92bf50d148b6bb3f39d096ad7bc4aa21509b917bee5921b94551c3a80/snakemake_executor_plugin_slurm-2.8.0.tar.gz", hash = "sha256:97d931284b1452b6a7afd2f1b6d2002c278ce7a5e8f6a982dc77688817d30399", size = 137886, upload-time = "2026-08-10T09:33:07.06Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5b/c9/498402ca72dfcd7bd66303f0713aadd532e03f0adf53a0f616055afcad48/snakemake_executor_plugin_slurm-2.7.1-py3-none-any.whl", hash = "sha256:4c63216bdb7c016b774c77c58dc663d81d2fca5756a247a2e1abb476bf0708f1", size = 45592, upload-time = "2026-06-01T09:41:16.735Z" },
+    { url = "https://files.pythonhosted.org/packages/b6/1d/5c61f9db841498be3c933bee40debcc3e74b0b0552f2446a5920ed9592fa/snakemake_executor_plugin_slurm-2.8.0-py3-none-any.whl", hash = "sha256:9b7fdb89261cee00a499d592f408d985ff64ae89916ece768d0506eb848ab58c", size = 46256, upload-time = "2026-08-10T09:33:06.073Z" },
 ]
 
 [[package]]
