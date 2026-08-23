@@ -142,6 +142,51 @@ class TestComputeSignalResidual:
         np.testing.assert_allclose(residual[10:20], -2.0, atol=1e-6)
 
 
+class TestShortMapDoesNotDropTheRead:
+    """A map shorter than its sequence must produce features, not an exception.
+
+    Under ``anchor="reference"`` the sequence is the aligned reference slice
+    while the map comes from ``compute_ref_to_signal``, which strips trailing
+    non-match CIGAR ops -- so an alignment ending in a deletion has
+    ``num_mapped_bases < num_bases``. Both residual helpers used to hand numpy
+    a length mismatch, which raised out of ``build_leech_read``, and the
+    prepare workers turn any exception into dropping the whole read. The Rust
+    backend zipped and kept it, so the two backends disagreed on which reads
+    exist -- issue #185's failure mode with the backends swapped, and biased
+    the same way, toward indel-heavy and supplementary alignments.
+    """
+
+    def test_kmer_residual_features_survive_a_short_map(self):
+        sig = np.arange(50, dtype=np.float32)
+        # 5 mapped bases, 8 sequence bases.
+        s2s = np.array([0, 10, 20, 30, 40, 50], dtype=np.int64)
+        feats = compute_kmer_residual_features(sig, s2s, "ACGTACGT", {"ACG": 1.0}, 3)
+        for name, arr in feats.items():
+            assert arr.shape == (5,), f"{name}: {arr.shape}"
+
+    def test_signal_residual_survives_a_short_map(self):
+        sig = np.arange(50, dtype=np.float32)
+        s2s = np.array([0, 10, 20, 30, 40, 50], dtype=np.int64)
+        levels = np.arange(8, dtype=np.float32)  # 8 sequence bases, 5 mapped
+        out = compute_signal_residual(sig, s2s, levels)
+        assert out.shape == (50,)
+        assert np.isfinite(out).all()
+
+    def test_levels_are_truncated_not_reordered(self):
+        """The kept levels are the first N, matching Rust's zip."""
+        from leech.features import levels_for_mapped_bases
+
+        levels = np.array([1.0, 2.0, 3.0, 4.0, 5.0], dtype=np.float32)
+        np.testing.assert_array_equal(
+            levels_for_mapped_bases(levels, 3), np.array([1.0, 2.0, 3.0], np.float32)
+        )
+        # Short arrays zero-fill rather than raise.
+        np.testing.assert_array_equal(
+            levels_for_mapped_bases(levels, 7),
+            np.array([1.0, 2.0, 3.0, 4.0, 5.0, 0.0, 0.0], np.float32),
+        )
+
+
 class TestTCNDwellResidualModel:
     """Test that TCNDwellResidual handles 2-channel signal input."""
 

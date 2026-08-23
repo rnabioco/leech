@@ -537,6 +537,35 @@ def compute_dwell_features(dwells: np.ndarray, window: int = 5) -> dict[str, np.
     }
 
 
+def levels_for_mapped_bases(expected_levels: np.ndarray, num_bases: int) -> np.ndarray:
+    """Fit a per-*sequence* level array to the per-*mapped-base* feature grid.
+
+    ``extract_levels`` returns one level per base of the sequence, but every
+    feature array is indexed by mapped base — ``len(seq_to_sig_map) - 1`` — and
+    the two differ. Under ``anchor="reference"`` the sequence is the aligned
+    reference slice ``[reference_start:reference_end]`` while the map comes from
+    ``compute_ref_to_signal``, which strips trailing non-match CIGAR ops first,
+    so an alignment ending in a deletion yields a map shorter than its
+    sequence. See ``LeechRead.num_mapped_bases``.
+
+    Levels past the map are dropped and a short array is zero-filled, which is
+    what the Rust pipeline's ``compute_kmer_residual_features`` does by zipping.
+    Before this existed, the mismatch raised ``ValueError`` out of a numpy
+    broadcast, the prepare workers caught it, and the whole read was dropped —
+    on the Python backend only. That is issue #185's failure mode with the
+    backends swapped, and it selects the same population: indel-heavy and
+    supplementary alignments.
+    """
+    levels = np.asarray(expected_levels, dtype=np.float32)
+    if levels.size == num_bases:
+        return levels
+    fitted = np.zeros(num_bases, dtype=np.float32)
+    n = min(levels.size, num_bases)
+    if n > 0:
+        fitted[:n] = levels[:n]
+    return fitted
+
+
 def compute_kmer_residual_features(
     signal: np.ndarray,
     seq_to_sig_map: np.ndarray,
@@ -571,7 +600,9 @@ def compute_kmer_residual_features(
     from leech.signal_refine import extract_levels
 
     num_bases = len(seq_to_sig_map) - 1
-    expected = extract_levels(sequence, kmer_to_level, kmer_len, center_idx)
+    expected = levels_for_mapped_bases(
+        extract_levels(sequence, kmer_to_level, kmer_len, center_idx), num_bases
+    )
 
     # Compute per-base observed mean (reuse vectorized reduceat logic)
     observed_mean = np.zeros(num_bases, dtype=np.float32)
@@ -623,9 +654,14 @@ def compute_signal_residual(
     if total == 0:
         return np.zeros(sig_len, dtype=np.float32)
 
+    # `expected_levels` is per sequence base, `lengths` per mapped base, and
+    # they are not always the same count -- see `levels_for_mapped_bases`.
+    # np.repeat rejects the mismatch outright, which cost the read.
+    levels = levels_for_mapped_bases(expected_levels, len(lengths))
+
     # Clamp lengths to non-negative for repeat
     safe_lengths = np.maximum(lengths, 0)
-    expanded = np.repeat(expected_levels.astype(np.float32), safe_lengths)
+    expanded = np.repeat(levels, safe_lengths)
 
     # Place into signal-length array (seq_to_sig_map may not cover full signal)
     start = int(seq_to_sig_map[0])

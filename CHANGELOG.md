@@ -65,6 +65,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `model train` copies these into the model config and `predict` rebuilds a
   refiner from them, so the provenance chain carried defaults end to end.
 
+- Reads whose signal map is shorter than their sequence were dropped by the
+  Python `data prepare` backend and kept by the Rust one. Under
+  `anchor="reference"` the sequence is the aligned reference slice while the map
+  comes from `compute_ref_to_signal`, which strips trailing non-match CIGAR ops,
+  so an alignment ending in a deletion has `num_mapped_bases < num_bases`. Both
+  `compute_kmer_residual_features` and `compute_signal_residual` then handed
+  numpy a length mismatch; the `ValueError` propagated out of `build_leech_read`
+  and the workers' `except` turned it into losing the whole read. This is #185's
+  failure mode with the backends swapped, and it selects the same population:
+  indel-heavy and supplementary alignments. Levels are now fitted to the
+  mapped-base grid on both sides (`levels_for_mapped_bases`), matching what the
+  Rust pipeline did by zipping.
+
+- The Rust pipeline emitted `kmer_expected` at full sequence length while
+  deriving `kmer_residual` / `kmer_residual_abs` at the shorter mapped-base
+  length, so one read could produce feature rows of two different widths and
+  chunk extraction's `safe_end <= feat_row.len()` guard would zero some rows and
+  not others. All three are now mapped-base width. `compute_signal_residual`
+  also indexes levels with `.get` instead of `[i]`, since an out-of-range index
+  inside a rayon worker is a panic that takes the whole batch down.
+
 - `--no-rough-rescale` now warns that it is not honored. Refinement is
   delegated to escapepod, whose `refine_signal_map` always applies its
   least-squares rough rescale and exposes no switch, so neither backend could
