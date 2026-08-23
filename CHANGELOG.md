@@ -44,6 +44,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fitted rescale no longer applied, the Python behaviour is a no-op on both
   outputs, so `-1` now means "no refinement" on both backends.
 
+- Refiner settings reached the Rust `data prepare` backend incompletely.
+  `_prepare_batch_rust` asked the `SigMapRefiner` for `kmer_center_idx`, an
+  attribute it does not have, so `getattr(..., -1)` pinned the Rust path to
+  escapepod's `kmer_len / 2` default however the k-mer centre was configured —
+  while the Python backend used the configured value. Half-bandwidth and
+  scale-iters are now read off the same object too, rather than off
+  `SignalConfig`, whose `refine_*` fields could only agree with the refiner by
+  convention.
+
+- `compute_kmer_residual_features` and the signal-residual channel extracted
+  expected levels at `kmer_len // 2` while refinement used the refiner's
+  `center_idx`, so a non-default centre offset every residual feature against
+  the boundaries that produced it. Both now take the refiner's value, as the
+  Rust pipeline already did.
+
+- `prepare_config.json` recorded `refine_half_bandwidth`,
+  `refine_do_rough_rescale` and `refine_kmer_center_idx` as dataclass defaults
+  rather than what ran, because `data prepare` built the refiner without them.
+  `model train` copies these into the model config and `predict` rebuilds a
+  refiner from them, so the provenance chain carried defaults end to end.
+
+- `--no-rough-rescale` now warns that it is not honored. Refinement is
+  delegated to escapepod, whose `refine_signal_map` always applies its
+  least-squares rough rescale and exposes no switch, so neither backend could
+  act on the flag.
+
 ### Changed
 
 - The backend parity test (`tests/test_parallel_prep.py`) now parametrizes

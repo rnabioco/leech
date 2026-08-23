@@ -132,7 +132,22 @@ def handle_prepare(
         signal_refiner = SigMapRefiner.from_table(
             kmer_table, scale_iters=scale_iters, do_rough_rescale=rough_rescale
         )
-        logger.info(f"Signal map refinement enabled with kmer table: {kmer_table}")
+        logger.info(
+            f"Signal map refinement enabled with kmer table: {kmer_table} "
+            f"(scale_iters={scale_iters}, half_bandwidth={signal_refiner.half_bandwidth}, "
+            f"kmer_len={signal_refiner.kmer_len}, center_idx={signal_refiner.center_idx})"
+        )
+        if not rough_rescale:
+            # escapepod's refine_signal_map always runs its rough rescale and
+            # does not expose a switch, so neither backend can honor this. Say
+            # so rather than recording a setting that had no effect.
+            logger.warning(
+                "--no-rough-rescale is not honored: signal-map refinement is "
+                "delegated to escapepod, whose refine_signal_map always applies "
+                "its least-squares rough rescale internally. The fitted rescale "
+                "is discarded either way (#168), so this only affects the DP's "
+                "level matching, which cannot currently be switched off."
+            )
     if workers > 1:
         logger.info(f"Parallel mode: {workers} workers, {chunk_size} reads per batch")
         if recover_softclip_signal:
@@ -171,7 +186,21 @@ def handle_prepare(
             pa_mean=pa_mean,
             pa_stdev=pa_stdev,
             refine_signal_map=refine_signal_map,
+            # Mirror the refiner that will actually run rather than letting
+            # these keep their dataclass defaults. They are recorded in
+            # prepare_config.json, copied into the model config by `model
+            # train`, and used by `predict` to rebuild an equivalent refiner —
+            # so a default here is a corpus that misreports its own geometry.
             refine_scale_iters=scale_iters,
+            refine_half_bandwidth=(
+                signal_refiner.half_bandwidth if signal_refiner is not None else 5
+            ),
+            refine_do_rough_rescale=(
+                signal_refiner.do_rough_rescale if signal_refiner is not None else True
+            ),
+            refine_kmer_center_idx=(
+                signal_refiner.center_idx if signal_refiner is not None else -1
+            ),
             signal_refiner=signal_refiner,
             kmer_table_path=kmer_table if refine_signal_map else None,
         ),

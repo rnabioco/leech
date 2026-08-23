@@ -246,6 +246,92 @@ class TestRustPythonWorkerParity:
             )
 
 
+class TestRefinerSettingsReachRust:
+    """Every refiner setting the Python backend runs must reach the Rust one.
+
+    ``_prepare_batch_rust`` reads these off the ``SigMapRefiner``, and the
+    attribute names are not obvious: it used to ask for ``kmer_center_idx``,
+    which does not exist on the dataclass, so ``getattr(..., -1)`` pinned the
+    Rust path to escapepod's ``kmer_len / 2`` default however the refiner was
+    configured. A typo in an attribute name is invisible at runtime, so assert
+    on the call.
+    """
+
+    @pytest.fixture
+    def read_infos(self):
+        return collect_read_infos(TRNA_BAM, min_mapq=0)
+
+    def test_refiner_settings_are_forwarded(self, read_infos, monkeypatch):
+        from leech.io import get_motif_searcher
+        from leech.preparation import parallel as parallel_mod
+
+        config = _trna_config("basecall", refine=True)
+        refiner = config.signal.signal_refiner
+        assert refiner is not None
+        # Move every setting off its default so a dropped one is detectable.
+        refiner.center_idx = refiner.kmer_len // 2 + 1
+        refiner.half_bandwidth = 7
+        refiner.scale_iters = 1
+
+        captured: dict = {}
+
+        def _fake_extract(**kwargs):
+            captured.update(kwargs)
+            return []
+
+        monkeypatch.setattr(parallel_mod, "_rs_extract_training_chunks", _fake_extract)
+
+        searcher = get_motif_searcher(
+            mode=config.motif.motif_reference,
+            reference_sequences=config.motif.reference_sequences,
+            skip_indels=config.motif.skip_motif_indels,
+            anchor=config.signal.anchor,
+        )
+        parallel_mod._prepare_batch_rust(read_infos, config, searcher)
+
+        assert captured, "Rust extraction was never called"
+        assert captured["kmer_center_idx"] == refiner.center_idx
+        assert captured["refine_half_bandwidth"] == refiner.half_bandwidth
+        assert captured["refine_scale_iters"] == refiner.scale_iters
+        assert captured["kmer_len"] == refiner.kmer_len
+        assert captured["base_justify"] == config.chunk.base_justify
+
+    def test_non_default_kmer_center_keeps_backends_in_agreement(self, read_infos):
+        """A shifted k-mer centre must shift both backends, or neither."""
+        pytest.importorskip("leech_core")
+        from leech._rust_accel import HAS_RUST, _rs_extract_training_chunks
+
+        if not HAS_RUST or _rs_extract_training_chunks is None:
+            pytest.skip("leech_core Rust acceleration not available")
+
+        from leech.io import get_motif_searcher
+        from leech.preparation.parallel import _prepare_batch_rust, _process_read_chunk_worker
+
+        config = _trna_config("reference", refine=True)
+        assert config.signal.signal_refiner is not None
+        config.signal.signal_refiner.center_idx = config.signal.signal_refiner.kmer_len // 2 + 1
+
+        searcher = get_motif_searcher(
+            mode=config.motif.motif_reference,
+            reference_sequences=config.motif.reference_sequences,
+            skip_indels=config.motif.skip_motif_indels,
+            anchor=config.signal.anchor,
+        )
+        py_by_key = _chunks_by_key(_process_read_chunk_worker((read_infos, config)))
+        rs_by_key = _chunks_by_key(_prepare_batch_rust(read_infos, config, searcher))
+
+        assert py_by_key and rs_by_key
+        assert set(py_by_key) == set(rs_by_key)
+        for key in sorted(py_by_key):
+            np.testing.assert_allclose(
+                np.asarray(py_by_key[key]["features"], dtype=np.float32),
+                np.asarray(rs_by_key[key]["features"], dtype=np.float32),
+                atol=1e-3,
+                rtol=1e-3,
+                err_msg=f"features {key[0][:8]}",
+            )
+
+
 class TestEdgeWindowParity:
     """A focus base near either end of the sequence still yields a chunk.
 

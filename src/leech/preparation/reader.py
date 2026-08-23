@@ -135,12 +135,19 @@ def build_leech_read(
         and signal_config.signal_refiner is not None
         and hasattr(signal_config.signal_refiner, "kmer_to_level")
     ):
+        # `center_idx` matters here, not just in refinement: it decides which
+        # base of each k-mer window the expected level is attributed to, so
+        # leaving it at extract_levels' default while the refiner used its own
+        # would offset every residual feature against the boundaries that
+        # produced it. The Rust pipeline passes one `kmer_center_idx` to both.
+        kmer_center_idx = signal_config.signal_refiner.center_idx
         kmer_residual_feats = compute_kmer_residual_features(
             norm_signal,
             seq_to_sig_map,
             use_sequence,
             signal_config.signal_refiner.kmer_to_level,
             signal_config.signal_refiner.kmer_len,
+            center_idx=kmer_center_idx,
         )
         signal_feats.update(kmer_residual_feats)
 
@@ -150,6 +157,7 @@ def build_leech_read(
             use_sequence,
             signal_config.signal_refiner.kmer_to_level,
             signal_config.signal_refiner.kmer_len,
+            center_idx=kmer_center_idx,
         )
         sig_residual = compute_signal_residual(norm_signal, seq_to_sig_map, expected_levels)
 

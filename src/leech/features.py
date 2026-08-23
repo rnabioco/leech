@@ -543,6 +543,7 @@ def compute_kmer_residual_features(
     sequence: str,
     kmer_to_level: dict[str, float],
     kmer_len: int,
+    center_idx: int | None = None,
 ) -> dict[str, np.ndarray]:
     """
     Compute per-base kmer residual features by comparing observed signal to expected kmer levels.
@@ -556,6 +557,10 @@ def compute_kmer_residual_features(
         sequence: Base sequence
         kmer_to_level: Mapping from kmer string to expected signal level
         kmer_len: Length of kmers in the table
+        center_idx: Which base of the kmer window the level is attributed to.
+            ``None`` means ``kmer_len // 2``. Pass the refiner's ``center_idx``
+            so residuals are computed against the same attribution the refined
+            boundaries were.
 
     Returns:
         Dictionary with per-base features:
@@ -566,7 +571,7 @@ def compute_kmer_residual_features(
     from leech.signal_refine import extract_levels
 
     num_bases = len(seq_to_sig_map) - 1
-    expected = extract_levels(sequence, kmer_to_level, kmer_len)
+    expected = extract_levels(sequence, kmer_to_level, kmer_len, center_idx)
 
     # Compute per-base observed mean (reuse vectorized reduceat logic)
     observed_mean = np.zeros(num_bases, dtype=np.float32)
