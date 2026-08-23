@@ -71,7 +71,16 @@ def int_to_seq(int_seq: np.ndarray) -> str:
     return "".join(bases[i] if i < 5 else "N" for i in int_seq)
 
 
-_BASE_TO_IDX = {"A": 0, "C": 1, "G": 2, "T": 3}
+#: A=0, C=1, G=2, T=3, with U folded onto T.
+#:
+#: U matters: RNA references and some basecaller outputs carry it, and every
+#: other encoder in the tree maps it to 3 -- ``features.sequence_to_int``,
+#: ``encoding.seq_to_int``, and both Rust encoders
+#: (``sequence_to_int`` / ``encode_base_onehot`` in
+#: ``rust/src/inference_pipeline/features.rs``). This table did not, so a U
+#: encoded as an all-zero column here and as a T everywhere else -- the same
+#: base, two different model inputs, depending on which encoder ran.
+_BASE_TO_IDX = {"A": 0, "C": 1, "G": 2, "T": 3, "U": 3}
 
 
 def encode_kmer(sequence: str) -> torch.Tensor:
@@ -86,7 +95,7 @@ def encode_kmer(sequence: str) -> torch.Tensor:
 
     Returns:
         One-hot encoded tensor of shape (4, len(sequence))
-        Bases are encoded as: A=0, C=1, G=2, T=3
+        Bases are encoded as: A=0, C=1, G=2, T=3 (U folds onto T)
         Unknown bases (e.g., N) are encoded as all zeros
 
     Examples:
