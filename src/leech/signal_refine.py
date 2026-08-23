@@ -990,6 +990,22 @@ class SigMapRefiner:
             self.center_idx = self.kmer_len // 2
         if self.sd_params is not None:
             self.sd_arr = compute_dwell_pen_array(*self.sd_params)
+        # `algo`, `sd_params` and `sd_arr` no longer reach the DP: `refine`
+        # delegates to escapepod, which builds its own settings and takes an
+        # asymmetric dwell penalty rather than leech's short-dwell table. They
+        # are kept because the reference implementation below still consumes
+        # them, but a caller setting them expects to change refinement, so say
+        # that it will not.
+        if self.algo != DEFAULT_ALGO or self.sd_params is not None:
+            logger.warning(
+                "SigMapRefiner algo=%r / sd_params=%r are not applied: refinement "
+                "is delegated to escapepod's refine_signal_map, which uses an "
+                "asymmetric dwell penalty (target resolved per read, weight 0.5) "
+                "and exposes neither setting. They affect only the reference "
+                "implementation used by the parity tests.",
+                self.algo,
+                self.sd_params,
+            )
 
     @classmethod
     def from_table(

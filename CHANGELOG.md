@@ -156,6 +156,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- One per-base statistics implementation in Rust instead of two.
+  `signal_stats::compute_signal_stats` (the Python fast path) and
+  `inference_pipeline::features::compute_per_base_stats` (the Rust extraction
+  path) were near-identical copies that disagreed on negative map entries: the
+  first cast `i64` to `usize` raw and skipped the base, the second clamps to 0
+  and computes over the truncated span. The pyfunction is now a wrapper.
+
+- One POD5 batch-read helper instead of four copies. Parsing read ids as UUIDs,
+  `reads_by_ids`, `get_signal_bulk` was written out in `pod5_io` twice and in
+  both pipeline entry points — four places to forget `cached_reader`, which is
+  the one thing that must not be got wrong there (#176).
+
+- `SigMapRefiner` warns when `algo` or `sd_params` are set. Neither reaches the
+  DP any more: `refine` delegates to escapepod, which builds its own settings
+  and uses an asymmetric dwell penalty rather than leech's short-dwell table.
+
 - The backend parity test (`tests/test_parallel_prep.py`) now parametrizes
   `refine_signal_map` and `base_justify` instead of pinning them to `False` and
   `"center"`. Pinning them is why the divergence above survived four releases:

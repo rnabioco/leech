@@ -2,7 +2,16 @@
 
 use super::numeric::median_f32;
 
-pub(super) fn compute_per_base_stats(
+/// Per-base mean, median, population sd and range over `signal`.
+///
+/// Boundaries are clamped into the signal rather than cast raw: under
+/// `anchor="reference"` a map entry can be negative, and `as usize` on a
+/// negative `i64` wraps to something enormous. `signal_stats::compute_signal_stats`
+/// carried a second copy of this that did the raw cast, so the Python fast path
+/// and the Rust pipeline disagreed about those bases -- one skipped them and
+/// left zeros, the other computed over a truncated span. One implementation
+/// now, exported for the pyfunction wrapper.
+pub(crate) fn compute_per_base_stats(
     signal: &[f32],
     seq_to_sig: &[i64],
 ) -> (Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>) {
