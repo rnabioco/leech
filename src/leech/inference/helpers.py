@@ -9,6 +9,11 @@ import numpy as np
 import pysam
 import torch
 
+from leech._rust_accel import (
+    RUST_NORM_METHOD,
+    rust_supports_norm_method,
+    rust_supports_softclip_recovery,
+)
 from leech.constants import BELOW_THRESHOLD_LABEL
 from leech.features import encode_signal_kmer, sequence_to_int
 from leech.model_loading import load_model_from_checkpoint
@@ -525,11 +530,21 @@ def _run_batch(
 
 def check_rust_extraction_available(
     backend: str,
+    norm_method: str = RUST_NORM_METHOD,
+    recover_softclip_signal: bool = False,
 ) -> tuple[bool, object, object, object]:
     """Decide whether the rust monolithic extraction hot path is usable.
 
     Args:
         backend: CLI-provided backend selector ("auto", "rust", or "python").
+        norm_method: Signal normalization method for this run. The Rust
+            pipeline only implements ``median_mad`` (see
+            ``rust_supports_norm_method``), so anything else falls back to
+            Python rather than being silently normalized the wrong way.
+        recover_softclip_signal: Whether ref-anchored chunks should recover
+            real soft-clipped samples at alignment edges. The Rust pipeline
+            discards the pre-crop signal that recovery reads from (see
+            ``rust_supports_softclip_recovery``), so this also forces Python.
 
     Returns:
         (use_rust, extract_inference_chunks, preload_pod5_signals,
@@ -538,7 +553,7 @@ def check_rust_extraction_available(
 
     Raises:
         RuntimeError: if ``backend == "rust"`` but ``leech_core`` is not
-        importable.
+        importable, or if it cannot honor the requested options.
     """
     from leech._rust_accel import (
         HAS_RUST,
@@ -553,7 +568,34 @@ def check_rust_extraction_available(
             "--backend rust requested but leech_core is not installed. "
             "Build with: cd rust && uv run maturin develop --release"
         )
-    use_rust = rust_available and backend != "python"
+    norm_ok = rust_supports_norm_method(norm_method)
+    softclip_ok = rust_supports_softclip_recovery(recover_softclip_signal)
+    if backend == "rust" and not norm_ok:
+        raise RuntimeError(
+            f"--backend rust requested but the Rust pipeline only implements "
+            f"'{RUST_NORM_METHOD}' normalization, not '{norm_method}'. "
+            f"Use --backend python or --signal-norm {RUST_NORM_METHOD}."
+        )
+    if backend == "rust" and not softclip_ok:
+        raise RuntimeError(
+            "--backend rust requested but the Rust pipeline does not implement "
+            "recover_softclip_signal, which this model's config enables. "
+            "Use --backend python."
+        )
+    use_rust = rust_available and backend != "python" and norm_ok and softclip_ok
+    if rust_available and backend != "python" and not norm_ok:
+        logger.warning(
+            f"Signal normalization '{norm_method}' is not implemented in the Rust "
+            f"extraction path (which always applies '{RUST_NORM_METHOD}'); falling "
+            f"back to the Python path so chunks match how the model was trained."
+        )
+    if rust_available and backend != "python" and norm_ok and not softclip_ok:
+        logger.warning(
+            "recover_softclip_signal is not implemented in the Rust extraction "
+            "path (it discards the pre-crop signal the recovery reads from); "
+            "falling back to the Python path so chunks match how the model was "
+            "trained."
+        )
     return (
         use_rust,
         _rs_extract_inference_chunks,

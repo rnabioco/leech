@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `--signal-norm` is no longer silently ignored when the Rust extraction path
+  is active. `rust/src/inference_pipeline/processing.rs` always applies
+  median-MAD — its `PipelineConfig` carries no normalization field — but
+  neither the training gate (`preparation/parallel.py`) nor the inference gate
+  (`inference/helpers.py`) checked the method, so `--signal-norm zscore` with
+  `leech_core` installed produced median-MAD chunks instead. Measured on the
+  tRNA fixtures, every chunk differed, by up to 1.77 in normalized-signal
+  units. Because `predict` reads `signal_norm` back out of the model config,
+  this also meant a model trained with a non-default norm was served under a
+  different one. Both gates now consult `rust_supports_norm_method()`:
+  `--backend auto` falls back to Python with a warning, and `--backend rust`
+  raises rather than mis-normalizing. `median_mad` runs are unaffected.
+- `recover_softclip_signal` is likewise no longer silently dropped on the Rust
+  path. Recovery fills chunk-window samples outside the aligned region from the
+  full pre-crop signal, which the Rust `ProcessedRead` discards when it crops —
+  so enabling the flag with `leech_core` active produced the zero-padding the
+  flag exists to avoid. `prepare` warned about this for `--workers > 1` but
+  never gated on it, and the inference path did not warn at all. Both now route
+  to Python automatically (`--backend rust` raises). The prepare warning is
+  downgraded to info and no longer tells users to pass `--workers 1`, since
+  the fallback is now automatic; enabling the flag costs throughput, not
+  correctness.
+
+### Changed
+
+- Rust prepare-backend selection moved into
+  `preparation.parallel.rust_prepare_unsupported_reason()`, a pure function
+  returning the reason Rust cannot serve a given `PrepareConfig` (or `None`).
+  It collects the pre-existing `focus_map` bypass alongside the two new
+  capability checks, so the rules can be unit-tested without running a
+  preparation pass — the previous inline gate could only be exercised by
+  spawning the multiprocessing pool.
+
+### Added
+
+- Rust/Python chunk parity is now tested for `anchor="reference"`, not just
+  `anchor="basecall"`. The test helper already accepted the parameter but no
+  call site ever passed it, leaving the reference-anchored path — the default,
+  and the one that crops the signal to the aligned region and runs
+  `compute_ref_to_signal` — with no parity coverage. The two backends agree
+  exactly on signal, sequence and dwells there, and to float32 rounding on
+  features; the assertions now also cover features, which are what the model
+  actually consumes.
+
 ## [0.5.0] - 2026-08-17
 
 ### Added

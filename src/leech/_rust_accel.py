@@ -70,6 +70,46 @@ except ImportError:
     logger.debug("Rust acceleration not available, using pure Python fallbacks")
 
 
+#: The only signal normalization the Rust pipeline implements.
+#:
+#: ``rust/src/inference_pipeline/processing.rs`` calls ``normalize_median_mad``
+#: unconditionally — ``PipelineConfig`` carries no normalization field at all.
+#: Callers must therefore check :func:`rust_supports_norm_method` before
+#: dispatching to Rust, or a run configured for ``zscore`` / ``quantile`` /
+#: ``pa_scaling`` would be silently normalized as ``median_mad`` instead.
+RUST_NORM_METHOD = "median_mad"
+
+
+def rust_supports_norm_method(norm_method: str | None) -> bool:
+    """Whether the Rust extraction path can honor ``norm_method``.
+
+    ``None`` means "caller did not configure one", which resolves to the
+    :data:`RUST_NORM_METHOD` default and is therefore supported.
+    """
+    return norm_method is None or norm_method == RUST_NORM_METHOD
+
+
+#: Whether the Rust pipeline implements ref-anchored soft-clip edge recovery.
+#:
+#: ``ChunkConfig.recover_softclip_signal`` fills chunk-window samples that fall
+#: outside the aligned region with real soft-clipped signal instead of zeros.
+#: Doing that requires keeping the full pre-crop signal plus its offset, which
+#: the Python path stashes on ``LeechRead.full_signal`` / ``signal_offset``.
+#: The Rust ``ProcessedRead`` has no such fields — ``process_read_signal``
+#: overwrites ``norm_signal`` with the cropped slice and discards the rest —
+#: so the flag cannot be honored there and callers must fall back to Python.
+#: Flip this to ``True`` if that changes.
+RUST_SUPPORTS_SOFTCLIP_RECOVERY = False
+
+
+def rust_supports_softclip_recovery(recover_softclip_signal: bool) -> bool:
+    """Whether the Rust extraction path can honor ``recover_softclip_signal``.
+
+    Always ``True`` when the flag is off, since there is then nothing to honor.
+    """
+    return not recover_softclip_signal or RUST_SUPPORTS_SOFTCLIP_RECOVERY
+
+
 def check_rust() -> None:
     """Print Rust acceleration status."""
     if HAS_RUST:

@@ -135,7 +135,15 @@ class TestRustPythonWorkerParity:
         for key in ("signal", "sequence", "dwell", "features", "read_id", "base_idx"):
             assert key in c, f"missing key: {key}"
 
-    def test_rust_worker_matches_python(self, read_infos):
+    @pytest.mark.parametrize("anchor", ["basecall", "reference"])
+    def test_rust_worker_matches_python(self, read_infos, anchor):
+        """Both anchor modes must agree across backends.
+
+        ``reference`` is the default and the one that crops the normalized
+        signal to the aligned region before refinement, so it exercises
+        ``compute_ref_to_signal`` and the crop arithmetic that ``basecall``
+        never reaches.
+        """
         pytest.importorskip("leech_core")
         from leech._rust_accel import HAS_RUST, _rs_extract_training_chunks
 
@@ -145,7 +153,7 @@ class TestRustPythonWorkerParity:
         from leech.io import get_motif_searcher
         from leech.preparation.parallel import _prepare_batch_rust, _process_read_chunk_worker
 
-        config = _trna_config()
+        config = _trna_config(anchor)
         motif_searcher = get_motif_searcher(
             mode=config.motif.motif_reference,
             reference_sequences=config.motif.reference_sequences,
@@ -185,6 +193,14 @@ class TestRustPythonWorkerParity:
                 np.asarray(rc["dwell"], dtype=np.float32),
                 err_msg=f"dwell {rid}",
             )
+            # Features are what the model actually consumes, so hold them to
+            # float32 rounding too.
+            py_feat = np.asarray(pc["features"], dtype=np.float32)
+            rs_feat = np.asarray(rc["features"], dtype=np.float32)
+            assert py_feat.shape == rs_feat.shape, f"features shape {rid}"
+            np.testing.assert_allclose(
+                py_feat, rs_feat, atol=1e-3, rtol=1e-3, err_msg=f"features {rid}"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -211,3 +227,130 @@ class TestPrepareTrainingDataParallel:
         # Every chunk should carry its label from config.
         assert all(c["label"] == "Ala" for c in chunks)
         assert all(int(c["label_int"]) == 1 for c in chunks)
+
+
+# ---------------------------------------------------------------------------
+# Rust backend capability gating
+# ---------------------------------------------------------------------------
+
+
+class TestRustNormMethodGate:
+    """The Rust pipeline always applies median-MAD, so other norms must not
+    silently reach it — see ``rust/src/inference_pipeline/processing.rs``,
+    whose ``PipelineConfig`` carries no normalization field.
+    """
+
+    @pytest.mark.parametrize("norm", ["median_mad", None])
+    def test_supported_norms(self, norm):
+        from leech._rust_accel import rust_supports_norm_method
+
+        assert rust_supports_norm_method(norm)
+
+    @pytest.mark.parametrize("norm", ["zscore", "quantile", "pa_scaling"])
+    def test_unsupported_norms(self, norm):
+        from leech._rust_accel import rust_supports_norm_method
+
+        assert not rust_supports_norm_method(norm)
+
+    @pytest.mark.parametrize("norm", ["zscore", "quantile", "pa_scaling"])
+    def test_prepare_bypasses_rust(self, norm):
+        """A non-median_mad prepare run must not take the Rust path."""
+        from leech.preparation.parallel import rust_prepare_unsupported_reason
+
+        config = _trna_config()
+        config.signal.norm_method = norm
+        reason = rust_prepare_unsupported_reason(config)
+        assert reason is not None
+        assert "normalization" in reason
+
+    def test_prepare_allows_rust_for_median_mad(self):
+        from leech.preparation.parallel import rust_prepare_unsupported_reason
+
+        assert rust_prepare_unsupported_reason(_trna_config()) is None
+
+    def test_inference_backend_rust_rejects_unsupported_norm(self):
+        """``--backend rust`` must fail loudly rather than mis-normalize."""
+        pytest.importorskip("leech_core")
+        from leech._rust_accel import HAS_RUST
+        from leech.inference.helpers import check_rust_extraction_available
+
+        if not HAS_RUST:
+            pytest.skip("leech_core Rust acceleration not available")
+
+        with pytest.raises(RuntimeError, match="only implements"):
+            check_rust_extraction_available("rust", "zscore")
+
+    def test_inference_auto_falls_back(self):
+        """``--backend auto`` silently prefers Python for unsupported norms."""
+        pytest.importorskip("leech_core")
+        from leech._rust_accel import HAS_RUST
+        from leech.inference.helpers import check_rust_extraction_available
+
+        if not HAS_RUST:
+            pytest.skip("leech_core Rust acceleration not available")
+
+        use_rust, *_ = check_rust_extraction_available("auto", "zscore")
+        assert use_rust is False
+        use_rust, *_ = check_rust_extraction_available("auto", "median_mad")
+        assert use_rust is True
+
+
+class TestRustSoftclipRecoveryGate:
+    """``recover_softclip_signal`` fills chunk-window samples outside the
+    aligned region from the pre-crop signal. Rust's ``ProcessedRead`` never
+    keeps that signal, so the flag must route work to Python instead of being
+    silently dropped back to zero-padding.
+    """
+
+    def test_flag_off_is_supported(self):
+        from leech._rust_accel import rust_supports_softclip_recovery
+
+        assert rust_supports_softclip_recovery(False)
+
+    def test_flag_on_is_unsupported(self):
+        from leech._rust_accel import rust_supports_softclip_recovery
+
+        assert not rust_supports_softclip_recovery(True)
+
+    def test_prepare_bypasses_rust(self):
+        from leech.preparation.parallel import rust_prepare_unsupported_reason
+
+        config = _trna_config("reference")
+        config.chunk.recover_softclip_signal = True
+        reason = rust_prepare_unsupported_reason(config)
+        assert reason is not None
+        assert "recover_softclip_signal" in reason
+
+    def test_focus_map_still_bypasses_rust(self):
+        """The pre-existing focus_map bypass must survive the refactor."""
+        from leech.preparation.parallel import rust_prepare_unsupported_reason
+
+        config = _trna_config()
+        config.labeling.focus_map = {"read-a": (1, 100)}
+        reason = rust_prepare_unsupported_reason(config)
+        assert reason is not None
+        assert "focus_map" in reason
+
+    def test_inference_backend_rust_rejects_flag(self):
+        pytest.importorskip("leech_core")
+        from leech._rust_accel import HAS_RUST
+        from leech.inference.helpers import check_rust_extraction_available
+
+        if not HAS_RUST:
+            pytest.skip("leech_core Rust acceleration not available")
+
+        with pytest.raises(RuntimeError, match="recover_softclip_signal"):
+            check_rust_extraction_available("rust", "median_mad", True)
+
+    def test_inference_auto_falls_back(self):
+        pytest.importorskip("leech_core")
+        from leech._rust_accel import HAS_RUST
+        from leech.inference.helpers import check_rust_extraction_available
+
+        if not HAS_RUST:
+            pytest.skip("leech_core Rust acceleration not available")
+
+        use_rust, *_ = check_rust_extraction_available("auto", "median_mad", True)
+        assert use_rust is False
+        use_rust, *_ = check_rust_extraction_available("auto", "median_mad", False)
+        assert use_rust is True
