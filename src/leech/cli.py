@@ -1414,12 +1414,27 @@ eval.command_order = ("test", "compare", "importance", "ablation")
     default=512,
     help="Batch size for evaluation (default: 512)",
 )
-def test(model, test_data, output, device, batch_size):
+@click.option(
+    "--emit-scores",
+    type=click.Path(path_type=Path),
+    default=None,
+    help=(
+        "Also write per-chunk scores (read_ids, labels, probs) to this .npz. "
+        "The metrics JSON summarises one threshold; these are what any other "
+        "question needs."
+    ),
+)
+def test(model, test_data, output, device, batch_size, emit_scores):
     """Test a trained model on a holdout test set."""
     from leech.commands.eval import handle_test
 
     handle_test(
-        model=model, test_data=test_data, output=output, device=device, batch_size=batch_size
+        model=model,
+        test_data=test_data,
+        output=output,
+        device=device,
+        batch_size=batch_size,
+        emit_scores=emit_scores,
     )
 
 
