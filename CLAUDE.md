@@ -287,10 +287,27 @@ went unnoticed because nothing compared the fields. Rust does it in
 `inference.rs`. Only `--seq-encoding signal_kmer` reads them, which is why a
 full divergence was invisible.
 
-`tests/test_parallel_prep.py::TestEdgeWindowParity` and
-`::TestSignalKmerFieldParity` fail if any of this regresses; the backends are
-held to chunk-set equality (not overlap) and to identical `signal_kmer`
-encodings.
+**The feature window resolves in exactly one place:
+`chunking.resolve_feature_window`.** `feature_start`/`feature_end` are signed
+offsets from the focus base (end inclusive) and are optional — `None` means the
+k-mer window, `±kmer_context`. `0` is a legitimate start (features begin *at*
+the focus, the right-only window for tRNA 3' ends), so the fallback test must be
+`is None`; `feature_start or -kmer_context` silently widens the window, which
+was issue #189. Rust honors whatever it is passed, but the Python side stamped
+the resolved value onto the chunk with `or -5` and got it wrong on every chunk
+of a `--feature-start 0` run.
+
+Nothing about the arrays gives that away — they have the requested width and
+contents. The stored value is what `dataset.py` slices the k-mer window out of
+the feature array with (`kmer_start = -kmer_context - feature_start`) and what
+`training.py` copies into the model config for `predict`, so a wrong one shifts
+training and inference by `kmer_context` bases with no shape error. `data
+prepare` now logs the resolved window and records it in `prepare_config.json`.
+
+`tests/test_parallel_prep.py::TestEdgeWindowParity`,
+`::TestSignalKmerFieldParity`, and `::TestFeatureWindowParity` fail if any of
+this regresses; the backends are held to chunk-set equality (not overlap), to
+identical `signal_kmer` encodings, and to the same stored feature window.
 
 ### Key Classes and Functions
 

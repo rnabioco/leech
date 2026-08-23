@@ -74,6 +74,17 @@ class ChunkConfig:
     # coordinate-positioning audit for why it's opt-in.
     recover_softclip_signal: bool = False
 
+    def resolved_feature_window(self) -> tuple[int, int, int]:
+        """``(start, end, width)`` of the feature window this config asks for.
+
+        ``feature_start``/``feature_end`` are optional and mean "the k-mer
+        window" when unset; resolving them anywhere other than
+        ``resolve_feature_window`` is how issue #189 happened.
+        """
+        from leech.chunking import resolve_feature_window
+
+        return resolve_feature_window(self.feature_start, self.feature_end, self.kmer_context)
+
 
 @dataclass
 class LabelConfig:
@@ -119,6 +130,8 @@ class PrepareConfig:
 
             kmer_table_sha256 = compute_kmer_table_sha256(self.signal.kmer_table_path)
 
+        _feat_start, _feat_end, _feat_width = self.chunk.resolved_feature_window()
+
         return {
             "anchor": self.signal.anchor,
             "reverse_signal": self.signal.reverse_signal,
@@ -139,6 +152,13 @@ class PrepareConfig:
             "base_justify": self.chunk.base_justify,
             "feature_start": self.chunk.feature_start,
             "feature_end": self.chunk.feature_end,
+            # The requested window above may be null (meaning "the k-mer
+            # window"); these are what extraction actually used, so a corpus
+            # states its own feature geometry instead of leaving the reader to
+            # re-derive it (issue #189).
+            "feature_start_resolved": _feat_start,
+            "feature_end_resolved": _feat_end,
+            "feature_width": _feat_width,
             "signal_context": list(self.chunk.signal_context),
             "kmer_context": self.chunk.kmer_context,
             "recover_softclip_signal": self.chunk.recover_softclip_signal,

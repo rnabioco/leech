@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- The Rust `data prepare` backend stamped the wrong feature window onto every
+  chunk when `--feature-start 0` was requested (#189). `_prepare_batch_rust`
+  resolved the value it stored with `config.chunk.feature_start or -5`, and `0`
+  — features beginning *at* the focus base, the right-only window used for tRNA
+  3' ends — is falsy, so the chunk recorded `feature_start=-5`.
+
+  The extraction itself was correct: Rust receives the window and cuts the
+  requested bases, so the arrays have the right shape and the right contents.
+  What was wrong is the number the corpus reports about them, and that number is
+  load-bearing — `dataset.py` slices the k-mer window out of the feature array
+  at `(-kmer_context) - feature_start`, and `model train` copies it into the
+  model config that `predict` later reads. A corpus prepared this way trains and
+  infers on a window shifted by `kmer_context` bases, silently, with no shape
+  error anywhere. **If you prepared with the Rust backend and an explicit
+  `--feature-start 0`, re-prepare** (or rewrite `feature_starts` in the `.npz`).
+
+  Only a falsy start triggered it; `--feature-start -15` was always stored
+  correctly, which is why it went unnoticed. Both backends now resolve the
+  window through one `resolve_feature_window`, and `TestFeatureWindowParity`
+  holds them to the same stored metadata and the same array widths across four
+  windows.
+
+### Changed
+
+- `data prepare` logs the resolved feature window (`[+0, +20] relative to the
+  focus base, 21 bases wide`) and records `feature_start_resolved`,
+  `feature_end_resolved`, and `feature_width` in `prepare_config.json`. The
+  requested values are optional and default to the k-mer window, so "asked for
+  21 bases, got 11" was previously visible only by diffing two corpora field by
+  field (#189). `data merge` now warns when inputs disagree on the resolved
+  window.
+
 ## [0.6.1] - 2026-08-23
 
 Two silent parity bugs between the `data prepare` backends. **If you built a

@@ -27,6 +27,30 @@ if TYPE_CHECKING:
 logger = logging.getLogger("leech.chunking.extractor")
 
 
+def resolve_feature_window(
+    feature_start: int | None,
+    feature_end: int | None,
+    kmer_context: int = DEFAULT_KMER_CONTEXT,
+) -> tuple[int, int, int]:
+    """Resolve a requested feature window to ``(start, end, width)``.
+
+    ``start``/``end`` are signed offsets from the focus base, ``end``
+    inclusive, so ``width`` is ``end - start + 1``. ``None`` means "the k-mer
+    window", i.e. ``-kmer_context``/``+kmer_context``.
+
+    The `is None` tests are the point of this function. ``feature_start=0``
+    (features begin *at* the focus base, the right-only windows used for tRNA
+    3' ends) is a legitimate value that a truthiness test turns back into the
+    default, silently widening the window by ``kmer_context`` bases — that was
+    issue #189, and it reached the stored chunk metadata that `dataset.py`
+    slices features with. Every caller resolving a feature window must go
+    through here rather than re-deriving the rule.
+    """
+    start = feature_start if feature_start is not None else -kmer_context
+    end = feature_end if feature_end is not None else kmer_context
+    return start, end, end - start + 1
+
+
 class LeechRead:
     """
     Container for a single read's data with all features.
@@ -250,11 +274,11 @@ class LeechRead:
             kmer_seq = "".join(parts)
 
         # Extract dwell features with safe boundary handling
-        eff_start = feature_start if feature_start is not None else -kmer_context
-        eff_end = feature_end if feature_end is not None else kmer_context
+        eff_start, eff_end, dwell_width = resolve_feature_window(
+            feature_start, feature_end, kmer_context
+        )
         dwell_start = base_idx + eff_start
         dwell_end = base_idx + eff_end + 1
-        dwell_width = dwell_end - dwell_start
         safe_start = max(0, dwell_start)
         safe_end = min(len(self.dwells), dwell_end)
         if safe_start < safe_end:

@@ -11,8 +11,33 @@ Tests the feature window and motor-sensor offset compensation:
 import numpy as np
 import pytest
 
-from leech.chunking import LeechRead, save_chunks
+from leech.chunking import LeechRead, resolve_feature_window, save_chunks
 from leech.dataset import LeechDataset
+
+
+class TestResolveFeatureWindow:
+    """The one place the feature-window default lives.
+
+    A truthiness test instead of `is None` here turns `feature_start=0` --
+    features starting AT the focus base -- back into the default and widens
+    every chunk's window by `kmer_context` bases (issue #189).
+    """
+
+    def test_zero_start_is_kept(self):
+        assert resolve_feature_window(0, 20, kmer_context=5) == (0, 20, 21)
+
+    def test_zero_end_is_kept(self):
+        assert resolve_feature_window(-20, 0, kmer_context=5) == (-20, 0, 21)
+
+    def test_none_falls_back_to_kmer_window(self):
+        assert resolve_feature_window(None, None, kmer_context=5) == (-5, 5, 11)
+
+    def test_one_sided_defaults(self):
+        assert resolve_feature_window(0, None, kmer_context=5) == (0, 5, 6)
+        assert resolve_feature_window(None, 0, kmer_context=5) == (-5, 0, 6)
+
+    def test_width_follows_kmer_context(self):
+        assert resolve_feature_window(None, None, kmer_context=9) == (-9, 9, 19)
 
 
 @pytest.fixture

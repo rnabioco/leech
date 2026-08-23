@@ -45,7 +45,7 @@ from leech._rust_accel import (
     rust_supports_norm_method,
     rust_supports_softclip_recovery,
 )
-from leech.chunking import extract_training_chunks, find_focus_bases
+from leech.chunking import extract_training_chunks, find_focus_bases, resolve_feature_window
 from leech.configs import PrepareConfig
 from leech.io import ReadInfo, get_motif_searcher, iter_read_info_batches
 from leech.io.bam_reader import count_bam_reads
@@ -327,7 +327,17 @@ def _prepare_batch_rust(
         base_justify=config.chunk.base_justify,
     )
 
-    # Attach Python-side labels/metadata
+    # Attach Python-side labels/metadata.
+    # The window Rust actually used, resolved by the same rule Python's
+    # `get_chunk` applies -- `feature_start=0` is a real window, not a missing
+    # one, and `or -kmer_context` silently rewrote it (issue #189). The value
+    # lands in the chunk file and is what `dataset.py` slices the k-mer window
+    # out of the feature array with, so getting it wrong misaligns training
+    # input without changing any shape.
+    feat_start, feat_end, _ = resolve_feature_window(
+        config.chunk.feature_start, config.chunk.feature_end, config.chunk.kmer_context
+    )
+
     all_chunks: list[dict] = []
     for chunk_dict in rust_chunks:
         rid = chunk_dict["read_id"]
@@ -339,8 +349,8 @@ def _prepare_batch_rust(
         chunk_dict["source_group"] = ""
         chunk_dict["reference_name"] = meta.get("reference_name", "")
         chunk_dict["cl_value"] = meta.get("cl_value")
-        chunk_dict["feature_start"] = config.chunk.feature_start or -5
-        chunk_dict["feature_end"] = config.chunk.feature_end or 5
+        chunk_dict["feature_start"] = feat_start
+        chunk_dict["feature_end"] = feat_end
 
         all_chunks.append(chunk_dict)
 

@@ -84,7 +84,11 @@ class TestPOD5ReaderCache:
 # ---------------------------------------------------------------------------
 
 
-def _trna_config(anchor: str = "basecall") -> PrepareConfig:
+def _trna_config(
+    anchor: str = "basecall",
+    feature_start: int | None = None,
+    feature_end: int | None = None,
+) -> PrepareConfig:
     """Build a PrepareConfig that matches the tRNA fixtures."""
     reference_sequences = None
     motif_reference = "bam"
@@ -110,6 +114,8 @@ def _trna_config(anchor: str = "basecall") -> PrepareConfig:
         chunk=ChunkConfig(
             base_justify="center",
             signal_context=(200, 200),
+            feature_start=feature_start,
+            feature_end=feature_end,
         ),
         labeling=LabelConfig(label="Ala", label_int=1),
     )
@@ -512,6 +518,86 @@ class TestSignalKmerFieldParity:
 # End-to-end prepare_training_data_parallel (Rust path only — avoids mp.Pool
 # fork inside pytest, which deadlocks with BAM iteration on some environments)
 # ---------------------------------------------------------------------------
+
+
+class TestFeatureWindowParity:
+    """A non-default `--feature-start`/`--feature-end` must survive to Rust.
+
+    Every other parity test leaves the window unset, so the backends were only
+    ever compared on the default k-mer window. `--feature-start 0` -- features
+    beginning AT the focus base, the right-only window used for tRNA 3' ends
+    -- is falsy, and the Rust batch path resolved the stored value with
+    `config.chunk.feature_start or -5`, stamping -5 onto chunks whose arrays
+    actually started at 0 (issue #189).
+
+    Nothing about the array shapes gives that away: `dataset.py` slices the
+    k-mer window out of the feature array using the stored `feature_start`, so
+    the corpus trains on a window shifted by `kmer_context` bases in silence.
+    Hence the metadata is asserted here alongside the arrays.
+    """
+
+    @pytest.fixture
+    def read_infos(self):
+        return collect_read_infos(TRNA_BAM, min_mapq=0)
+
+    @pytest.mark.parametrize(
+        ("feature_start", "feature_end"),
+        [
+            (0, 20),  # right-only, the falsy start that started #189
+            (-15, 15),  # wide symmetric
+            (5, 25),  # entirely past the focus base
+            (None, None),  # default: resolves to +/- kmer_context
+        ],
+    )
+    def test_window_matches_python(self, read_infos, feature_start, feature_end):
+        pytest.importorskip("leech_core")
+        from leech._rust_accel import HAS_RUST, _rs_extract_training_chunks
+
+        if not HAS_RUST or _rs_extract_training_chunks is None:
+            pytest.skip("leech_core Rust acceleration not available")
+
+        from leech.io import get_motif_searcher
+        from leech.preparation.parallel import _prepare_batch_rust, _process_read_chunk_worker
+
+        config = _trna_config("reference", feature_start, feature_end)
+        motif_searcher = get_motif_searcher(
+            mode=config.motif.motif_reference,
+            reference_sequences=config.motif.reference_sequences,
+            skip_indels=config.motif.skip_motif_indels,
+            anchor=config.signal.anchor,
+        )
+        py = _chunks_by_key(_process_read_chunk_worker((read_infos, config)))
+        rs = _chunks_by_key(_prepare_batch_rust(read_infos, config, motif_searcher))
+        assert py and set(py) == set(rs)
+
+        exp_start = feature_start if feature_start is not None else -DEFAULT_KMER_CONTEXT
+        exp_end = feature_end if feature_end is not None else DEFAULT_KMER_CONTEXT
+        exp_width = exp_end - exp_start + 1
+
+        for key in py:
+            pc, rc = py[key], rs[key]
+            # The window each backend reports, and the window it actually cut.
+            assert int(pc["feature_start"]) == exp_start, f"python feature_start {key}"
+            assert int(rc["feature_start"]) == exp_start, f"rust feature_start {key}"
+            assert int(pc["feature_end"]) == exp_end, f"python feature_end {key}"
+            assert int(rc["feature_end"]) == exp_end, f"rust feature_end {key}"
+            assert np.asarray(pc["dwell"]).shape == (exp_width,), f"python dwell width {key}"
+            assert np.asarray(rc["dwell"]).shape == (exp_width,), f"rust dwell width {key}"
+            assert np.asarray(pc["features"]).shape[1] == exp_width, f"python feat width {key}"
+            assert np.asarray(rc["features"]).shape[1] == exp_width, f"rust feat width {key}"
+            # ... and agree on the contents of it.
+            np.testing.assert_array_equal(
+                np.asarray(pc["dwell"], dtype=np.float32),
+                np.asarray(rc["dwell"], dtype=np.float32),
+                err_msg=f"dwell {key}",
+            )
+            np.testing.assert_allclose(
+                np.asarray(pc["features"], dtype=np.float32),
+                np.asarray(rc["features"], dtype=np.float32),
+                atol=1e-3,
+                rtol=1e-3,
+                err_msg=f"features {key}",
+            )
 
 
 class TestPrepareTrainingDataParallel:

@@ -206,6 +206,16 @@ def handle_prepare(
         _json.dump(config.to_dict(), f, indent=2)
     logger.info(f"Saved preparation config to {prepare_config_path}")
 
+    # Echo the window extraction will actually use, not the one requested.
+    # `--feature-start`/`--feature-end` are optional and resolve to the k-mer
+    # window when unset, so "asked for 21 bases, got 11" is otherwise invisible
+    # until someone diffs two corpora field by field (issue #189).
+    _fs, _fe, _fw = config.chunk.resolved_feature_window()
+    logger.info(
+        f"Feature window: [{_fs:+d}, {_fe:+d}] relative to the focus base, "
+        f"{_fw} bases wide (kmer_context={config.chunk.kmer_context})"
+    )
+
     # Extract chunks (parallel or sequential)
     if workers > 1:
         # Parallel processing
