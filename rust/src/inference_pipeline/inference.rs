@@ -1,6 +1,6 @@
 //! Inference chunk extraction, parallel processing, and PyO3 entry points.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use numpy::IntoPyArray;
 use numpy::{PyArray1, PyArray2};
@@ -469,28 +469,9 @@ pub fn extract_inference_chunks<'py>(
     // --- Phase 1: POD5 I/O (indexed read lookup + bulk extract), GIL released ---
     // Pure Rust I/O over no Python objects, so the GIL is dropped for the whole
     // phase; see `crate::pod5_cache` for why the reader must be shared.
-    let target_uuids: HashSet<escapepod_signal::Uuid> = read_ids
-        .iter()
-        .filter_map(|s| escapepod_signal::Uuid::parse_str(s).ok())
-        .collect();
-
+    // Shared, already-indexed reader; see `pod5_cache::read_signals_by_ids`.
     let signal_map: HashMap<String, Vec<i16>> = py
-        .detach(|| -> Result<HashMap<String, Vec<i16>>, String> {
-            let reader = crate::pod5_cache::cached_reader(pod5_path)?;
-
-            let matched_reads = reader
-                .reads_by_ids(&target_uuids)
-                .map_err(|e| format!("Failed to look up reads: {e}"))?;
-            let to_extract: Vec<(String, Vec<u64>)> = matched_reads
-                .into_iter()
-                .map(|r| (r.read_id.to_string(), r.signal_rows))
-                .collect();
-
-            let bulk_signals = reader
-                .get_signal_bulk(&to_extract)
-                .map_err(|e| format!("Signal extraction failed: {e}"))?;
-            Ok(bulk_signals.into_iter().collect())
-        })
+        .detach(|| crate::pod5_cache::read_signal_map_by_ids(pod5_path, &read_ids))
         .map_err(pyo3::exceptions::PyIOError::new_err)?;
 
     _process_and_convert(

@@ -1,6 +1,6 @@
 //! Training chunk extraction, parallel processing, and PyO3 entry point.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use numpy::IntoPyArray;
 use pyo3::prelude::*;
@@ -422,30 +422,9 @@ pub fn extract_training_chunks<'py>(
     // Rust I/O touching no Python objects, and holding it here would serialize
     // every caller thread against the slowest network read in the batch,
     // making it impossible to overlap batches (issue #176).
-    let target_uuids: HashSet<escapepod_signal::Uuid> = read_ids
-        .iter()
-        .filter_map(|s| escapepod_signal::Uuid::parse_str(s).ok())
-        .collect();
-
+    // Shared, already-indexed reader; see `pod5_cache::read_signals_by_ids`.
     let signal_map: HashMap<String, Vec<i16>> = py
-        .detach(|| -> Result<HashMap<String, Vec<i16>>, String> {
-            // Shared, already-indexed reader. Opening one per call instead
-            // would re-scan the whole reads table on every batch.
-            let reader = crate::pod5_cache::cached_reader(pod5_path)?;
-
-            let matched_reads = reader
-                .reads_by_ids(&target_uuids)
-                .map_err(|e| format!("Failed to look up reads: {e}"))?;
-            let to_extract: Vec<(String, Vec<u64>)> = matched_reads
-                .into_iter()
-                .map(|r| (r.read_id.to_string(), r.signal_rows))
-                .collect();
-
-            let bulk_signals = reader
-                .get_signal_bulk(&to_extract)
-                .map_err(|e| format!("Signal extraction failed: {e}"))?;
-            Ok(bulk_signals.into_iter().collect())
-        })
+        .detach(|| crate::pod5_cache::read_signal_map_by_ids(pod5_path, &read_ids))
         .map_err(pyo3::exceptions::PyIOError::new_err)?;
 
     _process_and_convert_training(

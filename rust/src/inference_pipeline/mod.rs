@@ -22,3 +22,7 @@ pub use inference::_test_ref_to_signal;
 pub use inference::extract_chunks_from_preloaded;
 pub use inference::extract_inference_chunks;
 pub use training::extract_training_chunks;
+
+// Shared with the standalone `compute_signal_stats` pyfunction so there is one
+// per-base statistics implementation rather than two that can drift.
+pub(crate) use features::compute_per_base_stats;
