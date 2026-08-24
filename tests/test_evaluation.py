@@ -3,11 +3,20 @@
 `_save_scores` is where the per-chunk scores are joined back to read ids, and
 the join is positional -- so these tests are mostly about the failure mode that
 join has, not about the happy path.
+
+The rest covers how the eval DataLoader is sized: a worker-less loader on a GPU
+is what left issue #205 running at 8% utilisation.
 """
+
+from types import SimpleNamespace
+from unittest import mock
 
 import numpy as np
 import pytest
 
+import leech.dataset as dataset
+from leech.constants import AUTO_DATALOADER_WORKERS
+from leech.dataset import resolve_dataloader_workers
 from leech.evaluation import _save_scores
 
 READ_IDS = ["read-a", "read-b", "read-c", "read-d"]
@@ -77,3 +86,89 @@ class TestSaveScores:
         _save_scores(out, _test_npz(tmp_path), LABELS, PROBS)
 
         assert out.exists()
+
+
+class TestDataLoaderWorkers:
+    """Eval must feed the GPU from more than one process (issue #205).
+
+    ``eval test`` built its loader with ``num_workers`` pinned to 0, so collate,
+    the host-to-device copy and the forward pass all ran serially in one Python
+    process: 8% GPU utilisation on an A5000 while training on the same corpus
+    and hardware ran at 98%.
+    """
+
+    def test_cuda_auto_gets_workers(self, monkeypatch):
+        """0 means auto, and auto on a GPU is not zero."""
+        monkeypatch.setattr(dataset, "_usable_cpus", lambda: 32)
+
+        assert AUTO_DATALOADER_WORKERS > 0
+        assert resolve_dataloader_workers(0, "cuda") == AUTO_DATALOADER_WORKERS
+
+    def test_cpu_auto_stays_serial(self):
+        """On CPU the workers would compete with the compute for the same cores."""
+        assert resolve_dataloader_workers(0, "cpu") == 0
+
+    def test_auto_fits_the_cpu_allocation(self, monkeypatch):
+        """A GPU job given 2 cores must not fork 8 workers onto them."""
+        monkeypatch.setattr(dataset, "_usable_cpus", lambda: 2)
+
+        assert resolve_dataloader_workers(0, "cuda") == 1
+
+    def test_auto_keeps_one_worker_on_a_single_core(self, monkeypatch):
+        """Even one worker decouples collate and the H2D copy from the forward pass."""
+        monkeypatch.setattr(dataset, "_usable_cpus", lambda: 1)
+
+        assert resolve_dataloader_workers(0, "cuda") == 1
+
+    def test_explicit_request_wins(self, monkeypatch):
+        """Only auto is capped; a caller who asks for N gets N."""
+        monkeypatch.setattr(dataset, "_usable_cpus", lambda: 2)
+
+        assert resolve_dataloader_workers(3, "cuda") == 3
+        assert resolve_dataloader_workers(3, "cpu") == 3
+
+    def test_daemon_forces_zero(self, monkeypatch):
+        """A pool worker (grid search) cannot spawn children; a loader with
+        workers raises there, whatever the caller asked for."""
+        import multiprocessing
+
+        monkeypatch.setattr(
+            multiprocessing, "current_process", lambda: SimpleNamespace(daemon=True)
+        )
+
+        assert resolve_dataloader_workers(8, "cuda") == 0
+
+    def test_cli_forwards_num_workers(self, tmp_path):
+        """--num-workers reaches evaluate_model, so a caller can fix this from
+        outside even where the auto default is wrong."""
+        from click.testing import CliRunner
+
+        import leech.evaluation as evaluation
+        from leech.cli import cli
+
+        captured: dict = {}
+        model = tmp_path / "model.pt"
+        model.touch()
+        test_data = tmp_path / "test.npz"
+        test_data.touch()
+
+        with mock.patch.object(evaluation, "evaluate_model", captured.update):
+            result = CliRunner().invoke(
+                cli,
+                [
+                    "eval",
+                    "test",
+                    "--model",
+                    str(model),
+                    "--test-data",
+                    str(test_data),
+                    "--output",
+                    str(tmp_path / "metrics.json"),
+                    "--num-workers",
+                    "4",
+                ],
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code == 0, result.output
+        assert captured["num_workers"] == 4

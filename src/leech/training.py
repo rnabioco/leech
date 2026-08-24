@@ -27,7 +27,7 @@ from torch.utils.data import DataLoader, WeightedRandomSampler
 
 import leech
 from leech.cli_config import make_console
-from leech.dataset import LeechDataset, collate_fn
+from leech.dataset import LeechDataset, collate_fn, resolve_dataloader_workers
 from leech.losses import AdversarialHead, FocalBCEWithLogitsLoss, RegressionHead
 from leech.models import get_model
 from leech.models.inference_wrapper import ModelInferenceWrapper
@@ -1487,25 +1487,7 @@ def train_model(
         )
 
     # Create data loaders
-    # Daemon processes (e.g. multiprocessing pool workers) cannot spawn children,
-    # so num_workers must be 0. On CPU, workers compete for CPU time with training;
-    # with pre-tensorized data __getitem__ is trivially fast, so workers add overhead.
-    import multiprocessing
-
-    is_daemon = multiprocessing.current_process().daemon
-    if is_daemon:
-        effective_workers = 0
-    elif num_workers > 0:
-        effective_workers = num_workers
-    elif device == "cpu":
-        effective_workers = 0
-    else:
-        effective_workers = 8  # auto default for CUDA
-
-    logger.info(
-        f"DataLoader workers: {effective_workers} "
-        f"(requested={num_workers}, daemon={is_daemon}, device={device})"
-    )
+    effective_workers = resolve_dataloader_workers(num_workers, device)
 
     # Seed the DataLoader generator from the run seed so shuffle order and each
     # worker's base seed are reproducible regardless of prior global-RNG use.

@@ -20,7 +20,7 @@ from sklearn.metrics import (
 )
 from torch.utils.data import DataLoader
 
-from leech.dataset import LeechDataset, collate_fn
+from leech.dataset import LeechDataset, collate_fn, resolve_dataloader_workers
 from leech.metrics import compute_metrics, print_metrics, save_metrics
 from leech.model_loading import load_model_from_checkpoint
 from leech.models.inference_wrapper import ModelInferenceWrapper
@@ -77,6 +77,7 @@ def evaluate_model(
     kmer_len: int | None = None,
     batch_size: int = 512,
     device: str = "cuda",
+    num_workers: int = 0,
     emit_scores: Path | None = None,
 ) -> dict:
     """
@@ -90,6 +91,8 @@ def evaluate_model(
         kmer_len: K-mer length (if None, read from model config)
         batch_size: Batch size for evaluation
         device: Device for inference
+        num_workers: DataLoader workers; 0 means auto (see
+            ``resolve_dataloader_workers``) -- up to 8 on CUDA, 0 on CPU
         emit_scores: If set, also write per-chunk scores to this .npz. A
             confusion matrix is a summary at ONE threshold; the scores behind
             it answer questions the summary cannot -- per-group error
@@ -160,9 +163,15 @@ def evaluate_model(
         dwell_template_table=dwell_template_table,
     )
 
-    loader_kwargs: dict = {"num_workers": 0}
+    # Collate, the host-to-device copy and the forward pass run serially in
+    # whichever process owns the loader, so a worker-less loader on a GPU means
+    # one core feeding an accelerator that then waits (issue #205).
+    effective_workers = resolve_dataloader_workers(num_workers, device)
+    loader_kwargs: dict = {"num_workers": effective_workers}
     if device != "cpu":
         loader_kwargs["pin_memory"] = True
+    if effective_workers > 0:
+        loader_kwargs["prefetch_factor"] = 4
     test_loader = DataLoader(
         test_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_fn, **loader_kwargs
     )
