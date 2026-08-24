@@ -8,6 +8,7 @@
 
 <b>L</b>earning <b>E</b>nhanced <b>E</b>lectrical <b>C</b>lassifiers from <b>H</b>anopore signals
 
+[![PyPI](https://img.shields.io/pypi/v/leech.svg)](https://pypi.org/project/leech/)
 [![CI](https://github.com/rnabioco/leech/actions/workflows/ci.yml/badge.svg)](https://github.com/rnabioco/leech/actions/workflows/ci.yml)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -18,6 +19,18 @@ tables (the BAM `mv` tag) and feeds them alongside raw signal and sequence
 context into a multi-branch neural network, giving it information that
 signal-only tools like [Remora](https://github.com/nanoporetech/remora)
 discard.
+
+## Install
+
+```bash
+uv add "leech[rust]"     # or: pip install "leech[rust]"
+```
+
+Released on PyPI as [`leech`](https://pypi.org/project/leech/) plus
+[`leech-core`](https://pypi.org/project/leech-core/), the optional Rust
+accelerator pulled by the `rust` extra. See
+[Installation](getting-started/installation.md) for the from-source path and
+platform notes.
 
 ## Workflow
 
