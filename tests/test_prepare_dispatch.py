@@ -174,3 +174,53 @@ class TestThroughputMonitor:
         (record,) = caplog.records
         assert "Rust (rayon)" in record.message
         assert "reads/s" in record.message
+
+
+class TestBackendSelection:
+    """``--backend`` on ``data prepare`` (issue #177).
+
+    It replaced the ``LEECH_DISABLE_RUST`` environment variable, which killed
+    the ``leech_core`` import process-wide -- far broader than the one step it
+    was meant to switch, and invisible to anything but a grep. Forcing a
+    backend is a measurement tool: both produce identical chunks
+    (``test_backend_parity.py``), so the only thing it changes is throughput.
+    """
+
+    @staticmethod
+    def _config(monkeypatch, *, reason=None, available=True):
+        monkeypatch.setattr(par, "rust_prepare_unsupported_reason", lambda cfg: reason)
+        monkeypatch.setattr(par, "HAS_RUST", available)
+        monkeypatch.setattr(par, "_rs_extract_training_chunks", object() if available else None)
+        return object()
+
+    def test_auto_takes_rust_when_it_can_serve(self, monkeypatch):
+        cfg = self._config(monkeypatch)
+        assert par._select_prepare_backend(cfg, "auto") is True
+
+    def test_auto_falls_back_when_config_unsupported(self, monkeypatch):
+        cfg = self._config(monkeypatch, reason="focus_map is set")
+        assert par._select_prepare_backend(cfg, "auto") is False
+
+    def test_auto_falls_back_when_unavailable(self, monkeypatch):
+        cfg = self._config(monkeypatch, available=False)
+        assert par._select_prepare_backend(cfg, "auto") is False
+
+    def test_python_forces_the_pool_even_when_rust_is_ready(self, monkeypatch):
+        cfg = self._config(monkeypatch)
+        assert par._select_prepare_backend(cfg, "python") is False
+
+    def test_rust_raises_rather_than_falling_back(self, monkeypatch):
+        """A forced run that quietly took the other path measures nothing."""
+        cfg = self._config(monkeypatch, reason="focus_map is set")
+        with pytest.raises(RuntimeError, match="cannot serve this config"):
+            par._select_prepare_backend(cfg, "rust")
+
+    def test_rust_raises_when_leech_core_is_missing(self, monkeypatch):
+        cfg = self._config(monkeypatch, available=False)
+        with pytest.raises(RuntimeError, match="not importable"):
+            par._select_prepare_backend(cfg, "rust")
+
+    def test_unknown_choice_is_rejected(self, monkeypatch):
+        cfg = self._config(monkeypatch)
+        with pytest.raises(ValueError, match="unknown backend"):
+            par._select_prepare_backend(cfg, "rusty")

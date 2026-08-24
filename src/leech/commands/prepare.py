@@ -64,6 +64,7 @@ def handle_prepare(
     compress: bool = True,
     workers: int = 8,
     chunk_size: int = 100,
+    backend: str = "auto",
     base_justify: str = "center",
     feature_start: int | None = None,
     feature_end: int | None = None,
@@ -245,6 +246,14 @@ def handle_prepare(
         f"{_fw} bases wide (kmer_context={config.chunk.kmer_context})"
     )
 
+    # The sequential path is Python-only, so --backend rust there is a demand
+    # that cannot be met. Say so rather than quietly running the other backend:
+    # a forced run that took the wrong path measures nothing.
+    if backend == "rust" and workers <= 1:
+        raise ValueError(
+            "--backend rust requires --workers > 1 (the sequential path is Python-only)"
+        )
+
     # Extract chunks (parallel or sequential)
     if workers > 1:
         # Parallel processing
@@ -255,6 +264,7 @@ def handle_prepare(
             num_workers=workers,
             chunk_size=chunk_size,
             min_mapq=min_mapq,
+            backend_choice=backend,
         )
 
         if len(chunks) == 0:

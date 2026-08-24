@@ -6,46 +6,10 @@ to the pure Python/numpy implementations.
 """
 
 import logging
-import os
 
 logger = logging.getLogger("leech._rust_accel")
 
-#: Set ``LEECH_DISABLE_RUST=1`` to take the pure-Python paths even when
-#: ``leech_core`` is installed.
-#:
-#: "Rust is available" and "Rust is faster here" are different claims, and
-#: without a switch there is no way to measure the second. They came apart on
-#: reference-anchored ``data prepare`` over a 145 GB merged POD5 (#176):
-#: 13 reads/s on the Rust path against 130 at 8 workers and 234 at 32 on the
-#: Python one.
-#:
-#: That step is bound by random-read LATENCY into the POD5 -- a
-#: coordinate-sorted BAM visits reads in an order unrelated to how they are
-#: stored -- so throughput is set by how many reads are in flight. The Rust
-#: path used to leave exactly one: it re-opened (and so re-scanned) the POD5
-#: per batch, held the GIL across the I/O, and was driven from a serial batch
-#: loop. #178 fixed all three, and ``prepare`` now logs achieved reads/s on
-#: every progress line so the two paths can be compared without this switch.
-#:
-#: Still useful for measuring, and as an escape hatch on data where the
-#: Python path happens to win. Leave it unset unless you have timed both on
-#: your own data.
-#:
-#: If you are comparing the two paths, check that both halves of your install
-#: are current: ``leech_core`` is a separate package from ``leech``, and a
-#: freshly built extension paired with a stale ``leech`` gives the new Rust
-#: with the old serial driver. The startup line names the dispatch, so a
-#: build without "batches in flight" in it is the stale pairing.
-DISABLE_RUST = os.environ.get("LEECH_DISABLE_RUST", "").strip().lower() in {
-    "1",
-    "true",
-    "yes",
-}
-
 try:
-    if DISABLE_RUST:
-        raise ImportError("leech_core disabled by LEECH_DISABLE_RUST")
-
     from leech_core import _test_process_read as _rs_test_process_read
     from leech_core import compute_signal_stats as _rs_compute_signal_stats
     from leech_core import encode_signal_kmer as _rs_encode_signal_kmer
@@ -62,8 +26,6 @@ try:
     logger.debug("Rust acceleration available (leech_core)")
 except ImportError:
     HAS_RUST = False
-    if DISABLE_RUST:
-        logger.info("Rust acceleration disabled by LEECH_DISABLE_RUST")
     _rs_test_process_read = None
     _rs_compute_signal_stats = None
     _rs_encode_signal_kmer = None

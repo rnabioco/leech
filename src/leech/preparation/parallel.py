@@ -552,12 +552,48 @@ class _ThroughputMonitor:
 # ---------------------------------------------------------------------------
 
 
+def _select_prepare_backend(config: PrepareConfig, backend_choice: str) -> bool:
+    """Resolve ``--backend`` against availability and config support.
+
+    One place decides, so the log line and the dispatch cannot disagree.
+    ``"rust"`` is a demand and raises rather than silently falling back --
+    a forced run that quietly took the other path measures nothing.
+    """
+    if backend_choice not in {"auto", "rust", "python"}:
+        raise ValueError(f"unknown backend {backend_choice!r}; expected auto, rust, or python")
+
+    rust_available = HAS_RUST and _rs_extract_training_chunks is not None
+    reason = rust_prepare_unsupported_reason(config)
+
+    if backend_choice == "python":
+        if rust_available:
+            logger.info("Using Python workers: --backend python")
+        return False
+
+    if backend_choice == "rust":
+        if not rust_available:
+            raise RuntimeError(
+                "--backend rust: leech_core is not importable. Build it with rust/build.sh, "
+                "or use --backend auto."
+            )
+        if reason is not None:
+            raise RuntimeError(
+                f"--backend rust: the Rust pipeline cannot serve this config: {reason}"
+            )
+        return True
+
+    if reason is not None and rust_available:
+        logger.warning(f"Using Python workers instead of the Rust pipeline: {reason}")
+    return rust_available and reason is None
+
+
 def prepare_training_data_parallel(
     bam_path: Path,
     config: PrepareConfig,
     num_workers: int = 8,
     chunk_size: int = 100,
     min_mapq: int = 0,
+    backend_choice: str = "auto",
 ) -> tuple[list[dict[str, np.ndarray | str | int | None]], dict[str, int]]:
     """
     Prepare training data from BAM and POD5 files using multiprocessing.
@@ -579,14 +615,16 @@ def prepare_training_data_parallel(
         num_workers: Number of parallel workers
         chunk_size: Number of reads to process per worker batch
         min_mapq: Minimum mapping quality
+        backend_choice: ``"auto"`` picks Rust when it is available and can
+            serve the config; ``"rust"`` raises if it cannot; ``"python"``
+            forces the worker pool. Forcing is a measurement tool -- the two
+            backends produce identical chunks, so the only thing that differs
+            is throughput.
 
     Returns:
         Tuple of (chunks, statistics)
     """
-    reason = rust_prepare_unsupported_reason(config)
-    use_rust = HAS_RUST and _rs_extract_training_chunks is not None and reason is None
-    if reason is not None and HAS_RUST:
-        logger.warning(f"Using Python workers instead of the Rust pipeline: {reason}")
+    use_rust = _select_prepare_backend(config, backend_choice)
     backend = "Rust (rayon)" if use_rust else "Python (multiprocessing)"
     # Name the dispatch, not just the backend. `leech_core` is a separate
     # package from `leech`, so a freshly built extension can sit alongside a
