@@ -1003,6 +1003,34 @@ def resolve_dataloader_workers(num_workers: int, device: str) -> int:
     return effective
 
 
+def resolve_val_dataloader_workers(val_dataset, num_workers: int, device: str) -> int:
+    """Workers for the VALIDATION loader.
+
+    Same rule as [`resolve_dataloader_workers`], with one exception: a dataset
+    that fell back to per-chunk lists gets 0.
+
+    Validation used to be hardcoded to 0 on the grounds that its `__getitem__`
+    is trivially fast. That does not follow -- collate, pin, host-to-device and
+    the forward pass still serialize onto one core, which cost ~5 minutes of
+    near-idle GPU at every epoch boundary on a 1.18M-chunk val set (issue #207,
+    the same failure as #205 for `eval test`).
+
+    The memory half of the old rationale is real but narrow. `LeechDataset`
+    stacks per-chunk tensors into contiguous buffers precisely so a fork
+    COW-shares them; only the `_try_stack` list fallback makes each worker
+    fault N PyObject headers into private copies and multiply peak RSS. So the
+    exception is scoped to exactly that case rather than applied to every run.
+    """
+    workers = resolve_dataloader_workers(num_workers, device)
+    if workers and getattr(val_dataset, "_signals_tensor", None) is None:
+        logger.info(
+            "Validation dataset is not contiguously stacked; using 0 DataLoader "
+            "workers to avoid multiplying peak RSS across forks"
+        )
+        return 0
+    return workers
+
+
 class SignalDataset(Dataset):
     """Minimal signal-only dataset for ``SignalCNN``.
 
