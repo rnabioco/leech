@@ -5,6 +5,49 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.7] - 2026-08-24
+
+Promotes `0.6.7-rc.1` unchanged — no commits landed between the two tags. The
+release candidate exercised the new PyPI path end to end, so this is the first
+version installable with `uv add "leech[rust]"` / `pip install "leech[rust]"`
+rather than from a checkout.
+
+### Added
+
+- **`leech` and `leech-core` publish to PyPI automatically on a `v*` tag**
+  (#210), via Trusted Publishing (OIDC) — no API token, no repository secret.
+  Publishing was previously a manual `uv publish`, and `leech-core` was never
+  published at all, so the `rust` extra could not resolve for anyone outside
+  the workspace.
+- **Two release gates.** `check-version` fails the tag before anything builds
+  if it disagrees with either declared version — a PyPI upload cannot be
+  replaced, so a wrong version reaching the index is permanent. `test` runs the
+  suite at the tagged revision, which nothing did before: CI triggers on pushes
+  to `main` and on PRs, never on a tag.
+
+### Changed
+
+- **`leech-core` ships one stable-ABI wheel per platform** (pyo3 `abi3-py312`)
+  rather than one per interpreter, so a new CPython release no longer needs a
+  new `leech` release to get a wheel. Wheels cover manylinux x86_64 and
+  aarch64; other platforms build from the sdist, which needs a Rust toolchain
+  and network access to github.com.
+- **The `rust` extra pins `leech-core` exactly.** `check_rust()` only *warns*
+  on a mismatch, so for a PyPI install the pin is the only thing preventing a
+  current `leech` from pairing with a stale extension — the hazard that let
+  `leech_core` sit at `0.3.0` across ten releases.
+
+### Fixed
+
+- **A correctly paired pre-release reported a version mismatch.** The two
+  halves report versions in different dialects: `leech`'s through
+  `importlib.metadata` in PEP 440 normal form, `leech_core`'s from
+  `env!("CARGO_PKG_VERSION")` as literal Cargo semver. A final release spells
+  the same in both, so the raw `==` looked correct until the first
+  pre-release — where it warned on every install and failed the new `test`
+  gate, making pre-releases unpublishable. Found by the `0.6.7-rc.1`
+  rehearsal.
+
 ## [0.6.7-rc.1] - 2026-08-24
 
 First release candidate. `leech` is public, and both distributions now publish
