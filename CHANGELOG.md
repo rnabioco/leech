@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **`leech_core`'s version now tracks `leech`'s.** It sat at `0.3.0` from v0.3.1
+  to v0.6.4 — ten releases, spanning #176, #185, #187, #188, #192, #195, #200
+  and #202 — while the Rust changed underneath it. That is not cosmetic: `uv`
+  keys its archive cache on the version string, so `uv sync` could restore a
+  compiled extension built from *any* earlier revision that shared it, over a
+  current build. Observed doing exactly that: 43 tests failing with pre-#188
+  behaviour (`chunk_signal_kmer_inputs` no longer snapping `map[0] = 0`) against
+  an up-to-date working tree.
+
+  `rust/Cargo.toml` is the single source; `rust/pyproject.toml` takes it via
+  `dynamic = ["version"]` rather than carrying a third copy to keep in sync.
+
+- **`leech_core` exports `__version__`, and `check_rust()` reports a mismatch.**
+  The two are separate distributions built from one repository, so an extension
+  compiled at one revision can sit alongside a `leech` from another. That
+  pairing does not raise — it produces different numbers, which is how #176
+  stayed hidden (new Rust, old serial driver). `check_rust()` printed a bare
+  `leech_core` with no version at all; it now names it and says which half to
+  rebuild.
+
+### Added
+
+- `tests/test_rust_version_pairing.py`: asserts the two declared versions agree
+  in the source tree, that `rust/pyproject.toml` defers rather than pinning a
+  third copy, and that the *installed* extension matches the tree — the last of
+  which is the stale-build hazard itself.
+
+### Changed
+
+- The release process (`.claude/commands/release.md`) bumps both versions and
+  re-verifies `check_rust()` afterwards, so this cannot drift again by omission.
+
 ## [0.6.4] - 2026-08-24
 
 Dependency and internal-consolidation release. No user-facing behaviour change;

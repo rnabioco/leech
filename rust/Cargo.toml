@@ -1,6 +1,18 @@
 [package]
 name = "leech_core"
-version = "0.3.0"
+# Tracks `leech`'s version in the root pyproject.toml and must be bumped with
+# it -- see `.claude/commands/release.md`. This is the single source: the wheel
+# takes it via `dynamic = ["version"]` in rust/pyproject.toml, and the module
+# exports it as `leech_core.__version__` via `env!("CARGO_PKG_VERSION")`.
+#
+# Not semver for this crate; nothing consumes leech_core independently. The
+# string's real job is to be a cache key and a staleness check. uv keys its
+# archive cache on it, so a version that does not move lets `uv sync` restore a
+# compiled extension built from any earlier revision that shared it. It sat at
+# 0.3.0 from leech v0.3.1 to v0.6.4 -- ten releases spanning #176, #185, #187,
+# #188, #192, #195, #200 and #202 -- and did exactly that, silently reinstating
+# pre-#188 chunk behaviour over a current build.
+version = "0.6.4"
 edition = "2024"
 
 [lib]
