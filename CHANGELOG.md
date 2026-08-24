@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`leech eval test` fed the GPU from a single core.** The eval DataLoader was
+  built with `num_workers` pinned to 0 and no flag to change it, so collate, the
+  host-to-device copy and the forward pass all ran serially in one process: 8%
+  GPU utilisation on an A5000 over a 7,835,334-chunk test set, against 98% for
+  `model train` on the same corpus and the same card — same dataset class, same
+  collate function, the only difference being that training had workers.
+
+  The rule for sizing a loader now lives in exactly one place,
+  `dataset.resolve_dataloader_workers`, which training carried inline and
+  evaluation did not have at all. Its semantics are training's: `0` means
+  *auto*, auto is 0 on CPU (workers there would compete with the compute) and
+  >0 on CUDA, and a daemonic process — a grid-search `mp.Pool` worker — always
+  gets 0, because it cannot spawn children.
+
+  Auto is now also capped by the CPUs the process may actually run on
+  (`sched_getaffinity`, which respects the Slurm cpuset). Without that, the
+  pipeline's GPU eval rules, which request `cpus_per_task=2`, would have forked
+  8 workers onto 2 cores. An explicit `--num-workers N` is honoured as given.
+
 - **`leech_core`'s version now tracks `leech`'s.** It sat at `0.3.0` from v0.3.1
   to v0.6.4 — ten releases, spanning #176, #185, #187, #188, #192, #195, #200
   and #202 — while the Rust changed underneath it. That is not cosmetic: `uv`
@@ -30,6 +49,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rebuild.
 
 ### Added
+
+- `--num-workers` on `leech eval test`, so the auto default can be overridden
+  where it is wrong (default `0` = auto, as on `model train`).
 
 - `tests/test_rust_version_pairing.py`: asserts the two declared versions agree
   in the source tree, that `rust/pyproject.toml` defers rather than pinning a

@@ -596,7 +596,7 @@ def merge(
     "--num-workers",
     type=int,
     default=0,
-    help="DataLoader workers (0=auto: 8 for GPU, 0 for CPU)",
+    help="DataLoader workers (0=auto: up to 8 on GPU, capped by CPUs; 0 on CPU)",
 )
 @click.option(
     "--balance-groups/--no-balance-groups",
@@ -1194,7 +1194,7 @@ def fetch(name, model_version, tag, output_dir, repo):
     "--num-workers",
     type=int,
     default=0,
-    help="DataLoader workers (0=auto: 8 for GPU, 0 for CPU)",
+    help="DataLoader workers (0=auto: up to 8 on GPU, capped by CPUs; 0 on CPU)",
 )
 @click.option(
     "--balance-groups/--no-balance-groups",
@@ -1415,6 +1415,12 @@ eval.command_order = ("test", "compare", "importance", "ablation")
     help="Batch size for evaluation (default: 512)",
 )
 @click.option(
+    "--num-workers",
+    type=int,
+    default=0,
+    help="DataLoader workers (0=auto: up to 8 on GPU, capped by CPUs; 0 on CPU)",
+)
+@click.option(
     "--emit-scores",
     type=click.Path(path_type=Path),
     default=None,
@@ -1424,7 +1430,7 @@ eval.command_order = ("test", "compare", "importance", "ablation")
         "question needs."
     ),
 )
-def test(model, test_data, output, device, batch_size, emit_scores):
+def test(model, test_data, output, device, batch_size, num_workers, emit_scores):
     """Test a trained model on a holdout test set."""
     from leech.commands.eval import handle_test
 
@@ -1434,6 +1440,7 @@ def test(model, test_data, output, device, batch_size, emit_scores):
         output=output,
         device=device,
         batch_size=batch_size,
+        num_workers=num_workers,
         emit_scores=emit_scores,
     )
 

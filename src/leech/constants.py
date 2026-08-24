@@ -55,6 +55,9 @@ KMER_RESIDUAL_FEATURES = [
 DEFAULT_BATCH_SIZE = 128
 DEFAULT_LEARNING_RATE = 0.001
 DEFAULT_EPOCHS = 50
+# Workers a DataLoader gets when the caller asks for 0 ("auto") on a GPU.
+# Resolved by ``dataset.resolve_dataloader_workers``; 0 on CPU.
+AUTO_DATALOADER_WORKERS = 8
 
 # Advanced training defaults
 DEFAULT_WEIGHT_DECAY = 0.0

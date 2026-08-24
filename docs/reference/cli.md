@@ -504,7 +504,18 @@ leech eval test --model FILE --test-data FILES --output FILE [OPTIONS]
 | `--test-data FILES` | *(required)* | Test data JSON files |
 | `--output FILE` | *(required)* | Output metrics JSON |
 | `--device STR` | auto | `cuda` or `cpu` |
+| `--num-workers INT` | `0` (auto) | DataLoader workers; auto is 8 on GPU (capped by the job's CPU allocation) and 0 on CPU |
 | `--emit-scores PATH` | *(off)* | Also write per-chunk `read_ids`, `labels`, `probs` to an `.npz` |
+
+!!! note "Why `--num-workers` matters on a GPU"
+
+    Collate, the host-to-device copy and the forward pass all run in whichever
+    process owns the loader. With no workers that is one core feeding an
+    accelerator that then waits: a 7.8M-chunk test set evaluated at **8% GPU**
+    on an A5000, while training the same corpus on the same card ran at 98%.
+    The default now resolves to workers on CUDA, capped by the CPUs the job is
+    actually allowed to use, so a 2-core allocation gets 1 worker rather than 8
+    thrashing ones. Raise it when the eval job has cores to spare.
 
 !!! note "Why `--emit-scores` exists"
 

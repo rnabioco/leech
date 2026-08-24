@@ -34,6 +34,7 @@ Example:
 """
 
 import logging
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -43,6 +44,7 @@ import torch
 from torch.utils.data import Dataset
 
 from leech.chunking import load_chunks
+from leech.constants import AUTO_DATALOADER_WORKERS
 from leech.features import encode_signal_kmer, sequence_to_int
 from leech.models.inference_wrapper import ModelInferenceWrapper
 
@@ -951,6 +953,54 @@ def collate_fn(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
         result["cl_target"] = torch.stack([item["cl_target"] for item in batch])
 
     return result
+
+
+def _usable_cpus() -> int:
+    """CPUs this process is allowed to run on, not CPUs the machine has."""
+    try:
+        return len(os.sched_getaffinity(0))
+    except AttributeError:  # not Linux
+        return os.cpu_count() or 1
+
+
+def resolve_dataloader_workers(num_workers: int, device: str) -> int:
+    """Resolve how many DataLoader workers to actually use.
+
+    ``num_workers=0`` means AUTO here, not "no workers": on CUDA it becomes
+    ``AUTO_DATALOADER_WORKERS``, on CPU it stays 0. Feeding a GPU from the main
+    process serializes collate, host-to-device copy and forward pass onto one
+    core, which is how ``eval test`` sat at 8% GPU on an A5000 (issue #205).
+    On CPU the workers would compete with the compute for the same cores, and
+    ``__getitem__`` is trivially fast against pre-tensorized data, so they only
+    add overhead.
+
+    The daemon check is not an optimization: daemonic processes (a
+    ``multiprocessing.Pool`` worker, as in grid search) cannot spawn children,
+    so a DataLoader with workers raises there. Every caller that builds a
+    loader goes through this function, so that guard lives in one place.
+
+    The auto count is capped by the CPUs this process may actually run on --
+    ``sched_getaffinity``, which respects the Slurm cpuset -- because a GPU job
+    allocated 2 cores would otherwise fork 8 workers onto them and thrash. An
+    explicit request is honoured as given; only "auto" is capped.
+    """
+    import multiprocessing
+
+    is_daemon = multiprocessing.current_process().daemon
+    if is_daemon:
+        effective = 0
+    elif num_workers > 0:
+        effective = num_workers
+    elif device == "cpu":
+        effective = 0
+    else:
+        effective = min(AUTO_DATALOADER_WORKERS, max(1, _usable_cpus() - 1))
+
+    logger.info(
+        f"DataLoader workers: {effective} "
+        f"(requested={num_workers}, daemon={is_daemon}, device={device})"
+    )
+    return effective
 
 
 class SignalDataset(Dataset):
