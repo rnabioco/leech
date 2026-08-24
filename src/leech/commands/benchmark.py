@@ -60,6 +60,8 @@ def _build_loader_and_model(
         loader_kwargs["persistent_workers"] = True
         loader_kwargs["prefetch_factor"] = prefetch_factor
 
+    # dataloader-workers: unresolved -- the worker count is the independent
+    # variable being benchmarked here, so resolving it defeats the measurement.
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, **loader_kwargs)
 
     first = next(iter(loader))

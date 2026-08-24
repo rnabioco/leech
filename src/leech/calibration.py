@@ -24,7 +24,7 @@ from torch.optim import LBFGS
 from torch.utils.data import DataLoader
 
 from leech.chunking import load_chunks
-from leech.dataset import LeechDataset, collate_fn
+from leech.dataset import LeechDataset, collate_fn, resolve_val_dataloader_workers
 from leech.models import get_model
 from leech.models.inference_wrapper import ModelInferenceWrapper
 
@@ -195,7 +195,11 @@ def calibrate_model(
         batch_size=batch_size,
         shuffle=False,
         collate_fn=collate_fn,
-        num_workers=num_workers,
+        # `num_workers=0` means AUTO, not "no workers" -- on CUDA feeding the
+        # forward pass from the main process alone leaves the GPU idle (#205,
+        # #207). The resolver caps by the Slurm cpuset, returns 0 in daemonic
+        # workers, and keeps 0 when the dataset fell back to per-chunk lists.
+        num_workers=resolve_val_dataloader_workers(val_dataset, num_workers, device),
     )
 
     logger.info(f"Collecting logits from {len(val_dataset)} validation samples...")
@@ -545,7 +549,7 @@ def calibrate_model_multiclass(
         batch_size=batch_size,
         shuffle=False,
         collate_fn=collate_fn,
-        num_workers=num_workers,
+        num_workers=resolve_val_dataloader_workers(val_dataset, num_workers, device),
     )
 
     logger.info(f"Collecting logits from {len(val_dataset)} validation samples...")

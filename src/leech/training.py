@@ -263,10 +263,14 @@ def train_signal_classifier(
     from leech.models import SignalCNN
 
     model = SignalCNN(num_classes=num_classes, signal_len=signal_len, channels=model_channels)
+    # dataloader-workers: unresolved -- legacy SignalCNN path. SignalDataset is
+    # not a LeechDataset and has no `_signals_tensor`, so the val guard would
+    # force 0 and change behaviour; converting it needs its own measurement.
     train_loader = DataLoader(
         SignalDataset(x_train, y_train), batch_size=batch_size, shuffle=True, collate_fn=collate_fn
     )
     val_loader = (
+        # dataloader-workers: unresolved -- same legacy SignalCNN path.
         DataLoader(SignalDataset(x_val, y_val), batch_size=batch_size, collate_fn=collate_fn)
         if x_val is not None
         else None
