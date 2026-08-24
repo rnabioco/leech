@@ -220,6 +220,17 @@ data.command_order = ("prepare", "merge")
     help="Number of reads to process per worker batch (for parallel processing)",
 )
 @click.option(
+    "--backend",
+    type=click.Choice(["auto", "rust", "python"]),
+    default="auto",
+    help=(
+        'Extraction backend: "auto" (default, Rust when available and the config '
+        'is supported), "rust" (force Rust, error if unavailable), "python" (force '
+        "the worker pool). Both backends produce identical chunks, so this only "
+        "changes throughput — use it to compare the two on your own data."
+    ),
+)
+@click.option(
     "--base-justify",
     type=click.Choice(["start", "center", "end"]),
     default="center",
@@ -340,6 +351,7 @@ def prepare(
     no_compress,
     workers,
     chunk_size,
+    backend,
     base_justify,
     feature_start,
     feature_end,
@@ -391,6 +403,7 @@ def prepare(
         compress=not no_compress,
         workers=workers,
         chunk_size=chunk_size,
+        backend=backend,
         base_justify=base_justify,
         feature_start=feature_start,
         feature_end=feature_end,
