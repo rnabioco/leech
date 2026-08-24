@@ -400,7 +400,7 @@ mapping (`escapepod_signal::mapping`).
 - `ConvLSTMRemoraBase`: Remora-compatible architecture without dwell features
 - `RemoraModelWrapper` (`models/remora_compat.py`): Wraps Remora models for leech inference
 
-**Model bundling** (`util.py`)
+**Model bundling** (`bundling.py`)
 - Bundle multiple trained models into a single versioned .pt file
 - Supports pairwise and one-vs-all aggregation modes
 - Provenance tracking: motif, motif_offset, base_justify stored per model
@@ -426,6 +426,8 @@ src/leech/           # Main package source
 │   ├── eval.py      # Test command handler
 │   ├── optimize.py  # Grid search optimization handler
 │   ├── predict.py   # Inference/predict handler
+│   ├── benchmark.py # Training-step benchmark handler
+│   ├── release_model.py  # model release/list/fetch handlers
 │   └── analyze.py   # Analysis command handlers (importance, ablation)
 ├── confounds.py     # Confound mappings for adversarial training
 ├── io/              # Input/output operations
@@ -444,13 +446,25 @@ src/leech/           # Main package source
 │   └── serialization.py # Save/load chunks
 ├── splitting/       # Data splitting
 │   └── splitter.py  # Train/val/test split
+├── release/         # `leech model release/list/fetch` (GitHub Releases)
+│   ├── spec.py          # ReleaseSpec: YAML model-release specification
+│   ├── notes.py         # Release-note rendering
+│   └── github.py        # gh CLI wrapper
 ├── features.py      # MoveTable, dwell times, signal levels, normalization
-├── dataset.py       # PyTorch Dataset classes for loading chunks
+├── dataset.py       # PyTorch Dataset classes, collate_fn, DataLoader sizing
 ├── training.py      # Training loop with Trainer class
 ├── evaluation.py    # Model evaluation and testing
-├── inference.py     # Inference engine (multi-model, Remora compat)
+├── inference/       # Inference engine (multi-model, Remora compat)
+│   ├── single.py        # Single-model inference
+│   ├── bundle.py        # Bundled multi-model inference
+│   ├── aggregation.py   # Pairwise / one-vs-all vote aggregation
+│   └── helpers.py       # Shared inference helpers
 ├── gridsearch.py    # Grid search for chunk context optimization
-├── util.py          # Helper functions (model loading, bundling, metrics)
+├── bundling.py      # Bundle models into one versioned .pt
+├── model_loading.py # Checkpoint loading, seeding
+├── model_export.py  # TorchScript / torch.export packaging
+├── metrics.py       # Metric computation, printing, serialization
+├── profiling.py     # Per-phase step timing for `model benchmark`
 ├── losses.py        # Loss function implementations (BCE, focal, cross-entropy)
 ├── calibration.py   # Post-hoc Platt scaling for model calibration
 ├── signal_refine.py # Signal map refinement via kmer level tables
@@ -458,6 +472,7 @@ src/leech/           # Main package source
 ├── configs.py       # Dataclass-based configuration management
 ├── constants.py     # Project-wide constants and defaults
 ├── logging_config.py  # Logging setup
+├── data/            # Packaged kmer level table (rna004_9mer_levels_v1)
 └── models/          # Model architectures
     ├── __init__.py            # Model registry and get_model()
     ├── nn.py                  # Layer registry + composition primitives
@@ -558,7 +573,7 @@ The workflow is designed to integrate with the leech CLI commands and supports b
 
 ## Current Status
 
-The codebase is feature-complete (v0.6.3):
+The codebase is feature-complete (v0.6.5):
 - ✓ Feature extraction with dwell offset tuning and signal map refinement
 - ✓ 29 model architectures: ConvLSTM (Base/Dwell × BN/GN/LN/Attn), TCN (Dwell/DwellGN/DwellLN/DwellResidual/DwellResidualGN/DwellResidualLN/DwellResidualMotor/DwellResidualDwellAttn/DwellSplitResidual/DwellSplitResidualLN), Transformer (Dwell/DwellResidual), ResNet, ConvOnly, SignalCNN
 - ✓ Config-driven model layer: bonito-style layer registry (`models/nn.py`) + TOML architecture declarations (`models/configs/`)
@@ -593,6 +608,10 @@ The codebase is feature-complete (v0.6.3):
 - ✓ One extraction-sequence rule (`chunking.extraction_sequence`) shared by
   prepare and predict; `base_justify`, `dwell_offset` and
   `require_query_mapping` reach the Rust inference path
+- ✓ One DataLoader worker rule (`dataset.resolve_dataloader_workers`) for
+  training, validation and eval: auto on GPU (capped by the job's CPU
+  allocation), serial on CPU, never workers inside a daemonic pool worker;
+  `eval test` takes `--num-workers`
 
 All core functionality is implemented and ready for use.
 

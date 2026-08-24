@@ -5,7 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.5] - 2026-08-24
+
+Performance and build-correctness release. `leech eval test` was feeding the GPU
+from a single process and now uses DataLoader workers, and `leech_core`'s
+version tracks `leech`'s so `uv` can no longer restore a stale compiled
+extension over a current build.
 
 ### Fixed
 
@@ -62,6 +67,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The release process (`.claude/commands/release.md`) bumps both versions and
   re-verifies `check_rust()` afterwards, so this cannot drift again by omission.
+
+### Documentation
+
+- Four `leech model` subcommands were missing from the CLI reference entirely --
+  `benchmark`, `release`, `list` and `fetch`. All four are now documented with
+  their options and defaults taken from the click definitions.
+
+- `CLAUDE.md`'s module tree named `util.py` and `inference.py`, neither of which
+  has existed since they were split into `bundling.py` / `model_loading.py` /
+  `model_export.py` / `metrics.py` and the `inference/` package. Thirteen
+  modules were unlisted; the tree is now checked against the source.
+
+- The docs workflow watched `mkdocs.yml` for changes. The site has built with
+  zensical since the migration, so edits to `zensical.toml` never triggered a
+  deploy.
 
 ## [0.6.4] - 2026-08-24
 

@@ -9,7 +9,7 @@ The CLI is organized into workflow-based command groups:
 | Group | Commands | Purpose |
 |-------|----------|---------|
 | `leech data` | `prepare`, `merge` | Extract features, merge and split datasets |
-| `leech model` | `train`, `optimize`, `benchmark`, `bundle`, `bundle-info`, `calibrate`, `export` | Train, tune, calibrate, and package models |
+| `leech model` | `train`, `optimize`, `benchmark`, `bundle`, `bundle-info`, `calibrate`, `export`, `release`, `list`, `fetch` | Train, tune, calibrate, package, and publish models |
 | `leech eval` | `test`, `compare`, `importance`, `ablation` | Evaluate and analyze models |
 | `leech predict` | *(top-level)* | Run inference on new data |
 
@@ -392,6 +392,45 @@ leech model optimize \
   --output-dir grid_results/
 ```
 
+### leech model benchmark
+
+Time one training step end to end -- per-phase timing plus GPU utilization -- to find out which
+phase is the bottleneck before changing anything.
+
+```bash
+leech model benchmark --train-data FILE --output-dir DIR [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--train-data PATH` | *(required)* | Training dataset (`.npz` or JSON chunks config) to benchmark against |
+| `-o, --output-dir DIR` | *(required)* | Directory for `benchmark.json` (and `trace.json` with `--trace`) |
+| `--model STR` | `ConvLSTMDwell` | Architecture to benchmark |
+| `--batch-size INT` | `128` | Batch size |
+| `--device STR` | `cuda` | `cuda` or `cpu` |
+| `--num-steps INT` | `100` | Timed training steps |
+| `--warmup-steps INT` | `10` | Warmup steps (cuDNN benchmark, `torch.compile`, prefetch queue) |
+| `--num-workers INT` | `8` | DataLoader workers (0 disables multiprocessing) |
+| `--prefetch-factor INT` | `4` | DataLoader `prefetch_factor` |
+| `--mixed-precision / --no-mixed-precision` | enabled | `torch.amp` autocast + `GradScaler` |
+| `--non-blocking / --blocking` | blocking | `.to(device, non_blocking=True)` for host-to-device copies |
+| `--signal-len INT` | `400` | Signal length |
+| `--kmer-len INT` | `11` | K-mer length |
+| `--seq-encoding STR` | `signal_kmer` | `base_onehot` or `signal_kmer` |
+| `--signal-mode STR` | `both` | `both`, `residual`, or `signal` |
+| `--trace / --no-trace` | off | Also collect a `torch.profiler` Chrome trace |
+| `--trace-active-steps INT` | `10` | Active steps captured in the trace |
+
+**Example:**
+
+```bash
+leech model benchmark \
+  --train-data chunks/train.npz \
+  --model TCNDwellResidual \
+  --num-workers 8 \
+  -o bench/
+```
+
 ### leech model bundle
 
 Package multiple trained pairwise models into a single versioned bundle file for deployment.
@@ -484,6 +523,67 @@ leech model export --model-dir DIR --output FILE
 
 ```bash
 leech model export --model-dir models/best/ -o exported_model.pt
+```
+
+### leech model release
+
+Publish a model bundle to GitHub Releases from a YAML spec. Requires the GitHub CLI (`gh`),
+authenticated (`gh auth login`) unless `--dry-run`.
+
+```bash
+leech model release --spec FILE [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--spec FILE` | *(required)* | YAML release spec |
+| `--dry-run` | off | Render the release notes and preview without publishing |
+| `--overwrite` | off | Delete an existing release with the same tag first |
+| `--repo STR` | `origin` | GitHub repo as `owner/repo` |
+
+The spec requires `name`, `version`, `description` and `bundle` (path to the `.pt`), and accepts
+`organism`, `experiment`, `data_version`, `training`, `metrics`, `prerelease` and `extra_assets`.
+The release tag is `model-{name}-v{version}`.
+
+**Example:**
+
+```bash
+leech model release --spec release/ivc-pairwise.yaml --dry-run
+```
+
+### leech model list
+
+Browse published model releases on GitHub.
+
+```bash
+leech model list [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--repo STR` | `origin` | GitHub repo as `owner/repo` |
+| `--limit INT` | `30` | Maximum releases to show |
+
+### leech model fetch
+
+Download a published bundle from GitHub Releases.
+
+```bash
+leech model fetch --name NAME --version VERSION [OPTIONS]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--name STR` | -- | Model release name (e.g. `ivc-pairwise-v1`) |
+| `--version STR` | -- | Model version |
+| `--tag STR` | -- | Full release tag, as an alternative to `--name` + `--version` |
+| `-o, --output-dir DIR` | `.` | Directory to download into |
+| `--repo STR` | `origin` | GitHub repo as `owner/repo` |
+
+**Example:**
+
+```bash
+leech model fetch --name ivc-pairwise --version 1.0.0 -o models/
 ```
 
 ---
