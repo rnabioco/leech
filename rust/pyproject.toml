@@ -4,7 +4,8 @@ build-backend = "maturin"
 
 [project]
 name = "leech-core"
-version = "0.3.0"
+# Single source is rust/Cargo.toml; maturin reads it through this.
+dynamic = ["version"]
 requires-python = ">=3.12"
 
 [tool.maturin]

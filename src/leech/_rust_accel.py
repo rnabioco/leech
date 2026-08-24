@@ -118,14 +118,54 @@ def rust_supports_softclip_recovery(recover_softclip_signal: bool) -> bool:
     return not recover_softclip_signal or RUST_SUPPORTS_SOFTCLIP_RECOVERY
 
 
+def rust_version_mismatch() -> tuple[str, str] | None:
+    """``(leech_version, leech_core_version)`` when the two disagree.
+
+    ``leech_core`` is a separate distribution from ``leech``, built from the
+    same repository but installed independently, so an extension compiled at one
+    revision can sit alongside a ``leech`` from another. That pairing produces
+    wrong numbers rather than an error -- it is how issue #176 stayed hidden
+    (new Rust, old serial driver), and how a stale ``uv`` cache entry silently
+    reinstated pre-#188 chunk behaviour over a current build.
+
+    Both versions move together on release, so a difference means one half of
+    the install is stale. Returns ``None`` when they agree, or when either
+    version cannot be determined (an old extension exports no ``__version__``,
+    and there is nothing useful to say about that).
+    """
+    if not HAS_RUST:
+        return None
+    import leech_core
+
+    import leech
+
+    core_version = getattr(leech_core, "__version__", None)
+    leech_version = getattr(leech, "__version__", None)
+    if not core_version or not leech_version or core_version == leech_version:
+        return None
+    return (leech_version, core_version)
+
+
 def check_rust() -> None:
     """Print Rust acceleration status."""
     if HAS_RUST:
         import leech_core
 
         version = getattr(leech_core, "__version__", None)
-        label = f"leech_core {version}" if version else "leech_core"
+        label = f"leech_core {version}" if version else "leech_core (version unknown)"
         print(f"Rust acceleration: enabled ({label})")
+        mismatch = rust_version_mismatch()
+        if mismatch is not None:
+            leech_version, core_version = mismatch
+            print(
+                f"  WARNING: leech {leech_version} paired with leech_core "
+                f"{core_version}. They are built from one repository and "
+                f"released together, so a mismatch means half the install is "
+                f"stale. Rebuild the extension with `bash rust/build.sh`; if "
+                f"that does not clear it, the stale half is leech's own "
+                f"metadata -- reinstall it (`uv pip install -e .`), which an "
+                f"editable install needs after a version bump."
+            )
         funcs = [
             "compute_signal_stats",
             "encode_signal_kmer",

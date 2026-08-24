@@ -9,6 +9,12 @@ mod signal_stats;
 
 #[pymodule]
 fn leech_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    // Exported so `leech._rust_accel.check_rust()` can compare it against
+    // `leech.__version__`. leech_core is a separate distribution from leech, so
+    // an extension built from one revision can sit alongside a leech from
+    // another; without a version to compare, that pairing is invisible until it
+    // produces wrong numbers.
+    m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     m.add_function(wrap_pyfunction!(signal_refine::seq_banded_dp, m)?)?;
     m.add_function(wrap_pyfunction!(signal_refine::extract_levels, m)?)?;
     m.add_function(wrap_pyfunction!(signal_refine::rough_rescale_quantile, m)?)?;

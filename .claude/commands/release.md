@@ -23,7 +23,11 @@ Parse the user's version input:
 
 **Important**: If current version has a pre-release suffix (e.g., `-alpha`, `-beta`, `-rc.1`), preserve the suffix when bumping.
 
-Current version location: `pyproject.toml` line 3 (`version = "x.y.z"`)
+Version locations (**both must move together**):
+- `pyproject.toml` line 3 (`version = "x.y.z"`) — the `leech` package
+- `rust/Cargo.toml` (`version = "x.y.z"`) — the `leech-core` extension.
+  `rust/pyproject.toml` takes it from there via `dynamic = ["version"]`, so
+  Cargo.toml is the only place to edit.
 
 ## Phase 2: Planning File Cleanup
 
@@ -92,7 +96,21 @@ If found, ask user what to do:
 ## Phase 5: Version Update
 
 1. **Update pyproject.toml**: Change version on line 3 from old to new version
-2. **Verify no other version strings**: Search for hardcoded version strings in:
+2. **Update rust/Cargo.toml to the SAME version**: `leech-core` tracks
+   `leech` exactly. This is not optional and not cosmetic:
+   - `uv` keys its archive cache on this string, so a version that does not move
+     lets `uv sync` restore a compiled extension built from *any* earlier
+     revision that shared it — silently, over a current build.
+   - `check_rust()` compares `leech_core.__version__` against
+     `leech.__version__` and warns on a mismatch. That warning is only useful if
+     the versions actually move together.
+
+   It sat at `0.3.0` from v0.3.1 to v0.6.4 — ten releases — and did exactly the
+   above.
+3. **Rebuild and re-verify after the bump**: `bash rust/build.sh`, then confirm
+   `python -c "from leech._rust_accel import check_rust; check_rust()"` prints
+   the new version with no mismatch warning.
+4. **Verify no other version strings**: Search for hardcoded version strings in:
    - `src/leech/__init__.py` (if it exists)
    - `docs/*.md` files (for version references in docs)
    - Update any found version references
@@ -121,7 +139,7 @@ Wait for user confirmation before proceeding.
 
 ## Phase 7: Release Finalization
 
-1. **Stage all changes**: `git add pyproject.toml CHANGELOG.md [any other updated files]`
+1. **Stage all changes**: `git add pyproject.toml rust/Cargo.toml rust/Cargo.lock CHANGELOG.md uv.lock [any other updated files]`
 2. **Create commit**: `git commit -m "chore: release vX.Y.Z"`
 3. **Create annotated tag**: `git tag -a vX.Y.Z -m "Release vX.Y.Z"`
 4. **Display next steps**:
