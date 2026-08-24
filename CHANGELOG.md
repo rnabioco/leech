@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.6] - 2026-08-24
+
+Patch release completing the DataLoader-worker fix started in 0.6.5. `eval test`
+was fixed there; the in-training validation loader and both `calibration.py`
+loaders were not, so a GPU still went near-idle once per epoch.
+
+### Fixed
+
+- **Validation loader starved the GPU once per epoch** (#207). `train` resolved
+  workers for the training loader and hardcoded `num_workers=0` for validation
+  three lines below. On a 1,176,763-chunk validation set that was ~5 minutes of
+  near-idle GPU at every epoch boundary — roughly 75 minutes across a 15-epoch
+  run, scaling with validation size.
+- **`calibration.py` passed a literal 0 through on CUDA.** Both loaders took
+  `num_workers: int = 0` and forwarded it unresolved, so `0` meant "no workers"
+  rather than AUTO.
+
+### Added
+
+- `resolve_val_dataloader_workers`, beside `resolve_dataloader_workers`. Same
+  rule, with one scoped exception: a dataset that fell back to per-chunk lists
+  keeps 0 workers. `LeechDataset` stacks into contiguous buffers precisely so a
+  fork COW-shares them; only the `_try_stack` fallback multiplies peak RSS. That
+  exception wins even over an explicit `--num-workers N`, because OOM is not a
+  throughput tradeoff — which is what the previous blanket 0 was protecting, at
+  the cost of every other run.
+- A guard test: `num_workers` may not be a bare literal anywhere in the package.
+  It must come from a resolver, from a local named for what it carries, or
+  carry a call-site marker `dataloader-workers: unresolved` with a reason. Two
+  markers exist — `commands/benchmark.py` (worker count is the variable under
+  test) and the legacy `SignalCNN` path (`SignalDataset` has no
+  `_signals_tensor`, so the validation guard would force 0 and change
+  behaviour).
+
+  The guard is checked against the value wherever it is bound, not against
+  `DataLoader(...)` call sites. Two earlier versions failed their own mutation
+  test: a file-scoped allow-list exempted a whole file so the #207 bug passed,
+  and a call-site check also passed it because that bug lives in a kwargs dict
+  reaching the loader via `**`, in a function that resolves a different loader.
+
 ## [0.6.5] - 2026-08-24
 
 Performance and build-correctness release. `leech eval test` was feeding the GPU
