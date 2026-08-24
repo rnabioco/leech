@@ -5,6 +5,53 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.7-rc.1] - 2026-08-24
+
+First release candidate. `leech` is public, and both distributions now publish
+to PyPI automatically from a `v*` tag — this rc exists to exercise that path
+end to end before a final release depends on it. It is a pre-release, so
+`pip install leech` will not resolve to it.
+
+### Added
+
+- **`leech` and `leech-core` publish to PyPI on tag** (#210), via Trusted
+  Publishing (OIDC) — no API token, no repository secret. Install with
+  `uv add "leech[rust]"` or `pip install "leech[rust]"`. Publishing was
+  previously a manual `uv publish`, and `leech-core` was never published at
+  all, so `leech[rust]` could not resolve for anyone outside the workspace.
+- **Two release gates that did not exist.** `check-version` fails the tag
+  before anything builds if it disagrees with either declared version — a PyPI
+  upload cannot be replaced, so a wrong version reaching the index is
+  permanent. `test` runs the suite at the tagged revision, which nothing did:
+  CI triggers on pushes to `main` and on PRs, never on a tag.
+
+### Changed
+
+- **`leech-core` ships one stable-ABI wheel per platform** (pyo3 `abi3-py312`)
+  instead of one per interpreter. It loads on CPython 3.12 and every later 3.x,
+  so a new CPython release no longer needs a new `leech` release to get a wheel.
+  Wheels cover manylinux x86_64 and aarch64.
+- **The `rust` extra pins `leech-core` exactly.** `check_rust()` only *warns* on
+  a mismatch, so for a PyPI install the pin is the only thing preventing a
+  current `leech` from pairing with a stale extension — the hazard that let
+  `leech_core` sit at `0.3.0` across ten releases. The version now lives in
+  three files and the test suite enforces all three agree with each other and
+  with the tag.
+
+### Fixed
+
+- **A correctly paired pre-release reported a version mismatch.** The two halves
+  report versions in different dialects: `leech`'s arrives via
+  `importlib.metadata` in PEP 440 normal form (`0.6.7rc1`), `leech_core`'s from
+  `env!("CARGO_PKG_VERSION")` as the literal Cargo semver (`0.6.7-rc.1`). A
+  final release spells the same in both, so the raw `==` comparison looked
+  correct right up to the first rc — where it warned on every install and failed
+  the version-pairing test, and so would have failed the new `test` gate and
+  made pre-releases unpublishable. `rust_version_mismatch()` now compares
+  normalized forms, without taking a dependency on `packaging` (which is not a
+  runtime dependency, and whose presence in dev environments is exactly how this
+  would have come back).
+
 ## [0.6.6] - 2026-08-24
 
 Patch release completing the DataLoader-worker fix started in 0.6.5. `eval test`
