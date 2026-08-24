@@ -16,7 +16,7 @@ import pytest
 
 import leech.dataset as dataset
 from leech.constants import AUTO_DATALOADER_WORKERS
-from leech.dataset import resolve_dataloader_workers
+from leech.dataset import resolve_dataloader_workers, resolve_val_dataloader_workers
 from leech.evaluation import _save_scores
 
 READ_IDS = ["read-a", "read-b", "read-c", "read-d"]
@@ -172,3 +172,66 @@ class TestDataLoaderWorkers:
 
         assert result.exit_code == 0, result.output
         assert captured["num_workers"] == 4
+
+
+class _Stacked:
+    """Stands in for a LeechDataset whose chunks stacked into one tensor."""
+
+    _signals_tensor = object()
+
+
+class _ListFallback:
+    """Stands in for the `_try_stack` fallback: per-chunk lists, fork-unsafe."""
+
+    _signals_tensor = None
+
+
+class TestValLoaderWorkers:
+    """The validation loader starved the GPU once per epoch (issue #207).
+
+    #206 routed `eval test` through `resolve_dataloader_workers` but left the
+    in-training validation pass hardcoded to 0, so a 1.18M-chunk val set spent
+    ~5 minutes at near-idle GPU at every epoch boundary -- ~75 minutes across a
+    15-epoch run.
+    """
+
+    def test_stacked_dataset_gets_workers_on_cuda(self, monkeypatch):
+        """The normal case: contiguous buffers COW-share, so workers are safe."""
+        monkeypatch.setattr(dataset, "_usable_cpus", lambda: 32)
+
+        assert resolve_val_dataloader_workers(_Stacked(), 0, "cuda") > 0
+
+    def test_val_matches_train_when_stacked(self, monkeypatch):
+        """Validation should not be a special case just for being validation."""
+        monkeypatch.setattr(dataset, "_usable_cpus", lambda: 32)
+
+        assert resolve_val_dataloader_workers(_Stacked(), 0, "cuda") == (
+            resolve_dataloader_workers(0, "cuda")
+        )
+
+    def test_list_fallback_stays_serial(self, monkeypatch):
+        """The one real memory case: forking a list of tensors multiplies RSS.
+
+        `LeechDataset` stacks precisely so a fork shares the buffers; when
+        `_try_stack` could not, each worker faults N PyObject headers into
+        private copies. This is the exception the old blanket 0 was protecting.
+        """
+        monkeypatch.setattr(dataset, "_usable_cpus", lambda: 32)
+
+        assert resolve_val_dataloader_workers(_ListFallback(), 0, "cuda") == 0
+
+    def test_cpu_stays_serial(self):
+        """On CPU workers compete with compute, stacked or not."""
+        assert resolve_val_dataloader_workers(_Stacked(), 0, "cpu") == 0
+
+    def test_explicit_request_honoured_when_stacked(self, monkeypatch):
+        """An explicit N is not capped, matching the train loader's contract."""
+        monkeypatch.setattr(dataset, "_usable_cpus", lambda: 2)
+
+        assert resolve_val_dataloader_workers(_Stacked(), 3, "cuda") == 3
+
+    def test_explicit_request_still_loses_to_the_list_fallback(self, monkeypatch):
+        """Memory safety wins over an explicit request -- OOM is not a tradeoff."""
+        monkeypatch.setattr(dataset, "_usable_cpus", lambda: 32)
+
+        assert resolve_val_dataloader_workers(_ListFallback(), 3, "cuda") == 0

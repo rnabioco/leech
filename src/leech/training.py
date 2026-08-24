@@ -27,7 +27,12 @@ from torch.utils.data import DataLoader, WeightedRandomSampler
 
 import leech
 from leech.cli_config import make_console
-from leech.dataset import LeechDataset, collate_fn, resolve_dataloader_workers
+from leech.dataset import (
+    LeechDataset,
+    collate_fn,
+    resolve_dataloader_workers,
+    resolve_val_dataloader_workers,
+)
 from leech.losses import AdversarialHead, FocalBCEWithLogitsLoss, RegressionHead
 from leech.models import get_model
 from leech.models.inference_wrapper import ModelInferenceWrapper
@@ -1582,13 +1587,27 @@ def train_model(
 
     val_loader = None
     if val_dataset is not None:
-        # Validation __getitem__ is trivially fast (no augmentation, pre-tensorized
-        # lookups only), so workers add memory overhead without benefit.  Dropping
-        # val workers halves the total process count and avoids OOM-triggered
-        # segfaults on large multiclass datasets.
+        # Validation goes through `resolve_dataloader_workers` like training and
+        # test, EXCEPT when the dataset fell back to per-chunk lists.
+        #
+        # The old comment here said workers "add memory overhead without
+        # benefit" because validation `__getitem__` is trivially fast. The first
+        # half is conditional and the second half is wrong. `__getitem__` being
+        # cheap does not mean one process can saturate a GPU: collate, pin,
+        # host-to-device and the forward pass all serialize onto that core. On a
+        # 1,176,763-chunk binary val set that cost ~5 minutes of near-idle GPU
+        # at every epoch boundary -- ~75 min per 15-epoch run -- which is the
+        # same failure as `eval test` in #205, and #206 fixed only that one.
+        #
+        # The memory half is real but narrower than a blanket 0. `LeechDataset`
+        # stacks into contiguous tensors precisely so a fork COW-shares the
+        # buffers; it is only the `_try_stack` list fallback (inconsistent
+        # per-chunk shapes) where each worker faults N PyObject headers into
+        # private copies and multiplies peak RSS. So keep 0 exactly there, and
+        # let every other case use workers.
         val_loader_kwargs: dict = {
             "collate_fn": collate_fn,
-            "num_workers": 0,
+            "num_workers": resolve_val_dataloader_workers(val_dataset, num_workers, device),
         }
         if device != "cpu":
             val_loader_kwargs["pin_memory"] = True
