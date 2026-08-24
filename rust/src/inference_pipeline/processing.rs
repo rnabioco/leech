@@ -3,9 +3,9 @@
 use crate::signal_refine::extract_levels_inner;
 
 use super::features::{
-    compute_dwell_features, compute_kmer_residual_features, compute_per_base_stats,
-    compute_signal_residual,
+    compute_dwell_features, compute_kmer_residual_features, compute_signal_residual,
 };
+use super::features_stats::compute_per_base_stats;
 use super::numeric::normalize_median_mad;
 use super::refinement::refine_signal_map_pipeline;
 use super::signal_mapping::{build_seq_to_sig_map, compute_ref_to_signal};

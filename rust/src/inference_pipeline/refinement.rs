@@ -1,68 +1,41 @@
 //! Signal refinement pipeline.
 //!
 //! Delegates the full signal-to-sequence refinement to escapepod-signal's
-//! canonical `resquiggle::refine_signal_map` rather than maintaining leech's
-//! own hand-ported copy. The settings below reproduce leech's pipeline
-//! (fixed banding, least-squares rough rescale over the 0.05–0.95 quantiles
-//! with 10-base clipping, Theil-Sen inter-iteration rescale) with escapepod's
-//! purpose-built asymmetric dwell penalty (quadratic below target, log above)
-//! in place of leech's short-dwell table.
+//! canonical `resquiggle::refine_signal_map`, configured by escapepod's own
+//! `RefineSettings::move_table_refinement` preset.
+//!
+//! **Do not hand-build the settings here.** This file used to carry a struct
+//! literal that duplicated the one inside escapepod's Python binding, each with
+//! a comment asserting it matched the other. They drifted on `dwell_target` --
+//! escapepod's binding hardcoded 4.0, this side passed the per-read sentinel --
+//! and because the dwell penalty is asymmetric, a target ~8x too low did not
+//! merely weaken the prior, it dragged boundaries toward dwells the pore never
+//! produced. The two backends refined the same reads to different boundaries
+//! for four releases (leech #193, escapepod-rs#257). One preset, both callers.
 
 use std::collections::HashMap;
 
-use escapepod_signal::resquiggle::{
-    BandingAlgo, RefineAlgo, RefineSettings, RescaleAlgo, RescaleFilterParams, RoughRescaleAlgo,
-    refine_signal_map,
-};
+use escapepod_signal::resquiggle::{RefineSettings, refine_signal_map};
 
 use crate::signal_refine::extract_levels_inner;
 
-/// Dwell target (signal samples/base) for the asymmetric dwell penalty.
-///
-/// A non-positive target tells escapepod to resolve the target from this read's
-/// own move-table median dwell, which is the only value that can be right
-/// across chemistries and translocation speeds. The previous fixed 4.0 was
-/// roughly 8x too fast for RNA004 (130 bps at 4 kHz is ~31 samples/base), so
-/// the penalty pushed every base toward implausibly short dwells.
-const DWELL_TARGET: f32 = 0.0;
-/// Strength of the dwell penalty.
-const DWELL_WEIGHT: f32 = 0.5;
-/// Max points sampled for the Theil-Sen inter-iteration rescale.
-const THEIL_SEN_MAX_POINTS: usize = 200;
-/// Bases clipped from each end during rough rescale.
-const ROUGH_CLIP_BASES: usize = 10;
 /// Fixed seed for the Theil-Sen subsample so refinement is reproducible on long
 /// reads. Must match leech's Python `REFINE_SUBSAMPLE_SEED`.
 const REFINE_SUBSAMPLE_SEED: u64 = 42;
 
-/// Build the refinement settings matching leech's pipeline.
+/// Build the refinement settings.
+///
+/// `scale_iters` is clamped at 0 only because escapepod reads 0 as "one DP pass
+/// without rescaling"; a *negative* value means "no refinement at all" and is
+/// handled by the caller (`process_read_signal`), which skips this function
+/// entirely rather than clamping. Clamping there instead would refine the map
+/// on this path while Python left it untouched.
 fn build_settings(half_bandwidth: i32, scale_iters: i32) -> RefineSettings {
-    // scale_iters: <0 handled by the caller (rough-rescale only). 0 -> a single
-    // DP pass with no rescale; >0 -> that many passes with rescale. This mirrors
-    // escapepod's `n_refinement_iters` (0 => 1 iter no rescale; n => n w/ rescale).
-    let n_refinement_iters = scale_iters.max(0) as usize;
-    let filter = RescaleFilterParams::default(); // matches leech's Theil-Sen filter
-    RefineSettings {
-        refinement_algo: RefineAlgo::DwellPenalty {
-            target: DWELL_TARGET,
-            weight: DWELL_WEIGHT,
-        },
-        n_refinement_iters,
-        half_bandwidth: half_bandwidth.max(0) as usize,
-        adjust_band_min_size: 2,
-        rescale_algo: RescaleAlgo::TheilSen {
-            filter,
-            max_points: THEIL_SEN_MAX_POINTS,
-            seed: Some(REFINE_SUBSAMPLE_SEED),
-        },
-        rough_rescale_algo: RoughRescaleAlgo::LeastSquares {
-            quantiles: RoughRescaleAlgo::default_quantiles(),
-            clip_bases: ROUGH_CLIP_BASES,
-            use_base_center: true,
-        },
-        normalize_levels: false,
-        banding_algo: BandingAlgo::Fixed,
-    }
+    RefineSettings::move_table_refinement(
+        half_bandwidth.max(0) as usize,
+        scale_iters.max(0) as usize,
+        Some(REFINE_SUBSAMPLE_SEED),
+    )
 }
 
 /// Full signal refinement pipeline (delegates to escapepod-signal).

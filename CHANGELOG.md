@@ -5,6 +5,53 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **escapepod bumped to v0.15.0, and four locally-held primitives handed back to
+  it.** All four are things leech was carrying only because escapepod had no
+  home for them; each was filed upstream during the Rust/Python audit and each
+  is now adopted. Net: 391 lines of Rust deleted against 102 added, with no
+  behaviour change beyond float32 rounding.
+
+  - **The refinement settings are escapepod's preset** (escapepod-rs#257).
+    `refinement.rs::build_settings` was a 28-line `RefineSettings` literal
+    duplicating the one inside escapepod's Python binding; the two drifted on
+    `dwell_target` and that is what caused #193. It is now
+    `RefineSettings::move_table_refinement(half_bandwidth, n_iters, seed)`,
+    which is field-for-field identical to what leech was building — verified
+    before switching — so the drift is now structurally impossible rather than
+    test-guarded.
+
+  - **The POD5 reader cache is escapepod's** (escapepod-rs#258). leech's
+    process-global `OnceLock<Mutex<HashMap<String, Arc<Reader>>>>` is replaced
+    by `escapepod_signal::cached_reader`, which warms the read-id index before
+    publishing the entry and opens outside the lock — the two properties that
+    made leech's version worth having. The batch-signal helper stays here and
+    builds on it.
+
+  - **Per-base statistics are `features::span_stats`** (escapepod-rs#260), with
+    `SpanFill::Zero`, `SpanBounds::Clamp` and `MedianConvention::SortPartialCmp`
+    to preserve leech's semantics exactly. escapepod computes in `f64` prefix
+    sums where leech accumulated in `f32`, so level features move by at most
+    7e-07 (`level_mean`) and 1.2e-07 (`level_std`); `level_median` and
+    `level_range` are bit-identical. Both leech paths moved together, and
+    Python-vs-Rust agreement is still exactly zero. leech's `median_f32` — kept
+    only to match `numpy.median`'s even-length tie-break — is deleted, since
+    that rule is now `MedianConvention`.
+
+  - **Move-table and CIGAR mapping are `escapepod_signal::mapping`**
+    (escapepod-rs#259). `build_seq_to_sig_map` and `compute_ref_to_signal` now
+    delegate to `seq_to_signal_from_moves` and `ref_to_signal`. Verified
+    byte-identical on every alignment in the tRNA fixtures before switching, and
+    the Rust-vs-numpy parity test still passes. leech retains only the BAM
+    op-code to `CigarKind` table, since escapepod takes the typed enum.
+
+  The Python `escapepod` floor stays at `>=0.14.0`: leech passes `dwell_target`
+  explicitly, which means the same thing on both versions, so there is no reason
+  to require a wheel that is not on PyPI yet.
+
 ## [0.6.3] - 2026-08-23
 
 Backend parity. An audit of the Rust/Python boundary found eight divergences,
