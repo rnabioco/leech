@@ -330,8 +330,17 @@ from the read's own median dwell). Passing that explicitly on both sides is not
 optional — leaving the default in place on the Python side made every dwell and
 every level-derived feature differ between backends for four releases (#193).
 `--scale-iters -1` means "no refinement" on both; do not clamp it to 0, which
-escapepod reads as one DP pass. Upstream `rnabioco/escapepod-rs#257` asks for a
-shared preset so this cannot drift again.
+escapepod reads as one DP pass.
+
+Since escapepod v0.15.0 the settings themselves are escapepod's
+`RefineSettings::move_table_refinement` preset (escapepod-rs#257), so there is
+no longer a literal here to drift. **Do not hand-build `RefineSettings` in this
+crate again** — that is what the preset exists to prevent. Four primitives now
+come from upstream rather than being held locally: the preset, the POD5 reader
+cache (`escapepod_signal::cached_reader`), per-base statistics
+(`features::span_stats`, configured `SpanFill::Zero` / `SpanBounds::Clamp` /
+`MedianConvention::SortPartialCmp`), and the move-table and CIGAR coordinate
+mapping (`escapepod_signal::mapping`).
 
 ### Key Classes and Functions
 

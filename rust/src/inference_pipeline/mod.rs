@@ -8,6 +8,7 @@
 //! refinement, signal_kmer encoding, and multi-channel signal (kmer residual).
 
 mod features;
+mod features_stats;
 mod inference;
 mod numeric;
 mod processing;
@@ -25,4 +26,4 @@ pub use training::extract_training_chunks;
 
 // Shared with the standalone `compute_signal_stats` pyfunction so there is one
 // per-base statistics implementation rather than two that can drift.
-pub(crate) use features::compute_per_base_stats;
+pub(crate) use features_stats::compute_per_base_stats;

@@ -10,9 +10,8 @@ use rayon::prelude::*;
 use crate::encoding::encode_signal_kmer_inner;
 use crate::pod5_io::PreloadedSignals;
 
-use super::features::{
-    compute_dwell_features, compute_per_base_stats, encode_base_onehot, sequence_to_int,
-};
+use super::features::{compute_dwell_features, encode_base_onehot, sequence_to_int};
+use super::features_stats::compute_per_base_stats;
 use super::numeric::normalize_median_mad;
 use super::processing::process_read_signal;
 use super::signal_mapping::{
