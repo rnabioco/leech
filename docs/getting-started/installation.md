@@ -11,7 +11,40 @@ This guide covers how to install `leech` and its dependencies.
 
 ## Installation Methods
 
-### Using uv (Recommended)
+### From PyPI (Recommended)
+
+`leech` is published on PyPI, along with `leech-core`, its compiled accelerator.
+
+```bash title="Bash" linenums="1"
+# With uv
+uv add "leech[rust]"
+
+# With pip
+pip install "leech[rust]"
+```
+
+#### About the `rust` extra
+
+The `rust` extra installs `leech-core`, which accelerates data preparation and
+inference (POD5 I/O, signal refinement, chunk extraction). It is optional —
+every accelerated path has a pure-Python fallback, so `pip install leech` gives
+a fully working install, just a slower one.
+
+Wheels are published for **manylinux x86_64 and aarch64**. They are stable-ABI
+(`abi3`) wheels, so one wheel serves CPython 3.12 and every later 3.x.
+
+On any other platform (macOS, Windows, musl/Alpine) pip falls back to building
+`leech-core` from its sdist, which needs a Rust toolchain **and** network access
+to github.com — the `escapepod-signal` dependency is fetched from git rather
+than crates.io. If that is inconvenient, install plain `leech` instead.
+
+To confirm which path you are on:
+
+```bash title="Bash" linenums="1"
+check-rust
+```
+
+### From source (development)
 
 [uv](https://docs.astral.sh/uv/) is a fast, reliable Python package manager that handles virtual environments and dependencies automatically.
 
@@ -33,11 +66,18 @@ uv sync
 
 # Install with dev dependencies
 uv sync --all-extras
+
+# Build the Rust extension from the workspace
+bash rust/build.sh
 ```
 
-### Using pip
+!!! warning "Rebuild after `uv sync`"
 
-If you prefer using pip:
+    `uv sync` can restore a cached `leech_core` build over a current one. Rerun
+    `bash rust/build.sh` after any sync, and use `check-rust` to confirm the
+    versions match.
+
+### Using pip from a checkout
 
 ```bash title="Bash" linenums="1"
 # Clone the repository
@@ -65,6 +105,12 @@ leech --help
 ```
 
 You should see the help message with available commands.
+
+Check whether the Rust accelerator is active and correctly paired:
+
+```bash title="Bash" linenums="1"
+check-rust
+```
 
 ## GPU Support
 

@@ -5,14 +5,96 @@ on:
     tags:
       - 'v*'
 
+# Default to read-only. Only the `release` job that creates the GitHub Release
+# is granted `contents: write`, and only the two publish jobs are granted
+# `id-token: write` for PyPI Trusted Publishing. The build jobs need neither.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  # ── Fail before anything is built if the tag and the declared versions
+  #    disagree. PyPI uploads cannot be replaced, so this is cheap insurance:
+  #    a wrong version reaching the index is permanent. ──────────────────
+  check-version:
+    name: Tag matches declared versions
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # Pinned rather than relying on the runner's default python: the parse
+      # below needs tomllib (3.11+), and the image's `python3` is not a
+      # guarantee. Reads the version from pyproject.toml's requires-python.
+      - uses: actions/setup-python@v7
+        with:
+          python-version-file: "pyproject.toml"
+
+      - name: Compare tag against pyproject.toml and rust/Cargo.toml
+        run: |
+          set -euo pipefail
+          tag_version="${GITHUB_REF_NAME#v}"
+          read -r leech core < <(python -c "
+          import tomllib
+          leech = tomllib.load(open('pyproject.toml', 'rb'))['project']['version']
+          core = tomllib.load(open('rust/Cargo.toml', 'rb'))['package']['version']
+          print(leech, core)
+          ")
+          echo "tag=${tag_version} leech=${leech} leech_core=${core}"
+          if [ "$tag_version" != "$leech" ] || [ "$tag_version" != "$core" ]; then
+            echo "::error::version mismatch — tag ${tag_version}, pyproject.toml ${leech}, rust/Cargo.toml ${core}. All three must agree; see .claude/commands/release.md."
+            exit 1
+          fi
+
+  # ── Run the test suite at the tagged revision. `ci.yml` triggers on pushes
+  #    to main and on PRs, so a tag push is otherwise unverified. Mirrors
+  #    ci.yml's `test` job. ──────────────────────────────────────────────
+  test:
+    name: Test
+    needs: check-version
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version-file: "pyproject.toml"
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      - name: Install dependencies
+        env:
+          # GPU-less runner: CPU-only torch, as in ci.yml.
+          UV_TORCH_BACKEND: cpu
+        run: |
+          uv venv
+          uv pip install --torch-backend=cpu -e ".[test,rust,pod5]" \
+            || uv pip install --torch-backend=cpu -e ".[test,pod5]"
+
+      - name: Run tests
+        env:
+          UV_TORCH_BACKEND: cpu
+        run: uv run --no-sync pytest
+
   # ── Build leech-core (Rust extension) platform wheels ──────────────
   build-rust-wheels:
     name: Build leech-core (${{ matrix.target }})
+    needs: check-version
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -30,11 +112,14 @@ jobs:
         with:
           python-version: '3.12'
 
+      # No --find-interpreter: the crate builds against the stable ABI
+      # (pyo3 `abi3-py312`), so maturin emits a single cp312-abi3 wheel per
+      # target that loads on CPython 3.12 and every later 3.x.
       - name: Build wheels
-        uses: PyO3/maturin-action@v1
+        uses: PyO3/maturin-action@v1.51.0
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist --find-interpreter
+          args: --release --out dist
           manylinux: auto
           working-directory: rust
 
@@ -46,14 +131,16 @@ jobs:
   # ── Build leech-core sdist ─────────────────────────────────────────
   build-rust-sdist:
     name: Build leech-core sdist
+    needs: check-version
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
       - name: Build sdist
-        uses: PyO3/maturin-action@v1
+        uses: PyO3/maturin-action@v1.51.0
         with:
           command: sdist
           args: --out dist
@@ -67,9 +154,13 @@ jobs:
   # ── Build leech (pure Python) sdist + wheel ────────────────────────
   build-python:
     name: Build leech Python package
+    needs: check-version
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: astral-sh/setup-uv@v10.0.1
 
@@ -86,6 +177,10 @@ jobs:
     name: Create GitHub Release
     runs-on: ubuntu-latest
     needs: [build-rust-wheels, build-rust-sdist, build-python]
+    timeout-minutes: 15
+    # Only this job needs write — it creates the GitHub Release.
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v7
         with:
@@ -170,3 +265,64 @@ jobs:
           echo '```' >> $GITHUB_STEP_SUMMARY
           ls -1 dist/ >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
+
+  # ---------------------------------------------------------------------------
+  # PyPI. Two jobs, one per distribution, so a leech-core upload failure never
+  # blocks `leech` (and vice versa) and each downloads an unambiguous artifact
+  # set. Both are independent of the `release` job above, so a PyPI outage does
+  # not cost the GitHub Release.
+  #
+  # Trusted Publishing (OIDC) — no API token, no repo secret. Each requires a
+  # PyPI publisher for repo rnabioco/leech, workflow release.yml. See
+  # .claude/commands/release.md.
+  #
+  # The two environments MUST differ, and that is not cosmetic. PyPI identifies
+  # a publisher by (owner, repo, workflow, environment) and enforces a unique
+  # constraint on exactly that tuple -- project name is not part of it. Two
+  # packages released from one workflow under one environment name therefore
+  # collide: registering the second pending publisher fails with "A pending
+  # trusted publisher matching this configuration has already been registered
+  # for a different project name". The environment is the only field left to
+  # tell them apart, so it carries the package name.
+  # ---------------------------------------------------------------------------
+  publish-pypi-core:
+    name: Publish leech-core to PyPI
+    needs: [test, build-rust-wheels, build-rust-sdist]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: pypi-leech-core
+    permissions:
+      id-token: write
+    steps:
+      - name: Download leech-core wheels and sdist
+        uses: actions/download-artifact@v8
+        with:
+          pattern: wheels-rust-*
+          path: dist
+          merge-multiple: true
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
+
+  publish-pypi-leech:
+    name: Publish leech to PyPI
+    needs: [test, build-python]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: pypi-leech
+    permissions:
+      id-token: write
+    steps:
+      - name: Download leech wheel and sdist
+        uses: actions/download-artifact@v8
+        with:
+          pattern: wheels-python
+          path: dist
+          merge-multiple: true
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist

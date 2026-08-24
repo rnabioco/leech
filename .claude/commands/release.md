@@ -23,11 +23,18 @@ Parse the user's version input:
 
 **Important**: If current version has a pre-release suffix (e.g., `-alpha`, `-beta`, `-rc.1`), preserve the suffix when bumping.
 
-Version locations (**both must move together**):
-- `pyproject.toml` line 3 (`version = "x.y.z"`) — the `leech` package
+Version locations (**all three must move together**):
+- `pyproject.toml` `[project] version` — the `leech` package
+- `pyproject.toml` `[project.optional-dependencies] rust` — the pin
+  `leech-core==x.y.z`. This is what stops PyPI users pairing a current `leech`
+  with a stale extension; `check_rust()` only *warns*.
 - `rust/Cargo.toml` (`version = "x.y.z"`) — the `leech-core` extension.
   `rust/pyproject.toml` takes it from there via `dynamic = ["version"]`, so
   Cargo.toml is the only place to edit.
+
+`tests/test_rust_version_pairing.py::TestDeclaredVersionsAgree` fails if any of
+the three disagree, and the `check-version` job in `.github/workflows/release.yml`
+fails the release if they disagree with the tag.
 
 ## Phase 2: Planning File Cleanup
 
@@ -95,7 +102,8 @@ If found, ask user what to do:
 
 ## Phase 5: Version Update
 
-1. **Update pyproject.toml**: Change version on line 3 from old to new version
+1. **Update pyproject.toml**: change `[project] version` **and** the
+   `leech-core==` pin in the `rust` extra
 2. **Update rust/Cargo.toml to the SAME version**: `leech-core` tracks
    `leech` exactly. This is not optional and not cosmetic:
    - `uv` keys its archive cache on this string, so a version that does not move
@@ -150,12 +158,14 @@ Wait for user confirmation before proceeding.
    1. Review the commit: git show
    2. Push to GitHub: git push origin main --follow-tags
    3. GitHub Actions will automatically:
-      - Create a GitHub Release
+      - Verify the tag matches all three declared versions, then run the tests
+      - Build leech-core abi3 wheels (manylinux x86_64 + aarch64) and sdists
+      - Create a GitHub Release with every artifact attached
       - Mark releases with -alpha/-beta/-rc as pre-releases
       - Auto-generate release notes from commits/PRs
       - Include your CHANGELOG.md entry in the release
+      - Publish BOTH `leech` and `leech-core` to PyPI
    4. Edit release notes on GitHub if needed (optional)
-   5. Optional: Publish to PyPI with `uv publish`
    ```
 
 ## Important Notes
@@ -165,6 +175,48 @@ Wait for user confirmation before proceeding.
 - **Verify builds**: Always build and check artifacts before committing
 - **Documentation first**: /check and /docs MUST pass before release
 - **Keep CHANGELOG**: Maintain full history, only prepend new entries
+
+## PyPI publishing (one-time setup)
+
+Releases publish to PyPI via **Trusted Publishing** (OIDC) — there is no API
+token and no repository secret. If a release fails at the `publish-pypi-*` job
+with an OIDC/permission error, the publisher is probably not registered.
+
+Both projects need a publisher at <https://pypi.org/manage/account/publishing/>
+(use *pending publisher* if the project does not exist yet):
+
+| field | `leech` | `leech-core` |
+|---|---|---|
+| PyPI project name | `leech` | `leech-core` |
+| Owner | `rnabioco` | `rnabioco` |
+| Repository name | `leech` | `leech` |
+| Workflow name | `release.yml` | `release.yml` |
+| Environment name | `pypi-leech` | `pypi-leech-core` |
+
+**The environment names must differ.** PyPI identifies a publisher by
+`(owner, repo, workflow, environment)` and enforces a unique constraint on
+exactly that tuple — the project name is *not* part of it. Two packages
+released from one workflow under one environment name collide, and registering
+the second fails with:
+
+> A pending trusted publisher matching this configuration has already been
+> registered for a different project name. Please contact PyPI's admins if this
+> wasn't intentional.
+
+That message is misleading here: nothing is wrong, no admin is needed, and it
+does not mean someone took the name (a pending publisher never reserves a
+name). It means the *configuration* is already in use — by our own other
+package. The environment is the only field left to distinguish them, so it
+carries the package name.
+
+The constraint applies to *pending* publishers, which are 1:1 with a project
+name. Once a project exists its publisher becomes a normal one, which several
+projects may share — so this is purely a bootstrapping constraint. Distinct
+environments sidestep it and give each package its own approval gate.
+
+The GitHub environments are created automatically the first time the workflow
+references them. Add a required-reviewer protection rule to either if uploads
+should wait for manual approval.
 
 ## Error Handling
 
@@ -181,6 +233,9 @@ After user pushes to GitHub, remind them to:
 - [ ] Check GitHub Releases page for the new release (auto-created)
 - [ ] Review auto-generated release notes and edit if needed
 - [ ] Verify pre-release status is correct (if using -alpha/-beta/-rc suffixes)
-- [ ] Consider publishing to PyPI if package is public: `uv publish`
+- [ ] Verify both PyPI projects updated: <https://pypi.org/project/leech/> and
+      <https://pypi.org/project/leech-core/>
+- [ ] Smoke-test the published artifacts in a clean env:
+      `uv run --isolated --with "leech[rust]==X.Y.Z" --no-project check-rust`
 - [ ] Update any dependent projects or documentation
 - [ ] Announce release (if applicable)

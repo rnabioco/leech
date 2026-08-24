@@ -20,7 +20,11 @@ name = "leech_core"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.28", features = ["extension-module"] }
+# `abi3-py312` builds one stable-ABI wheel per platform that loads on CPython
+# 3.12 and every later 3.x, so a new CPython release does not require a new
+# leech release to get a wheel. Keep it in step with `requires-python` in the
+# root pyproject.toml.
+pyo3 = { version = "0.28", features = ["extension-module", "abi3-py312"] }
 numpy = "0.28"
 # Not on crates.io; pulled straight from the public GitHub repo. Pin by tag so
 # the build is reproducible — bump the tag to take a new escapepod release.

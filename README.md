@@ -23,6 +23,17 @@ discard.
 Requires Python 3.12+
 
 ```bash
+uv add "leech[rust]"     # or: pip install "leech[rust]"
+```
+
+The `rust` extra pulls `leech-core`, the compiled accelerator for data
+preparation and inference. `leech` runs without it — every accelerated path has
+a pure-Python fallback — so plain `uv add leech` is fine if no wheel matches
+your platform (wheels are built for manylinux x86_64 and aarch64).
+
+To work on leech itself:
+
+```bash
 # Install uv if you don't have it
 curl -LsSf https://astral.sh/uv/install.sh | sh
 

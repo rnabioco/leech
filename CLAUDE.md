@@ -11,6 +11,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 This project uses [uv](https://docs.astral.sh/uv/) for fast, reliable Python package management.
 
 ### Installation
+
+Released on PyPI as two distributions: `leech` (pure Python) and `leech-core`
+(the `abi3` Rust extension, pulled by the `rust` extra). End users install
+`uv add "leech[rust]"`. From a checkout:
+
 ```bash
 # Install uv if you don't have it
 curl -LsSf https://astral.sh/uv/install.sh | sh
