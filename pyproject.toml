@@ -24,7 +24,7 @@ dependencies = [
   "click>=8.1.0",
   # POD5 I/O and signal normalization. Imported unconditionally by
   # leech.io.pod5_reader and leech.features, so it cannot be optional.
-  "escapepod>=0.14.0",
+  "escapepod>=0.15.0",
   "numpy>=2.0.0",
   "nvitop>=1.6.1",
   "polars>=1.43.2",
