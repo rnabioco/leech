@@ -56,19 +56,22 @@ MAX_POINTS_FOR_THEIL_SEN = 1000
 # on long reads. Must match leech_core's REFINE_SUBSAMPLE_SEED (Rust path).
 REFINE_SUBSAMPLE_SEED = 42
 
-#: Dwell target (signal samples/base) for escapepod's asymmetric dwell penalty.
+#: escapepod's named preset is the single definition of leech's refinement
+#: settings, on both backends.
 #:
-#: Non-positive tells escapepod to resolve the target from *this read's* own
-#: move-table median dwell, which is the only value that can be right across
-#: chemistries and translocation speeds. escapepod's Python binding defaults
-#: this to a fixed 4.0, which is ~8x too fast for RNA004 (130 bps at 4 kHz is
-#: ~31 samples/base) and pushes every base toward an implausibly short dwell.
+#: There is deliberately no ``dwell_target`` constant here any more. This module
+#: used to pin it to 0.0 (resolve the target from the read's own move-table
+#: median) to override escapepod's old fixed 4.0 default -- but leech_core takes
+#: the whole preset via ``RefineSettings::move_table_refinement``, so pinning
+#: one field here would leave the two halves free to drift apart again the
+#: moment the preset changed. That asymmetry is exactly what caused #193.
 #:
-#: Must match leech_core's ``DWELL_TARGET``
-#: (``rust/src/inference_pipeline/refinement.rs``). It was set there by #168 and
-#: not here, so the two backends refined to different boundaries for four
-#: releases — see :meth:`SigMapRefiner.refine`.
-REFINE_DWELL_TARGET = 0.0
+#: escapepod >= 0.15.0 defaults ``dwell_target``/``dwell_weight`` to ``None``,
+#: meaning "take the preset" (escapepod-rs#257), which is why the floor in
+#: pyproject.toml is 0.15.0 and not 0.14.0: on 0.14.0 omitting the argument
+#: silently reinstates the 4.0 that this module existed to override. The
+#: backend parity suite fails loudly if that ever happens.
+REFINE_PRESET_DOC = "escapepod RefineSettings::move_table_refinement"
 
 
 # ============================================================================
@@ -1060,8 +1063,9 @@ class SigMapRefiner:
         their own copy of "leech's refinement configuration" and the copies
         differ:
 
-        - ``dwell_target``: escapepod's binding defaults to 4.0; leech_core
-          passes 0.0 (auto). See :data:`REFINE_DWELL_TARGET`.
+        - the settings: both halves take escapepod's
+          ``RefineSettings::move_table_refinement`` preset rather than pinning
+          fields themselves. See :data:`REFINE_PRESET_DOC`.
         - the fitted ``(scale, shift, drift)``: leech_core deliberately discards
           them. See the note at the end of this method.
         """
@@ -1099,9 +1103,9 @@ class SigMapRefiner:
                 levels_f32,
                 half_bandwidth=self.half_bandwidth,
                 scale_iters=max(0, self.scale_iters),
-                # Resolve the dwell target from this read's own median dwell
-                # instead of escapepod's fixed 4.0 default.
-                dwell_target=REFINE_DWELL_TARGET,
+                # dwell_target/dwell_weight deliberately unset: that takes
+                # escapepod's preset, which is what leech_core takes too.
+                # See REFINE_PRESET_DOC.
                 # Fixed seed so the Theil-Sen subsample (on long reads) is
                 # reproducible; must match leech_core's REFINE_SUBSAMPLE_SEED.
                 seed=REFINE_SUBSAMPLE_SEED,

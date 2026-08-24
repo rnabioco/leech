@@ -48,9 +48,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     the Rust-vs-numpy parity test still passes. leech retains only the BAM
     op-code to `CigarKind` table, since escapepod takes the typed enum.
 
-  The Python `escapepod` floor stays at `>=0.14.0`: leech passes `dwell_target`
-  explicitly, which means the same thing on both versions, so there is no reason
-  to require a wheel that is not on PyPI yet.
+  - **The Python half takes the preset too.** With `escapepod` 0.15.0 now on
+    PyPI, the floor moves to `>=0.15.0` and `SigMapRefiner.refine` stops passing
+    `dwell_target` at all — on 0.15.0 the default means "take the preset", which
+    is what leech_core takes. Pinning one field on the Python side while the
+    Rust side took the whole preset would have left the two halves free to drift
+    apart again the moment the preset changed, which is the exact shape of #193.
+    The floor is load-bearing rather than cosmetic: on 0.14.0 omitting the
+    argument silently reinstates the fixed `4.0` this override existed to
+    correct, and the backend parity suite fails loudly if that happens.
 
 ## [0.6.3] - 2026-08-23
 
