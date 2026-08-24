@@ -4,9 +4,40 @@ build-backend = "maturin"
 
 [project]
 name = "leech-core"
+description = "Rust acceleration for leech: POD5 I/O, signal refinement, and chunk extraction"
+readme = "README.md"
 # Single source is rust/Cargo.toml; maturin reads it through this.
 dynamic = ["version"]
 requires-python = ">=3.12"
+license = "MIT"
+# maturin resolves these against this directory, so `../LICENSE` is out of
+# reach -- rust/LICENSE is a copy of the repository's, the same arrangement
+# escapepod-rs uses for its own wheel crate.
+license-files = ["LICENSE"]
+authors = [{ name = "Jay Hesselberth", email = "jay.hesselberth@gmail.com" }]
+keywords = [
+  "bioinformatics",
+  "nanopore",
+  "pod5",
+  "signal",
+  "tRNA"
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Science/Research",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: Implementation :: CPython",
+  "Programming Language :: Rust",
+  "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+
+[project.urls]
+Homepage = "https://github.com/rnabioco/leech"
+Repository = "https://github.com/rnabioco/leech"
+Documentation = "https://rnabioco.github.io/leech/"
+Issues = "https://github.com/rnabioco/leech/issues"
 
 [tool.maturin]
 features = ["pyo3/extension-module"]

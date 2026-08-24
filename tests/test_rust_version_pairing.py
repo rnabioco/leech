@@ -7,6 +7,11 @@ does not raise — it produces different numbers. It is how #176 stayed hidden
 silently reinstated pre-#188 chunk behaviour over a current build: uv keys its
 cache on the version string, and `leech_core` sat at `0.3.0` from leech v0.3.1
 to v0.6.4 while the Rust changed underneath it.
+
+Three files declare the version and all three must agree: `pyproject.toml`
+(`leech`), `rust/Cargo.toml` (`leech_core`, the single source for the wheel),
+and the `rust` extra in `pyproject.toml`, which is what pins the pairing for
+anyone installing `leech[rust]` from PyPI.
 """
 
 from __future__ import annotations
@@ -40,6 +45,23 @@ class TestDeclaredVersionsAgree:
             f"extension cache on the leech_core version -- if it does not move, "
             f"`uv sync` can restore a stale compiled extension over a current "
             f"build. Bump both; see .claude/commands/release.md."
+        )
+
+    def test_rust_extra_pins_the_matching_leech_core(self):
+        """`pip install leech[rust]` must be unable to pair mismatched versions.
+
+        `check_rust()` only warns on a mismatch, so the extra is the only thing
+        that actually prevents one for a PyPI install.
+        """
+        pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
+        leech_version = pyproject["project"]["version"]
+        extra = pyproject["project"]["optional-dependencies"]["rust"]
+        assert extra == [f"leech-core=={leech_version}"], (
+            f"the `rust` extra is {extra!r} but pyproject.toml is "
+            f"{leech_version}. It must pin the matching leech-core exactly -- "
+            f"an unpinned or stale pin lets pip install a current `leech` "
+            f"against an older extension. Bump it with the other two; see "
+            f".claude/commands/release.md."
         )
 
     def test_wheel_version_is_not_pinned_separately(self):

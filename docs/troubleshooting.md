@@ -225,11 +225,13 @@ Verify paths in your pipeline config. On Alpine, ensure raw data is in
 error: No module named leech
 ```
 
-Run `uv sync` from the project root to install the package.
+From a checkout, run `uv sync` from the project root. Otherwise install from
+PyPI with `uv add "leech[rust]"` (or `pip install "leech[rust]"`).
 
 ### Checking your installation
 
 ```bash
 uv run leech --version
+check-rust  # is the Rust accelerator installed, and does its version match?
 uv run python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}')"
 ```
