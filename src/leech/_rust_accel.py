@@ -7,6 +7,7 @@ to the pure Python/numpy implementations.
 
 import logging
 import os
+import re
 
 logger = logging.getLogger("leech._rust_accel")
 
@@ -118,6 +119,41 @@ def rust_supports_softclip_recovery(recover_softclip_signal: bool) -> bool:
     return not recover_softclip_signal or RUST_SUPPORTS_SOFTCLIP_RECOVERY
 
 
+#: Separators PEP 440 drops from a pre-release segment. Cargo keeps them.
+_VERSION_SEP = re.compile(r"[-_.]")
+
+#: Pre-release spellings PEP 440 folds together. Cargo passes them through.
+_PRE_ALIASES = {"alpha": "a", "beta": "b", "c": "rc", "pre": "rc", "preview": "rc"}
+
+
+def _normalize_version(version: str) -> str:
+    """Reduce a version to a form comparable across Cargo and PEP 440.
+
+    The two halves of the install report their versions in different dialects.
+    ``leech``'s comes from ``importlib.metadata``, which gives the PEP 440
+    normal form (``0.6.7rc1``). ``leech_core``'s comes from
+    ``env!("CARGO_PKG_VERSION")`` -- the literal Cargo string, which must be
+    semver (``0.6.7-rc.1``). A final release spells the same in both, so this
+    only bites on pre-releases, where a raw ``==`` reports a mismatch on a
+    correctly paired install and there is no way to release an rc at all.
+
+    Comparing normal forms rather than parsing: ``packaging`` is not a runtime
+    dependency (it happens to be present in dev environments, which is exactly
+    how this would come back), and the comparison only needs the two spellings
+    to agree, not a total order.
+    """
+    version = version.strip().lower()
+    release, sep, suffix = version.partition("-")
+    if not sep:
+        # Already inline (PEP 440), or no pre-release at all.
+        return version
+    suffix = _VERSION_SEP.sub("", suffix)
+    if match := re.match(r"([a-z]+)(.*)", suffix):
+        word, rest = match.groups()
+        suffix = _PRE_ALIASES.get(word, word) + rest
+    return release + suffix
+
+
 def rust_version_mismatch() -> tuple[str, str] | None:
     """``(leech_version, leech_core_version)`` when the two disagree.
 
@@ -141,7 +177,9 @@ def rust_version_mismatch() -> tuple[str, str] | None:
 
     core_version = getattr(leech_core, "__version__", None)
     leech_version = getattr(leech, "__version__", None)
-    if not core_version or not leech_version or core_version == leech_version:
+    if not core_version or not leech_version:
+        return None
+    if _normalize_version(core_version) == _normalize_version(leech_version):
         return None
     return (leech_version, core_version)
 

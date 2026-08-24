@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from leech._rust_accel import HAS_RUST, rust_version_mismatch
+from leech._rust_accel import HAS_RUST, _normalize_version, rust_version_mismatch
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -73,6 +73,50 @@ class TestDeclaredVersionsAgree:
             'dynamic = ["version"] so rust/Cargo.toml stays the single source.'
         )
         assert "version" in project.get("dynamic", [])
+
+
+class TestVersionDialects:
+    """A correctly paired pre-release must not report a mismatch.
+
+    The two halves report versions in different dialects. `leech`'s arrives via
+    `importlib.metadata` in PEP 440 normal form (`0.6.7rc1`); `leech_core`'s is
+    `env!("CARGO_PKG_VERSION")`, the literal Cargo string, which must be semver
+    (`0.6.7-rc.1`). Final releases spell the same in both, so a raw `==` looks
+    correct right up until the first rc -- where it fails
+    `test_no_mismatch_in_this_environment`, and so fails the `test` gate in
+    release.yml, and so makes pre-releases unpublishable.
+    """
+
+    @pytest.mark.parametrize(
+        ("cargo", "pep440"),
+        [
+            ("0.6.6", "0.6.6"),
+            ("1.0.0", "1.0.0"),
+            ("0.6.7-rc.1", "0.6.7rc1"),
+            ("0.6.7-rc1", "0.6.7rc1"),
+            ("0.6.7-alpha.1", "0.6.7a1"),
+            ("0.6.7-beta.2", "0.6.7b2"),
+        ],
+    )
+    def test_dialects_of_one_version_agree(self, cargo, pep440):
+        assert _normalize_version(cargo) == _normalize_version(pep440), (
+            f"Cargo {cargo} and PEP 440 {pep440} are the same release but "
+            f"normalize to {_normalize_version(cargo)} and "
+            f"{_normalize_version(pep440)}."
+        )
+
+    @pytest.mark.parametrize(
+        ("left", "right"),
+        [
+            ("0.6.7-rc.1", "0.6.6"),
+            ("0.6.7-rc.1", "0.6.7-rc.2"),
+            ("0.6.7-rc.1", "0.6.7"),
+            ("0.6.7-alpha.1", "0.6.7-beta.1"),
+        ],
+    )
+    def test_genuinely_different_versions_stay_different(self, left, right):
+        """Normalizing must not paper over a real mismatch -- the whole point."""
+        assert _normalize_version(left) != _normalize_version(right)
 
 
 @pytest.mark.skipif(not HAS_RUST, reason="leech_core not installed")
