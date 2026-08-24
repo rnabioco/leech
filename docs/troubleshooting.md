@@ -73,8 +73,8 @@ Progress [Rust (rayon)]: 40 batches, 40000 reads | 38112 chunks extracted | 1064
 ```
 
 If that number is far below what the same data managed before, the problem is
-not your `--workers` setting. Compare the two backends directly by setting
-`LEECH_DISABLE_RUST=1` to force the Python worker pool for one run.
+not your `--workers` setting. Compare the two backends directly with
+`--backend python`, which forces the worker pool for one run.
 
 Preparation on a large POD5 over a network filesystem (BeeGFS, Lustre, NFS) is
 usually latency-bound on POD5 reads rather than CPU-bound, so a run can crawl
@@ -92,7 +92,7 @@ Read yield [Rust (rayon)]: 992576/1052751 reads produced chunks (94.28%); 60175 
 ```
 
 The two backends must report the same number on the same input. Force the
-Python worker pool for one run with `LEECH_DISABLE_RUST=1` and compare.
+Python worker pool for one run with `--backend python` and compare.
 
 A yield that differs by backend is a bug -- please report it. Up to v0.6.0 the
 Rust path dropped ~1% of reads the Python path kept, non-randomly, and said
