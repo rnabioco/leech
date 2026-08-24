@@ -191,11 +191,32 @@ Both projects need a publisher at <https://pypi.org/manage/account/publishing/>
 | Owner | `rnabioco` | `rnabioco` |
 | Repository name | `leech` | `leech` |
 | Workflow name | `release.yml` | `release.yml` |
-| Environment name | `pypi` | `pypi` |
+| Environment name | `pypi-leech` | `pypi-leech-core` |
 
-The GitHub `pypi` environment is created automatically the first time the
-workflow references it. Add a required-reviewer protection rule there if
-uploads should wait for manual approval.
+**The environment names must differ.** PyPI identifies a publisher by
+`(owner, repo, workflow, environment)` and enforces a unique constraint on
+exactly that tuple — the project name is *not* part of it. Two packages
+released from one workflow under one environment name collide, and registering
+the second fails with:
+
+> A pending trusted publisher matching this configuration has already been
+> registered for a different project name. Please contact PyPI's admins if this
+> wasn't intentional.
+
+That message is misleading here: nothing is wrong, no admin is needed, and it
+does not mean someone took the name (a pending publisher never reserves a
+name). It means the *configuration* is already in use — by our own other
+package. The environment is the only field left to distinguish them, so it
+carries the package name.
+
+The constraint applies to *pending* publishers, which are 1:1 with a project
+name. Once a project exists its publisher becomes a normal one, which several
+projects may share — so this is purely a bootstrapping constraint. Distinct
+environments sidestep it and give each package its own approval gate.
+
+The GitHub environments are created automatically the first time the workflow
+references them. Add a required-reviewer protection rule to either if uploads
+should wait for manual approval.
 
 ## Error Handling
 

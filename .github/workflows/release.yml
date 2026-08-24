@@ -273,15 +273,24 @@ jobs:
   # not cost the GitHub Release.
   #
   # Trusted Publishing (OIDC) — no API token, no repo secret. Each requires a
-  # PyPI publisher configured for env `pypi`, repo rnabioco/leech, workflow
-  # release.yml. See .claude/commands/release.md.
+  # PyPI publisher for repo rnabioco/leech, workflow release.yml. See
+  # .claude/commands/release.md.
+  #
+  # The two environments MUST differ, and that is not cosmetic. PyPI identifies
+  # a publisher by (owner, repo, workflow, environment) and enforces a unique
+  # constraint on exactly that tuple -- project name is not part of it. Two
+  # packages released from one workflow under one environment name therefore
+  # collide: registering the second pending publisher fails with "A pending
+  # trusted publisher matching this configuration has already been registered
+  # for a different project name". The environment is the only field left to
+  # tell them apart, so it carries the package name.
   # ---------------------------------------------------------------------------
   publish-pypi-core:
     name: Publish leech-core to PyPI
     needs: [test, build-rust-wheels, build-rust-sdist]
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    environment: pypi
+    environment: pypi-leech-core
     permissions:
       id-token: write
     steps:
@@ -302,7 +311,7 @@ jobs:
     needs: [test, build-python]
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    environment: pypi
+    environment: pypi-leech
     permissions:
       id-token: write
     steps:
