@@ -17,7 +17,7 @@ from pathlib import Path
 import numpy as np
 from rich.table import Table
 
-from leech.chunking import ChunkTable, load_chunks
+from leech.chunking import load_chunks
 from leech.cli_config import make_console
 from leech.models.inference_wrapper import ModelInferenceWrapper
 from leech.training import train_model
@@ -216,13 +216,14 @@ class GridSearchConfig:
 def _training_label_column(path: Path) -> np.ndarray:
     """Every valid ``label_int`` in a chunk corpus, without loading its arrays.
 
-    ``ChunkTable`` reads the metadata members only, so the signals and
-    features -- the whole reason a corpus is tens of gigabytes -- never enter
-    the process. Corpora that predate the flat array format still need the
-    full read.
+    One npz member, so the signals and features -- the whole reason a corpus is
+    tens of gigabytes -- never enter the process. A negative label is the
+    missing-value sentinel, the same one ``ChunkTable`` and ``LeechDataset``
+    filter on. Corpora that predate the flat array format need the full read.
     """
     try:
-        labels = ChunkTable.from_npz(path).require_values("label_int")
+        with np.load(path, allow_pickle=False) as data:
+            labels = data["labels_int"]
     except (KeyError, ValueError):
         return np.array([c["label_int"] for c in load_chunks(path) if c["label_int"] is not None])
     return labels[labels >= 0]
