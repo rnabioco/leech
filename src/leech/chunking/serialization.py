@@ -234,40 +234,79 @@ def iter_npz_row_blocks(
             start += rows
 
 
-def save_chunks(chunks: list[dict], output_path: Path, *, compressed: bool = True) -> None:
+def npz_path(output_path: Path) -> Path:
+    """The file ``np.savez`` would write for ``output_path`` (it appends .npz)."""
+    text = str(output_path)
+    return output_path if text.endswith(".npz") else Path(text + ".npz")
+
+
+def open_npz_zip(output_path: Path, compressed: bool) -> zipfile.ZipFile:
+    """Open an .npz for writing with the same zip settings ``np.savez`` uses."""
+    compression = zipfile.ZIP_DEFLATED if compressed else zipfile.ZIP_STORED
+    return zipfile.ZipFile(
+        npz_path(output_path), mode="w", compression=compression, allowZip64=True
+    )
+
+
+def write_npz_member(zf: zipfile.ZipFile, name: str, array: np.ndarray) -> None:
+    """Write one array into an open .npz exactly as ``np.savez`` would."""
+    with zf.open(name + ".npy", "w", force_zip64=True) as fp:
+        np.lib.format.write_array(fp, np.asanyarray(array), allow_pickle=True)
+
+
+def write_npy_header(fp, shape: tuple[int, ...], dtype: np.dtype) -> None:
+    """Write the .npy magic + header for ``shape``/``dtype``, payload to follow.
+
+    :func:`np.lib.format.write_array` needs the whole array; this is the split
+    version, for members whose rows are streamed in afterwards.
     """
-    Save training chunks to numpy format.
+    header = np.lib.format.header_data_from_array_1_0(np.empty((0,), dtype=dtype))
+    header["shape"] = tuple(int(n) for n in shape)
+    try:
+        np.lib.format.write_array_header_1_0(fp, header)
+    except ValueError:  # header too long for the 1.0 format
+        np.lib.format.write_array_header_2_0(fp, header)
+
+
+#: Transient bytes allowed when copying array payloads around.
+_COPY_SLICE_BYTES = 8 << 20
+
+
+def _row_step(dtype: np.dtype, row_shape: tuple[int, ...]) -> int:
+    """Rows per payload slice, so a copy never allocates more than ~8 MB."""
+    row_bytes = int(np.prod(row_shape, dtype=np.int64)) * dtype.itemsize
+    return max(1, _COPY_SLICE_BYTES // max(int(row_bytes), 1))
+
+
+def _write_rows(fp, array: np.ndarray) -> None:
+    """Write an array's payload in bounded slices (never one big ``tobytes``)."""
+    step = _row_step(array.dtype, array.shape[1:])
+    for start in range(0, len(array), step):
+        fp.write(array[start : start + step].tobytes())
+
+
+def iter_chunk_columns(chunks: list[dict]) -> Iterator[tuple[str, np.ndarray | list]]:
+    """Yield ``(member_name, value)`` for every npz member of ``chunks``, in write order.
+
+    This is the single definition of the on-disk chunk format: both
+    :func:`save_chunks` and :class:`ChunkSpool` consume it, so a field can only
+    be added in one place.
+
+    ``value`` is an ndarray for the members stored as fixed-shape arrays, or a
+    plain list of per-chunk rows for the ragged (object-array) fallback —
+    ``signals``/``dwells``/``features`` when the chunks do not all share a
+    shape. Members are yielded one at a time and the caller is expected to
+    write each one before asking for the next, so the stacked copies never
+    coexist (#211).
 
     Args:
         chunks: List of chunk dictionaries from extract_training_chunks
-        output_path: Output file path (.npz)
-        compressed: If True (default), use np.savez_compressed (zlib);
-            if False, use np.savez for faster writes at larger file size.
 
-    Raises:
-        ValueError: If chunks list is empty
-
-    Format:
-        Saves as .npz with arrays:
-        - signals: (N, signal_len) raw signal chunks (object array for variable length)
-        - sequences: (N,) string array of k-mer sequences
-        - dwells: (N, kmer_len) dwell times (object array for variable length)
-        - features: (N, num_features, kmer_len) feature arrays (object array)
-        - labels: (N,) string labels (e.g., "Ala", "Gly")
-        - labels_int: (N,) integer labels (0, 1, or -1 if unset)
-        - read_ids: (N,) string array of read IDs
-        - base_indices: (N,) base indices
-        - seq_to_sig_values / seq_to_sig_offsets: base-to-signal maps in CSR
-          form; row i is ``values[offsets[i]:offsets[i + 1]]``. Files written
-          before v0.6.8 carry a pickled object array named ``seq_to_sig_maps``
-          instead, which :func:`load_chunks` still reads.
-
-    Examples:
-        >>> chunks = extract_training_chunks(read, motif="CCAGGC")
-        >>> save_chunks(chunks, Path("output/chunks.npz"))
+    Yields:
+        ``(name, value)`` pairs. Names never repeat.
     """
     if not chunks:
-        raise ValueError("No chunks to save")
+        return
 
     # Collect arrays
     signals = []
@@ -320,81 +359,137 @@ def save_chunks(chunks: list[dict], output_path: Path, *, compressed: bool = Tru
         sequences_with_kmer_context.append(seq_ctx if seq_ctx is not None else "")
 
     # Convert to arrays — use flat (non-object) arrays when shapes are uniform
-    # for faster serialization (avoids pickle overhead on object arrays)
-    sequences_arr = np.array(sequences, dtype=str)
-    labels_arr = np.array(labels, dtype=str)  # String labels
-    labels_int_arr = np.array(labels_int, dtype=np.int64)  # Numeric labels
-    read_ids_arr = np.array(read_ids, dtype=str)
-    base_indices_arr = np.array(base_indices, dtype=np.int64)
-    feature_starts_arr = np.array(feature_starts, dtype=np.int64)
-    feature_ends_arr = np.array(feature_ends, dtype=np.int64)
-    source_groups_arr = np.array(source_groups, dtype=str)
-    reference_names_arr = np.array(reference_names, dtype=str)
-    sequences_with_kmer_context_arr = np.array(sequences_with_kmer_context, dtype=str)
+    # for faster serialization (avoids pickle overhead on object arrays).
+    # Each member is built at the point it is yielded and its source list is
+    # dropped straight after, so at most one stacked array is alive at a time.
+    yield "sequences", np.array(sequences, dtype=str)
+    del sequences
+    yield "labels", np.array(labels, dtype=str)  # String labels
+    del labels
+    yield "labels_int", np.array(labels_int, dtype=np.int64)  # Numeric labels
+    del labels_int
+    yield "read_ids", np.array(read_ids, dtype=str)
+    del read_ids
+    yield "base_indices", np.array(base_indices, dtype=np.int64)
+    del base_indices
+    yield "feature_starts", np.array(feature_starts, dtype=np.int64)
+    del feature_starts
+    yield "feature_ends", np.array(feature_ends, dtype=np.int64)
+    del feature_ends
+    yield "source_groups", np.array(source_groups, dtype=str)
+    del source_groups
+    yield "reference_names", np.array(reference_names, dtype=str)
+    del reference_names
+
     # seq_to_sig_maps are variable length (they depend on the read's dwell
     # times), so store them CSR-style: one flat values array plus row offsets.
     # An object array would be pickled, which costs a Python ndarray per chunk
     # on load and makes the member unstreamable (#211).
     seq_to_sig_values_arr, seq_to_sig_offsets_arr = csr_from_object_rows(seq_to_sig_maps)
+    del seq_to_sig_maps
+    yield "seq_to_sig_values", seq_to_sig_values_arr
+    del seq_to_sig_values_arr
+    yield "seq_to_sig_offsets", seq_to_sig_offsets_arr
+    del seq_to_sig_offsets_arr
 
-    # Create parent directories if they don't exist
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    cl_values_arr = np.array(cl_values, dtype=np.int16)
-
-    save_kwargs: dict[str, np.ndarray] = {
-        "sequences": sequences_arr,
-        "labels": labels_arr,
-        "labels_int": labels_int_arr,
-        "read_ids": read_ids_arr,
-        "base_indices": base_indices_arr,
-        "feature_starts": feature_starts_arr,
-        "feature_ends": feature_ends_arr,
-        "source_groups": source_groups_arr,
-        "reference_names": reference_names_arr,
-        "seq_to_sig_values": seq_to_sig_values_arr,
-        "seq_to_sig_offsets": seq_to_sig_offsets_arr,
-        "sequences_with_kmer_context": sequences_with_kmer_context_arr,
-        "cl_values": cl_values_arr,
-    }
+    yield "sequences_with_kmer_context", np.array(sequences_with_kmer_context, dtype=str)
+    del sequences_with_kmer_context
+    yield "cl_values", np.array(cl_values, dtype=np.int16)
+    del cl_values
 
     if has_focus_signal_pos:
-        save_kwargs["focus_signal_pos"] = np.array(focus_signal_pos_list, dtype=np.int64)
+        yield "focus_signal_pos", np.array(focus_signal_pos_list, dtype=np.int64)
+    del focus_signal_pos_list
 
-    # Signals: try stacking into 2D float32 (all chunks should be same length)
+    # Signals: try stacking into 2D float32 (all chunks should be same length).
+    # `copy=False` matters: chunk signals are already float32, so the default
+    # `astype` duplicates the largest array in the process for nothing (#211).
     sig_shapes = {s.shape for s in signals}
     if len(sig_shapes) == 1:
-        save_kwargs["signals_flat"] = np.stack(signals).astype(np.float32)
+        yield "signals_flat", np.stack(signals).astype(np.float32, copy=False)
     else:
-        save_kwargs["signals"] = np.array(signals, dtype=object)
+        yield "signals", signals
+    del signals
 
     # Signal residuals (optional, same shape as signals)
     if has_signal_residual and signal_residuals:
         sr_shapes = {s.shape for s in signal_residuals}
         if len(sr_shapes) == 1:
-            save_kwargs["signal_residuals_flat"] = np.stack(signal_residuals).astype(np.float32)
+            yield (
+                "signal_residuals_flat",
+                np.stack(signal_residuals).astype(np.float32, copy=False),
+            )
         else:
-            save_kwargs["signal_residuals"] = np.array(signal_residuals, dtype=object)
+            yield "signal_residuals", signal_residuals
+    del signal_residuals
 
     # Dwells: try stacking into 2D
     dwell_shapes = {d.shape for d in dwells}
     if len(dwell_shapes) == 1:
-        save_kwargs["dwells_flat"] = np.stack(dwells).astype(np.float32)
+        yield "dwells_flat", np.stack(dwells).astype(np.float32, copy=False)
     else:
-        save_kwargs["dwells"] = np.array(dwells, dtype=object)
+        yield "dwells", dwells
+    del dwells
 
     # Features: try stacking into 3D
     feat_shapes = {f.shape for f in features}
     if len(feat_shapes) == 1 and features[0].size > 0:
-        save_kwargs["features_flat"] = np.stack(features).astype(np.float32)
+        yield "features_flat", np.stack(features).astype(np.float32, copy=False)
     else:
-        save_kwargs["features"] = np.array(features, dtype=object)
+        yield "features", features
+    del features
 
-    # Save
-    if compressed:
-        np.savez_compressed(output_path, **save_kwargs)
-    else:
-        np.savez(output_path, **save_kwargs)
+
+def save_chunks(chunks: list[dict], output_path: Path, *, compressed: bool = True) -> None:
+    """
+    Save training chunks to numpy format.
+
+    Args:
+        chunks: List of chunk dictionaries from extract_training_chunks
+        output_path: Output file path (.npz)
+        compressed: If True (default), compress members with zlib
+            (``np.savez_compressed``); if False, store them (``np.savez``) for
+            faster writes at larger file size.
+
+    Raises:
+        ValueError: If chunks list is empty
+
+    Format:
+        Saves as .npz with arrays:
+        - signals: (N, signal_len) raw signal chunks (object array for variable length)
+        - sequences: (N,) string array of k-mer sequences
+        - dwells: (N, kmer_len) dwell times (object array for variable length)
+        - features: (N, num_features, kmer_len) feature arrays (object array)
+        - labels: (N,) string labels (e.g., "Ala", "Gly")
+        - labels_int: (N,) integer labels (0, 1, or -1 if unset)
+        - read_ids: (N,) string array of read IDs
+        - base_indices: (N,) base indices
+        - seq_to_sig_values / seq_to_sig_offsets: base-to-signal maps in CSR
+          form; row i is ``values[offsets[i]:offsets[i + 1]]``. Files written
+          before v0.6.8 carry a pickled object array named ``seq_to_sig_maps``
+          instead, which :func:`load_chunks` still reads.
+
+    Note:
+        Members are stacked and written one at a time rather than collected
+        into a ``np.savez`` call, so only one of them is resident at a time.
+        Callers that do not already have the whole corpus as a list should use
+        :class:`ChunkNpzWriter`, which never builds one.
+
+    Examples:
+        >>> chunks = extract_training_chunks(read, motif="CCAGGC")
+        >>> save_chunks(chunks, Path("output/chunks.npz"))
+    """
+    if not chunks:
+        raise ValueError("No chunks to save")
+
+    # Create parent directories if they don't exist
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with open_npz_zip(output_path, compressed) as zf:
+        for name, value in iter_chunk_columns(chunks):
+            array = np.array(value, dtype=object) if isinstance(value, list) else value
+            write_npz_member(zf, name, array)
+            del array, value
 
     logger.info(f"Saved {len(chunks)} chunks to {output_path}")
 
