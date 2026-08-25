@@ -31,7 +31,7 @@ import multiprocessing as mp
 import sys
 import time
 from collections import deque
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
@@ -558,6 +558,7 @@ def prepare_training_data_parallel(
     num_workers: int = 8,
     chunk_size: int = 100,
     min_mapq: int = 0,
+    chunk_sink: Callable[[list[dict]], None] | None = None,
 ) -> tuple[list[dict[str, np.ndarray | str | int | None]], dict[str, int]]:
     """
     Prepare training data from BAM and POD5 files using multiprocessing.
@@ -579,9 +580,16 @@ def prepare_training_data_parallel(
         num_workers: Number of parallel workers
         chunk_size: Number of reads to process per worker batch
         min_mapq: Minimum mapping quality
+        chunk_sink: Optional callback handed each batch's chunks as it
+            completes. When given, chunks are NOT accumulated and the returned
+            list is empty — the sink owns them. This is how ``data prepare``
+            writes a corpus without ever holding it (#211); see
+            :class:`~leech.chunking.ChunkSpool`. The statistics are the same
+            either way.
 
     Returns:
-        Tuple of (chunks, statistics)
+        Tuple of (chunks, statistics). ``chunks`` is empty when ``chunk_sink``
+        is given.
     """
     reason = rust_prepare_unsupported_reason(config)
     use_rust = HAS_RUST and _rs_extract_training_chunks is not None and reason is None
@@ -610,6 +618,7 @@ def prepare_training_data_parallel(
 
     all_chunks: list[dict[str, np.ndarray | str | int | None]] = []
     total_reads = 0
+    total_chunks = 0
     reads_with_chunks = 0
     batches_completed = 0
 
@@ -673,11 +682,16 @@ def prepare_training_data_parallel(
                 total_reads += n_reads
                 batches_completed += 1
                 reads_with_chunks += _count_reads_with_chunks(batch_chunks)
-                all_chunks.extend(batch_chunks)
+                total_chunks += len(batch_chunks)
+                if chunk_sink is None:
+                    all_chunks.extend(batch_chunks)
+                else:
+                    chunk_sink(batch_chunks)
+                del batch_chunks
                 progress.update(
                     task,
                     completed=batches_completed,
-                    chunks_extracted=len(all_chunks),
+                    chunks_extracted=total_chunks,
                     rate=f"{monitor.reads_per_second(total_reads):.0f} reads/s",
                 )
 
@@ -689,9 +703,14 @@ def prepare_training_data_parallel(
             total_reads += n_reads
             batches_completed += 1
             reads_with_chunks += _count_reads_with_chunks(batch_chunks)
-            all_chunks.extend(batch_chunks)
+            total_chunks += len(batch_chunks)
+            if chunk_sink is None:
+                all_chunks.extend(batch_chunks)
+            else:
+                chunk_sink(batch_chunks)
+            del batch_chunks
             if batches_completed % log_interval == 0:
-                monitor.log_progress(batches_completed, total_reads, len(all_chunks))
+                monitor.log_progress(batches_completed, total_reads, total_chunks)
 
     if total_reads == 0:
         return [], {
@@ -709,11 +728,11 @@ def prepare_training_data_parallel(
         "total_reads": total_reads,
         "reads_with_motif": reads_with_chunks,
         "reads_without_motif": total_reads - reads_with_chunks,
-        "total_chunks": len(all_chunks),
+        "total_chunks": total_chunks,
     }
 
     logger.info(
-        f"Parallel processing complete [{backend}]: extracted {len(all_chunks)} chunks "
+        f"Parallel processing complete [{backend}]: extracted {total_chunks} chunks "
         f"from {total_reads} reads in {monitor.elapsed():.1f}s "
         f"({monitor.reads_per_second(total_reads):.0f} reads/s)"
     )
