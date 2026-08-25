@@ -35,6 +35,8 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
+
 DISC_BASE_TO_INT: dict[str, int] = {"A": 0, "C": 1, "G": 2, "T": 3}
 
 NUM_DISC_BASES = 4
@@ -355,7 +357,7 @@ def _load_lookup_table(table: str, data_dir: Path | None) -> dict:
 def build_confound_encoder(
     spec: ConfoundSpec,
     *,
-    source_values: list | None = None,
+    source_values: "list | np.ndarray | None" = None,
     label_map: dict[str, int] | None = None,
     data_dir: Path | None = None,
 ) -> ConfoundEncoder | None:
@@ -364,7 +366,9 @@ def build_confound_encoder(
     Args:
         spec: The confound description.
         source_values: Per-chunk raw values of ``spec.source`` from the training
-            set. Required for ``mapping="identity"``.
+            set, as a list or as the npz column itself. Required for
+            ``mapping="identity"``. Passing the array avoids boxing one Python
+            string per chunk (~400 MB on a 6.7M-chunk corpus).
         label_map: ``{class_name: label_int}`` -- required by the ``disc_base``
             built-in to compose the discriminator-base lookup.
         data_dir: Training data directory, used to resolve sidecar tables and
@@ -390,7 +394,10 @@ def build_confound_encoder(
         )
 
     if spec.mapping == "identity":
-        if not source_values:
+        # `len(...) == 0` rather than `not source_values`: the caller hands us
+        # the npz column directly (one string per chunk, millions of them), and
+        # a bare truth test on an ndarray raises "truth value is ambiguous".
+        if source_values is None or len(source_values) == 0:
             logger.warning(
                 "confound '%s' (identity on '%s') found no source values; "
                 "disabling adversarial training",

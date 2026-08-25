@@ -156,5 +156,112 @@ def test_compute_signal_features():
     assert features["level_std"][1] > 0.5
 
 
+class TestMeanFastPathTail:
+    """The per-base mean must not absorb signal past the end of the map.
+
+    `np.add.reduceat` sums its *final* segment to the end of the array, so the
+    Python fallback charged everything after the last mapped base to that base
+    (audit C3). Median/std/range come from the explicit loop and never had the
+    bug, which is why nothing caught it. These tests pin the Python fallback
+    specifically -- `monkeypatch`, not "hope the extension is missing", because
+    with `leech-core` installed the Rust path answers first and is correct.
+    """
+
+    # Base 0 -> [1, 1, 1], base 1 -> [2, 2, 2], and a tail belonging to no base.
+    SIGNAL = np.array([1, 1, 1, 2, 2, 2, 100, 100, 100, 100], dtype=np.float32)
+    MAP = np.array([0, 3, 6], dtype=np.int64)
+    EXPECTED = np.array([1.0, 2.0], dtype=np.float32)
+
+    @pytest.fixture
+    def no_rust(self, monkeypatch):
+        """Force the pure-Python fallback (what `pip install leech` runs)."""
+        import leech.features as features_mod
+
+        monkeypatch.setattr(features_mod, "HAS_RUST", False)
+
+    def test_compute_signal_features(self, no_rust):
+        from leech.features import compute_signal_features
+
+        feats = compute_signal_features(self.SIGNAL, self.MAP)
+        np.testing.assert_array_equal(feats["level_mean"], self.EXPECTED)
+        # The loop-computed stats were always right; they are the cross-check.
+        np.testing.assert_array_equal(feats["level_median"], self.EXPECTED)
+
+    def test_compute_signal_levels(self, no_rust):
+        levels = compute_signal_levels(self.SIGNAL, self.MAP, stat="mean")
+        np.testing.assert_array_equal(levels, self.EXPECTED)
+
+    def test_compute_kmer_residual_features(self, no_rust):
+        from leech.features import compute_kmer_residual_features
+
+        # Empty level table -> every expected level is 0, so the residual is
+        # exactly the observed per-base mean.
+        feats = compute_kmer_residual_features(self.SIGNAL, self.MAP, "AC", {}, kmer_len=1)
+        np.testing.assert_array_equal(feats["kmer_residual"], self.EXPECTED)
+
+    @pytest.mark.parametrize(
+        "seq_to_sig",
+        [
+            np.array([0, 3, 6], dtype=np.int64),  # map ends before the signal
+            np.array([0, 3, 6, 10], dtype=np.int64),  # map covers the signal
+            np.array([0, 3, 3, 6, 10], dtype=np.int64),  # zero-dwell base
+            np.array([2, 5, 10], dtype=np.int64),  # map starts late
+            np.array([0, 4, 14], dtype=np.int64),  # map runs past the signal
+        ],
+    )
+    def test_matches_per_base_numpy_mean(self, no_rust, seq_to_sig):
+        """The fast path must equal `np.mean` over each base's own slice."""
+        from leech.features import compute_signal_features
+
+        rng = np.random.default_rng(0)
+        signal = rng.standard_normal(10).astype(np.float32)
+        expected = np.array(
+            [
+                np.mean(signal[s:e]) if e > s and len(signal[s:e]) else 0.0
+                for s, e in zip(seq_to_sig[:-1], seq_to_sig[1:], strict=True)
+            ],
+            dtype=np.float32,
+        )
+        got = compute_signal_features(signal, seq_to_sig)["level_mean"]
+        np.testing.assert_allclose(got, expected, rtol=1e-6, atol=1e-7)
+
+    def test_full_coverage_is_bit_identical_to_the_old_expression(self, no_rust):
+        """No value moves on the normal case -- chunks must not change.
+
+        The reference is the pre-fix expression verbatim. It has to be: the
+        rounding of a `reduceat` segment sum is not reproducible with
+        `np.add.reduce` over the same slice (they accumulate in a different
+        order and differ by an ulp), and "same to an ulp" is not the claim.
+        The claim is that a map covering its signal produces the same bits it
+        always did.
+        """
+        from leech.features import compute_signal_features
+
+        rng = np.random.default_rng(7)
+        seq_to_sig = np.array([0, 5, 9, 15, 20], dtype=np.int64)
+        signal = rng.standard_normal(20).astype(np.float32)
+
+        sums = np.add.reduceat(signal, seq_to_sig[:-1])
+        expected = (sums / np.diff(seq_to_sig)).astype(np.float32)
+
+        got = compute_signal_features(signal, seq_to_sig)["level_mean"]
+        np.testing.assert_array_equal(got, expected)
+        np.testing.assert_array_equal(compute_signal_levels(signal, seq_to_sig, "mean"), expected)
+
+    def test_rust_and_python_agree_on_a_partial_map(self, monkeypatch):
+        """Both backends must charge the tail to nobody."""
+        from leech.features import HAS_RUST, compute_signal_features
+
+        if not HAS_RUST:
+            pytest.skip("leech_core not installed")
+        rust = compute_signal_features(self.SIGNAL, self.MAP)["level_mean"]
+
+        import leech.features as features_mod
+
+        monkeypatch.setattr(features_mod, "HAS_RUST", False)
+        python = compute_signal_features(self.SIGNAL, self.MAP)["level_mean"]
+        np.testing.assert_allclose(python, rust, rtol=1e-5, atol=1e-6)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

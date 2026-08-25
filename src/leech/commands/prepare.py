@@ -108,13 +108,13 @@ def handle_prepare(
     Returns:
         Dictionary with extraction statistics
     """
-    from leech.chunking import save_chunks
+    from leech.chunking import ChunkSpool
     from leech.configs import ChunkConfig, LabelConfig, MotifConfig, PrepareConfig, SignalConfig
     from leech.constants import DEFAULT_SIGNAL_CONTEXT
     from leech.io import get_reference_sequences
     from leech.model_loading import setup_random_seed
     from leech.preparation import prepare_training_data_parallel, prepare_training_data_with_split
-    from leech.splitting import split_chunks_by_read
+    from leech.preparation.orchestrator import split_rows_by_read
 
     logger.info(f"Preparing data from {pod5} and {bam}")
     logger.info(f"Motif reference mode: {motif_reference}")
@@ -247,73 +247,80 @@ def handle_prepare(
 
     # Extract chunks (parallel or sequential)
     if workers > 1:
-        # Parallel processing
+        # Parallel processing. Batches go straight into a spool, which holds
+        # the corpus on disk rather than as a list of chunk dicts — the corpus
+        # plus its stacked copy is what made `prepare` peak at several times
+        # the size of the file it writes (#211).
         logger.info("Extracting chunks in parallel...")
-        chunks, stats = prepare_training_data_parallel(
-            bam_path=bam,
-            config=config,
-            num_workers=workers,
-            chunk_size=chunk_size,
-            min_mapq=min_mapq,
+        logger.info(
+            f"Chunks are spooled to temporary files in {output_dir} while they are "
+            f"extracted; that directory needs room for the corpus twice over"
         )
-
-        if len(chunks) == 0:
-            reads_processed = stats.get("total_reads", 0)
-            logger.warning(
-                f"0 chunks extracted from {reads_processed} reads. "
-                f"Common causes: indels at motif site, insufficient context, "
-                f"or MAPQ filtering (--min-mapq={min_mapq})."
+        with ChunkSpool(output_dir, compressed=compress) as spool:
+            _chunks, stats = prepare_training_data_parallel(
+                bam_path=bam,
+                config=config,
+                num_workers=workers,
+                chunk_size=chunk_size,
+                min_mapq=min_mapq,
+                chunk_sink=spool.append,
             )
-            console.print(
-                f"[bold red]Warning: 0 chunks extracted from {reads_processed} reads.[/bold red]\n"
-                f"[yellow]Stats: {stats}[/yellow]"
-            )
-            return {
-                "n_chunks": 0,
-                "n_train": 0,
-                "n_val": 0,
-                "n_test": 0,
-            }
+            n_chunks = stats["total_chunks"]
 
-        # Setup seed and handle splitting/saving
-        setup_random_seed(seed, output_dir)
+            if n_chunks == 0:
+                reads_processed = stats.get("total_reads", 0)
+                logger.warning(
+                    f"0 chunks extracted from {reads_processed} reads. "
+                    f"Common causes: indels at motif site, insufficient context, "
+                    f"or MAPQ filtering (--min-mapq={min_mapq})."
+                )
+                console.print(
+                    f"[bold red]Warning: 0 chunks extracted from {reads_processed} "
+                    f"reads.[/bold red]\n"
+                    f"[yellow]Stats: {stats}[/yellow]"
+                )
+                return {
+                    "n_chunks": 0,
+                    "n_train": 0,
+                    "n_val": 0,
+                    "n_test": 0,
+                }
 
-        if no_split:
-            all_file = output_dir / "all.npz"
-            save_chunks(chunks, all_file, compressed=compress)
-            logger.info(f"Saved all chunks to {all_file}")
-            result = {
-                "n_chunks": len(chunks),
-                "n_train": 0,
-                "n_val": 0,
-                "n_test": 0,
-            }
-        else:
-            train_chunks, val_chunks, test_chunks = split_chunks_by_read(
-                chunks, train_frac=train_split, val_frac=val_split, seed=seed
-            )
+            # Setup seed and handle splitting/saving
+            setup_random_seed(seed, output_dir)
 
-            if train_chunks:
-                train_file = output_dir / "train.npz"
-                save_chunks(train_chunks, train_file, compressed=compress)
-                logger.info(f"Saved {len(train_chunks)} train chunks to {train_file}")
+            if no_split:
+                all_file = output_dir / "all.npz"
+                spool.write_npz(all_file)
+                logger.info(f"Saved all chunks to {all_file}")
+                result = {
+                    "n_chunks": n_chunks,
+                    "n_train": 0,
+                    "n_val": 0,
+                    "n_test": 0,
+                }
+            else:
+                train_rows, val_rows, test_rows = split_rows_by_read(
+                    spool.read_ids(), train_split, val_split, seed
+                )
 
-            if val_chunks:
-                val_file = output_dir / "val.npz"
-                save_chunks(val_chunks, val_file, compressed=compress)
-                logger.info(f"Saved {len(val_chunks)} val chunks to {val_file}")
+                for split, rows in (
+                    ("train", train_rows),
+                    ("val", val_rows),
+                    ("test", test_rows),
+                ):
+                    if len(rows) == 0:
+                        continue
+                    split_file = output_dir / f"{split}.npz"
+                    spool.write_npz(split_file, rows=rows)
+                    logger.info(f"Saved {len(rows)} {split} chunks to {split_file}")
 
-            if test_chunks:
-                test_file = output_dir / "test.npz"
-                save_chunks(test_chunks, test_file, compressed=compress)
-                logger.info(f"Saved {len(test_chunks)} test chunks to {test_file}")
-
-            result = {
-                "n_chunks": len(chunks),
-                "n_train": len(train_chunks),
-                "n_val": len(val_chunks),
-                "n_test": len(test_chunks),
-            }
+                result = {
+                    "n_chunks": n_chunks,
+                    "n_train": len(train_rows),
+                    "n_val": len(val_rows),
+                    "n_test": len(test_rows),
+                }
     else:
         # Sequential processing with refactored function
         from rich.progress import Progress, TaskID

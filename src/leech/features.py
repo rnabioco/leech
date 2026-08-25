@@ -178,6 +178,53 @@ def compute_dwell_times(move_table: MoveTable) -> np.ndarray:
     return dwells
 
 
+def _per_base_means(signal: np.ndarray, seq_to_sig_map: np.ndarray) -> np.ndarray:
+    """Per-base mean of ``signal`` over ``[map[i], map[i + 1])``.
+
+    The vectorized half of the per-base statistics, and the one place the
+    Python fallback computes a level mean -- ``compute_signal_levels``,
+    ``compute_signal_features`` and ``compute_kmer_residual_features`` all come
+    here. It used to be the same four lines copied into each of them, and the
+    copies shared a bug.
+
+    ``np.add.reduceat`` segments on *starts* alone: its last segment runs to
+    the end of the array. A map that ends before the signal does therefore
+    charged every remaining sample to the last mapped base -- the mean of the
+    final base absorbed the whole tail, while median/std/range (computed by the
+    explicit loop over both boundaries) stayed right. Appending the last mapped
+    base's *end* as one more boundary gives that tail a segment of its own,
+    which is then dropped.
+
+    Segment sums are otherwise untouched, so on a map that covers the signal
+    every value is bit-identical to what the bare ``reduceat`` produced. Spans
+    are clipped to the signal for the divisor, which is what ``np.mean`` over
+    the base's own slice does and what escapepod's ``span_stats``
+    (``SpanBounds::Clamp``) does on the Rust side.
+    """
+    num_bases = len(seq_to_sig_map) - 1
+    if num_bases <= 0:
+        return np.zeros(max(num_bases, 0), dtype=np.float32)
+
+    means = np.zeros(num_bases, dtype=np.float32)
+    starts = seq_to_sig_map[:-1]
+    ends = seq_to_sig_map[1:]
+    sig_len = len(signal)
+    valid = (ends > starts) & (starts < sig_len)
+    if not np.any(valid):
+        return means
+
+    valid_starts = starts[valid]
+    valid_ends = np.minimum(ends[valid], sig_len)
+    last_end = int(valid_ends[-1])
+    if last_end < sig_len:
+        # One extra boundary so the tail past the map is its own segment.
+        sums = np.add.reduceat(signal, np.append(valid_starts, last_end))[:-1]
+    else:
+        sums = np.add.reduceat(signal, valid_starts)
+    means[valid] = (sums / (valid_ends - valid_starts)).astype(np.float32)
+    return means
+
+
 def compute_signal_levels(
     signal: np.ndarray, seq_to_sig_map: np.ndarray, stat: str = "mean"
 ) -> np.ndarray:
@@ -201,19 +248,13 @@ def compute_signal_levels(
         means, medians, stds, ranges = _rs_compute_signal_stats(sig, s2s)
         return [np.asarray(means), np.asarray(medians), np.asarray(stds)][stat_to_idx[stat]]
 
+    # Vectorized fast path (also the only place the mean is computed)
+    if stat == "mean":
+        return _per_base_means(signal, seq_to_sig_map)
+
     num_bases = len(seq_to_sig_map) - 1
     levels = np.zeros(num_bases, dtype=np.float32)
-
-    boundaries = seq_to_sig_map[:-1]
     lengths = np.diff(seq_to_sig_map)
-    sig_len = len(signal)
-    valid = (lengths > 0) & (boundaries < sig_len)
-
-    # Vectorized mean using reduceat (fast path)
-    if stat == "mean" and np.any(valid):
-        sums = np.add.reduceat(signal, boundaries[valid])
-        levels[valid] = (sums / lengths[valid]).astype(np.float32)
-        return levels
 
     # Loop for median/std/min/max (no vectorized numpy equivalent)
     stat_funcs: dict[str, Callable[[np.ndarray], Any]] = {
@@ -604,15 +645,9 @@ def compute_kmer_residual_features(
         extract_levels(sequence, kmer_to_level, kmer_len, center_idx), num_bases
     )
 
-    # Compute per-base observed mean (reuse vectorized reduceat logic)
-    observed_mean = np.zeros(num_bases, dtype=np.float32)
-    boundaries = seq_to_sig_map[:-1]
-    lengths = np.diff(seq_to_sig_map)
-    sig_len = len(signal)
-    valid = (lengths > 0) & (boundaries < sig_len)
-    if np.any(valid):
-        sums = np.add.reduceat(signal, boundaries[valid])
-        observed_mean[valid] = (sums / lengths[valid]).astype(np.float32)
+    # Per-base observed mean -- the same one `compute_signal_features` reports
+    # as `level_mean`, so it comes from the same helper.
+    observed_mean = _per_base_means(signal, seq_to_sig_map)
 
     kmer_expected = expected.astype(np.float32)
     kmer_residual = observed_mean - kmer_expected
@@ -711,21 +746,16 @@ def compute_signal_features(
     num_bases = len(seq_to_sig_map) - 1
 
     features = {
-        "level_mean": np.zeros(num_bases, dtype=np.float32),
+        # Vectorized; the loop below covers the three that have no numpy
+        # equivalent. Channel order here is the feature-row order -- see
+        # `LeechRead.feature_channels`.
+        "level_mean": _per_base_means(signal, seq_to_sig_map),
         "level_median": np.zeros(num_bases, dtype=np.float32),
         "level_std": np.zeros(num_bases, dtype=np.float32),
         "level_range": np.zeros(num_bases, dtype=np.float32),
     }
 
-    boundaries = seq_to_sig_map[:-1]
     lengths = np.diff(seq_to_sig_map)
-    sig_len = len(signal)
-    valid = (lengths > 0) & (boundaries < sig_len)
-
-    # Vectorized mean using reduceat
-    if np.any(valid):
-        sums = np.add.reduceat(signal, boundaries[valid])
-        features["level_mean"][valid] = (sums / lengths[valid]).astype(np.float32)
 
     # Loop only for median/std/range (no vectorized numpy equivalent)
     for i in range(num_bases):

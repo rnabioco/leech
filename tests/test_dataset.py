@@ -638,5 +638,147 @@ class TestAsymmetricFocusPosition:
         assert chunk_sym["focus_signal_pos"] == 200
 
 
+class TestBatchedFetch:
+    """``__getitems__`` gathers a whole batch instead of one row at a time.
+
+    ``DataLoader`` calls it in place of N ``__getitem__`` calls plus a
+    ``collate_fn`` stack (torch >= 2.0). The gate is that it changes nothing:
+    the batch it returns must equal the one the per-sample path produces, bit
+    for bit, for every option that changes what a sample contains.
+    """
+
+    OPTIONS = {
+        "signal_len": 400,
+        "kmer_len": 11,
+        "model_type": "ConvLSTMDwell",
+        "seq_encoding": "base_onehot",
+    }
+
+    def _dataset(self, path, **overrides):
+        return LeechDataset(chunk_path=path, **{**self.OPTIONS, **overrides})
+
+    def _assert_same_batch(self, dataset, indices):
+        batched = collate_fn(dataset.__getitems__(indices))
+        per_sample = collate_fn([dataset[i] for i in indices])
+        assert batched.keys() == per_sample.keys()
+        for key in batched:
+            assert batched[key].dtype == per_sample[key].dtype, key
+            assert batched[key].shape == per_sample[key].shape, key
+            assert torch.equal(batched[key], per_sample[key]), key
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {},
+            {"model_type": "ConvLSTMBase"},
+            {"model_type": "TCNDwellResidualLN"},
+            {"seq_encoding": "signal_kmer", "signal_kmer_context": (2, 2)},
+            {"cl_regression": True},
+            {"signal_mode": "signal"},
+            {"dwell_offset": 1},
+        ],
+        ids=["default", "no_features", "wide_features", "signal_kmer", "cl", "signal_only", "off1"],
+    )
+    def test_batch_equals_per_sample(self, temp_chunks_file, overrides):
+        dataset = self._dataset(temp_chunks_file, **overrides)
+        assert dataset._batched_fetch
+        self._assert_same_batch(dataset, list(range(len(dataset))))
+        self._assert_same_batch(dataset, [len(dataset) - 1, 0, 1])  # out of order
+
+    def test_batch_equals_per_sample_with_a_confound(self, temp_chunks_file):
+        from leech.confounds import ConfoundEncoder
+
+        encoder = ConfoundEncoder(
+            name="grp", source="label_int", value_to_class={0: 0, 1: 1}, num_classes=2
+        )
+        dataset = self._dataset(temp_chunks_file, confound_encoder=encoder)
+        assert "confound_label" in dataset[0]
+        self._assert_same_batch(dataset, list(range(len(dataset))))
+
+    def test_collate_passes_an_already_collated_batch_through(self, temp_chunks_file):
+        dataset = self._dataset(temp_chunks_file)
+        batch = dataset.__getitems__([0, 1])
+        assert isinstance(batch, dict)
+        assert collate_fn(batch) is batch
+
+    def test_dataloader_yields_the_same_batches_either_way(self, temp_chunks_file):
+        from torch.utils.data import DataLoader
+
+        dataset = self._dataset(temp_chunks_file)
+
+        def batches():
+            loader = DataLoader(dataset, batch_size=2, shuffle=False, collate_fn=collate_fn)
+            return [{k: v.clone() for k, v in b.items()} for b in loader]
+
+        dataset._batched_fetch = True
+        with_batched = batches()
+        dataset._batched_fetch = False
+        without = batches()
+
+        assert len(with_batched) == len(without)
+        for left, right in zip(with_batched, without, strict=True):
+            assert left.keys() == right.keys()
+            for key in left:
+                assert torch.equal(left[key], right[key]), key
+
+    def test_falls_back_to_a_list_when_a_field_is_not_stacked(self, temp_chunks_file):
+        """Ragged fields keep the per-sample path; there is no batch to gather."""
+        dataset = self._dataset(temp_chunks_file)
+        dataset._batched_fetch = False
+        fetched = dataset.__getitems__([0, 1])
+        assert isinstance(fetched, list)
+        assert collate_fn(fetched)["signal"].shape[0] == 2
+
+    @pytest.mark.parametrize("option", ["shift_max_bases", "time_mask_bases"])
+    def test_cross_layer_augmentation_keeps_the_per_sample_path(self, temp_chunks_file, option):
+        """Shift and time mask draw one offset per sample and roll by it."""
+        dataset = self._dataset(temp_chunks_file, **{option: 2 if option else 0})
+        fetched = dataset.__getitems__([0, 1])
+        assert isinstance(fetched, list)
+
+    def test_batched_augmentation_draws_per_sample(self, temp_chunks_file):
+        """One scale factor per row, not one for the whole batch.
+
+        A batched ``uniform_(...).item()`` would scale every row by the same
+        number — the augmentation would still "work" and every batch would be
+        wrong in the same way, which is why this is asserted rather than eyeballed.
+        """
+        dataset = self._dataset(
+            temp_chunks_file, augmentation={"jitter_std": 0.0, "scale_range": (0.5, 1.5)}
+        )
+        indices = list(range(len(dataset)))
+        torch.manual_seed(0)
+        batch = collate_fn(dataset.__getitems__(indices))
+
+        stored = dataset._signals_tensor[indices]
+        ratios = (batch["signal"] / stored).reshape(len(indices), -1)
+        # Constant within a row (one factor per sample) ...
+        assert torch.allclose(ratios.min(dim=1).values, ratios.max(dim=1).values, atol=1e-5)
+        # ... and different between rows.
+        per_row = ratios[:, 0]
+        assert per_row.unique().numel() == len(indices)
+        assert float(per_row.min()) >= 0.5 and float(per_row.max()) <= 1.5
+
+    def test_batched_jitter_is_per_element(self, temp_chunks_file):
+        dataset = self._dataset(temp_chunks_file, augmentation={"jitter_std": 0.05})
+        indices = list(range(len(dataset)))
+        torch.manual_seed(0)
+        batch = collate_fn(dataset.__getitems__(indices))
+        noise = batch["signal"] - dataset._signals_tensor[indices]
+        assert noise.abs().max() > 0
+        # Independent draws: no two rows share their noise vector.
+        assert not torch.equal(noise[0], noise[1])
+        assert abs(float(noise.std()) - 0.05) < 0.02
+
+    def test_batched_feature_noise_is_per_element(self, temp_chunks_file):
+        dataset = self._dataset(temp_chunks_file, feature_noise_scale=0.5)
+        indices = list(range(len(dataset)))
+        torch.manual_seed(0)
+        batch = collate_fn(dataset.__getitems__(indices))
+        noise = batch["features"] - dataset._features_tensor[indices]
+        assert noise.abs().max() > 0
+        assert not torch.equal(noise[0], noise[1])
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

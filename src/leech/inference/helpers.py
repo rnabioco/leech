@@ -3,6 +3,8 @@
 import array
 import json
 import logging
+import threading
+from collections.abc import Callable, Hashable
 from pathlib import Path
 
 import numpy as np
@@ -516,6 +518,159 @@ def _write_mega_batch_predictions(
     return n_preds
 
 
+class BatchAccumulator:
+    """Four parallel chunk buffers, a size check, and a flush — in one place.
+
+    Every extraction path in :mod:`leech.inference` produces the same four
+    parallel streams (signal, sequence, feature, per-chunk metadata) and turns
+    them into fixed-size model batches. That state machine used to be written
+    out three times — twice in ``single.py`` (multiprocessing workers, threaded
+    Rust) and once in ``bundle.py`` — so the paths differed in more than the
+    only thing that actually differs between them: what produces the chunks.
+
+    ``flush_fn`` is handed the four buffers *after* they have been detached
+    from the accumulator, so it is free to keep them. The sequential path in
+    ``single.py`` relies on that: it submits them to a single-worker GPU thread
+    and keeps filling the next batch while that runs.
+
+    Element types are whatever the caller appends — ``single.py`` accumulates
+    numpy arrays for :func:`_run_batch`, ``bundle.py`` accumulates torch
+    tensors for its own multi-model flush.
+    """
+
+    __slots__ = ("batch_size", "features", "flush_fn", "meta", "sequences", "signals")
+
+    def __init__(self, batch_size: int, flush_fn: Callable[[list, list, list, list], None]):
+        self.batch_size = batch_size
+        self.flush_fn = flush_fn
+        self.signals: list = []
+        self.sequences: list = []
+        self.features: list = []
+        self.meta: list = []
+
+    def __len__(self) -> int:
+        return len(self.signals)
+
+    def take(self) -> tuple[list, list, list, list]:
+        """Detach and return the current buffers, leaving the accumulator empty."""
+        buffers = (self.signals, self.sequences, self.features, self.meta)
+        self.signals = []
+        self.sequences = []
+        self.features = []
+        self.meta = []
+        return buffers
+
+    def flush(self) -> None:
+        """Run ``flush_fn`` on the buffered chunks. No-op when empty."""
+        if not self.signals:
+            return
+        self.flush_fn(*self.take())
+
+    def add(self, signal, sequence, feature, meta) -> None:
+        """Append one chunk, flushing once the batch is full."""
+        self.signals.append(signal)
+        self.sequences.append(sequence)
+        self.features.append(feature)
+        self.meta.append(meta)
+        if len(self.signals) >= self.batch_size:
+            self.flush()
+
+
+def prepare_signal_channels(chunk: dict, signal_len: int) -> np.ndarray:
+    """Pad/crop a chunk's signal to ``signal_len`` and stack the residual channel.
+
+    Returns ``(signal_len,)`` for a single-channel model, or
+    ``(2, signal_len)`` when the chunk carries a k-mer residual channel. Shared
+    by both Python extraction paths in ``single.py``; they had byte-identical
+    copies of this.
+    """
+    signal_array = chunk["signal"]
+    sig = signal_array.astype(np.float32)
+    sig_residual = chunk.get("signal_residual")
+    if len(sig) < signal_len:
+        sig = np.pad(sig, (0, signal_len - len(sig)), mode="constant")
+        if sig_residual is not None:
+            sig_residual = np.pad(
+                sig_residual.astype(np.float32),
+                (0, signal_len - len(sig_residual)),
+                mode="constant",
+            )
+    elif len(sig) > signal_len:
+        start = (len(sig) - signal_len) // 2
+        sig = sig[start : start + signal_len]
+        if sig_residual is not None:
+            sig_residual = sig_residual.astype(np.float32)[start : start + signal_len]
+    if sig_residual is not None:
+        sig_residual = sig_residual.astype(np.float32)
+        sig = np.stack([sig, sig_residual], axis=0)
+    return sig
+
+
+# Per-thread pinned staging buffers for host->device batch copies.
+#
+# `torch.from_numpy(np.stack(x)).to(device)` copies out of pageable memory: the
+# driver has to stage it through a pinned bounce buffer of its own, and the copy
+# is synchronous, so the calling thread blocks for its full duration. On the
+# sequential inference path that thread is the dedicated GPU worker, and the
+# extraction threads feeding it sit idle meanwhile. Staging into a pinned buffer
+# we own lets `np.stack` write straight into page-locked memory and the copy be
+# issued with `non_blocking=True`.
+#
+# Reuse is only safe while no copy out of the buffer is still in flight. Every
+# caller here happens to end its batch with a `.cpu()` on the same stream, which
+# synchronizes -- but that is an invariant a future caller could quietly break,
+# so each buffer carries a CUDA event recorded after its copy and waits on it
+# before being overwritten. In the normal case the event is long since complete
+# and the wait returns immediately. Buffers are thread-local on top of that, so
+# two threads never share one.
+_pinned_staging = threading.local()
+
+
+def _stack_to_device(arrays: list[np.ndarray], device: str, slot: Hashable) -> torch.Tensor:
+    """Stack ``arrays`` into one tensor on ``device``.
+
+    On CUDA the stack lands in a per-thread pinned staging buffer (keyed by
+    ``slot`` plus row shape and dtype) and the copy is issued asynchronously.
+    Everywhere else this is exactly ``torch.from_numpy(np.stack(arrays)).to(device)``.
+
+    ``slot`` names the input the batch belongs to ("signal", "sequence",
+    "features"); two inputs must not share a buffer. Every row is expected to
+    have the row shape and dtype of ``arrays[0]`` — which is what every caller
+    produces (float32 throughout) and what plain ``np.stack`` requires for the
+    shape anyway.
+    """
+    if not device.startswith("cuda"):
+        return torch.from_numpy(np.stack(arrays)).to(device)
+
+    first = arrays[0]
+    n = len(arrays)
+    key = (slot, first.shape, first.dtype.str)
+    cache = getattr(_pinned_staging, "buffers", None)
+    if cache is None:
+        cache = {}
+        _pinned_staging.buffers = cache
+    entry = cache.get(key)
+    if entry is None or entry[0].shape[0] < n:
+        entry = (
+            torch.empty(
+                (n,) + first.shape,
+                dtype=torch.from_numpy(first).dtype,
+                pin_memory=True,
+            ),
+            torch.cuda.Event(),
+        )
+        cache[key] = entry
+    else:
+        # Do not overwrite a buffer whose last copy is still in flight.
+        entry[1].synchronize()
+    buf, copied = entry
+    view = buf[:n]
+    np.stack(arrays, out=view.numpy())
+    out = view.to(device, non_blocking=True)
+    copied.record()
+    return out
+
+
 def _run_batch_multiclass(
     signals: list[np.ndarray],
     sequences: list[np.ndarray],
@@ -529,14 +684,14 @@ def _run_batch_multiclass(
     cl_regression_head: "torch.nn.Module | None" = None,
 ) -> None:
     """Run a multi-class batch: store (base_idx, class_idx, confidence, all_probs, cl_pred) per read."""
-    signal_t = torch.from_numpy(np.stack(signals)).to(device)
-    seq_t = torch.from_numpy(np.stack(sequences)).to(device)
+    signal_t = _stack_to_device(signals, device, "signal")
+    seq_t = _stack_to_device(sequences, device, "sequence")
     batch = {"signal": signal_t, "sequence": seq_t}
 
     if requires_features:
         valid_feats = [f for f in features if f is not None]
         if valid_feats:
-            batch["features"] = torch.from_numpy(np.stack(valid_feats)).to(device)
+            batch["features"] = _stack_to_device(valid_feats, device, "features")
 
     with torch.inference_mode():
         logits = model_wrapper.forward_batch(batch, device)
@@ -557,15 +712,16 @@ def _run_batch_multiclass(
         ):
             cl_preds = cl_regression_head(model_wrapper.captured_repr).cpu().numpy()
 
-    for i, ((read_id, base_idx), cls_idx, conf, prob_vec) in enumerate(
-        zip(meta, class_indices.flatten(), confidences.flatten(), probs, strict=True)
+    # One `tolist()` for the whole batch, not `float(p)` per class per chunk.
+    # numpy promotes float32 -> Python float identically either way.
+    prob_lists = probs.tolist()
+    for i, ((read_id, base_idx), cls_idx, conf) in enumerate(
+        zip(meta, class_indices.flatten(), confidences.flatten(), strict=True)
     ):
         cl_val = float(cl_preds[i]) if cl_preds is not None else None
         if read_id not in pending:
             pending[read_id] = []
-        pending[read_id].append(
-            (base_idx, int(cls_idx), float(conf), [float(p) for p in prob_vec], cl_val)
-        )
+        pending[read_id].append((base_idx, int(cls_idx), float(conf), prob_lists[i], cl_val))
 
 
 def _run_batch(
@@ -579,23 +735,23 @@ def _run_batch(
     pending: dict[str, list[tuple[int, float]]],
 ) -> None:
     """Run a batch through the model and accumulate results into pending."""
-    signal_t = torch.from_numpy(np.stack(signals)).to(device)
-    seq_t = torch.from_numpy(np.stack(sequences)).to(device)
+    signal_t = _stack_to_device(signals, device, "signal")
+    seq_t = _stack_to_device(sequences, device, "sequence")
     batch = {"signal": signal_t, "sequence": seq_t}
 
     if requires_features:
         valid_feats = [f for f in features if f is not None]
         if valid_feats:
-            batch["features"] = torch.from_numpy(np.stack(valid_feats)).to(device)
+            batch["features"] = _stack_to_device(valid_feats, device, "features")
 
     with torch.inference_mode():
         logits = model_wrapper.forward_batch(batch, device)
         probs = torch.sigmoid(logits).cpu().numpy().flatten()
 
-    for (read_id, base_idx), prob in zip(meta, probs, strict=True):
+    for (read_id, base_idx), prob in zip(meta, probs.tolist(), strict=True):
         if read_id not in pending:
             pending[read_id] = []
-        pending[read_id].append((base_idx, float(prob)))
+        pending[read_id].append((base_idx, prob))
 
 
 # =============================================================================

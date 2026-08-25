@@ -26,6 +26,7 @@ from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 from torch.utils.data import DataLoader, WeightedRandomSampler
 
 import leech
+from leech.chunking.table import ChunkTable
 from leech.cli_config import make_console
 from leech.dataset import (
     LeechDataset,
@@ -145,7 +146,96 @@ def split_batch(batch: dict[str, Any], n: int) -> list[dict[str, Any]]:
     return [{**passthrough, **{k: chunked[k][i] for k in tensor_keys}} for i in range(num_splits)]
 
 
-def compute_class_weights(dataset: LeechDataset) -> torch.Tensor | None:
+def _label_column(chunks) -> np.ndarray:
+    """Every chunk's ``label_int`` as one array.
+
+    A :class:`~leech.chunking.table.ChunkTable` already holds the column, so
+    this is free there; the legacy list-of-dicts path still costs one pass.
+    Either way it replaces a pass that builds a row view per chunk, which on a
+    6.7M-chunk corpus is seconds of startup for a tally that is one C loop.
+    """
+    if isinstance(chunks, ChunkTable):
+        return chunks.require_values("label_int")
+    return np.fromiter((c["label_int"] for c in chunks), dtype=np.int64, count=len(chunks))
+
+
+def _categorical_codes(values: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """``(code per element, unique values, count per unique value)``.
+
+    Uniques come back in first-appearance order so that counts iterate the way
+    the dict-of-counts this replaces did, which keeps log output identical.
+    """
+    uniq, first, inverse, counts = np.unique(
+        values, return_index=True, return_inverse=True, return_counts=True
+    )
+    order = np.argsort(first, kind="stable")
+    rank = np.empty(len(order), dtype=np.int64)
+    rank[order] = np.arange(len(order))
+    return rank[np.asarray(inverse).ravel()], uniq[order], counts[order]
+
+
+def _source_group_counts(chunks) -> tuple[np.ndarray, list[str], np.ndarray]:
+    """``(group code per chunk, group names, chunks per group)``.
+
+    Mirrors ``chunk.get("source_group") or "unknown"``: both an absent group
+    and an empty one land in ``"unknown"``, and a corpus that also carries a
+    literal ``"unknown"`` group merges into it exactly as the dict did.
+    """
+    raw = chunks.values("source_group") if isinstance(chunks, ChunkTable) else None
+    if raw is None:
+        raw = np.array([(c.get("source_group") or "unknown") for c in chunks], dtype=object)
+
+    codes, uniq, counts = _categorical_codes(raw)
+    names = [
+        (value.decode() if isinstance(value, bytes) else str(value)) or "unknown" for value in uniq
+    ]
+    if len(set(names)) != len(names):
+        merged: dict[str, int] = {}
+        remap = np.array([merged.setdefault(name, len(merged)) for name in names])
+        codes = remap[codes]
+        counts = np.bincount(codes, minlength=len(merged))
+        names = list(merged)
+    return codes, names, counts
+
+
+class _DeviceTally:
+    """Epoch running totals kept on the device and read once, at the end.
+
+    Every ``.item()`` / ``.cpu()`` inside a training loop drains the CUDA
+    stream, so accumulating epoch metrics on the host costs one host/device
+    sync per read -- three per optimizer step in :meth:`Trainer.train_epoch`
+    before this existed.
+
+    The totals are float64 and are added in the same order as the Python
+    floats they replace, so every metric derived from them is bit-identical
+    to the host-side accumulation: ``x.item() / n`` and
+    ``x.to(float64) / n`` round the same way, and summing doubles in the same
+    order gives the same double.
+    """
+
+    __slots__ = ("_totals",)
+
+    def __init__(self) -> None:
+        self._totals: dict[str, torch.Tensor] = {}
+
+    def add(self, name: str, value: torch.Tensor, divisor: int = 1) -> None:
+        """Add ``value / divisor`` to the running total ``name``."""
+        term = value.detach().to(torch.float64)
+        if divisor != 1:
+            term = term / divisor
+        total = self._totals.get(name)
+        if total is None:
+            self._totals[name] = torch.zeros((), dtype=torch.float64, device=term.device)
+            total = self._totals[name]
+        total += term
+
+    def value(self, name: str) -> float:
+        """Read one total back to the host. One sync per call."""
+        total = self._totals.get(name)
+        return 0.0 if total is None else float(total)
+
+
+def compute_class_weights(dataset: "LeechDataset | np.ndarray") -> torch.Tensor | None:
     """
     Compute class weights from dataset label distribution.
 
@@ -154,18 +244,15 @@ def compute_class_weights(dataset: LeechDataset) -> torch.Tensor | None:
     frequency) for CrossEntropyLoss.
 
     Args:
-        dataset: Dataset with integer labels
+        dataset: Dataset with integer labels, or the label column itself.
+            Prefer the column: it is what the counting needs, and reading it
+            off a dataset costs a row view per chunk.
 
     Returns:
         Weight tensor, or None if balanced / single class
     """
     # Count class occurrences
-    labels = []
-    for i in range(len(dataset)):
-        chunk = dataset.chunks[i]
-        labels.append(chunk["label_int"])
-
-    labels_array = np.array(labels)
+    labels_array = dataset if isinstance(dataset, np.ndarray) else _label_column(dataset.chunks)
     unique, counts = np.unique(labels_array, return_counts=True)
 
     if len(unique) < 2:
@@ -715,13 +802,14 @@ class Trainer:
             self.adversarial_head.train()
         if self.cl_regression_head is not None:
             self.cl_regression_head.train()
-        total_loss = 0.0
-        total_adv_loss = 0.0
-        total_cl_loss = 0.0
-        all_preds: list[float] = []
-        all_labels: list[float] = []
-        all_adv_preds: list[int] = []
-        all_adv_labels: list[int] = []
+
+        # Training metrics reduce to a mean loss and an accuracy, so nothing
+        # here needs the predictions themselves -- a running correct-count is
+        # enough and keeps the per-epoch prediction arrays (one boxed
+        # np.float32 per prediction) from ever existing. Totals stay on the
+        # device until the epoch ends; see _DeviceTally.
+        tally = _DeviceTally()
+        seen = 0
 
         for batch in self.train_loader:
             self.optimizer.zero_grad()
@@ -750,29 +838,33 @@ class Trainer:
 
                 # Track metrics (sub-batch losses are averaged back to a
                 # per-batch mean so history is comparable across split settings)
-                total_loss += main_loss.item() / num_splits
+                tally.add("loss", main_loss, num_splits)
                 if adv is not None:
                     adv_loss, adv_preds, adv_labels = adv
-                    total_adv_loss += adv_loss.item() / num_splits
+                    tally.add("adv_loss", adv_loss, num_splits)
+                    # `mask.any()` would sync; the masked matches and the
+                    # masked count are all the accuracy needs, and both are
+                    # correct when the mask is empty.
                     mask = adv_labels != -1
-                    if mask.any():
-                        all_adv_preds.extend(adv_preds[mask].cpu().numpy().tolist())
-                        all_adv_labels.extend(adv_labels[mask].cpu().numpy().tolist())
+                    tally.add("adv_correct", ((adv_preds == adv_labels) & mask).sum())
+                    tally.add("adv_seen", mask.sum())
                 if cl_loss is not None:
-                    total_cl_loss += cl_loss.item() / num_splits
+                    tally.add("cl_loss", cl_loss, num_splits)
 
+                labels_flat = labels.detach().flatten()
                 if self.loss_type == "cross_entropy" and self._num_out > 2:
                     # Multi-class: argmax predictions
-                    preds = torch.argmax(logits, dim=-1).detach().cpu().numpy()
-                    all_preds.extend(preds.flatten())
-                elif self.loss_type == "cross_entropy":
-                    # Binary CE: probabilities via softmax, take class 1
-                    probs = torch.softmax(logits, dim=-1)[:, 1].detach().cpu().numpy()
-                    all_preds.extend(probs.flatten())
+                    preds = torch.argmax(logits, dim=-1).detach().flatten()
                 else:
-                    preds = torch.sigmoid(logits).detach().cpu().numpy()
-                    all_preds.extend(preds.flatten())
-                all_labels.extend(labels.cpu().numpy().flatten())
+                    if self.loss_type == "cross_entropy":
+                        # Binary CE: probabilities via softmax, take class 1
+                        scores = torch.softmax(logits, dim=-1)[:, 1]
+                    else:
+                        scores = torch.sigmoid(logits)
+                    preds = scores.detach().flatten() > 0.5
+                matches = preds.to(torch.float64) == labels_flat.to(torch.float64)
+                tally.add("correct", matches.sum())
+                seen += labels_flat.numel()
 
             # Gradient clipping + optimizer step (once per full batch)
             needs_clip = self.clip_grad_fn is not None or self.max_grad_norm > 0
@@ -794,25 +886,23 @@ class Trainer:
             if progress is not None and task_id is not None:
                 progress.update(task_id, advance=1)
 
-        # Compute metrics
-        avg_loss = total_loss / len(self.train_loader)
-        if self._num_out > 2:
-            # Multi-class: preds are already class indices
-            accuracy = accuracy_score(all_labels, all_preds)
-        else:
-            all_preds_binary = (np.array(all_preds) > 0.5).astype(int)
-            accuracy = accuracy_score(all_labels, all_preds_binary)
+        # Compute metrics. accuracy_score normalizes to matches / samples, so
+        # the running counts reproduce it exactly for both the multi-class
+        # (argmax) and the binary (threshold at 0.5) case.
+        avg_loss = tally.value("loss") / len(self.train_loader)
+        accuracy = tally.value("correct") / seen if seen else 0.0
 
         # Adversarial metrics
         if self.adversarial_head is not None:
-            avg_adv_loss = total_adv_loss / max(1, len(self.train_loader))
-            adv_acc = accuracy_score(all_adv_labels, all_adv_preds) if all_adv_labels else 0.0
+            avg_adv_loss = tally.value("adv_loss") / max(1, len(self.train_loader))
+            adv_seen = tally.value("adv_seen")
+            adv_acc = tally.value("adv_correct") / adv_seen if adv_seen else 0.0
             self.history["train_adv_loss"].append(avg_adv_loss)
             self.history["train_adv_acc"].append(adv_acc)
 
         # CL regression metrics
         if self.cl_regression_head is not None:
-            avg_cl_loss = total_cl_loss / max(1, len(self.train_loader))
+            avg_cl_loss = tally.value("cl_loss") / max(1, len(self.train_loader))
             self.history["train_cl_loss"].append(avg_cl_loss)
 
         return avg_loss, accuracy
@@ -836,10 +926,12 @@ class Trainer:
         self.model.eval()
         if self.cl_regression_head is not None:
             self.cl_regression_head.eval()
-        total_loss = 0.0
-        total_cl_loss = 0.0
-        all_preds: list[float] = []
-        all_labels: list[float] = []
+        # AUROC needs the probabilities themselves, so validation keeps them --
+        # but as one array per batch, never as a list of boxed numpy scalars
+        # (~40 bytes each while alive, and unboxed one at a time at the end).
+        tally = _DeviceTally()
+        all_preds: list[np.ndarray] = []
+        all_labels: list[np.ndarray] = []
         # For multiclass: keep full softmax probabilities so we can compute
         # macro one-vs-rest AUROC (argmax-only preds lose that information).
         all_probs_mc: list[np.ndarray] = []
@@ -882,36 +974,35 @@ class Trainer:
                         cl_preds = self.cl_regression_head(
                             self.model_wrapper.captured_repr[cl_mask]
                         )
-                        total_cl_loss += nn.functional.mse_loss(
-                            cl_preds, cl_targets[cl_mask]
-                        ).item()
+                        tally.add(
+                            "cl_loss",
+                            nn.functional.mse_loss(cl_preds, cl_targets[cl_mask]),
+                        )
 
                 # Track metrics
-                total_loss += loss.item()
+                tally.add("loss", loss)
                 if self.loss_type == "cross_entropy" and self._num_out > 2:
                     probs_mc = torch.softmax(logits, dim=-1).cpu().numpy()
                     all_probs_mc.append(probs_mc)
-                    preds = probs_mc.argmax(axis=-1)
-                    all_preds.extend(preds.flatten())
+                    all_preds.append(probs_mc.argmax(axis=-1).ravel())
                 elif self.loss_type == "cross_entropy":
-                    probs = torch.softmax(logits, dim=-1)[:, 1].cpu().numpy()
-                    all_preds.extend(probs.flatten())
+                    all_preds.append(torch.softmax(logits, dim=-1)[:, 1].cpu().numpy().ravel())
                 else:
-                    preds = torch.sigmoid(logits).cpu().numpy()
-                    all_preds.extend(preds.flatten())
-                all_labels.extend(labels.cpu().numpy().flatten())
+                    all_preds.append(torch.sigmoid(logits).cpu().numpy().ravel())
+                all_labels.append(labels.cpu().numpy().ravel())
 
                 # Update progress if provided
                 if progress is not None and task_id is not None:
                     progress.update(task_id, advance=1)
 
         # Compute metrics
-        avg_loss = total_loss / len(self.val_loader)
+        avg_loss = tally.value("loss") / len(self.val_loader)
+        preds_arr = np.concatenate(all_preds) if all_preds else np.zeros(0, dtype=np.float32)
+        labels_arr = np.concatenate(all_labels) if all_labels else np.zeros(0, dtype=np.float32)
         if self._num_out > 2:
             # Multi-class: preds are class indices; probs are needed for AUROC.
-            accuracy = accuracy_score(all_labels, all_preds)
-            f1 = f1_score(all_labels, all_preds, average="macro", zero_division=0.0)
-            labels_arr = np.asarray(all_labels)
+            accuracy = accuracy_score(labels_arr, preds_arr)
+            f1 = f1_score(labels_arr, preds_arr, average="macro", zero_division=0.0)
             present = np.unique(labels_arr)
             # Macro one-vs-rest AUROC computed per-class. We avoid passing the
             # sliced probs to roc_auc_score(multi_class="ovr") because sklearn
@@ -939,14 +1030,14 @@ class Trainer:
             else:
                 auc = 0.0
         else:
-            all_preds_binary = (np.array(all_preds) > 0.5).astype(int)
-            accuracy = accuracy_score(all_labels, all_preds_binary)
-            auc = roc_auc_score(all_labels, all_preds) if len(np.unique(all_labels)) > 1 else 0.0
-            f1 = f1_score(all_labels, all_preds_binary, zero_division=0.0)
+            all_preds_binary = (preds_arr > 0.5).astype(int)
+            accuracy = accuracy_score(labels_arr, all_preds_binary)
+            auc = roc_auc_score(labels_arr, preds_arr) if len(np.unique(labels_arr)) > 1 else 0.0
+            f1 = f1_score(labels_arr, all_preds_binary, zero_division=0.0)
 
         # CL regression validation metrics
         if self.cl_regression_head is not None:
-            avg_cl_loss = total_cl_loss / max(1, len(self.val_loader))
+            avg_cl_loss = tally.value("cl_loss") / max(1, len(self.val_loader))
             self.history["val_cl_loss"].append(avg_cl_loss)
 
         return avg_loss, accuracy, auc, f1
@@ -1421,12 +1512,18 @@ def train_model(
         if train_chunks is not None:
             source_values = [c.get(spec.source) for c in train_chunks]
         elif train_data_path is not None:
-            _npz = np.load(train_data_path, allow_pickle=True)
-            # npz arrays are stored under the pluralized field name.
-            for _key in (spec.source, f"{spec.source}s"):
-                if _key in _npz:
-                    source_values = _npz[_key].tolist()
-                    break
+            # `with`: an unclosed np.load holds the zip handle for the whole
+            # run, and the column it reads is only needed until the encoder
+            # exists (see the `del` below).
+            with np.load(train_data_path, allow_pickle=True) as _npz:
+                # npz arrays are stored under the pluralized field name.
+                for _key in (spec.source, f"{spec.source}s"):
+                    if _key in _npz:
+                        # The column, not `.tolist()`: boxing one Python string
+                        # per chunk costs ~400 MB on a 6.7M-chunk corpus, and
+                        # the encoder only needs the distinct values.
+                        source_values = _npz[_key]
+                        break
 
         # Resolve label_map for label-keyed confounds (e.g. disc_base).
         _lm = label_map
@@ -1445,6 +1542,11 @@ def train_model(
             label_map=_lm,
             data_dir=_data_dir,
         )
+        # The encoder keeps only the value -> class map, so the per-chunk
+        # column is dead here. Dropping it matters: it is one Python string
+        # per chunk (~400 MB on a 6.7M-chunk corpus) and both datasets are
+        # built below.
+        del source_values
         if confound_encoder is not None:
             adversarial_num_classes = confound_encoder.num_classes
         else:
@@ -1495,6 +1597,10 @@ def train_model(
             dwell_template_table=dwell_template_table,
         )
 
+    # One read of the label column, shared by the sampler, the num_out probe
+    # and the class weights below.
+    train_labels = _label_column(train_dataset.chunks)
+
     # Create data loaders
     effective_workers = resolve_dataloader_workers(num_workers, device)
 
@@ -1532,47 +1638,42 @@ def train_model(
         )
 
     # Build balanced sampler if requested
+    # Both sampler strategies want the same two things -- a count per category
+    # and a weight per chunk -- and np.unique returns both from one pass over
+    # the column. The four passes this replaces each built a row view per
+    # chunk, before a single batch had been loaded.
     train_sampler = None
     if balance_groups:
         # Compute per-chunk weights so each source group is equally represented
-        group_counts: dict[str, int] = {}
-        for chunk in train_dataset.chunks:
-            sg = chunk.get("source_group") or "unknown"
-            group_counts[sg] = group_counts.get(sg, 0) + 1
+        codes, group_names, group_counts = _source_group_counts(train_dataset.chunks)
 
-        if len(group_counts) > 1:
-            weights = []
-            for chunk in train_dataset.chunks:
-                sg = chunk.get("source_group") or "unknown"
-                weights.append(1.0 / group_counts[sg])
+        if len(group_names) > 1:
+            weights = (1.0 / group_counts)[codes]
             train_sampler = WeightedRandomSampler(
                 weights, num_samples=len(train_dataset), replacement=True
             )
-            logger.info(f"Balanced sampling enabled across {len(group_counts)} source groups:")
-            for sg, count in sorted(group_counts.items(), key=lambda x: -x[1]):
-                logger.info(f"  {sg}: {count} chunks, weight={1.0 / count:.6f}")
+            logger.info(f"Balanced sampling enabled across {len(group_names)} source groups:")
+            for rank in np.argsort(-group_counts, kind="stable"):
+                count = int(group_counts[rank])
+                logger.info(f"  {group_names[rank]}: {count} chunks, weight={1.0 / count:.6f}")
         else:
             logger.warning(
                 f"balance_groups enabled but only 1 source group found "
-                f"({list(group_counts.keys())}). Falling back to shuffle."
+                f"({group_names}). Falling back to shuffle."
             )
     elif oversample_minority:
         # Compute per-sample weights inversely proportional to class frequency
-        label_counts: dict[int, int] = {}
-        for chunk in train_dataset.chunks:
-            lbl = chunk["label_int"]
-            label_counts[lbl] = label_counts.get(lbl, 0) + 1
+        codes, class_labels, label_counts = _categorical_codes(train_labels)
 
-        if len(label_counts) > 1:
-            weights = []
-            for chunk in train_dataset.chunks:
-                lbl = chunk["label_int"]
-                weights.append(1.0 / label_counts[lbl])
+        if len(class_labels) > 1:
+            weights = (1.0 / label_counts)[codes]
             train_sampler = WeightedRandomSampler(
                 weights, num_samples=len(train_dataset), replacement=True
             )
-            logger.info(f"Minority oversampling enabled across {len(label_counts)} classes:")
-            for lbl, count in sorted(label_counts.items()):
+            logger.info(f"Minority oversampling enabled across {len(class_labels)} classes:")
+            for lbl, count in sorted(
+                zip(class_labels.tolist(), label_counts.tolist(), strict=True)
+            ):
                 logger.info(f"  class {lbl}: {count} chunks, weight={1.0 / count:.6f}")
         else:
             logger.warning(
@@ -1630,7 +1731,7 @@ def train_model(
 
     # Auto-detect num_out from training data when not explicitly set
     if num_out <= 1:
-        max_label = max(int(c["label_int"]) for c in train_dataset.chunks)
+        max_label = int(train_labels.max())
         if max_label > 1:
             num_out = max_label + 1
             logger.info(f"Auto-detected multi-class: num_out={num_out}")
@@ -1653,7 +1754,7 @@ def train_model(
         logger.info(f"Using manual pos_weight={pos_weight:.4f}")
     elif use_class_weights:
         # Auto-compute from training data
-        pos_weight_tensor = compute_class_weights(train_dataset)
+        pos_weight_tensor = compute_class_weights(train_labels)
 
     # Create model
     # Only pass num_features to models that need it

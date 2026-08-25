@@ -14,10 +14,13 @@ from leech.chunking.extractor import (
 )
 from leech.chunking.serialization import (
     DEFERRABLE_FIELDS,
+    ChunkNpzWriter,
+    ChunkSpool,
     csr_from_object_rows,
     csr_gather_index,
     csr_offsets_from_lens,
     get_chunk_statistics,
+    iter_chunk_columns,
     iter_npz_row_blocks,
     load_chunks,
     load_seq_to_sig_csr,
@@ -36,6 +39,9 @@ __all__ = [
     "resolve_feature_window",
     # Serialization
     "save_chunks",
+    "ChunkNpzWriter",
+    "ChunkSpool",
+    "iter_chunk_columns",
     "load_chunks",
     "get_chunk_statistics",
     "DEFERRABLE_FIELDS",

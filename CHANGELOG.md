@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`data merge --k-fold` crashed on multiclass inputs.**
+  `merge_and_kfold_split_multiclass` carried its own inline copy of the merge,
+  and that copy never learned about the CSR base-to-signal members added in
+  0.6.8 — it masked `seq_to_sig_values` (one row per map *entry*) with the
+  per-chunk mask and raised `IndexError: boolean index did not match indexed
+  array`. Every k-fold multiclass merge of a corpus written by the current
+  `save_chunks` failed. It now calls the shared `_merge_arrays_by_split`, like
+  the binary k-fold path always did. No test covered any merge entry point,
+  which is why the drift shipped; `tests/test_splitter_merge.py` now covers all
+  four.
+- **Merging corpora with different member sets wrote a misaligned column.**
+  An input missing `focus_signal_pos` (or the residual channel) contributed no
+  rows for that member but full rows for every other one, and nothing checked
+  the row counts agreed. Depending on input order the result either raised
+  `IndexError` on load or — silently — gave every affected chunk another read's
+  focus position, and so the wrong asymmetric signal crop. Mismatched inputs are
+  now rejected up front, naming the file and the missing member, and every
+  output member is asserted to have one row per chunk before it is written.
+- **The per-base mean absorbed any signal past the end of the map.**
+  `np.add.reduceat` segments on starts alone and runs its final segment to the
+  end of the array, so `level_mean` for the last mapped base summed the whole
+  tail: a map of `[0, 3, 6]` over ten samples reported 135.33 instead of 2.0.
+  Median, std and range come from the explicit loop over both boundaries and
+  were always right, which is why nothing caught it. Python fallback only
+  (`HAS_RUST` False) — what an install without the `rust` extra runs, and what
+  any caller of the exported `compute_signal_levels` with a partial map gets.
+  Values on a map that covers its signal are bit-identical to before.
+
 - **`LeechDataset` no longer holds three copies of the corpus while it loads**
   (#211). `load_chunks` read every npz member, the tensorize loop built one
   tensor per chunk from them, and `torch.stack` allocated the whole contiguous
@@ -36,6 +64,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Merging chunk files with different member sets is now an error.** It used
+  to produce a corpus that was silently wrong (above). Corpora prepared by
+  different leech versions must be re-prepared, or merged within their vintage.
+
 - **`seq_to_sig_maps` is stored as `seq_to_sig_values` + `seq_to_sig_offsets`**
   (CSR: row `i` is `values[offsets[i]:offsets[i+1]]`) instead of a pickled
   object array. The old member cost one Python ndarray per chunk to unpickle
@@ -44,6 +76,86 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   file written by this version and read by leech <= 0.6.7 has no
   `seq_to_sig_maps`, so a `signal_kmer` run on that older version falls back to
   `base_onehot` (with the warning it already emits).
+
+### Performance
+
+- **`prepare` writes the corpus as it is extracted instead of accumulating it.**
+  Both backends used to extend one list until every batch was done and only
+  then call `save_chunks`, so peak held the per-chunk dicts, their arrays, and
+  the stacked copy at once. Batches now spool to disk through `ChunkSpool` and
+  the `.npz` is assembled at the end. Measured on 100k chunks / 231 MB of
+  arrays: peak **2.46x -> 0.27x** of the payload without a split, **2.17x ->
+  0.25x** with one, at unchanged wall time. The corpus is written twice (spill,
+  then `.npz`), so the output directory needs room for it twice over; both
+  paths log this at the start of a run.
+- **`save_chunks` no longer duplicates every field it stacks.**
+  `np.stack(...).astype(np.float32)` copied the array it had just built —
+  `astype` copies by default, and the chunks were already float32 — and every
+  stacked member was held until `np.savez` returned. Members are now stacked
+  and written one at a time with `copy=False`: peak **1.99x -> 0.97x** of the
+  payload (100k chunks), and `np.stack(200k x 540).astype(...)` alone drops
+  824 MB -> 443 MB.
+- **The merge holds one output at a time, not the whole corpus.**
+  `_merge_arrays_by_split` accumulated every sliced array for every split
+  across every input, then concatenated with all of it still alive. It now
+  counts kept rows in a header-only first pass, preallocates one array per
+  output member, and fills from `iter_npz_row_blocks`. 240k chunks / 661 MB,
+  4 inputs to 3 splits: peak **1.80x -> 1.10x** of the payload, wall 9.04 s ->
+  6.71 s. The k-fold multiclass path no longer caches every input file in RAM
+  either: 120k chunks, `k_fold=3`, peak **3.95x -> 2.07x**.
+- **`LeechDataset` builds its tensors a row block at a time.** The tensorize
+  loop ran per chunk — one `torch.tensor` per label, one `np.stack` per
+  signal/residual pair, one row view per chunk — over arrays that arrive in
+  blocks of ~1,500 rows. Metadata now comes off the `ChunkTable` columns in one
+  slice per block and only signal and features are handled per block. Measured
+  on 200k chunks with production shapes (540-sample signal + residual, 12x21
+  features): construction **57.7 -> 26.3 us/chunk** with `signal_kmer`,
+  **66.9 -> 23.7 us/chunk** with `base_onehot`, peak RSS unchanged (1.99 ->
+  1.95 GB). 2,216 output tensors across 28 option combinations are
+  bit-identical.
+- **The loader fetches a batch at a time.** `LeechDataset.__getitems__` returns
+  an already-collated batch and `collate_fn` passes it through, replacing 256
+  per-sample `__getitem__` calls and a `torch.stack`. Batch 256,
+  `num_workers=0`: **100,959 -> 925,425 chunks/s**. Per-sample randomness in
+  augmentation is preserved; cross-layer shift/time-mask and the list-fallback
+  path still go per sample. `signal_kmer` gets the construction win but not the
+  loader win — its per-sample `encode_signal_kmer` still dominates.
+- **Splitting reads are mapped to splits in one pass.** The masks were built
+  with a `str()` comprehension over the whole read-id column plus one
+  membership comprehension per split. 500k rows over 3 splits: **756 -> 176 ms**.
+- **Inference stages its host-to-device copies through pinned memory.**
+  `np.stack(...)` then a synchronous `.to(device)` from pageable memory blocked
+  the GPU thread for the whole copy. Batch 512 on an A30: the copy itself is
+  **1.31x** faster for `base_onehot` and **1.85x** for `signal_kmer` (42.5 MB
+  per batch). End-to-end `predict` moves 1.0-1.03x — it is extraction-bound —
+  so this shows up only when the GPU thread is the bottleneck.
+- **`ReadInfo` rebuilds the reference sequence on demand.**
+  `get_reference_sequence()` ran in the constructor for every read whether or
+  not the run was reference-anchored. Construction drops **6.45 -> 4.80 us** on
+  139 nt reads and **43.8 -> 10.5 us** (4.2x) on 6.8 kb reads. The value is
+  still materialised before pickling, so the multiprocessing prepare path is
+  unaffected.
+
+### Internal
+
+- **One batch accumulator instead of three.** `single.py`'s two extraction
+  paths and `bundle.py` each carried their own four parallel buffers, size
+  check, flush and mega-batch write. `BatchAccumulator` and
+  `prepare_signal_channels` are now shared; `single.py` drops 1400 -> 1259
+  lines. Output BAMs are byte-identical across {multiclass, binary, bundle} x
+  {rust, python} x {0, 2 workers}.
+- **The four merge functions share their common shape.** `_collect_read_index`,
+  `_assign_splits`, `_assign_kfold_splits` and friends replace four copies of
+  scan-ids / assign / merge / build-result. Public signatures and returned
+  dicts are unchanged; outputs verified member-for-member identical across 17
+  scenarios.
+- **Feature channel order is resolved once per read**, not rebuilt per chunk
+  from a dict merge inside `get_chunk`. The order is unchanged and now pinned
+  by name, by row, and by value against the Rust pipeline's own order.
+- **The tally passes over chunk metadata read columns.** `max(label_int)`,
+  the source-group and label counts, the sampler weights and `_crop_starts`
+  each built a row view per chunk. 200k chunks: `max(label_int)` 97.9 -> 0.03 ms,
+  the focus-position loop 124.2 -> 0.08 ms.
 
 ## [0.6.7] - 2026-08-24
 

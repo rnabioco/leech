@@ -225,3 +225,49 @@ def test_confound_encoder_direct() -> None:
     enc = ConfoundEncoder(name="c", source="source_group", value_to_class={"x": 0}, num_classes=1)
     assert enc.encode({"source_group": "x"}) == 0
     assert enc.encode({"source_group": "y"}) == -1
+
+
+class TestIdentityFromNpzColumn:
+    """`build_confound_encoder` takes the npz column itself, not a boxed list.
+
+    `training.py` used to call `.tolist()` on the source column, which boxes one
+    Python string per chunk -- ~400 MB on the 6.7M-chunk corpus in #211, held
+    while both datasets are built. The guard here was `if not source_values:`,
+    which raises "truth value of an array with more than one element is
+    ambiguous" on an ndarray, so the array could not be passed at all.
+    """
+
+    def _spec(self):
+        from leech.confounds import parse_confound_token
+
+        return parse_confound_token("source_group:identity")
+
+    def test_ndarray_column_builds_the_same_encoder_as_a_list(self):
+        import numpy as np
+
+        from leech.confounds import build_confound_encoder
+
+        values = ["Ala", "Gly", "Ala", "Ser", "Gly"]
+        from_list = build_confound_encoder(self._spec(), source_values=values)
+        from_array = build_confound_encoder(self._spec(), source_values=np.array(values, dtype=str))
+
+        assert from_list is not None and from_array is not None
+        assert from_array.num_classes == from_list.num_classes
+        assert from_array.value_to_class == from_list.value_to_class
+
+    def test_empty_ndarray_disables_adversarial_training(self):
+        import numpy as np
+
+        from leech.confounds import build_confound_encoder
+
+        assert build_confound_encoder(self._spec(), source_values=np.array([], dtype=str)) is None
+        assert build_confound_encoder(self._spec(), source_values=None) is None
+
+    def test_single_element_ndarray_is_not_mistaken_for_empty(self):
+        import numpy as np
+
+        from leech.confounds import build_confound_encoder
+
+        encoder = build_confound_encoder(self._spec(), source_values=np.array(["Ala"], dtype=str))
+        assert encoder is not None
+        assert encoder.num_classes == 1
