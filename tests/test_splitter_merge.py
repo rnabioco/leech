@@ -193,6 +193,33 @@ class TestMergeAndSplit:
             two_inputs, result["output_files"], expect_labels_int={"Ala": 0, "Gly": 1}
         )
 
+    def test_an_input_with_no_selected_reads_contributes_nothing(self, two_inputs, tmp_path):
+        """Not even its dtypes: a wider column there must not widen the output."""
+        from leech.splitting.splitter import _merge_arrays_by_split
+
+        ala, gly = two_inputs
+        unused = write_corpus(
+            tmp_path,
+            "Asparagine",
+            n_reads=6,
+            prefix="a_very_long_unused_read_prefix",
+            label="Asparagine",
+            seed=9,
+        )
+        reads = {str(r) for r in np.load(ala, allow_pickle=True)["read_ids"]}
+        reads |= {str(r) for r in np.load(gly, allow_pickle=True)["read_ids"]}
+
+        outputs = {"train": tmp_path / "out" / "train.npz"}
+        counts = _merge_arrays_by_split([ala, gly, unused], {"train": reads}, outputs)
+        assert counts["train"] == 24 * CHUNKS_PER_READ
+
+        with (
+            np.load(outputs["train"], allow_pickle=True) as merged,
+            np.load(ala, allow_pickle=True) as source,
+        ):
+            for name in ("read_ids", "labels", "source_groups"):
+                assert merged[name].dtype == source[name].dtype
+
     def test_no_output_dir_returns_chunk_lists(self, two_inputs):
         train, val, test = merge_and_split_chunks(list(two_inputs), seed=42)
         assert len(train) + len(val) + len(test) == 24 * CHUNKS_PER_READ

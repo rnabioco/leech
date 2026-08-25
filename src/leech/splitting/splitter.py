@@ -147,6 +147,10 @@ def _split_codes(read_ids: np.ndarray, split_read_ids: dict[str, set[str]]) -> n
 
     Rows are converted a block at a time so the transient list of Python
     strings stays bounded rather than being one object per chunk in the corpus.
+
+    The splits must be disjoint — one code per row is the whole point — which
+    every producer here guarantees: fractional, k-fold and group-level
+    assignment all partition the read ids.
     """
     lookup: dict[str, int] = {}
     for code, rid_set in enumerate(split_read_ids.values()):
@@ -355,6 +359,12 @@ def _merge_arrays_by_split(
         return dict.fromkeys(split_names, 0)
 
     plans = _plan_inputs(input_paths, split_read_ids, label_overrides, source_group_overrides)
+    # An input none of whose reads made it into a split contributes nothing —
+    # not even its dtypes, which would otherwise widen a column past what the
+    # merged file actually holds.
+    plans = [plan for plan in plans if any(plan.rows[sname].size for sname in split_names)]
+    if not plans:
+        return dict.fromkeys(split_names, 0)
     specs = _output_specs(plans)
 
     # Members no .npy header could be read for: object dtype (the legacy
@@ -400,13 +410,12 @@ def _merge_arrays_by_split(
     s2s_written = dict.fromkeys(split_names, 0)
     for plan in plans:
         base = dict(written)
-        contributes = any(plan.rows[sname].size for sname in split_names)
         skip = set(plan.text_overrides)
         if plan.label_int is not None:
             skip.add("labels_int")
         streamed = [name for name in specs if name not in skip]
 
-        if contributes and streamed:
+        if streamed:
             for row_start, blocks in iter_npz_row_blocks(plan.path, streamed):
                 n_block = len(blocks[streamed[0]])
                 for sname in split_names:
@@ -420,7 +429,7 @@ def _merge_arrays_by_split(
                     for name in streamed:
                         outputs[sname][name][dst : dst + (hi - lo)] = blocks[name][local]
 
-        if contributes and boxed_members:
+        if boxed_members:
             with np.load(plan.path, allow_pickle=True) as data:
                 for name in boxed_members:
                     column = data[name]
@@ -444,25 +453,24 @@ def _merge_arrays_by_split(
         # Base-to-signal maps are CSR (values + offsets), so they are selected
         # by gathering rows rather than by masking, and their offsets are
         # rebuilt from the accumulated row lengths at save time.
-        if contributes:
-            s2s = _load_s2s_csr(plan.path, plan.members)
-            for sname in split_names:
-                rows = plan.rows[sname]
-                if not rows.size:
-                    continue
-                if s2s is None:
-                    # No maps in this file; keep the row count aligned so a
-                    # merge with files that do have them stays row-indexable.
-                    s2s_lens[sname].append(np.zeros(rows.size, dtype=np.int64))
-                    continue
-                values, offsets = s2s
-                lens, _col, src = csr_gather_index(offsets, rows)
-                s2s_lens[sname].append(lens)
-                gathered = int(lens.sum())
-                at = s2s_written[sname]
-                s2s_values_out[sname][at : at + gathered] = values[src]
-                s2s_written[sname] = at + gathered
-            del s2s
+        s2s = _load_s2s_csr(plan.path, plan.members)
+        for sname in split_names:
+            rows = plan.rows[sname]
+            if not rows.size:
+                continue
+            if s2s is None:
+                # No maps in this file; keep the row count aligned so a merge
+                # with files that do have them stays row-indexable.
+                s2s_lens[sname].append(np.zeros(rows.size, dtype=np.int64))
+                continue
+            values, offsets = s2s
+            lens, _col, src = csr_gather_index(offsets, rows)
+            s2s_lens[sname].append(lens)
+            gathered = int(lens.sum())
+            at = s2s_written[sname]
+            s2s_values_out[sname][at : at + gathered] = values[src]
+            s2s_written[sname] = at + gathered
+        del s2s
 
     # Assemble and save one split at a time, dropping each before the next.
     saved_counts: dict[str, int] = {}
