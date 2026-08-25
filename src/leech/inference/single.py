@@ -15,6 +15,7 @@ from rich.progress import Progress
 from leech.configs import ChunkConfig, InferenceConfig, MotifConfig, SignalConfig
 from leech.features import encode_signal_kmer, extract_move_table, sequence_to_int
 from leech.inference.helpers import (
+    BatchAccumulator,
     _check_config_consistency,
     _encode_sequence_for_inference,
     _run_batch,
@@ -26,6 +27,7 @@ from leech.inference.helpers import (
     collect_bam_metadata_for_rust,
     load_model_auto,
     prepare_inference_features,
+    prepare_signal_channels,
     validate_inference_shapes,
 )
 from leech.io.bam_reader import count_bam_reads, iter_bam_batches
@@ -126,26 +128,7 @@ def _inference_worker(
                     continue
 
                 # Signal (with optional kmer residual channel)
-                sig = chunk["signal"].astype(np.float32)
-                sig_residual = chunk.get("signal_residual")
-                if len(sig) < config.signal_len:
-                    sig = np.pad(sig, (0, config.signal_len - len(sig)), mode="constant")
-                    if sig_residual is not None:
-                        sig_residual = np.pad(
-                            sig_residual.astype(np.float32),
-                            (0, config.signal_len - len(sig_residual)),
-                            mode="constant",
-                        )
-                elif len(sig) > config.signal_len:
-                    start = (len(sig) - config.signal_len) // 2
-                    sig = sig[start : start + config.signal_len]
-                    if sig_residual is not None:
-                        sig_residual = sig_residual.astype(np.float32)[
-                            start : start + config.signal_len
-                        ]
-                if sig_residual is not None:
-                    sig_residual = sig_residual.astype(np.float32)
-                    sig = np.stack([sig, sig_residual], axis=0)  # (2, signal_len)
+                sig = prepare_signal_channels(chunk, config.signal_len)
 
                 # Sequence encoding
                 if config.seq_encoding == "signal_kmer":
@@ -673,6 +656,19 @@ def run_inference(
             else _run_batch
         )
 
+        def _run_worker_batch(sigs, seqs, feats, meta) -> None:
+            """Flush callback: score one batch into the current mega-batch's ``pending``."""
+            _batch_fn_p(
+                sigs,
+                seqs,
+                feats,
+                meta,
+                model_wrapper,
+                requires_features,
+                device,
+                pending,
+            )
+
         with Progress() as progress:
             task = progress.add_task("[cyan]Running inference...", total=None)
 
@@ -710,42 +706,15 @@ def run_inference(
                     worker_args = [(wb, inf_config) for wb in worker_batches]
 
                     pending: dict[str, list] = {}
+                    accumulator = BatchAccumulator(batch_size, _run_worker_batch)
                     for worker_results in pool.imap_unordered(_inference_worker, worker_args):
-                        signals_buf = []
-                        seqs_buf = []
-                        feats_buf = []
-                        meta_buf = []
-
                         for read_id, base_idx, sig, enc_seq, feat in worker_results:
-                            signals_buf.append(sig)
-                            seqs_buf.append(enc_seq)
-                            feats_buf.append(feat)
-                            meta_buf.append((read_id, base_idx))
-
-                            if len(signals_buf) >= batch_size:
-                                _batch_fn_p(
-                                    signals_buf,
-                                    seqs_buf,
-                                    feats_buf,
-                                    meta_buf,
-                                    model_wrapper,
-                                    requires_features,
-                                    device,
-                                    pending,
-                                )
-                                signals_buf, seqs_buf, feats_buf, meta_buf = [], [], [], []
-
-                        if signals_buf:
-                            _batch_fn_p(
-                                signals_buf,
-                                seqs_buf,
-                                feats_buf,
-                                meta_buf,
-                                model_wrapper,
-                                requires_features,
-                                device,
-                                pending,
-                            )
+                            accumulator.add(sig, enc_seq, feat, (read_id, base_idx))
+                        # One worker's results never share a batch with the
+                        # next worker's -- imap_unordered hands them back
+                        # whole, and this is the batching the path has always
+                        # had.
+                        accumulator.flush()
 
                     # Write this mega-batch's predictions
                     if tsv_writer is not None:
@@ -783,10 +752,6 @@ def run_inference(
         # ---- Sequential path (mega-batched, double-buffered GPU) ----
         from concurrent.futures import Future, ThreadPoolExecutor
 
-        batch_signals: list[np.ndarray] = []
-        batch_seqs: list[np.ndarray] = []
-        batch_feats: list[np.ndarray | None] = []
-        batch_meta: list[tuple[str, int]] = []
         pending: dict[str, list] = {}
         _shape_validated = False
 
@@ -806,22 +771,16 @@ def run_inference(
         _bam_write_executor = ThreadPoolExecutor(max_workers=1)
         _bam_write_future: Future | None = None
 
-        def _flush_batch() -> None:
-            """Submit accumulated chunks to GPU thread (double-buffered)."""
-            nonlocal batch_signals, batch_seqs, batch_feats, batch_meta, _gpu_future
-            if not batch_signals:
-                return
+        def _submit_gpu_batch(sigs, seqs, feats, meta) -> None:
+            """Flush callback: hand one batch to the GPU thread (double-buffered).
+
+            The accumulator has already detached these buffers, so the GPU
+            thread owns them and extraction can keep filling the next batch.
+            """
+            nonlocal _gpu_future
             # Wait for previous GPU batch before submitting next
             if _gpu_future is not None:
                 _gpu_future.result()
-            # Capture current batch and reset buffers
-            sigs, seqs, feats, meta = (
-                batch_signals,
-                batch_seqs,
-                batch_feats,
-                batch_meta,
-            )
-            batch_signals, batch_seqs, batch_feats, batch_meta = [], [], [], []
             # Submit GPU work -- runs while main thread continues extraction
             _gpu_future = _gpu_executor.submit(
                 _batch_fn,
@@ -834,6 +793,8 @@ def run_inference(
                 device,
                 pending,
             )
+
+        accumulator = BatchAccumulator(batch_size, _submit_gpu_batch)
 
         def _drain_gpu() -> None:
             """Wait for any in-flight GPU batch to complete."""
@@ -952,26 +913,7 @@ def run_inference(
                     continue
 
                 # Signal (with optional kmer residual channel)
-                signal_array = chunk["signal"]
-                assert isinstance(signal_array, np.ndarray)
-                sig = signal_array.astype(np.float32)
-                sig_residual = chunk.get("signal_residual")
-                if len(sig) < signal_len:
-                    sig = np.pad(sig, (0, signal_len - len(sig)), mode="constant")
-                    if sig_residual is not None:
-                        sig_residual = np.pad(
-                            sig_residual.astype(np.float32),
-                            (0, signal_len - len(sig_residual)),
-                            mode="constant",
-                        )
-                elif len(sig) > signal_len:
-                    start = (len(sig) - signal_len) // 2
-                    sig = sig[start : start + signal_len]
-                    if sig_residual is not None:
-                        sig_residual = sig_residual.astype(np.float32)[start : start + signal_len]
-                if sig_residual is not None:
-                    sig_residual = sig_residual.astype(np.float32)
-                    sig = np.stack([sig, sig_residual], axis=0)
+                sig = prepare_signal_channels(chunk, signal_len)
 
                 # Sequence
                 seq_enc = _encode_sequence_for_inference(
@@ -1097,12 +1039,7 @@ def run_inference(
                 if not _shape_validated:
                     validate_inference_shapes(sig, feat, config)
                     _shape_validated = True
-                batch_signals.append(sig)
-                batch_seqs.append(seq_arr)
-                batch_feats.append(feat)
-                batch_meta.append((read_id, base_idx))
-                if len(batch_signals) >= batch_size:
-                    _flush_batch()
+                accumulator.add(sig, seq_arr, feat, (read_id, base_idx))
 
         def _wait_for_bam_write():
             """Wait for any in-flight async BAM write to complete."""
@@ -1119,7 +1056,7 @@ def run_inference(
             """
             nonlocal total_reads, total_predictions, mega_batch_idx
             nonlocal pending, _bam_write_future
-            _flush_batch()
+            accumulator.flush()
             _drain_gpu()
             # Wait for any previous BAM write (serializes bam_out access)
             _wait_for_bam_write()
@@ -1358,13 +1295,7 @@ def run_inference(
                                         validate_inference_shapes(sig, feat, config)
                                         _shape_validated = True
 
-                                    batch_signals.append(sig)
-                                    batch_seqs.append(seq_arr)
-                                    batch_feats.append(feat)
-                                    batch_meta.append(meta)
-
-                                    if len(batch_signals) >= batch_size:
-                                        _flush_batch()
+                                    accumulator.add(sig, seq_arr, feat, meta)
 
                         _finalize_mega_batch(aln_batch)
 
