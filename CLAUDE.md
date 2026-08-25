@@ -772,8 +772,10 @@ The codebase is feature-complete (v0.7.0):
   `eval test` takes `--num-workers`
 - ✓ CTC-CRF sequence models (`leech.crf`): encoder, training objective with an
   analytic forward-backward, optional Triton lattice kernels, and the two-pass
-  Viterbi decode — ported from escapepod-models, torch + numpy only. The
-  trainer, ONNX export and corpus paths are not here yet.
+  Viterbi decode — ported from escapepod-models, torch + numpy only. Plus the
+  manifest seam, the corpus builder (`plan_corpus`/`build_corpus`) and the
+  trainer (`CrfTrainer`). The ONNX export and the metrics/eval half are not
+  here yet.
 
 All core functionality is implemented and ready for use.
 
