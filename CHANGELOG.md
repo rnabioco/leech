@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`leech.crf`: CTC-CRF sequence models — encoder, training objective and
+  decode.** A second task alongside the chunk classifiers: where a classifier
+  maps a signal window to a label, a CRF maps one to a *sequence*, over
+  `n_base ** state_len` states whose Viterbi traceback emits one base per move.
+  Ported unchanged from `escapepod_models.crf`, which now imports it from here.
+  The formulation is ONT's, introduced in bonito; the architecture is
+  SeqTagger's published parameters (Genome Res 35:956). The equivalence checks
+  that prove it correct stay in escapepod-models, where the reference
+  implementation is available to run as the oracle. The port is pinned by an A/B against
+  the pre-move copy: encoder forward, loss forward *and* backward, the analytic
+  forward-backward's posteriors, and the decoded strings are all bit-identical
+  on CPU and on GPU (Triton kernels included).
+
+  Contents: `CrfEncoder` (3 convs -> 5 alternating LSTMs -> linear -> tanh/scale
+  -> per-state blank splice), `CtcCrfLoss` with an analytic forward-backward
+  that replaces a 300-step autograd replay with one elementwise multiply,
+  optional Triton lattice kernels, the two-pass Viterbi `decode_batch`, and the
+  packaged architecture config `leech/crf/configs/crf_ctc.toml`.
+
+  The subpackage imports **only torch and numpy, and only on demand** — the
+  config path is eager and the rest is lazy (PEP 562, as in `leech.models`), so
+  `from leech.crf import DEFAULT_CONFIG` costs no torch import. That is what
+  lets escapepod-models install leech `--no-deps` into a conda-forge pixi
+  environment, and it is enforced by `tests/test_crf_package.py`.
+
+  Not included yet: the trainer, the ONNX export, and the corpus paths.
+
+- **`leech.crf.manifest`: the seam between a corpus's vocabulary and its signal.**
+  One table, one row per read — `read_id, pod5, anchor_end, target` plus optional
+  `label`/`group`/`batch`/`quality_score`/`quality_margin`/`split` — and nothing
+  about where those facts came from. `target` is the *resolved* sequence: a class
+  name may ride along in `label` for reporting, but nothing here looks one up.
+  Everything above the manifest is vocabulary (panels, codes, oligos, gates) and
+  belongs to whatever project defines it; everything below is signal ML.
+
+  Two rules it exists to enforce, both silent when broken. Label quality travels
+  as **numbers, never a `keep` boolean**, so the gate stays sweepable at training
+  time — gating one panel's labels moved accuracy from 0.875 to 0.97, and a
+  boolean decided at extraction would mean re-cutting an 8 GB corpus per
+  threshold; `quality_coverage()` reports partial scoring, because an unscored
+  read cannot pass a gate and is dropped without a word (this once cut a corpus
+  to a non-random 13.5%). And `check_geometry` **raises** on a window too short
+  to hold its target rather than warning, because a short window trains,
+  converges, and quietly discriminates on fewer bases than designed.
+
 ## [0.7.0] - 2026-08-25
 
 ### Fixed

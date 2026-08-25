@@ -391,6 +391,92 @@ and a training loop contends with its own forward/backward for that pool, while
 grid search runs N such processes. `LeechDataset`'s block fill and
 `__getitems__` gather go through numpy for this reason.
 
+### CTC-CRF: a second task, and five rules that do not announce themselves
+
+`leech.crf` maps a signal window to a *sequence* rather than a label — a CRF
+over `n_base ** state_len` states whose Viterbi traceback emits one base per
+move. The formulation is ONT's, introduced in bonito; the architecture is
+SeqTagger's published parameters. Ported here from `escapepod_models.crf`
+(rnabioco/escapepod-models#40), which now imports it from leech.
+
+**The equivalence checks that prove this code correct live in escapepod-models**
+(`scripts/ldx/analysis/verify_crf_*.py`), because they run the reference
+implementation as the oracle and leech carries no dependency on it. Keep them
+there, and do not "simplify" them by dropping that comparison — it is the
+evidence.
+
+**`import leech.crf` must pull only torch and numpy, and only on demand.** Not
+pysam, polars, escapepod, sklearn or click — ever. escapepod-models installs
+leech `--no-deps` into a conda-forge pixi environment precisely so its solver
+never has to reconcile leech's POD5/BAM stack against conda's pytorch, and the
+CRF path is all it needs; one convenience import at the top of `encoder.py`
+turns that into an install that breaks at first use. The config path is eager
+and everything else is lazy (PEP 562, as in `leech.models`), so
+`from leech.crf import DEFAULT_CONFIG` costs no torch import: escapepod-models'
+`ldxlib` exposes it as a module constant and is imported by two dozen scripts
+that want only edit distances and panel lookups. `tests/test_crf_package.py`
+fails if either property regresses.
+
+**The model cannot emit the first `state_len` bases of its target.** They fix
+the initial state and nothing else, so a `target_len` target decodes to
+`target_len - state_len` bases *at any window width* — widening the signal
+window recovers exactly nothing. Match decodes against `target[state_len:]`;
+matching the full-length target calls the same sequence but inflates every edit
+distance and compresses the confidence margin that ranking depends on. Size
+targets so the sacrificial bases come from a constant prefix.
+
+**Blank is entry 0 of each state group, and the score width is 1280.**
+`score_index = state * (n_base + 1) + label`, `label == 0` meaning stay. 1024 is
+the *linear layer's* width (`n_base ** (state_len + 1)`); the blank is spliced in
+per state afterwards. This is the layout `escapepod-demux`'s Rust decoder
+assumes — move the blank to the end of each group and every shape still lines
+up while every call is wrong. Output is also **time-major** `(T, N, n_score)`,
+the opposite of the boundary CNN's batch-major `[B, 2, L]` in the same stack.
+
+**The loss runs in fp32, outside autocast, and `_UNREACHABLE` is -1e30, not
+-inf.** The lattice scan accumulates over `chunk // stride` timesteps and fp16
+loses the tail of that sum; autocast the encoder, where the matmuls are, and
+cast back before the loss. And `logaddexp(-inf, -inf)` is `-inf` forward but
+differentiates to `nan`, which poisons every upstream gradient — the loss looks
+perfect and training silently does nothing. A large finite floor underflows to
+zero weight against any real path while keeping the backward pass finite.
+
+**The decode is two passes and both are load-bearing.** Log-semiring
+forward/backward for per-timestep edge posteriors, then max-semiring over
+`log(post + 1e-8)` for the argmax edge. A one-pass Viterbi over the raw encoder
+scores is a different and worse decode, and is the obvious thing to simplify
+away. The floor goes on the probability, not the log, so it cannot be folded
+into the softmax.
+
+**The manifest is the seam, and vocabulary stays on the far side of it.**
+`leech.crf.manifest` takes one table — `read_id, pod5, anchor_end, target` plus
+optional `label`/`group`/`batch`/`quality_score`/`quality_margin`/`split` — and
+nothing about where those facts came from. Which reads belong to which barcode,
+which flowcell, how a label's trustworthiness was scored: that is the producing
+project's business. `target` is the **resolved sequence**; a class name may ride
+along in `label` for reporting, but nothing here looks one up. escapepod-models'
+extractor took a `--panel` argument purely to turn a class name into a target
+string, and that one thread is what kept it tied to a single assay.
+
+Two rules the manifest exists to enforce, both silent when broken:
+
+- **Label quality travels as numbers, never as a `keep` boolean.** The gate is
+  applied at training time so it stays sweepable — gating the ldx labels moved
+  accuracy from 0.875 to 0.97, and a boolean decided at extraction would mean
+  re-cutting an 8 GB corpus per threshold. `quality_coverage()` is there because
+  an *unscored* read cannot pass a gate and is therefore dropped without a word:
+  a partially scored table once cut a corpus from 56% to 13.5% of its reads,
+  non-randomly.
+- **`anchor_end` and `target` are coupled.** `check_geometry` refuses a window
+  too short to hold its target rather than warning, because a short window
+  trains, converges, and quietly discriminates on fewer bases than designed.
+  Pass a *measured* `samples_per_base` — leech has dwell times — not a constant.
+
+The analytic forward-backward in `_analytic.py` is the loss path; the plain
+scans in `loss.py` are the readable reference the tests check it against, and
+the Triton kernels check against those. Keep all three — the fallback chain is
+what makes a wrong kernel visible.
+
 ### Key Classes and Functions
 
 **`MoveTable` (features.py)**
@@ -499,6 +585,15 @@ src/leech/           # Main package source
 │   ├── spec.py          # ReleaseSpec: YAML model-release specification
 │   ├── notes.py         # Release-note rendering
 │   └── github.py        # gh CLI wrapper
+├── crf/             # CTC-CRF sequence models (torch + numpy ONLY)
+│   ├── encoder.py       # CrfEncoder: signal -> transition scores
+│   ├── loss.py          # CtcCrfLoss + the readable reference scans
+│   ├── _analytic.py     # Analytic forward-backward (autograd Functions)
+│   ├── _triton.py       # Optional CUDA lattice kernels
+│   ├── decode.py        # Two-pass Viterbi -> sequences
+│   ├── config.py        # Architecture TOML reader
+│   ├── _flags.py        # LEECH_* / ESCAPEPOD_* switches
+│   └── configs/         # Packaged crf_ctc.toml (the shipped geometry)
 ├── features.py      # MoveTable, dwell times, signal levels, normalization
 ├── dataset.py       # PyTorch Dataset classes, collate_fn, DataLoader sizing
 ├── training.py      # Training loop with Trainer class
@@ -661,6 +756,10 @@ The codebase is feature-complete (v0.7.0):
   training, validation and eval: auto on GPU (capped by the job's CPU
   allocation), serial on CPU, never workers inside a daemonic pool worker;
   `eval test` takes `--num-workers`
+- ✓ CTC-CRF sequence models (`leech.crf`): encoder, training objective with an
+  analytic forward-backward, optional Triton lattice kernels, and the two-pass
+  Viterbi decode — ported from escapepod-models, torch + numpy only. The
+  trainer, ONNX export and corpus paths are not here yet.
 
 All core functionality is implemented and ready for use.
 
