@@ -1,4 +1,4 @@
-"""The bonito-free CTC-CRF loss must agree with the one that trained the models.
+"""The CTC-CRF loss must agree with the one that trained the shipped models.
 
 The equivalence check against bonito+koi itself needs CUDA and bonito, so it
 lives in `scripts/ldx/analysis/verify_crf_loss.py` and is run by hand on a GPU
@@ -142,7 +142,7 @@ def test_analytic_backward_matches_autograd():
     This is the check that makes a manual backward safe to ship. koi's gradient
     is analytic too, so without it we would be trusting two hand-derivations
     against each other; here the plain scans in `loss.py` are differentiated by
-    autograd and used as the oracle, which needs no bonito and no GPU.
+    autograd and used as the oracle, so this test runs anywhere.
     """
     from leech.crf import _analytic
     from leech.crf.loss import _scan_full, _scan_target

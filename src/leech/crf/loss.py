@@ -1,14 +1,15 @@
-"""CTC-CRF training objective in plain PyTorch — no bonito, no ont-koi.
+"""CTC-CRF training objective in plain PyTorch.
 
-The other half of removing the ONT-licensed training dependency (#40). Where
-`encoder.py` replaces the forward pass, this replaces the loss, which is where
-`ont-koi`'s CUDA kernels sat: `logZ_cu` for the target lattice and
-`logZ_cu_sparse` for the normaliser.
+Two partition functions over the CRF lattice — one restricted to the target
+path, one over every path — expressed as ordinary torch ops so autograd supplies
+the backward pass. That matters more than it sounds: a hand-written backward for
+a forward-backward algorithm is where numerical bugs hide, because a wrong
+gradient does not crash, it just trains slightly worse.
 
-Both are forward scans over a lattice, expressed here as ordinary torch ops so
-autograd supplies the backward pass. That matters more than it sounds: a
-hand-written backward for a forward-backward algorithm is where numerical bugs
-hide, because a wrong gradient does not crash, it just trains slightly worse.
+(``_analytic`` then supersedes autograd on the hot path, computing the same
+gradients directly from the beta scan — the trade ONT's koi makes too, whose
+``LogZ.backward`` is one elementwise multiply. The plain scans here stay as the
+readable reference the analytic version is tested against.)
 
 The objective
 -------------

@@ -1,32 +1,19 @@
-"""CTC-CRF barcode encoder in plain PyTorch — no bonito, no ont-koi.
+"""CTC-CRF barcode encoder in plain PyTorch.
 
-Why this exists
----------------
-The shipped barcode models are trained through ``bonito.crf.model``, which is
-licensed for Research Purposes only (ONT Public License v1.0, §2.1), and calls
-into ``ont-koi``, whose wheel ships no licence of its own. That is fine for
-grant-funded research — the ONT licence explicitly carves it in — but it
-forecloses any commercial route and leaves an unlicensed dependency in the
-training path. See issue #40.
+Provenance
+----------
+The CTC-CRF formulation this implements is Oxford Nanopore's, introduced in
+bonito. The seven architecture hyperparameters are the published SeqTagger
+values (Genome Res 35:956), cited rather than copied — see
+``configs/crf_ctc.toml``, which annotates each with where it came from.
 
-This module is the encoder half of removing that dependency. It is a *from-graph*
-reimplementation: every layer, shape, padding and constant below was read off
-**our own exported ONNX** (``crf_encoder.onnx``) and verified numerically against
-**our own fixture** (``reference_io.npz``), not transcribed from bonito's Python.
-The architecture hyperparameters themselves are the published SeqTagger values
-(Genome Res 35:956), cited rather than copied — see ``scripts/ldx/crf_config.toml``.
-
-Honesty about "clean room": this is an *informed* reimplementation, not a
-clean-room one in the legal sense. Whoever wrote it had read bonito's source. If
-the licence review needs the stricter standard, the implementer has to be someone
-who has not — the graph and fixtures in this repo are enough to work from.
-
-What this does NOT remove
--------------------------
-Training also needs the CTC-CRF loss, which is where ``ont-koi``'s CUDA kernels
-live (``logZ_cu`` for the target lattice, ``logZ_cu_sparse`` for the normaliser).
-Those are a separate piece of work. This module makes the *forward pass*
-independent; it does not yet make training independent.
+The implementation is *from-graph*: every layer, shape, padding and constant
+below was read off **our own exported ONNX** (``crf_encoder.onnx``) and verified
+numerically against **our own fixture** (``reference_io.npz``). Be honest about
+what that is — an *informed* reimplementation, not a clean-room one in the legal
+sense, since whoever wrote it had read the original. If a licence review ever
+needs the stricter standard, the implementer has to be someone who has not; the
+graph and the fixtures are enough to work from.
 
 Architecture
 ------------

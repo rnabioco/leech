@@ -1,4 +1,4 @@
-"""The bonito-free decode must reproduce `decode_batch`, not merely resemble it.
+"""The decode must reproduce the reference rule, not merely resemble it.
 
 Agreement with bonito itself needs CUDA and bonito, so it lives in
 `scripts/ldx/analysis/verify_crf_decode.py` and runs by hand on a GPU node

@@ -6,9 +6,9 @@ signal window to a label, this maps one to a *sequence*: a CRF over
 It is what the barcode basecallers in escapepod-models are trained with, and
 what ``escapepod-demux``'s Rust decoder runs in production.
 
-Independent of bonito and ont-koi — all three pieces of the training path are
-here, so a model can be trained, evaluated and exported without either. See
-``encoder.py`` for what that buys legally and what it does not.
+The encoder, the objective and the decode are all here, so a model can be
+trained, evaluated and exported from this package alone. ``encoder.py`` records
+where the architecture and the formulation come from.
 
 **This subpackage imports only torch and numpy**, and only when a symbol that
 needs them is actually touched. Not pysam, not polars, not escapepod, ever. Both

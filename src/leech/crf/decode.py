@@ -1,9 +1,8 @@
-"""CTC-CRF Viterbi decode in plain PyTorch — the last piece bonito was needed for.
+"""CTC-CRF Viterbi decode in plain PyTorch.
 
-This is the third and final bonito dependency in the training path. The encoder
-made the forward pass independent, the loss made the objective independent, and
-`decode_batch` is what every evaluation script called to turn scores into
-sequences. With this, `scripts/ldx/` imports no bonito at all.
+Turns encoder scores into sequences. Structurally this reproduces bonito's
+``SeqdistModel.decode_batch``, whose two-pass shape is load-bearing and is the
+part worth reading before changing anything here.
 
 Two passes, and both are needed
 -------------------------------

@@ -13,10 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   decode.** A second task alongside the chunk classifiers: where a classifier
   maps a signal window to a label, a CRF maps one to a *sequence*, over
   `n_base ** state_len` states whose Viterbi traceback emits one base per move.
-  Ported unchanged from `escapepod_models.crf`, where it was written to get
-  bonito and ont-koi (ONT Public License / no licence respectively) out of the
-  training path; escapepod-models now imports it from here and its bonito
-  equivalence checks remain the oracle. The port is pinned by an A/B against
+  Ported unchanged from `escapepod_models.crf`, which now imports it from here.
+  The formulation is ONT's, introduced in bonito; the architecture is
+  SeqTagger's published parameters (Genome Res 35:956). The equivalence checks
+  that prove it correct stay in escapepod-models, where the reference
+  implementation is available to run as the oracle. The port is pinned by an A/B against
   the pre-move copy: encoder forward, loss forward *and* backward, the analytic
   forward-backward's posteriors, and the decoded strings are all bit-identical
   on CPU and on GPU (Triton kernels included).

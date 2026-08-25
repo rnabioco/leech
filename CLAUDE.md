@@ -395,12 +395,15 @@ grid search runs N such processes. `LeechDataset`'s block fill and
 
 `leech.crf` maps a signal window to a *sequence* rather than a label — a CRF
 over `n_base ** state_len` states whose Viterbi traceback emits one base per
-move. Ported from `escapepod_models.crf` (rnabioco/escapepod-models#40), which
-is where it was written to get bonito and ont-koi out of the training path;
-that repo now imports it from here, and its bonito equivalence checks
-(`scripts/ldx/analysis/verify_crf_*.py`) remain the oracle this code is proved
-against. **Do not add a bonito dependency to leech** — and do not "simplify" the
-verification by dropping it there, or it stops being evidence.
+move. The formulation is ONT's, introduced in bonito; the architecture is
+SeqTagger's published parameters. Ported here from `escapepod_models.crf`
+(rnabioco/escapepod-models#40), which now imports it from leech.
+
+**The equivalence checks that prove this code correct live in escapepod-models**
+(`scripts/ldx/analysis/verify_crf_*.py`), because they run the reference
+implementation as the oracle and leech carries no dependency on it. Keep them
+there, and do not "simplify" them by dropping that comparison — it is the
+evidence.
 
 **`import leech.crf` must pull only torch and numpy, and only on demand.** Not
 pysam, polars, escapepod, sklearn or click — ever. escapepod-models installs
