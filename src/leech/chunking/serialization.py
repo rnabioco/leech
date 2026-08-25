@@ -304,6 +304,24 @@ def _write_rows(fp, array: np.ndarray) -> None:
         fp.write(array[start : start + step].tobytes())
 
 
+def _text(value) -> str:
+    """Coerce an optional text field to the empty-string convention.
+
+    `None` means "absent" throughout the chunk format, and the readers already
+    honour that on the way in: `load_chunks` and `ChunkTable` both map `""` back
+    to `None`. The writer did not honour it on the way out. `chunk.get("label",
+    "")` returns the default only when the key is *missing*, so a key present
+    with the value `None` — which is what `--label` produces when it is not
+    passed, and what `load_chunks` produces for an absent group — reached
+    `np.array(..., dtype=str)` and was stringified to the literal `"None"`.
+
+    That made a save/load round trip non-idempotent: `"" -> None -> "None"`, so
+    merging a corpus renamed its empty source groups to a group *called*
+    "None", which `--balance-groups` then weighted as a real one.
+    """
+    return "" if value is None else str(value)
+
+
 def iter_chunk_columns(chunks: list[dict]) -> Iterator[tuple[str, np.ndarray | list]]:
     """Yield ``(member_name, value)`` for every npz member of ``chunks``, in write order.
 
@@ -354,7 +372,7 @@ def iter_chunk_columns(chunks: list[dict]) -> Iterator[tuple[str, np.ndarray | l
         sequences.append(chunk["sequence"])
         dwells.append(chunk["dwell"])
         features.append(chunk["features"])
-        labels.append(chunk.get("label", ""))  # String label (e.g., "Ala", "Gly")
+        labels.append(_text(chunk.get("label")))  # String label (e.g., "Ala", "Gly")
         labels_int.append(
             chunk.get("label_int", -1) if chunk.get("label_int") is not None else -1
         )  # Numeric label or -1
@@ -362,8 +380,8 @@ def iter_chunk_columns(chunks: list[dict]) -> Iterator[tuple[str, np.ndarray | l
         base_indices.append(chunk["base_idx"])
         feature_starts.append(chunk.get("feature_start", -5))
         feature_ends.append(chunk.get("feature_end", 5))
-        source_groups.append(chunk.get("source_group", ""))
-        reference_names.append(chunk.get("reference_name", ""))
+        source_groups.append(_text(chunk.get("source_group")))
+        reference_names.append(_text(chunk.get("reference_name")))
         # Charging level: sentinel -1 for missing
         cl_val = chunk.get("cl_value")
         cl_values.append(cl_val if cl_val is not None else -1)
@@ -375,7 +393,7 @@ def iter_chunk_columns(chunks: list[dict]) -> Iterator[tuple[str, np.ndarray | l
         s2s = chunk.get("seq_to_sig_map")
         seq_ctx = chunk.get("sequence_with_kmer_context")
         seq_to_sig_maps.append(s2s if s2s is not None else np.array([], dtype=np.int64))
-        sequences_with_kmer_context.append(seq_ctx if seq_ctx is not None else "")
+        sequences_with_kmer_context.append(_text(seq_ctx))
 
     # Convert to arrays — use flat (non-object) arrays when shapes are uniform
     # for faster serialization (avoids pickle overhead on object arrays).
