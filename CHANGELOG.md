@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Optional text fields wrote `None` as the literal string `"None"`.**
+  `chunk.get("label", "")` returns the default only when the key is *missing*,
+  so a key present with the value `None` — which is what `data prepare`
+  produces when `--label` is not passed, and what `load_chunks` produces for an
+  absent source group — reached `np.array(..., dtype=str)` and was stringified.
+  Two consequences: an unlabelled prepare stored the label `"None"` for every
+  chunk, and a save/load round trip was not idempotent (`"" -> None ->
+  "None"`), so merging a corpus renamed its empty source groups to a group
+  *called* `"None"` — which `--balance-groups` then weighted like a real one,
+  and which pairwise relabelling (matching on the stored label) matched
+  against nothing, leaving `label_int` at -1 so the dataset dropped those
+  chunks. `None` is now written as `""`, which is the convention every reader
+  already honours. **Corpora written before this fix keep their `"None"`
+  strings** — the readers are not changed to reinterpret them, because a group
+  legitimately named "None" would then be silently destroyed. Check with
+  `np.load(f)["source_groups"]` and re-prepare or rewrite if affected.
+- **Calling `run_inference` twice in one process could hang forever.** The
+  sequential path shut its `ThreadPoolExecutor`s down with `wait=False`,
+  leaving worker threads alive past the return; the parallel path then forks an
+  `mp.Pool`, and a fork inherits the memory of a process with running threads —
+  including any lock those threads hold — but not the threads themselves, so
+  nothing releases it. `num_workers=0` followed by `num_workers>0` deadlocked
+  with no error and no timeout. The CLI never hit this (one predict per
+  process); anyone scripting the Python API did. The pools are drained by that
+  point anyway, so they now shut down with `wait=True`.
 - **`data merge --k-fold` crashed on multiclass inputs.**
   `merge_and_kfold_split_multiclass` carried its own inline copy of the merge,
   and that copy never learned about the CSR base-to-signal members added in

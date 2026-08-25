@@ -1315,10 +1315,18 @@ def run_inference(
             f"{total_reads / _t_total:.0f} reads/s)"
         )
 
-        _extract_pool.shutdown(wait=False)
-        _gpu_executor.shutdown(wait=False)
+        # wait=True, not False. Every one of these pools is already drained here
+        # (`_drain_gpu` and `_wait_for_bam_write` above), so waiting costs
+        # nothing -- but `wait=False` leaves worker threads alive past the
+        # return, and the parallel path below forks an `mp.Pool`. A fork
+        # inherits the memory of a process with running threads, including any
+        # lock those threads hold, but not the threads themselves, so nothing
+        # ever releases it: calling `run_inference` with `num_workers=0` and
+        # then with `num_workers>0` in one process hung forever, with no error.
+        _extract_pool.shutdown(wait=True)
+        _gpu_executor.shutdown(wait=True)
         _wait_for_bam_write()  # Ensure final BAM write completes before close
-        _bam_write_executor.shutdown(wait=False)
+        _bam_write_executor.shutdown(wait=True)
 
     if tsv_writer is not None:
         tsv_writer.close()

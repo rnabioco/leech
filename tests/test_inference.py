@@ -1537,3 +1537,56 @@ class TestExtractionPathParity:
         sequential = json.loads((tmp_path / "w0.json").read_text())
         assert any("aa" in r for r in sequential)
         assert parallel == sequential
+
+
+class TestSequentialThenParallelInProcess:
+    """Two `run_inference` calls in one process must not deadlock.
+
+    The sequential path shut its `ThreadPoolExecutor`s down with `wait=False`,
+    leaving worker threads alive past the return. The parallel path then forks
+    an `mp.Pool`, and a fork inherits the memory of a process with running
+    threads -- including any lock those threads hold -- but not the threads
+    themselves, so nothing ever releases it. The second call hung forever, with
+    no error and no timeout. The CLI never hit this (one predict per process);
+    anyone scripting `leech.run_inference` twice did.
+    """
+
+    SCRIPT = """
+from concurrent.futures import ThreadPoolExecutor
+
+# Stand-in for the sequential path's teardown: threads still running at fork.
+pool = ThreadPoolExecutor(max_workers=2)
+list(pool.map(lambda i: i * 2, range(8)))
+pool.shutdown(wait={wait})
+
+import multiprocessing as mp
+with mp.get_context("fork").Pool(processes=2) as p:
+    assert p.map(abs, [-1, -2, -3]) == [1, 2, 3]
+print("OK")
+"""
+
+    def test_a_fork_after_a_waited_shutdown_completes(self, tmp_path):
+        """Runs in a subprocess with a hard timeout: the bug under test IS a hang."""
+        import subprocess
+        import sys
+
+        script = tmp_path / "fork_after_threads.py"
+        script.write_text(self.SCRIPT.format(wait=True))
+        done = subprocess.run(
+            [sys.executable, str(script)], capture_output=True, text=True, timeout=120
+        )
+        assert done.stdout.strip() == "OK", done.stderr
+
+    def test_the_sequential_teardown_waits(self):
+        """The guard: `wait=False` here is what reintroduces the hang."""
+        from pathlib import Path
+
+        from leech.inference import single as inference_single
+
+        source = Path(inference_single.__file__).read_text()
+        teardown = source[source.index("_extract_pool.shutdown") :]
+        teardown = teardown[: teardown.index("_bam_write_executor.shutdown") + 60]
+        assert "wait=False" not in teardown, (
+            "an executor in the sequential teardown shuts down with wait=False; "
+            "the mp.Pool fork in the parallel path will inherit its held locks"
+        )

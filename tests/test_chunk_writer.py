@@ -452,3 +452,99 @@ class TestMemory:
         # save_chunks needs the whole corpus resident plus a stacked copy; the
         # writer needs one batch. Half the payload is a wide margin either way.
         assert peak < payload * 0.5, f"peak {peak} of payload {payload}"
+
+
+class TestOptionalTextRoundTrip:
+    """`None` text fields are stored as `""`, not as the string `"None"`.
+
+    `--label` defaults to `None`, so a `data prepare` run that does not pass it
+    gave every chunk the literal label `"None"` -- and because `load_chunks`
+    maps `""` back to `None`, a plain load/save round trip *renamed* an empty
+    source group to a group called `"None"`. `--balance-groups` then weighted
+    that bucket like a real one, and pairwise relabelling (which matches on the
+    stored label) silently matched nothing.
+    """
+
+    @staticmethod
+    def _chunks(label, source_group, reference_name, n=3):
+        return [
+            {
+                "signal": np.zeros(8, np.float32),
+                "sequence": "ACGTACGTACG",
+                "dwell": np.ones(5, np.float32),
+                "features": np.ones((2, 5), np.float32),
+                "label": label,
+                "label_int": None,
+                "read_id": f"r{i}",
+                "base_idx": i,
+                "source_group": source_group,
+                "reference_name": reference_name,
+                "feature_start": -2,
+                "feature_end": 2,
+                "cl_value": None,
+                "seq_to_sig_map": np.arange(6, dtype=np.int64),
+                "sequence_with_kmer_context": "ACGT" * 4,
+                "focus_signal_pos": 4,
+            }
+            for i in range(n)
+        ]
+
+    def test_none_is_stored_as_empty_not_the_string_none(self, tmp_path):
+        path = tmp_path / "unlabelled.npz"
+        save_chunks(self._chunks(None, None, None), path, compressed=False)
+
+        with np.load(path) as data:
+            for member in ("labels", "source_groups", "reference_names"):
+                stored = data[member].tolist()
+                assert stored == ["", "", ""], f"{member} stored as {stored!r}"
+
+    def test_none_loads_back_as_the_readers_absent_value(self, tmp_path):
+        """Whatever `load_chunks` calls "absent" -- never the string "None".
+
+        The reader is not uniform and this pins that rather than papering over
+        it: `label` and `source_group` come back as `None`, while
+        `reference_name` deliberately comes back as `""` (see `load_chunks`).
+        Both are fine; the round trip is idempotent either way. What matters is
+        that none of them is the four-character string "None".
+        """
+        path = tmp_path / "unlabelled.npz"
+        save_chunks(self._chunks(None, None, None), path, compressed=False)
+
+        chunk = load_chunks(path)[0]
+        assert chunk["label"] is None
+        assert chunk["source_group"] is None
+        assert chunk["reference_name"] == ""
+        assert "None" not in (chunk["label"], chunk["source_group"], chunk["reference_name"])
+
+    def test_round_trip_is_idempotent(self, tmp_path):
+        """save(load(x)) == x. It was "" -> None -> "None" before."""
+        first, second = tmp_path / "one.npz", tmp_path / "two.npz"
+        save_chunks(self._chunks("", "", ""), first, compressed=False)
+        save_chunks(load_chunks(first), second, compressed=False)
+
+        with np.load(first) as a, np.load(second) as b:
+            for member in ("labels", "source_groups", "reference_names"):
+                assert a[member].tolist() == b[member].tolist() == ["", "", ""]
+
+    def test_a_real_label_still_survives(self, tmp_path):
+        path = tmp_path / "labelled.npz"
+        save_chunks(self._chunks("Ala", "ThrRS_thr_b1", "tRNA-Ala-AGC"), path, compressed=False)
+
+        chunk = load_chunks(path)[0]
+        assert chunk["label"] == "Ala"
+        assert chunk["source_group"] == "ThrRS_thr_b1"
+        assert chunk["reference_name"] == "tRNA-Ala-AGC"
+
+    def test_the_spooled_writer_agrees(self, tmp_path):
+        """Both write paths share `iter_chunk_columns`; prove it stays that way."""
+        listed, spooled = tmp_path / "listed.npz", tmp_path / "spooled.npz"
+        chunks = self._chunks(None, None, None)
+        save_chunks(chunks, listed, compressed=False)
+
+        writer = ChunkNpzWriter(spooled, compressed=False)
+        writer.append(chunks)
+        writer.close()
+
+        with np.load(listed) as a, np.load(spooled) as b:
+            for member in ("labels", "source_groups", "reference_names"):
+                assert a[member].tolist() == b[member].tolist() == ["", "", ""]
