@@ -5,12 +5,233 @@ Provides functions for saving and loading training chunks to/from compressed
 numpy format (.npz files).
 """
 
+import contextlib
 import logging
+import zipfile
+from collections.abc import Collection, Iterator
 from pathlib import Path
 
 import numpy as np
 
 logger = logging.getLogger("leech.chunking.serialization")
+
+# Chunk fields `load_chunks(..., defer=...)` can skip. These are the per-chunk
+# arrays; everything else in the file is a scalar or a string and stays cheap.
+DEFERRABLE_FIELDS = frozenset(
+    {
+        "signal",
+        "signal_residual",
+        "dwell",
+        "features",
+        "seq_to_sig_map",
+        "sequence_with_kmer_context",
+    }
+)
+
+
+def _read_npy_header(fp) -> tuple[tuple[int, ...], bool, np.dtype]:
+    """Read the .npy magic + header from an open member stream.
+
+    numpy 2.x moved the version-dispatching ``_read_array_header`` out of the
+    public namespace, so dispatch on the magic ourselves.
+    """
+    major, _minor = np.lib.format.read_magic(fp)
+    if major == 1:
+        shape, fortran_order, dtype = np.lib.format.read_array_header_1_0(fp)
+    else:
+        shape, fortran_order, dtype = np.lib.format.read_array_header_2_0(fp)
+    return tuple(shape), fortran_order, dtype
+
+
+# ZipExtFile has no native readinto: BufferedIOBase's default allocates a bytes
+# object the size of the request. Fill the block in bounded slices so that
+# transient stays small no matter how large a block is.
+_READ_SLICE_BYTES = 1 << 20
+
+
+def _readinto_exact(fp, buf: memoryview) -> int:
+    """Fill ``buf`` from ``fp``, returning the bytes read (short only at EOF)."""
+    total = 0
+    while total < len(buf):
+        end = min(total + _READ_SLICE_BYTES, len(buf))
+        got = fp.readinto(buf[total:end])
+        if not got:
+            break
+        total += got
+    return total
+
+
+def csr_offsets_from_lens(lens: np.ndarray) -> np.ndarray:
+    """Row offsets for CSR storage: ``[0, lens[0], lens[0] + lens[1], ...]``."""
+    offsets = np.zeros(len(lens) + 1, dtype=np.int64)
+    np.cumsum(lens, out=offsets[1:])
+    return offsets
+
+
+def csr_gather_index(
+    offsets: np.ndarray, rows: np.ndarray
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Index arrays for reading a subset of CSR rows as one concatenated run.
+
+    Args:
+        offsets: CSR row offsets.
+        rows: Row indices to gather, ascending.
+
+    Returns:
+        ``(lens, col, src)``: per-row lengths, the within-row column of every
+        gathered element, and the index into the values array of every gathered
+        element. ``values[src]`` is the concatenation of the selected rows.
+    """
+    lens = (offsets[rows + 1] - offsets[rows]).astype(np.int64)
+    total = int(lens.sum())
+    col = np.arange(total, dtype=np.int64) - np.repeat(np.cumsum(lens) - lens, lens)
+    src = np.repeat(offsets[rows], lens) + col
+    return lens, col, src
+
+
+def csr_from_object_rows(rows: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Convert a legacy object array of variable-length rows into CSR form."""
+    lens = np.fromiter((len(r) for r in rows), dtype=np.int64, count=len(rows))
+    offsets = csr_offsets_from_lens(lens)
+    values = (
+        np.concatenate(list(rows)).astype(np.int32)
+        if offsets[-1] > 0
+        else np.empty(0, dtype=np.int32)
+    )
+    return values, offsets
+
+
+def npz_member_names(input_path: Path) -> set[str]:
+    """Names of every member of an .npz, without reading any data.
+
+    Unlike :func:`npz_array_members` this includes object (pickled) members, so
+    it answers "was this field written at all" for formats that
+    :func:`iter_npz_row_blocks` cannot stream.
+    """
+    with zipfile.ZipFile(input_path) as zf:
+        return {name[:-4] for name in zf.namelist() if name.endswith(".npy")}
+
+
+def npz_array_members(input_path: Path) -> dict[str, tuple[tuple[int, ...], np.dtype]]:
+    """Shapes and dtypes of the row-streamable members of an .npz, without reading data.
+
+    Only the zip central directory and each member's .npy header are read, so
+    this is O(number of members) regardless of file size. Members that
+    :func:`iter_npz_row_blocks` cannot stream — object dtypes (pickled),
+    Fortran order, 0-d — are omitted, so ``name in npz_array_members(path)``
+    is the test for "can I stream this".
+
+    Args:
+        input_path: Path to .npz file
+
+    Returns:
+        Mapping of member name (without the .npy suffix) to ``(shape, dtype)``.
+
+    Examples:
+        >>> members = npz_array_members(Path("chunks.npz"))
+        >>> members["signals_flat"][0]  # doctest: +SKIP
+        (6668328, 540)
+    """
+    members: dict[str, tuple[tuple[int, ...], np.dtype]] = {}
+    with zipfile.ZipFile(input_path) as zf:
+        for info in zf.infolist():
+            if not info.filename.endswith(".npy"):
+                continue
+            with zf.open(info) as fp:
+                try:
+                    shape, fortran_order, dtype = _read_npy_header(fp)
+                except ValueError:  # not a .npy stream we understand
+                    continue
+            if fortran_order or dtype.hasobject or not shape:
+                continue
+            members[info.filename[:-4]] = (shape, dtype)
+    return members
+
+
+def iter_npz_row_blocks(
+    input_path: Path,
+    names: Collection[str],
+    block_rows: int | None = None,
+    *,
+    block_bytes: int = 8 << 20,
+) -> Iterator[tuple[int, dict[str, np.ndarray]]]:
+    """Yield ``(row_start, {name: block})`` over the rows of fixed-shape npz members.
+
+    ``np.load`` reads a whole member at once — it never memory-maps a zip
+    member, compressed or not — so converting a large corpus means holding the
+    numpy source and the converted output at the same time (#211). This walks
+    the members as sequential row blocks instead, so only one block per member
+    is resident.
+
+    **Blocks are reused between iterations.** The yielded arrays are views into
+    buffers that the next iteration overwrites; copy anything you need to keep.
+
+    Args:
+        input_path: Path to .npz file
+        names: Member names to stream, without the .npy suffix. All must have
+            the same number of rows (see :func:`npz_array_members`).
+        block_rows: Rows per block. Default sizes the block from ``block_bytes``
+            so a wide signal does not silently allocate a huge buffer, and
+            never exceeds the member's row count.
+        block_bytes: Target resident bytes across all streamed members, used
+            when ``block_rows`` is not given.
+
+    Yields:
+        ``(row_start, blocks)`` where ``blocks[name]`` has ``min(block_rows,
+        n_rows - row_start)`` rows.
+
+    Raises:
+        ValueError: If a member is not streamable, row counts disagree, or the
+            member is truncated.
+    """
+    names = list(names)
+    if not names or (block_rows is not None and block_rows < 1):
+        return
+
+    with contextlib.ExitStack() as stack:
+        opened: dict[str, tuple] = {}
+        n_rows: int | None = None
+        for name in names:
+            # One handle per member: each is then a single sequential read
+            # rather than interleaved seeks through one shared file object.
+            zf = stack.enter_context(zipfile.ZipFile(input_path))
+            fp = stack.enter_context(zf.open(name + ".npy"))
+            shape, fortran_order, dtype = _read_npy_header(fp)
+            if fortran_order or dtype.hasobject or not shape:
+                raise ValueError(f"npz member '{name}' is not row-streamable")
+            if n_rows is None:
+                n_rows = shape[0]
+            elif shape[0] != n_rows:
+                raise ValueError(f"npz member '{name}' has {shape[0]} rows, expected {n_rows}")
+            row_shape = shape[1:]
+            row_bytes = int(np.prod(row_shape, dtype=np.int64)) * dtype.itemsize
+            opened[name] = (fp, row_shape, dtype, row_bytes)
+
+        assert n_rows is not None
+        if block_rows is None:
+            per_row = sum(entry[3] for entry in opened.values())
+            block_rows = max(1, block_bytes // max(per_row, 1))
+        block_rows = min(block_rows, max(n_rows, 1))
+
+        streams: dict[str, tuple] = {}
+        for name, (fp, row_shape, dtype, row_bytes) in opened.items():
+            block = np.empty((block_rows, *row_shape), dtype=dtype)
+            streams[name] = (fp, block, block.reshape(-1).view(np.uint8), row_bytes)
+
+        start = 0
+        while start < n_rows:
+            rows = min(block_rows, n_rows - start)
+            blocks = {}
+            for name, (fp, block, raw, row_bytes) in streams.items():
+                want = rows * row_bytes
+                got = _readinto_exact(fp, memoryview(raw)[:want])
+                if got != want:
+                    raise ValueError(
+                        f"npz member '{name}' truncated at row {start}: read {got} of {want} bytes"
+                    )
+                blocks[name] = block[:rows]
+            yield start, blocks
+            start += rows
 
 
 def save_chunks(chunks: list[dict], output_path: Path, *, compressed: bool = True) -> None:
@@ -36,6 +257,10 @@ def save_chunks(chunks: list[dict], output_path: Path, *, compressed: bool = Tru
         - labels_int: (N,) integer labels (0, 1, or -1 if unset)
         - read_ids: (N,) string array of read IDs
         - base_indices: (N,) base indices
+        - seq_to_sig_values / seq_to_sig_offsets: base-to-signal maps in CSR
+          form; row i is ``values[offsets[i]:offsets[i + 1]]``. Files written
+          before v0.6.8 carry a pickled object array named ``seq_to_sig_maps``
+          instead, which :func:`load_chunks` still reads.
 
     Examples:
         >>> chunks = extract_training_chunks(read, motif="CCAGGC")
@@ -106,8 +331,11 @@ def save_chunks(chunks: list[dict], output_path: Path, *, compressed: bool = Tru
     source_groups_arr = np.array(source_groups, dtype=str)
     reference_names_arr = np.array(reference_names, dtype=str)
     sequences_with_kmer_context_arr = np.array(sequences_with_kmer_context, dtype=str)
-    # seq_to_sig_maps are variable length (depend on read dwell times), keep as object
-    seq_to_sig_maps_arr = np.array(seq_to_sig_maps, dtype=object)
+    # seq_to_sig_maps are variable length (they depend on the read's dwell
+    # times), so store them CSR-style: one flat values array plus row offsets.
+    # An object array would be pickled, which costs a Python ndarray per chunk
+    # on load and makes the member unstreamable (#211).
+    seq_to_sig_values_arr, seq_to_sig_offsets_arr = csr_from_object_rows(seq_to_sig_maps)
 
     # Create parent directories if they don't exist
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -124,7 +352,8 @@ def save_chunks(chunks: list[dict], output_path: Path, *, compressed: bool = Tru
         "feature_ends": feature_ends_arr,
         "source_groups": source_groups_arr,
         "reference_names": reference_names_arr,
-        "seq_to_sig_maps": seq_to_sig_maps_arr,
+        "seq_to_sig_values": seq_to_sig_values_arr,
+        "seq_to_sig_offsets": seq_to_sig_offsets_arr,
         "sequences_with_kmer_context": sequences_with_kmer_context_arr,
         "cl_values": cl_values_arr,
     }
@@ -170,21 +399,47 @@ def save_chunks(chunks: list[dict], output_path: Path, *, compressed: bool = Tru
     logger.info(f"Saved {len(chunks)} chunks to {output_path}")
 
 
-def load_chunks(input_path: Path) -> list[dict]:
-    """
-    Load training chunks from compressed numpy format.
+def load_seq_to_sig_csr(input_path: Path) -> tuple[np.ndarray, np.ndarray] | None:
+    """Load the base-to-signal maps in CSR form: ``(values, offsets)``.
+
+    Row ``i`` is ``values[offsets[i]:offsets[i + 1]]``. Files written before
+    v0.6.8 store these as a pickled object array (``seq_to_sig_maps``); those
+    are converted here so callers see one representation.
 
     Args:
         input_path: Path to .npz file
 
     Returns:
+        ``(values, offsets)``, or None if the file has no base-to-signal maps.
+    """
+    with np.load(input_path, allow_pickle=True) as data:
+        if "seq_to_sig_values" in data:
+            return data["seq_to_sig_values"], data["seq_to_sig_offsets"]
+        if "seq_to_sig_maps" not in data:
+            return None
+        return csr_from_object_rows(data["seq_to_sig_maps"])
+
+
+def load_chunks(input_path: Path, *, defer: Collection[str] = ()) -> list[dict]:
+    """
+    Load training chunks from compressed numpy format.
+
+    Args:
+        input_path: Path to .npz file
+        defer: Chunk array fields to leave unread (see :data:`DEFERRABLE_FIELDS`).
+            The key is still present on each chunk, set to None. Callers that
+            convert the arrays themselves — :class:`~leech.dataset.LeechDataset`
+            streams them with :func:`iter_npz_row_blocks` — use this to avoid
+            holding a second full copy.
+
+    Returns:
         List of chunk dictionaries compatible with extract_training_chunks output
 
     Note:
-        This function loads all arrays into memory at once. The arrays are stored
-        as numpy object arrays (dtype=object) to handle variable-length signals.
-        The loaded data is kept in memory-mapped form when possible, but converting
-        to individual dictionaries will create copies in memory.
+        Every member requested is read in full: ``np.load`` does not memory-map
+        zip members, compressed or not, so there is no lazy path here. On a
+        large corpus this dominates peak memory, which is what ``defer`` and
+        :func:`iter_npz_row_blocks` exist to avoid (#211).
 
     Examples:
         >>> chunks = load_chunks(Path("output/chunks.npz"))
@@ -192,35 +447,70 @@ def load_chunks(input_path: Path) -> list[dict]:
         >>> for chunk in chunks[:5]:
         ...     print(f"{chunk['read_id']}: {chunk['label']}")
     """
-    # Load all arrays at once (keeps data memory-mapped when possible)
+    deferred = frozenset(defer)
+    unknown = deferred - DEFERRABLE_FIELDS
+    if unknown:
+        raise ValueError(
+            f"Cannot defer unknown chunk field(s): {sorted(unknown)}. "
+            f"Deferrable: {sorted(DEFERRABLE_FIELDS)}"
+        )
+
+    # Repeated string fields: a few hundred distinct values across millions of
+    # chunks, and str(arr[i]) mints a fresh object every time.
+    _interned: dict[str, str] = {}
+
+    def _intern(value) -> str:
+        text = str(value)
+        return _interned.setdefault(text, text)
+
     with np.load(input_path, allow_pickle=True) as data:
         # Detect format: flat arrays (new, fast) vs object arrays (old, backward compat)
         has_flat_signals = "signals_flat" in data
         has_flat_dwells = "dwells_flat" in data
         has_flat_features = "features_flat" in data
 
-        signals = data["signals_flat"] if has_flat_signals else data["signals"]
+        signals = (
+            None
+            if "signal" in deferred
+            else data["signals_flat" if has_flat_signals else "signals"]
+        )
         sequences = data["sequences"]
-        dwells = data["dwells_flat"] if has_flat_dwells else data["dwells"]
-        features = data["features_flat"] if has_flat_features else data["features"]
+        dwells = (
+            None if "dwell" in deferred else data["dwells_flat" if has_flat_dwells else "dwells"]
+        )
+        features = (
+            None
+            if "features" in deferred
+            else data["features_flat" if has_flat_features else "features"]
+        )
         labels_arr = data["labels"]  # String labels
         labels_int_arr = data["labels_int"]  # Numeric labels
         read_ids = data["read_ids"]
         base_indices = data["base_indices"]
-        # New fields for signal_kmer encoding (backward compatible)
-        has_sig_kmer = "seq_to_sig_maps" in data
+        # Base-to-signal maps: CSR pair (new) or pickled object array (old)
+        has_sig_kmer = "seq_to_sig_values" in data or "seq_to_sig_maps" in data
+        seq_to_sig_values = seq_to_sig_offsets = seq_to_sig_maps = None
+        sequences_with_kmer_context = None
         if has_sig_kmer:
-            seq_to_sig_maps = data["seq_to_sig_maps"]
-            sequences_with_kmer_context = data["sequences_with_kmer_context"]
+            if "seq_to_sig_map" not in deferred:
+                if "seq_to_sig_values" in data:
+                    seq_to_sig_values = data["seq_to_sig_values"]
+                    seq_to_sig_offsets = data["seq_to_sig_offsets"]
+                else:
+                    seq_to_sig_maps = data["seq_to_sig_maps"]
+            if "sequence_with_kmer_context" not in deferred:
+                sequences_with_kmer_context = data["sequences_with_kmer_context"]
 
         # Signal residual channel (backward compatible)
         has_signal_residual_data = "signal_residuals_flat" in data or "signal_residuals" in data
-        if has_signal_residual_data:
+        if has_signal_residual_data and "signal_residual" not in deferred:
             signal_residuals_loaded = (
                 data["signal_residuals_flat"]
                 if "signal_residuals_flat" in data
                 else data["signal_residuals"]
             )
+        else:
+            signal_residuals_loaded = None
 
         # Feature window params (new format: feature_starts/feature_ends)
         has_feature_se = "feature_starts" in data
@@ -259,22 +549,32 @@ def load_chunks(input_path: Path) -> list[dict]:
         # Create dictionaries with references to array elements
         for i in range(n_chunks):
             chunk = {
-                "signal": signals[i],
-                "sequence": str(sequences[i]),
-                "dwell": dwells[i],
-                "features": features[i],
+                "signal": None if signals is None else signals[i],
+                "sequence": _intern(sequences[i]),
+                "dwell": None if dwells is None else dwells[i],
+                "features": None if features is None else features[i],
                 "read_id": str(read_ids[i]),
                 "base_idx": int(base_indices[i]),
-                "label": str(labels_arr[i]) if labels_arr[i] != "" else None,
+                "label": _intern(labels_arr[i]) if labels_arr[i] != "" else None,
                 "label_int": int(labels_int_arr[i]) if labels_int_arr[i] >= 0 else None,
             }
             if has_sig_kmer:
-                s2s = seq_to_sig_maps[i]
-                seq_ctx = str(sequences_with_kmer_context[i])
-                chunk["seq_to_sig_map"] = s2s if len(s2s) > 0 else None
-                chunk["sequence_with_kmer_context"] = seq_ctx if seq_ctx else None
+                if seq_to_sig_offsets is not None:
+                    s2s = seq_to_sig_values[seq_to_sig_offsets[i] : seq_to_sig_offsets[i + 1]]
+                elif seq_to_sig_maps is not None:
+                    s2s = seq_to_sig_maps[i]
+                else:
+                    s2s = None
+                chunk["seq_to_sig_map"] = s2s if s2s is not None and len(s2s) > 0 else None
+                if sequences_with_kmer_context is None:
+                    chunk["sequence_with_kmer_context"] = None
+                else:
+                    seq_ctx = str(sequences_with_kmer_context[i])
+                    chunk["sequence_with_kmer_context"] = seq_ctx if seq_ctx else None
             if has_signal_residual_data:
-                chunk["signal_residual"] = signal_residuals_loaded[i]
+                chunk["signal_residual"] = (
+                    None if signal_residuals_loaded is None else signal_residuals_loaded[i]
+                )
             if has_feature_se:
                 chunk["feature_start"] = int(feature_starts_loaded[i])
                 chunk["feature_end"] = int(feature_ends_loaded[i])
@@ -282,10 +582,10 @@ def load_chunks(input_path: Path) -> list[dict]:
                 # Old format: convert dwell_margin_left to feature_left
                 chunk["dwell_margin_left"] = int(dwell_margin_lefts[i])
             if has_source_groups:
-                sg = str(source_groups[i])
+                sg = _intern(source_groups[i])
                 chunk["source_group"] = sg if sg else None
             if has_reference_names:
-                rn = str(reference_names_loaded[i])
+                rn = _intern(reference_names_loaded[i])
                 chunk["reference_name"] = rn if rn else ""
             if has_cl_values:
                 cl_val = int(cl_values_loaded[i])

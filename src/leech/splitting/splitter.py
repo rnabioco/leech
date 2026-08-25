@@ -13,9 +13,18 @@ from typing import Any
 
 import numpy as np
 
-from leech.chunking import load_chunks
+from leech.chunking import (
+    csr_from_object_rows,
+    csr_gather_index,
+    csr_offsets_from_lens,
+    load_chunks,
+)
 
 logger = logging.getLogger("leech.splitting.splitter")
+
+# npz members holding the CSR base-to-signal maps; merged by row gather, not
+# by boolean mask, so they are excluded from the generic member loop.
+_S2S_MEMBERS = frozenset({"seq_to_sig_values", "seq_to_sig_offsets", "seq_to_sig_maps"})
 
 
 def _source_group_from_path(chunk_path: Path) -> str:
@@ -143,6 +152,11 @@ def _merge_arrays_by_split(
     # Accumulators: split_name -> array_key -> list of arrays
     accumulators: dict[str, dict[str, list[np.ndarray]]] = {s: {} for s in split_names}
 
+    # Base-to-signal maps are CSR (values + offsets), so they are selected by
+    # gathering rows rather than by masking, and their offsets are rebuilt from
+    # the accumulated row lengths at save time.
+    s2s_lens: dict[str, list[np.ndarray]] = {s: [] for s in split_names}
+
     for chunk_path in input_paths:
         with np.load(chunk_path, allow_pickle=True) as data:
             # Get read_ids to build masks
@@ -154,8 +168,18 @@ def _merge_arrays_by_split(
             for sname, rid_set in split_read_ids.items():
                 masks[sname] = np.array([r in rid_set for r in read_ids_str], dtype=bool)
 
+            # Base-to-signal maps: CSR pair, or a legacy object array normalized
+            # to CSR so a merge of mixed-vintage inputs writes one format.
+            if "seq_to_sig_values" in data:
+                s2s_values = data["seq_to_sig_values"]
+                s2s_offsets = data["seq_to_sig_offsets"]
+            elif "seq_to_sig_maps" in data:
+                s2s_values, s2s_offsets = csr_from_object_rows(data["seq_to_sig_maps"])
+            else:
+                s2s_values = s2s_offsets = None
+
             # Collect all array keys from the file
-            array_keys = list(data.keys())
+            array_keys = [key for key in data.keys() if key not in _S2S_MEMBERS]
 
             for sname in split_names:
                 mask = masks[sname]
@@ -163,6 +187,15 @@ def _merge_arrays_by_split(
                     continue
 
                 count = int(mask.sum())
+                if s2s_offsets is None:
+                    # No maps in this file; keep the row count aligned so a
+                    # merge with files that do have them stays row-indexable.
+                    s2s_lens[sname].append(np.zeros(count, dtype=np.int64))
+                else:
+                    rows = np.nonzero(mask)[0]
+                    lens, _col, src = csr_gather_index(s2s_offsets, rows)
+                    s2s_lens[sname].append(lens)
+                    accumulators[sname].setdefault("seq_to_sig_values", []).append(s2s_values[src])
                 for key in array_keys:
                     arr = data[key]
                     sliced = arr[mask]
@@ -198,6 +231,11 @@ def _merge_arrays_by_split(
         save_kwargs: dict[str, np.ndarray] = {}
         for key, arr_list in acc.items():
             save_kwargs[key] = np.concatenate(arr_list)
+
+        if s2s_lens[sname]:
+            lens = np.concatenate(s2s_lens[sname])
+            save_kwargs["seq_to_sig_offsets"] = csr_offsets_from_lens(lens)
+            save_kwargs.setdefault("seq_to_sig_values", np.empty(0, dtype=np.int32))
 
         n_chunks = len(save_kwargs.get("read_ids", np.array([])))
         counts[sname] = n_chunks

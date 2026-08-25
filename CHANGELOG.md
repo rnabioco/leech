@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **`LeechDataset` no longer holds three copies of the corpus while it loads**
+  (#211). `load_chunks` read every npz member, the tensorize loop built one
+  tensor per chunk from them, and `torch.stack` allocated the whole contiguous
+  output while that list was still alive — a 41 GB npz peaked at 116 GB and
+  hit the 120 GB cgroup limit before epoch 1. The fields now fill a
+  preallocated tensor in bounded batches (`torch.stack(..., out=)`), and the
+  arrays are read from the npz in row blocks rather than materialised, so the
+  numpy source is never resident alongside the tensors built from it. Measured
+  on a 300k-chunk corpus (1.8 GB npz, 1.6 GB of output tensors): peak RSS
+  6.19 GB -> 2.36 GB, load time 21.5 s -> 19.7 s, tensors bit-identical.
+- **Only the members a run consumes are decompressed.** `signal_residuals_flat`
+  is skipped for `--signal-mode signal`, `features_flat` for models without a
+  feature branch, and the base-to-signal maps unless `--seq-encoding
+  signal_kmer` asks for them — up to 20 GB of decompression that used to
+  happen on every load regardless.
+- **Chunk metadata is stored as columns, not a dict per chunk** (#211). The
+  dicts measured 780 bytes each — 5.2 GB for a 6.7M-chunk corpus — holding a
+  handful of small integers and a few hundred distinct strings. `ChunkTable`
+  keeps the npz's own arrays (text packed to bytes, integers narrowed) and
+  hands out a row view on demand: 112 B/chunk measured, with no conversion
+  transient, and `dataset.chunks` still reads as a sequence of mappings.
+- **`load_chunks`'s docstring no longer claims the data is memory-mapped.**
+  `np.load` never maps a zip member, compressed or not; it is always a full
+  read, which is what made this path look lazy when it was not.
+
+### Changed
+
+- **`seq_to_sig_maps` is stored as `seq_to_sig_values` + `seq_to_sig_offsets`**
+  (CSR: row `i` is `values[offsets[i]:offsets[i+1]]`) instead of a pickled
+  object array. The old member cost one Python ndarray per chunk to unpickle
+  and could not be read in row blocks. `load_chunks`, `data merge` and the
+  dataset still read the legacy member, so existing corpora stay valid — but a
+  file written by this version and read by leech <= 0.6.7 has no
+  `seq_to_sig_maps`, so a `signal_kmer` run on that older version falls back to
+  `base_onehot` (with the warning it already emits).
+
 ## [0.6.7] - 2026-08-24
 
 Promotes `0.6.7-rc.1` unchanged — no commits landed between the two tags. The

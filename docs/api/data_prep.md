@@ -101,6 +101,43 @@ Save and load training chunks.
       show_root_heading: true
       show_source: false
 
+### Streaming Chunk Arrays
+
+Read the per-chunk arrays a row block at a time instead of materialising whole
+members — how `LeechDataset` builds its tensors without holding a second copy
+of the corpus.
+
+::: leech.chunking.serialization.npz_array_members
+    options:
+      show_root_heading: true
+      show_source: false
+
+::: leech.chunking.serialization.iter_npz_row_blocks
+    options:
+      show_root_heading: true
+      show_source: false
+
+::: leech.chunking.serialization.load_seq_to_sig_csr
+    options:
+      show_root_heading: true
+      show_source: false
+
+### Chunk Metadata Table
+
+Per-chunk metadata as columns, read as a sequence of mappings — what
+`LeechDataset.chunks` holds when the corpus is loaded from a path.
+
+::: leech.chunking.table.ChunkTable
+    options:
+      show_root_heading: true
+      show_source: false
+      members:
+        - from_npz
+        - select
+        - values
+        - require_values
+        - nbytes
+
 ## Preparation Module (`leech.preparation`)
 
 ### Sequential Preparation
