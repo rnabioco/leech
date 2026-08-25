@@ -534,7 +534,8 @@ carries no model vocabulary: sequence ints, a base-to-signal map, a signal
 length and a k-mer context in, a `(4 * kmer_len, signal_len)` scatter out. That
 is an `escapepod-signal` primitive by every rule this stack already applies —
 and escapepod-signal owns `mapping`, which *produces* the map this consumes, so
-today the producer is upstream and the consumer is downstream. Until it moves,
+today the producer is upstream and the consumer is downstream. Moving it is
+rnabioco/escapepod-rs#271. Until it does,
 any Rust consumer has to transcribe it, which is a second definition, and the
 mitigation is a cross-language golden of the kind the CRF decode and the
 charging features already have.
