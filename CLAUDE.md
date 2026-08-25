@@ -88,6 +88,10 @@ uv run leech data merge -i label1=file1.npz -i label2=file2.npz --output-dir mer
 uv run leech model train --train-data chunks/train.json --val-data chunks/val.json \
   --model ConvLSTMDwell --output-dir models/
 
+# Train a CTC-CRF sequence model (emits a sequence, not a label)
+uv run leech model train-crf --corpus corpus/ldx16 --output-dir models/crf/ \
+  --epochs 32 --batch-size 256
+
 # Optimize hyperparameters
 uv run leech model optimize --train-data chunks/train.npz --val-data chunks/val.npz \
   --context-grid 200,500,1000 --output-dir grid_results/ --parallel 4
@@ -792,7 +796,7 @@ The codebase is feature-complete (v0.7.0):
 - ✓ Feature extraction with dwell offset tuning and signal map refinement
 - ✓ 29 model architectures: ConvLSTM (Base/Dwell × BN/GN/LN/Attn), TCN (Dwell/DwellGN/DwellLN/DwellResidual/DwellResidualGN/DwellResidualLN/DwellResidualMotor/DwellResidualDwellAttn/DwellSplitResidual/DwellSplitResidualLN), Transformer (Dwell/DwellResidual), ResNet, ConvOnly, SignalCNN
 - ✓ Config-driven model layer: bonito-style layer registry (`models/nn.py`) + TOML architecture declarations (`models/configs/`)
-- ✓ CLI organized into 4 command groups: `data` (prepare, merge), `model` (train, optimize, bundle, bundle-info, calibrate, export), `eval` (test, compare, importance, ablation), `predict`
+- ✓ CLI organized into 4 command groups: `data` (prepare, merge), `model` (train, train-crf, optimize, bundle, bundle-info, calibrate, export), `eval` (test, compare, importance, ablation), `predict`
 - ✓ Training with focal loss, mixup augmentation, cosine annealing, gradient clipping, adversarial training, CL regression
 - ✓ Grid search with range syntax, parallel execution, dwell offset tuning
 - ✓ Model bundling for multi-model pairwise deployment
@@ -831,7 +835,8 @@ The codebase is feature-complete (v0.7.0):
   analytic forward-backward, optional Triton lattice kernels, and the two-pass
   Viterbi decode — ported from escapepod-models, torch + numpy only. Plus the
   manifest seam, the corpus builder (`plan_corpus`/`build_corpus`), the trainer
-  (`CrfTrainer`) and the ONNX export. The metrics/eval half is not here yet.
+  (`CrfTrainer`, `leech model train-crf`) and the ONNX export. The metrics/eval
+  half is not here yet.
 - ✓ ONNX export for the classifier arms and the CRF encoder
   (`leech model export --format onnx`, `leech.crf.export`), dynamo exporter at
   opset 18, each with a contract sidecar and a round-trip check against torch

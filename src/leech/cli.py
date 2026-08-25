@@ -422,6 +422,7 @@ def model():
 
 model.command_order = (
     "train",
+    "train-crf",
     "optimize",
     "benchmark",
     "calibrate",
@@ -429,6 +430,110 @@ model.command_order = (
     "bundle-info",
     "export",
 )
+
+
+@model.command("train-crf")
+@click.option(
+    "--corpus",
+    required=True,
+    type=click.Path(path_type=Path),
+    help="Corpus stem — reads <corpus>_X.npy and <corpus>_meta.npz",
+)
+@click.option(
+    "--output-dir",
+    "-o",
+    type=click.Path(path_type=Path),
+    help="Where to write model.pt and model.json (omit to train without saving)",
+)
+@click.option(
+    "--config",
+    "arch_config",
+    type=click.Path(exists=True, path_type=Path),
+    help="Architecture TOML [default: the packaged geometry]",
+)
+@click.option(
+    "--epochs",
+    default=32,
+    show_default=True,
+    type=int,
+    help="32, not 16: a longer target is under-trained at 16 and measures ~1.2pp worse than it is",
+)
+@click.option("--batch-size", default=256, show_default=True, type=int)
+@click.option("--lr", default=2e-3, show_default=True, type=float)
+@click.option("--weight-decay", default=1e-5, show_default=True, type=float)
+@click.option("--max-grad-norm", default=2.0, show_default=True, type=float)
+@click.option(
+    "--seed",
+    default=0,
+    show_default=True,
+    type=int,
+    help="Fixes the split, the weight init and the batch order together",
+)
+@click.option(
+    "--gate/--no-gate",
+    default=True,
+    show_default=True,
+    help="Apply the label-quality gate. --no-gate is a deliberate opt-out: "
+    "on one panel, gating moved accuracy from 0.875 to 0.97",
+)
+@click.option("--min-score", default=66.0, show_default=True, type=float)
+@click.option("--min-margin", default=5.0, show_default=True, type=float)
+@click.option(
+    "--min-coverage",
+    default=0.9,
+    show_default=True,
+    type=float,
+    help="Refuse to gate a corpus scored below this fraction — an unscored "
+    "read cannot pass, so it is dropped silently",
+)
+@click.option(
+    "--test-frac",
+    default=0.1,
+    show_default=True,
+    type=float,
+    help="Only used when the corpus carries no split, or with --resplit",
+)
+@click.option("--resplit", is_flag=True, help="Ignore the corpus's own split and seed a new one")
+@click.option(
+    "--holdout-batch",
+    default=None,
+    help="Train on every batch but this one and test on it (prefix match). The "
+    "honest generalisation number when classes are crossed with batch",
+)
+@click.option("--chunk", default=None, type=int, help="Window samples [default: as extracted]")
+@click.option("--target-len", default=None, type=int, help="Target nt [default: as extracted]")
+@click.option(
+    "--select-tol",
+    default=0.25,
+    show_default=True,
+    type=float,
+    help="Ship the best epoch instead of the last when the last is worse by "
+    "more than this. A divergence detector, not a ranking",
+)
+@click.option(
+    "--always-final", is_flag=True, help="Always ship the last epoch, disabling --select-tol"
+)
+@click.option(
+    "--device", default="auto", show_default=True, type=click.Choice(["auto", "cuda", "cpu"])
+)
+def train_crf(corpus, output_dir, arch_config, **options):
+    """Train a CTC-CRF sequence model on a prepared corpus.
+
+    Unlike `model train`, which fits a classifier, this fits a model that emits a
+    SEQUENCE: a CRF whose Viterbi traceback produces one base per move.
+
+    \b
+    The model cannot emit the first `state_len` bases of its target — they only
+    fix the initial state — so a target of length L decodes to L - state_len
+    bases at ANY window width. Widening the window does not lengthen the decode.
+
+    Writes model.pt and model.json. The sidecar carries the standardisation
+    constants, which are in neither the architecture config nor the checkpoint,
+    so anything downstream that ignores it decodes silently worse.
+    """
+    from leech.commands.train_crf import handle_train_crf
+
+    handle_train_crf(corpus=corpus, output_dir=output_dir, arch_config=arch_config, **options)
 
 
 @data.command()

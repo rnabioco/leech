@@ -375,7 +375,17 @@ def load_corpus(path: str | Path, *, mmap: bool = True):
             meta["read_id"].astype(str),
             split,
         )
-    legacy = np.load(base.with_suffix(".npz"), allow_pickle=True)
+    legacy_path = base.with_suffix(".npz")
+    if not legacy_path.exists():
+        # Name BOTH layouts. The stem is not a file, so reporting the one that
+        # happened to be tried last points at a path the caller never wrote.
+        raise FileNotFoundError(
+            f"no corpus at {base}: expected either {streamed.name} (the streamed "
+            f"layout, written by build_corpus) or {legacy_path.name} (the legacy "
+            f"single-file one) beside it. `--corpus` takes the STEM, without a "
+            f"suffix."
+        )
+    legacy = np.load(legacy_path, allow_pickle=True)
     group_key = "group" if "group" in legacy else "code"
     return (
         legacy["X"],
