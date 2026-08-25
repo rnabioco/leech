@@ -7,6 +7,7 @@ numpy format (.npz files).
 
 import contextlib
 import logging
+import tempfile
 import zipfile
 from collections.abc import Collection, Iterator
 from pathlib import Path
@@ -234,40 +235,97 @@ def iter_npz_row_blocks(
             start += rows
 
 
-def save_chunks(chunks: list[dict], output_path: Path, *, compressed: bool = True) -> None:
+def npz_path(output_path: Path) -> Path:
+    """The file ``np.savez`` would write for ``output_path`` (it appends .npz)."""
+    text = str(output_path)
+    return output_path if text.endswith(".npz") else Path(text + ".npz")
+
+
+def open_npz_zip(output_path: Path, compressed: bool) -> zipfile.ZipFile:
+    """Open an .npz for writing with the same zip settings ``np.savez`` uses."""
+    compression = zipfile.ZIP_DEFLATED if compressed else zipfile.ZIP_STORED
+    return zipfile.ZipFile(
+        npz_path(output_path), mode="w", compression=compression, allowZip64=True
+    )
+
+
+def write_npz_member(zf: zipfile.ZipFile, name: str, array: np.ndarray) -> None:
+    """Write one array into an open .npz exactly as ``np.savez`` would."""
+    with zf.open(name + ".npy", "w", force_zip64=True) as fp:
+        np.lib.format.write_array(fp, np.asanyarray(array), allow_pickle=True)
+
+
+def write_npy_header(fp, shape: tuple[int, ...], dtype: np.dtype) -> None:
+    """Write the .npy magic + header for ``shape``/``dtype``, payload to follow.
+
+    :func:`np.lib.format.write_array` needs the whole array; this is the split
+    version, for members whose rows are streamed in afterwards.
     """
-    Save training chunks to numpy format.
+    header = np.lib.format.header_data_from_array_1_0(np.empty((0,), dtype=dtype))
+    header["shape"] = tuple(int(n) for n in shape)
+    try:
+        np.lib.format.write_array_header_1_0(fp, header)
+    except ValueError:  # header too long for the 1.0 format
+        np.lib.format.write_array_header_2_0(fp, header)
+
+
+#: ``np.strings`` since numpy 2.0, ``np.char`` before it.
+_str_len = getattr(np, "strings", np.char).str_len
+
+
+def _text_dtype(values: np.ndarray) -> np.dtype:
+    """The ``<U`` dtype ``np.array(list_of_str, dtype=str)`` would give ``values``.
+
+    Selecting rows out of a member does not narrow its width, but
+    :func:`save_chunks` on the same subset would size it to that subset's
+    longest string. Recompute it so a split file is dtype-identical to one
+    written from a list.
+    """
+    width = int(_str_len(values).max()) if len(values) else 0
+    return np.dtype(f"<U{max(width, 1)}")
+
+
+#: Transient bytes allowed when copying array payloads around. Deliberately
+#: small: this is what keeps the writer's peak a constant rather than a
+#: fraction of the corpus, and a memcpy this size costs nothing.
+_COPY_SLICE_BYTES = 1 << 20
+
+
+def _row_step(dtype: np.dtype, row_shape: tuple[int, ...]) -> int:
+    """Rows per payload slice, so a copy never exceeds ``_COPY_SLICE_BYTES``."""
+    row_bytes = int(np.prod(row_shape, dtype=np.int64)) * dtype.itemsize
+    return max(1, _COPY_SLICE_BYTES // max(int(row_bytes), 1))
+
+
+def _write_rows(fp, array: np.ndarray) -> None:
+    """Write an array's payload in bounded slices (never one big ``tobytes``)."""
+    step = _row_step(array.dtype, array.shape[1:])
+    for start in range(0, len(array), step):
+        fp.write(array[start : start + step].tobytes())
+
+
+def iter_chunk_columns(chunks: list[dict]) -> Iterator[tuple[str, np.ndarray | list]]:
+    """Yield ``(member_name, value)`` for every npz member of ``chunks``, in write order.
+
+    This is the single definition of the on-disk chunk format: both
+    :func:`save_chunks` and :class:`ChunkSpool` consume it, so a field can only
+    be added in one place.
+
+    ``value`` is an ndarray for the members stored as fixed-shape arrays, or a
+    plain list of per-chunk rows for the ragged (object-array) fallback —
+    ``signals``/``dwells``/``features`` when the chunks do not all share a
+    shape. Members are yielded one at a time and the caller is expected to
+    write each one before asking for the next, so the stacked copies never
+    coexist (#211).
 
     Args:
         chunks: List of chunk dictionaries from extract_training_chunks
-        output_path: Output file path (.npz)
-        compressed: If True (default), use np.savez_compressed (zlib);
-            if False, use np.savez for faster writes at larger file size.
 
-    Raises:
-        ValueError: If chunks list is empty
-
-    Format:
-        Saves as .npz with arrays:
-        - signals: (N, signal_len) raw signal chunks (object array for variable length)
-        - sequences: (N,) string array of k-mer sequences
-        - dwells: (N, kmer_len) dwell times (object array for variable length)
-        - features: (N, num_features, kmer_len) feature arrays (object array)
-        - labels: (N,) string labels (e.g., "Ala", "Gly")
-        - labels_int: (N,) integer labels (0, 1, or -1 if unset)
-        - read_ids: (N,) string array of read IDs
-        - base_indices: (N,) base indices
-        - seq_to_sig_values / seq_to_sig_offsets: base-to-signal maps in CSR
-          form; row i is ``values[offsets[i]:offsets[i + 1]]``. Files written
-          before v0.6.8 carry a pickled object array named ``seq_to_sig_maps``
-          instead, which :func:`load_chunks` still reads.
-
-    Examples:
-        >>> chunks = extract_training_chunks(read, motif="CCAGGC")
-        >>> save_chunks(chunks, Path("output/chunks.npz"))
+    Yields:
+        ``(name, value)`` pairs. Names never repeat.
     """
     if not chunks:
-        raise ValueError("No chunks to save")
+        return
 
     # Collect arrays
     signals = []
@@ -320,83 +378,585 @@ def save_chunks(chunks: list[dict], output_path: Path, *, compressed: bool = Tru
         sequences_with_kmer_context.append(seq_ctx if seq_ctx is not None else "")
 
     # Convert to arrays — use flat (non-object) arrays when shapes are uniform
-    # for faster serialization (avoids pickle overhead on object arrays)
-    sequences_arr = np.array(sequences, dtype=str)
-    labels_arr = np.array(labels, dtype=str)  # String labels
-    labels_int_arr = np.array(labels_int, dtype=np.int64)  # Numeric labels
-    read_ids_arr = np.array(read_ids, dtype=str)
-    base_indices_arr = np.array(base_indices, dtype=np.int64)
-    feature_starts_arr = np.array(feature_starts, dtype=np.int64)
-    feature_ends_arr = np.array(feature_ends, dtype=np.int64)
-    source_groups_arr = np.array(source_groups, dtype=str)
-    reference_names_arr = np.array(reference_names, dtype=str)
-    sequences_with_kmer_context_arr = np.array(sequences_with_kmer_context, dtype=str)
+    # for faster serialization (avoids pickle overhead on object arrays).
+    # Each member is built at the point it is yielded and its source list is
+    # dropped straight after, so at most one stacked array is alive at a time.
+    yield "sequences", np.array(sequences, dtype=str)
+    del sequences
+    yield "labels", np.array(labels, dtype=str)  # String labels
+    del labels
+    yield "labels_int", np.array(labels_int, dtype=np.int64)  # Numeric labels
+    del labels_int
+    yield "read_ids", np.array(read_ids, dtype=str)
+    del read_ids
+    yield "base_indices", np.array(base_indices, dtype=np.int64)
+    del base_indices
+    yield "feature_starts", np.array(feature_starts, dtype=np.int64)
+    del feature_starts
+    yield "feature_ends", np.array(feature_ends, dtype=np.int64)
+    del feature_ends
+    yield "source_groups", np.array(source_groups, dtype=str)
+    del source_groups
+    yield "reference_names", np.array(reference_names, dtype=str)
+    del reference_names
+
     # seq_to_sig_maps are variable length (they depend on the read's dwell
     # times), so store them CSR-style: one flat values array plus row offsets.
     # An object array would be pickled, which costs a Python ndarray per chunk
     # on load and makes the member unstreamable (#211).
     seq_to_sig_values_arr, seq_to_sig_offsets_arr = csr_from_object_rows(seq_to_sig_maps)
+    del seq_to_sig_maps
+    yield "seq_to_sig_values", seq_to_sig_values_arr
+    del seq_to_sig_values_arr
+    yield "seq_to_sig_offsets", seq_to_sig_offsets_arr
+    del seq_to_sig_offsets_arr
 
-    # Create parent directories if they don't exist
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    cl_values_arr = np.array(cl_values, dtype=np.int16)
-
-    save_kwargs: dict[str, np.ndarray] = {
-        "sequences": sequences_arr,
-        "labels": labels_arr,
-        "labels_int": labels_int_arr,
-        "read_ids": read_ids_arr,
-        "base_indices": base_indices_arr,
-        "feature_starts": feature_starts_arr,
-        "feature_ends": feature_ends_arr,
-        "source_groups": source_groups_arr,
-        "reference_names": reference_names_arr,
-        "seq_to_sig_values": seq_to_sig_values_arr,
-        "seq_to_sig_offsets": seq_to_sig_offsets_arr,
-        "sequences_with_kmer_context": sequences_with_kmer_context_arr,
-        "cl_values": cl_values_arr,
-    }
+    yield "sequences_with_kmer_context", np.array(sequences_with_kmer_context, dtype=str)
+    del sequences_with_kmer_context
+    yield "cl_values", np.array(cl_values, dtype=np.int16)
+    del cl_values
 
     if has_focus_signal_pos:
-        save_kwargs["focus_signal_pos"] = np.array(focus_signal_pos_list, dtype=np.int64)
+        yield "focus_signal_pos", np.array(focus_signal_pos_list, dtype=np.int64)
+    del focus_signal_pos_list
 
-    # Signals: try stacking into 2D float32 (all chunks should be same length)
+    # Signals: try stacking into 2D float32 (all chunks should be same length).
+    # `copy=False` matters: chunk signals are already float32, so the default
+    # `astype` duplicates the largest array in the process for nothing (#211).
     sig_shapes = {s.shape for s in signals}
     if len(sig_shapes) == 1:
-        save_kwargs["signals_flat"] = np.stack(signals).astype(np.float32)
+        yield "signals_flat", np.stack(signals).astype(np.float32, copy=False)
     else:
-        save_kwargs["signals"] = np.array(signals, dtype=object)
+        yield "signals", signals
+    del signals
 
     # Signal residuals (optional, same shape as signals)
     if has_signal_residual and signal_residuals:
         sr_shapes = {s.shape for s in signal_residuals}
         if len(sr_shapes) == 1:
-            save_kwargs["signal_residuals_flat"] = np.stack(signal_residuals).astype(np.float32)
+            yield (
+                "signal_residuals_flat",
+                np.stack(signal_residuals).astype(np.float32, copy=False),
+            )
         else:
-            save_kwargs["signal_residuals"] = np.array(signal_residuals, dtype=object)
+            yield "signal_residuals", signal_residuals
+    del signal_residuals
 
     # Dwells: try stacking into 2D
     dwell_shapes = {d.shape for d in dwells}
     if len(dwell_shapes) == 1:
-        save_kwargs["dwells_flat"] = np.stack(dwells).astype(np.float32)
+        yield "dwells_flat", np.stack(dwells).astype(np.float32, copy=False)
     else:
-        save_kwargs["dwells"] = np.array(dwells, dtype=object)
+        yield "dwells", dwells
+    del dwells
 
     # Features: try stacking into 3D
     feat_shapes = {f.shape for f in features}
     if len(feat_shapes) == 1 and features[0].size > 0:
-        save_kwargs["features_flat"] = np.stack(features).astype(np.float32)
+        yield "features_flat", np.stack(features).astype(np.float32, copy=False)
     else:
-        save_kwargs["features"] = np.array(features, dtype=object)
+        yield "features", features
+    del features
 
-    # Save
-    if compressed:
-        np.savez_compressed(output_path, **save_kwargs)
-    else:
-        np.savez(output_path, **save_kwargs)
+
+def save_chunks(chunks: list[dict], output_path: Path, *, compressed: bool = True) -> None:
+    """
+    Save training chunks to numpy format.
+
+    Args:
+        chunks: List of chunk dictionaries from extract_training_chunks
+        output_path: Output file path (.npz)
+        compressed: If True (default), compress members with zlib
+            (``np.savez_compressed``); if False, store them (``np.savez``) for
+            faster writes at larger file size.
+
+    Raises:
+        ValueError: If chunks list is empty
+
+    Format:
+        Saves as .npz with arrays:
+        - signals: (N, signal_len) raw signal chunks (object array for variable length)
+        - sequences: (N,) string array of k-mer sequences
+        - dwells: (N, kmer_len) dwell times (object array for variable length)
+        - features: (N, num_features, kmer_len) feature arrays (object array)
+        - labels: (N,) string labels (e.g., "Ala", "Gly")
+        - labels_int: (N,) integer labels (0, 1, or -1 if unset)
+        - read_ids: (N,) string array of read IDs
+        - base_indices: (N,) base indices
+        - seq_to_sig_values / seq_to_sig_offsets: base-to-signal maps in CSR
+          form; row i is ``values[offsets[i]:offsets[i + 1]]``. Files written
+          before v0.6.8 carry a pickled object array named ``seq_to_sig_maps``
+          instead, which :func:`load_chunks` still reads.
+
+    Note:
+        Members are stacked and written one at a time rather than collected
+        into a ``np.savez`` call, so only one of them is resident at a time.
+        Callers that do not already have the whole corpus as a list should use
+        :class:`ChunkNpzWriter`, which never builds one.
+
+    Examples:
+        >>> chunks = extract_training_chunks(read, motif="CCAGGC")
+        >>> save_chunks(chunks, Path("output/chunks.npz"))
+    """
+    if not chunks:
+        raise ValueError("No chunks to save")
+
+    # Create parent directories if they don't exist
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with open_npz_zip(output_path, compressed) as zf:
+        for name, value in iter_chunk_columns(chunks):
+            array = np.array(value, dtype=object) if isinstance(value, list) else value
+            write_npz_member(zf, name, array)
+            del array, value
 
     logger.info(f"Saved {len(chunks)} chunks to {output_path}")
+
+
+class _SpilledColumn:
+    """One fixed-shape npz member, accumulated row by row in a temp file."""
+
+    __slots__ = ("name", "dtype", "row_shape", "row_bytes", "n_rows", "_fp", "_mm", "_sealed")
+
+    def __init__(self, name: str, dtype: np.dtype, row_shape: tuple[int, ...], spill_dir: Path):
+        self.name = name
+        self.dtype = dtype
+        self.row_shape = row_shape
+        self.row_bytes = int(np.prod(row_shape, dtype=np.int64)) * dtype.itemsize
+        self.n_rows = 0
+        self._fp = tempfile.TemporaryFile(dir=spill_dir)
+        self._mm: np.ndarray | None = None
+        self._sealed = False
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        return (self.n_rows, *self.row_shape)
+
+    def append(self, array: np.ndarray) -> None:
+        if array.dtype != self.dtype or array.shape[1:] != self.row_shape:
+            raise ValueError(
+                f"npz member '{self.name}' changed layout between batches: "
+                f"had {self.dtype}{self.row_shape}, got {array.dtype}{array.shape[1:]}"
+            )
+        if self._sealed:
+            # Reading rewinds the spill; appending after that would overwrite it.
+            raise ValueError(f"npz member '{self.name}' cannot be appended to after a read")
+        array = np.ascontiguousarray(array)
+        try:
+            # Writes straight out of the array's buffer: no `tobytes` copy of a
+            # member that may be the largest array in the process.
+            array.tofile(self._fp)
+        except (OSError, ValueError):  # not a real file (mocked, in-memory, ...)
+            _write_rows(self._fp, array)
+        self.n_rows += len(array)
+
+    def stream_to(self, fp) -> None:
+        """Copy the whole payload into ``fp`` through one reused buffer."""
+        self._sealed = True
+        self._fp.flush()
+        self._fp.seek(0)
+        remaining = self.n_rows * self.row_bytes
+        buffer = bytearray(min(_COPY_SLICE_BYTES, max(remaining, 1)))
+        view = memoryview(buffer)
+        while remaining > 0:
+            want = min(len(buffer), remaining)
+            got = self._fp.readinto(view[:want])
+            if not got:
+                raise ValueError(f"spill for npz member '{self.name}' is truncated")
+            fp.write(view[:got])
+            remaining -= got
+
+    def view(self) -> np.ndarray:
+        """A read-only view of every row, without reading the file into memory.
+
+        A memory map where the filesystem allows one, otherwise the member read
+        back into an array.
+        """
+        self._sealed = True
+        if self.n_rows == 0:
+            return np.empty(self.shape, dtype=self.dtype)
+        if self._mm is None:
+            self._fp.flush()
+            try:
+                self._mm = np.memmap(self._fp, dtype=self.dtype, mode="r", shape=self.shape)
+            except (OSError, ValueError) as exc:
+                # Some filesystems refuse to mmap. Reading the member back is
+                # the whole point of the spill, so fall back rather than fail —
+                # at the cost of holding this one member.
+                logger.warning(
+                    f"Cannot memory-map the spill for npz member '{self.name}' ({exc}); "
+                    f"reading it into memory instead"
+                )
+                self._fp.seek(0)
+                count = self.n_rows * max(int(np.prod(self.row_shape, dtype=np.int64)), 1)
+                self._mm = np.fromfile(self._fp, dtype=self.dtype, count=count).reshape(self.shape)
+        return self._mm
+
+    def close(self) -> None:
+        self._mm = None
+        with contextlib.suppress(Exception):
+            self._fp.close()
+
+
+class ChunkSpool:
+    """Accumulate chunk batches on disk, then write one or more .npz corpora.
+
+    ``save_chunks`` needs the whole corpus as a list before it writes anything,
+    which is what makes ``data prepare`` peak at the corpus plus its stacked
+    copy (#211). A spool takes the same chunks a batch at a time, spills each
+    npz member to its own temp file as it goes, and assembles the .npz at the
+    end — so no batch outlives the ``append`` call that delivered it.
+
+    Output is byte-compatible with :func:`save_chunks`: same member names,
+    order, dtypes, shapes and values, including the CSR
+    ``seq_to_sig_values``/``seq_to_sig_offsets`` pair and the object-array
+    fallbacks for ragged chunks. ``tests/test_chunk_writer.py`` holds the two
+    writers to that.
+
+    Trade-off: the corpus is written twice (once to the spill, once into the
+    .npz) and the spill needs corpus-sized scratch space in ``spill_dir``,
+    which defaults to the output directory. That buys back the corpus-sized
+    peak in RAM.
+
+    What is *not* spilled: string members are held in memory (a few hundred
+    bytes per chunk — they are what the read-level split is computed from), and
+    the ragged object-array fallback is buffered like ``save_chunks`` does,
+    since a pickled member cannot be appended to.
+
+    Args:
+        spill_dir: Directory for the temp files. Must have room for the corpus.
+        compressed: Default for :meth:`write_npz`.
+        batch_rows: Chunks buffered before a spill write. Callers that append
+            one read at a time (the sequential prepare path) would otherwise
+            pay a per-member array build per read.
+
+    Examples:
+        >>> with ChunkSpool(Path("out")) as spool:  # doctest: +SKIP
+        ...     for batch in batches:
+        ...         spool.append(batch)
+        ...     spool.write_npz(Path("out/all.npz"))
+    """
+
+    def __init__(self, spill_dir: Path, *, compressed: bool = True, batch_rows: int = 4096):
+        self.spill_dir = Path(spill_dir)
+        self.spill_dir.mkdir(parents=True, exist_ok=True)
+        self.compressed = compressed
+        self.batch_rows = max(1, batch_rows)
+        self._order: list[str] = []
+        self._flat: dict[str, _SpilledColumn] = {}
+        self._text: dict[str, list[np.ndarray]] = {}
+        self._object: dict[str, list] = {}
+        self._pending: list[dict] = []
+        self._n_chunks = 0
+        self._csr_total = 0
+        self._csr_started = False
+        self._closed = False
+
+    # -- accumulation ------------------------------------------------------
+
+    def __len__(self) -> int:
+        return self._n_chunks
+
+    @property
+    def n_chunks(self) -> int:
+        """Chunks appended so far."""
+        return self._n_chunks
+
+    def append(self, chunks: list[dict]) -> None:
+        """Add a batch of chunks. The caller may drop them immediately after."""
+        if self._closed:
+            raise ValueError("ChunkSpool is closed")
+        if not chunks:
+            return
+        self._pending.extend(chunks)
+        self._n_chunks += len(chunks)
+        if len(self._pending) >= self.batch_rows:
+            self._flush()
+
+    def _flush(self) -> None:
+        """Turn the buffered chunks into npz members and spill them."""
+        if not self._pending:
+            return
+        chunks = self._pending
+        self._pending = []
+        names = []
+        for name, value in iter_chunk_columns(chunks):
+            names.append(name)
+            self._append_member(name, value)
+            del value
+        del chunks
+        if not self._order:
+            self._order = names
+        elif names != self._order:
+            raise ValueError(
+                "chunk batches disagree on the npz members they produce: "
+                f"{self._order} then {names}. A spool cannot mix batches whose "
+                "chunks carry different fields or different array shapes."
+            )
+
+    def _append_member(self, name: str, value: np.ndarray | list) -> None:
+        if isinstance(value, list):
+            # Ragged fallback: the member is pickled, so it cannot be streamed.
+            self._object.setdefault(name, []).extend(value)
+            return
+        if value.dtype.kind in "US":
+            # Fixed-width text: the width is per batch, so these are promoted
+            # to the widest at write time rather than spilled at a width that
+            # a later batch might outgrow.
+            self._text.setdefault(name, []).append(value)
+            return
+        if name == "seq_to_sig_offsets":
+            value = self._continue_csr_offsets(value)
+        column = self._flat.get(name)
+        if column is None:
+            column = _SpilledColumn(name, value.dtype, value.shape[1:], self.spill_dir)
+            self._flat[name] = column
+        column.append(value)
+
+    def _continue_csr_offsets(self, local: np.ndarray) -> np.ndarray:
+        """Rebase one batch's CSR row offsets onto the values already spilled."""
+        base = self._csr_total
+        if self._csr_started:
+            rebased = local[1:] + base
+        else:
+            # The first batch keeps its leading 0, which is row 0's start.
+            self._csr_started = True
+            rebased = local
+        self._csr_total = base + int(local[-1])
+        return rebased
+
+    # -- reading back ------------------------------------------------------
+
+    def text_column(self, name: str) -> np.ndarray:
+        """One text member as a single array, at the width the .npz will use."""
+        self._flush()
+        parts = self._text[name]
+        if len(parts) > 1:
+            dtype = parts[0].dtype
+            for part in parts[1:]:
+                dtype = np.promote_types(dtype, part.dtype)
+            joined = np.concatenate([p.astype(dtype, copy=False) for p in parts])
+            # Collapse in place: the per-batch arrays are a second copy.
+            parts.clear()
+            parts.append(joined)
+        return parts[0]
+
+    def read_ids(self) -> np.ndarray:
+        """The ``read_ids`` column, for computing a read-level split."""
+        return self.text_column("read_ids")
+
+    # -- writing -----------------------------------------------------------
+
+    def write_npz(
+        self,
+        output_path: Path,
+        *,
+        rows: np.ndarray | None = None,
+        compressed: bool | None = None,
+    ) -> int:
+        """Write the spooled chunks to ``output_path`` as an .npz.
+
+        Args:
+            output_path: Output file path (.npz appended if absent).
+            rows: Row indices to write, in output order. ``None`` writes every
+                row in arrival order. Used to split a spooled corpus into
+                train/val/test without ever materialising a split as a list.
+            compressed: Overrides the spool's default.
+
+        Returns:
+            Number of chunks written.
+
+        Raises:
+            ValueError: If the spool is empty or a member has the wrong length.
+        """
+        if self._closed:
+            raise ValueError("ChunkSpool is closed")
+        if self._n_chunks == 0:
+            raise ValueError("No chunks to save")
+        self._flush()
+        self._check_lengths()
+        if compressed is None:
+            compressed = self.compressed
+        if rows is not None:
+            rows = np.asarray(rows, dtype=np.int64)
+        n_written = self._n_chunks if rows is None else len(rows)
+
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        csr = self._csr_gather(rows) if rows is not None else None
+        with open_npz_zip(output_path, compressed) as zf:
+            for name in self._order:
+                if csr is not None and name in ("seq_to_sig_values", "seq_to_sig_offsets"):
+                    self._write_csr_member(zf, name, csr)
+                elif name in self._object:
+                    self._write_object_member(zf, name, rows)
+                elif name in self._text:
+                    self._write_text_member(zf, name, rows)
+                else:
+                    self._write_flat_member(zf, name, rows)
+
+        logger.info(f"Saved {n_written} chunks to {output_path}")
+        return n_written
+
+    def _check_lengths(self) -> None:
+        """Every per-chunk member must have one row per chunk before we write."""
+        expected = self._n_chunks
+        for name, column in self._flat.items():
+            if name == "seq_to_sig_values":
+                continue  # flat CSR values, one row per map entry
+            want = expected + 1 if name == "seq_to_sig_offsets" else expected
+            if column.n_rows != want:
+                raise ValueError(f"npz member '{name}' has {column.n_rows} rows, expected {want}")
+        for name in self._text:
+            got = sum(len(p) for p in self._text[name])
+            if got != expected:
+                raise ValueError(f"npz member '{name}' has {got} rows, expected {expected}")
+        for name, values in self._object.items():
+            if len(values) != expected:
+                raise ValueError(f"npz member '{name}' has {len(values)} rows, expected {expected}")
+
+    def _write_flat_member(self, zf: zipfile.ZipFile, name: str, rows: np.ndarray | None) -> None:
+        column = self._flat[name]
+        if rows is None:
+            with zf.open(name + ".npy", "w", force_zip64=True) as fp:
+                write_npy_header(fp, column.shape, column.dtype)
+                column.stream_to(fp)
+            return
+        view = column.view()
+        with zf.open(name + ".npy", "w", force_zip64=True) as fp:
+            write_npy_header(fp, (len(rows), *column.row_shape), column.dtype)
+            step = _row_step(column.dtype, column.row_shape)
+            for start in range(0, len(rows), step):
+                fp.write(np.asarray(view[rows[start : start + step]]).tobytes())
+
+    def _write_text_member(self, zf: zipfile.ZipFile, name: str, rows: np.ndarray | None) -> None:
+        parts = self._text[name]
+        dtype = parts[0].dtype
+        for part in parts[1:]:
+            dtype = np.promote_types(dtype, part.dtype)
+        if rows is None:
+            with zf.open(name + ".npy", "w", force_zip64=True) as fp:
+                write_npy_header(fp, (sum(len(p) for p in parts),), dtype)
+                for part in parts:
+                    _write_rows(fp, np.ascontiguousarray(part.astype(dtype, copy=False)))
+            return
+        selected = self.text_column(name)[rows]
+        dtype = _text_dtype(selected)
+        with zf.open(name + ".npy", "w", force_zip64=True) as fp:
+            write_npy_header(fp, (len(rows),), dtype)
+            _write_rows(fp, np.ascontiguousarray(selected.astype(dtype, copy=False)))
+
+    def _write_object_member(self, zf: zipfile.ZipFile, name: str, rows: np.ndarray | None) -> None:
+        values = self._object[name]
+        if rows is not None:
+            values = [values[i] for i in rows.tolist()]
+        write_npz_member(zf, name, np.array(values, dtype=object))
+
+    def _csr_gather(self, rows: np.ndarray) -> dict:
+        """Row lengths and output offsets for a gathered subset of the CSR pair."""
+        offsets = np.asarray(self._flat["seq_to_sig_offsets"].view())
+        return {
+            "offsets": offsets,
+            "out_offsets": csr_offsets_from_lens(offsets[rows + 1] - offsets[rows]),
+            "rows": rows,
+        }
+
+    def _write_csr_member(self, zf: zipfile.ZipFile, name: str, csr: dict) -> None:
+        if name == "seq_to_sig_offsets":
+            write_npz_member(zf, name, csr["out_offsets"])
+            return
+        values = self._flat["seq_to_sig_values"].view()
+        rows = csr["rows"]
+        offsets = csr["offsets"]
+        total = int(csr["out_offsets"][-1])
+        with zf.open(name + ".npy", "w", force_zip64=True) as fp:
+            write_npy_header(fp, (total,), values.dtype)
+            mean_row_bytes = max(1, (total // max(len(rows), 1)) * values.dtype.itemsize)
+            step = max(1, _COPY_SLICE_BYTES // mean_row_bytes)
+            for start in range(0, len(rows), step):
+                _lens, _col, src = csr_gather_index(offsets, rows[start : start + step])
+                fp.write(np.asarray(values[src]).tobytes())
+
+    # -- lifecycle ---------------------------------------------------------
+
+    def close(self) -> None:
+        """Drop the spill files. The spool cannot be used afterwards."""
+        if self._closed:
+            return
+        self._closed = True
+        self._pending.clear()
+        for column in self._flat.values():
+            column.close()
+        self._flat.clear()
+        self._text.clear()
+        self._object.clear()
+
+    def __enter__(self) -> "ChunkSpool":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+
+class ChunkNpzWriter:
+    """Write one .npz from chunk batches, without ever holding the corpus.
+
+    The streaming counterpart of :func:`save_chunks`, for callers that produce
+    chunks a batch at a time (``data prepare``). Output is byte-compatible; see
+    :class:`ChunkSpool` for the mechanics and the disk-space trade-off.
+
+    Args:
+        output_path: Output file path (.npz appended if absent).
+        compressed: If True (default), compress members with zlib.
+        spill_dir: Where the temp files go. Defaults to the output directory.
+        batch_rows: Chunks buffered before a spill write.
+
+    Examples:
+        >>> with ChunkNpzWriter(Path("out/all.npz")) as writer:  # doctest: +SKIP
+        ...     for batch in batches:
+        ...         writer.append(batch)
+    """
+
+    def __init__(
+        self,
+        output_path: Path,
+        *,
+        compressed: bool = True,
+        spill_dir: Path | None = None,
+        batch_rows: int = 4096,
+    ):
+        self.output_path = Path(output_path)
+        self.output_path.parent.mkdir(parents=True, exist_ok=True)
+        self._spool = ChunkSpool(
+            spill_dir if spill_dir is not None else self.output_path.parent,
+            compressed=compressed,
+            batch_rows=batch_rows,
+        )
+
+    def append(self, chunks: list[dict]) -> None:
+        """Add a batch of chunks. The caller may drop them immediately after."""
+        self._spool.append(chunks)
+
+    @property
+    def n_chunks(self) -> int:
+        return self._spool.n_chunks
+
+    def close(self) -> None:
+        """Write the .npz and drop the spill files."""
+        try:
+            self._spool.write_npz(self.output_path)
+        finally:
+            self._spool.close()
+
+    def __enter__(self) -> "ChunkNpzWriter":
+        return self
+
+    def __exit__(self, exc_type, *_exc) -> None:
+        if exc_type is None:
+            self.close()
+        else:
+            self._spool.close()
 
 
 def load_seq_to_sig_csr(input_path: Path) -> tuple[np.ndarray, np.ndarray] | None:
