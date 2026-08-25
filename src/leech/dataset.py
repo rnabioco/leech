@@ -204,11 +204,18 @@ class _TensorFill:
     list, which ``__getitem__`` still handles.
     """
 
+    #: Rows staged before one bulk write. Assigning row by row costs a few
+    #: microseconds of dispatch each — seconds over a multi-million-chunk
+    #: corpus — while ``torch.stack(..., out=)`` writes a run at C speed with
+    #: no transient. Small enough that what it pins is irrelevant.
+    _BATCH_ROWS = 256
+
     def __init__(self, name: str, capacity: int):
         self.name = name
         self.capacity = capacity
         self._tensor: torch.Tensor | None = None
         self._items: list[torch.Tensor] = []
+        self._pending: list[torch.Tensor] = []
         self._n = 0
 
     def append(self, tensor: torch.Tensor) -> None:
@@ -217,19 +224,36 @@ class _TensorFill:
             return
         if self._tensor is None:
             self._tensor = torch.empty((self.capacity, *tensor.shape), dtype=tensor.dtype)
-        elif tuple(tensor.shape) != tuple(self._tensor.shape[1:]):
-            logger.warning(
-                "%s shapes differ (%s vs %s), falling back to list access",
-                self.name,
-                tuple(tensor.shape),
-                tuple(self._tensor.shape[1:]),
-            )
-            self._items = [self._tensor[i].clone() for i in range(self._n)]
-            self._tensor = None
-            self._items.append(tensor)
+        elif (
+            tuple(tensor.shape) != tuple(self._tensor.shape[1:])
+            or tensor.dtype != self._tensor.dtype
+        ):
+            self._degrade(tensor)
             return
-        self._tensor[self._n] = tensor
-        self._n += 1
+        self._pending.append(tensor)
+        if len(self._pending) >= self._BATCH_ROWS:
+            self._flush()
+
+    def _flush(self) -> None:
+        if not self._pending:
+            return
+        rows = len(self._pending)
+        torch.stack(self._pending, out=self._tensor[self._n : self._n + rows])
+        self._n += rows
+        self._pending.clear()
+
+    def _degrade(self, tensor: torch.Tensor) -> None:
+        """Fall back to a list of per-chunk tensors, keeping what was filled."""
+        logger.warning(
+            "%s shapes differ (%s vs %s), falling back to list access",
+            self.name,
+            tuple(tensor.shape),
+            tuple(self._tensor.shape[1:]),
+        )
+        self._flush()
+        self._items = [self._tensor[i].clone() for i in range(self._n)]
+        self._tensor = None
+        self._items.append(tensor)
 
     def finish(self) -> tuple[torch.Tensor | None, list[torch.Tensor]]:
         """Return ``(stacked_tensor, fallback_list)``; exactly one is populated."""
@@ -237,6 +261,7 @@ class _TensorFill:
             # Nothing appended (the caller uses a different tensor) or shapes
             # differed — both cases the old _try_stack signalled with None.
             return None, self._items
+        self._flush()
         return self._tensor[: self._n], []
 
 
@@ -299,16 +324,19 @@ class _ArrayStream:
     def __iter__(self):
         """Yield one dict of arrays per kept row, in ``LeechDataset.chunks`` order.
 
-        The arrays are views into recycled block buffers — valid until the next
-        iteration, which is all the tensorize loop needs since it copies each
-        row into the output tensor.
+        Rows are copied out of the block buffer, which the next block read
+        overwrites. Without the copy the caller would have to consume each row
+        before the next one arrives — and it does not: preparing a chunk can
+        return a tensor that aliases its input (a contiguous crop is a view),
+        and those are staged in batches. Copying a few KB per row is cheaper
+        than the alternatives and removes the lifetime question entirely.
         """
         if self.keep is None:
             raise RuntimeError("_ArrayStream.keep must be set before iterating")
         for start, blocks in iter_npz_row_blocks(self.path, list(self.members.values())):
             rows = len(next(iter(blocks.values())))
             for j in np.nonzero(self.keep[start : start + rows])[0]:
-                yield {field: blocks[member][j] for field, member in self.members.items()}
+                yield {field: blocks[member][j].copy() for field, member in self.members.items()}
 
 
 def _expand_seq_to_sig_csr(
@@ -700,6 +728,13 @@ class LeechDataset(Dataset):
             ):
                 if key in chunk:
                     chunk[key] = None
+
+        # Same reasoning for the streaming bookkeeping: one row per chunk each,
+        # and a DataLoader that spawns workers pickles whatever is still here.
+        self._s2s_csr = None
+        self._s2s_rows = None
+        if self._array_stream is not None:
+            self._array_stream.keep = None
 
         # Precompute per-channel feature stds for feature noise augmentation.
         # Reuse the already-stacked features tensor when available.

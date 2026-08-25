@@ -434,15 +434,26 @@ class TestLegacyFormats:
 class TestPeakMemory:
     """Guards on the two copies #211 removed."""
 
-    def test_init_does_not_stack(self, tmp_path, monkeypatch):
-        """Preallocate-and-fill, not torch.stack — the stack doubled the peak."""
+    def test_init_never_allocates_a_second_copy(self, tmp_path, monkeypatch):
+        """Every stack during init writes into the preallocated output.
+
+        ``torch.stack(items)`` allocates the whole result while ``items`` is
+        still alive — that was the third copy in #211. Writing through ``out=``
+        in bounded batches is what replaced it.
+        """
+        from leech.dataset import _TensorFill
+
         path = tmp_path / "chunks.npz"
-        save_chunks(make_chunks(12), path)
+        save_chunks(make_chunks(600), path)
 
-        def fail(*args, **kwargs):
-            raise AssertionError("torch.stack allocates a second copy of the corpus")
+        calls = []
+        real_stack = torch.stack
 
-        monkeypatch.setattr(torch, "stack", fail)
+        def record(tensors, *args, **kwargs):
+            calls.append((len(tensors), kwargs.get("out") is not None))
+            return real_stack(tensors, *args, **kwargs)
+
+        monkeypatch.setattr(torch, "stack", record)
         dataset = LeechDataset(
             chunk_path=path,
             signal_len=STORED_SIGNAL_LEN,
@@ -450,7 +461,11 @@ class TestPeakMemory:
             model_type="ConvLSTMDwell",
             seq_encoding="base_onehot",
         )
-        assert dataset._signals_tensor.shape[0] == 12
+        assert dataset._signals_tensor.shape[0] == 600
+        assert calls, "expected the fill to stack in batches"
+        allocating = [n for n, has_out in calls if not has_out]
+        assert not allocating, f"{len(allocating)} stacks allocated instead of writing to out="
+        assert max(n for n, _ in calls) <= _TensorFill._BATCH_ROWS
 
     def test_streaming_peak_does_not_scale_with_corpus(self, tmp_path):
         """The point of streaming: the array copy is bounded by the block size.
