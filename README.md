@@ -118,7 +118,7 @@ uv run leech predict \
 
 ## Model architectures
 
-20 architectures across 5 families, all supporting multi-channel signal input (`signal_in_channels`):
+29 architectures across 5 families, all supporting multi-channel signal input (`signal_in_channels`):
 
 | Family | Models | Description |
 |--------|--------|-------------|
@@ -128,6 +128,28 @@ uv run leech predict \
 | **Transformer** | TransformerDwell, TransformerDwellResidual | Multi-head self-attention; Residual variant uses 2-channel signal (raw + kmer residual) |
 | **TCN** | TCNDwell, +GN, +LN, +Residual | Temporal Convolutional Network with dilated convolutions |
 | **Other** | ResNetDwell, ConvOnly | Residual network; pure CNN with multi-scale convolutions |
+
+## Sequence models (CTC-CRF)
+
+Alongside the classifiers, `leech.crf` trains **sequence** models: a CTC-CRF
+over `n_base ** state_len` states whose Viterbi traceback emits one base per
+move, for reading a sequence out of raw signal rather than assigning it a label.
+The formulation is Oxford Nanopore's, introduced in bonito; the architecture is
+SeqTagger's published parameters (Genome Res 35:956).
+
+```python
+from leech.crf import CrfEncoder, CtcCrfLoss, decode_batch, encoder_config_from_toml, load_config
+
+cfg = encoder_config_from_toml(load_config())
+model, criterion = CrfEncoder(cfg), CtcCrfLoss(cfg.n_base, cfg.state_len)
+scores = model(signal)                        # (N, 1, chunk) -> (T, N, n_score)
+sequences = decode_batch(scores, cfg.n_base, cfg.state_len)
+```
+
+Corpora are described by a [manifest](https://rnabioco.github.io/leech/api/crf/)
+— one row per read naming the signal window and its target — so the vocabulary
+of a given assay stays with whatever produced it. See the
+[CRF API reference](https://rnabioco.github.io/leech/api/crf/).
 
 ## Training features
 

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-08-25
+
+Minor rather than patch: one new capability, no change to anything that
+existed. Everything in 0.7.0 behaves identically — `leech.crf` is additive, and
+nothing outside it was touched.
+
 ### Added
 
 - **`leech.crf`: CTC-CRF sequence models — encoder, training objective and
@@ -53,6 +59,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to a non-random 13.5%). And `check_geometry` **raises** on a window too short
   to hold its target rather than warning, because a short window trains,
   converges, and quietly discriminates on fewer bases than designed.
+
+### Fixed
+
+- **README claimed 20 model architectures; the registry has 29.** The count had
+  not moved as families were added. It also did not mention the CRF task at all,
+  which is now a section of its own.
 
 ## [0.7.0] - 2026-08-25
 
