@@ -1,0 +1,92 @@
+"""CTC-CRF sequence models: encoder, training objective, and decode.
+
+A second task alongside leech's chunk classifiers. Where a classifier maps a
+signal window to a label, this maps one to a *sequence*: a CRF over
+``n_base ** state_len`` states whose Viterbi traceback emits one base per move.
+It is what the barcode basecallers in escapepod-models are trained with, and
+what ``escapepod-demux``'s Rust decoder runs in production.
+
+Independent of bonito and ont-koi — all three pieces of the training path are
+here, so a model can be trained, evaluated and exported without either. See
+``encoder.py`` for what that buys legally and what it does not.
+
+**This subpackage imports only torch and numpy**, and only when a symbol that
+needs them is actually touched. Not pysam, not polars, not escapepod, ever. Both
+halves of that are load-bearing:
+
+* escapepod-models installs leech into a conda-forge pixi environment with
+  ``--no-deps`` precisely so the solver is never asked to reconcile leech's
+  POD5/BAM stack against conda's pytorch, and the CRF path is the only part of
+  leech it needs.
+* The config path is resolved eagerly and everything else lazily (PEP 562, as in
+  :mod:`leech.models`), so ``from leech.crf import DEFAULT_CONFIG`` costs
+  nothing. escapepod-models' ``ldxlib`` exposes it as a module constant and is
+  imported by two dozen scripts that want only edit distances and panel
+  lookups; the CLI will want the same for a ``--config`` default without paying
+  the torch import at parse time.
+
+``tests/test_crf_package.py`` fails if either property regresses.
+
+Three invariants the rest of this package assumes, each of which has already
+cost a debugging session somewhere in this stack:
+
+* **The model cannot emit the first ``state_len`` bases of its target.** They fix
+  the initial state and nothing else, so a ``target_len``-base target decodes to
+  ``target_len - state_len`` bases *at any window width* — widening the window
+  recovers nothing. Size targets so the sacrificial bases come from a constant
+  prefix, and match decodes against ``target[state_len:]``.
+* **Blank is entry 0 of each state's group**, giving a score width of
+  ``n_states * (n_base + 1)`` = 1280, not the linear layer's 1024.
+* **The decode is two passes** — log-semiring posteriors, then max-semiring over
+  ``log(post + 1e-8)``. A one-pass Viterbi over the raw scores is a different and
+  worse decode, and is the obvious thing to simplify away.
+"""
+
+from __future__ import annotations
+
+import importlib
+from typing import Any
+
+# Torch-free, so it stays eager: this is the half consumers reach for without
+# wanting a model.
+from .config import CONFIG_DIR, DEFAULT_CONFIG, load_config
+
+#: Symbol -> module, resolved on first access. Plain strings that no import
+#: statement checks, so `tests/test_crf_package.py` walks the table.
+_LAZY: dict[str, str] = {
+    "ALPHABET": "leech.crf.decode",
+    "best_path": "leech.crf.decode",
+    "decode_batch": "leech.crf.decode",
+    "BLANK_SCORE": "leech.crf.encoder",
+    "CrfEncoder": "leech.crf.encoder",
+    "EncoderConfig": "leech.crf.encoder",
+    "encoder_config_from_toml": "leech.crf.encoder",
+    "load_crf_state_dict": "leech.crf.encoder",
+    "CtcCrfLoss": "leech.crf.loss",
+}
+
+__all__ = [
+    "ALPHABET",
+    "BLANK_SCORE",
+    "CONFIG_DIR",
+    "DEFAULT_CONFIG",
+    "CrfEncoder",
+    "CtcCrfLoss",
+    "EncoderConfig",
+    "best_path",
+    "decode_batch",
+    "encoder_config_from_toml",
+    "load_config",
+    "load_crf_state_dict",
+]
+
+
+def __getattr__(name: str) -> Any:
+    module = _LAZY.get(name)
+    if module is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return getattr(importlib.import_module(module), name)
+
+
+def __dir__() -> list[str]:
+    return sorted([*globals(), *_LAZY])

@@ -36,6 +36,7 @@ nav = [
     { "Features" = "api/features.md" },
     { "Dataset" = "api/dataset.md" },
     { "Models" = "api/models.md" },
+    { "CRF" = "api/crf.md" },
     { "Training" = "api/training.md" },
     { "Evaluation" = "api/evaluation.md" },
     { "Inference" = "api/inference.md" },

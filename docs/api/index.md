@@ -14,6 +14,7 @@ see the [CLI Reference](../reference/cli.md).
 ### Models and training
 
 - **[Models](models.md)** -- Neural network architectures (ConvLSTMDwell, TransformerDwell, etc.)
+- **[CRF](crf.md)** -- CTC-CRF sequence models: encoder, loss, and Viterbi decode
 - **[Training](training.md)** -- Trainer class and training loop
 - **[Evaluation](evaluation.md)** -- Model evaluation and metrics
 - **[Inference](inference.md)** -- Inference engine and bundle inference

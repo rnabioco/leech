@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`leech.crf`: CTC-CRF sequence models — encoder, training objective and
+  decode.** A second task alongside the chunk classifiers: where a classifier
+  maps a signal window to a label, a CRF maps one to a *sequence*, over
+  `n_base ** state_len` states whose Viterbi traceback emits one base per move.
+  Ported unchanged from `escapepod_models.crf`, where it was written to get
+  bonito and ont-koi (ONT Public License / no licence respectively) out of the
+  training path; escapepod-models now imports it from here and its bonito
+  equivalence checks remain the oracle. The port is pinned by an A/B against
+  the pre-move copy: encoder forward, loss forward *and* backward, the analytic
+  forward-backward's posteriors, and the decoded strings are all bit-identical
+  on CPU and on GPU (Triton kernels included).
+
+  Contents: `CrfEncoder` (3 convs -> 5 alternating LSTMs -> linear -> tanh/scale
+  -> per-state blank splice), `CtcCrfLoss` with an analytic forward-backward
+  that replaces a 300-step autograd replay with one elementwise multiply,
+  optional Triton lattice kernels, the two-pass Viterbi `decode_batch`, and the
+  packaged architecture config `leech/crf/configs/crf_ctc.toml`.
+
+  The subpackage imports **only torch and numpy, and only on demand** — the
+  config path is eager and the rest is lazy (PEP 562, as in `leech.models`), so
+  `from leech.crf import DEFAULT_CONFIG` costs no torch import. That is what
+  lets escapepod-models install leech `--no-deps` into a conda-forge pixi
+  environment, and it is enforced by `tests/test_crf_package.py`.
+
+  Not included yet: the trainer, the ONNX export, and the corpus paths.
+
 ## [0.7.0] - 2026-08-25
 
 ### Fixed

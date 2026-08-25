@@ -1,0 +1,53 @@
+# CTC-CRF architecture config. The geometry the shipped barcode basecallers
+# (escapepod-models `barcode_crf_*`) were trained with, and the default for
+# `leech.crf`.
+#
+# OURS: written from our own values plus published architecture parameters, not
+# a copy of SeqTagger's config.toml. Every value is annotated with where it
+# comes from, because that provenance is the point
+# (rnabioco/escapepod-models#40).
+#
+# bonito.crf.model.Model reads exactly four things: `labels.labels`,
+# `input.features`, `global_norm.state_len` and `encoder.*`. SeqTagger's file
+# also carried [standardisation], [basecaller] and [qscore]; nothing in this
+# repo reads them, and [standardisation] is actively harmful — it holds
+# constants for THEIR barcode region, and using them silently degrades our
+# decode. Omitted rather than reproduced.
+#
+# Our standardisation is derived per corpus at training time and recorded in the
+# model sidecar and the bundle's metadata.json. That is the only place to read
+# it from.
+
+[labels]
+# Forced by the task: CTC blank plus the four DNA bases. The barcode is DNA
+# translocating under an RNA motor, so the alphabet is DNA regardless of the
+# RNA004 chemistry.
+labels = ["N", "A", "C", "G", "T"]
+
+[input]
+features = 1                          # forced: single-channel raw pA signal
+
+[global_norm]
+# 4-mer states (4^4 = 256). Standard for bonito CRF models, and the value the
+# Rust decode in escapepod-demux is verified against by a golden test.
+#
+# This is why a target must be longer than the sequence you want out: the CRF
+# emits target[state_len:]. See rnabioco/escapepod-models#36.
+state_len = 4
+
+[encoder]
+# Adopted from the SeqTagger architecture for RNA004 barcode basecalling, as
+# published in Genome Res 35:956 (https://github.com/novoalab/SeqTagger) —
+# cited as published parameters rather than copied from their config file.
+#
+# These seven are the only values here originating outside this project. They
+# have not been re-tuned; a sweep would give us our own provenance for them, and
+# is worth doing if the licence review (rnabioco/escapepod-models#40) wants the
+# architecture to be unambiguously ours.
+winlen = 31                           # first strided conv kernel
+stride = 10                           # samples per output timestep
+scale = 5.0                           # CRF score scaling (tanh)
+features = 96                         # conv/LSTM width
+rnn_type = "lstm"
+activation = "swish"
+blank_score = 2.0                     # expanded per state by LinearCRFEncoder
