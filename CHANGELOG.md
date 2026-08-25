@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`leech.crf.training`: a CTC-CRF trainer.** `CrfTrainer` runs the schedule
+  and writes `model.pt` plus a `model.json` sidecar. The sidecar is not optional:
+  the standardisation constants live in neither the architecture config nor the
+  checkpoint, so weights alone cannot be used correctly.
+
+  Separate from `leech.training.Trainer`, which is classification-locked through
+  `pos_weight`, `num_out`, BCE/focal/CE and AUROC/F1 checkpointing — a sequence
+  task shares none of it, and forcing it through would put the production
+  classifier path at risk. The decisions are split out as plain functions
+  (`compute_standardisation`, `apply_quality_gate`, `resolve_split`,
+  `encode_targets`, `select_checkpoint`) so they are testable without a GPU; the
+  loop is mechanical, the decisions are where runs go wrong quietly.
+
+  Verified against production data, not just fixtures: standardisation over the
+  391,174 x 3000 ldx corpus reproduces the shipped model's recorded constants
+  (61.8216743766 / 9.5716818880) with a delta of **0.000e+00** on both, and the
+  train/test counts match what `plan_corpus` derives independently from the
+  manifest (283,296 / 107,878). A two-epoch GPU run trains at ~40 s/epoch with
+  loss falling 0.4446 -> 0.0639.
+
+
 - **`leech.crf.corpus`: cut a CRF training corpus from a manifest.**
   `plan_corpus` decides which reads and in which split, touching no POD5;
   `build_corpus` extracts their signal, streaming it to a memory-mappable

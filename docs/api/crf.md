@@ -124,6 +124,44 @@ Four rules it enforces, each of which fails silently when broken:
   each shard keeps its share of one global split; filtering first would give
   each shard its own test set drawn from one batch.
 
+## Training
+
+```python
+from leech.crf import CrfTrainer, CrfTrainConfig
+
+result = CrfTrainer(
+    "corpus",
+    config=CrfTrainConfig(epochs=32, batch_size=256, lr=2e-3, seed=0),
+    output_dir="run/",
+).train()
+```
+
+Writes `run/model.pt` and `run/model.json`. **The sidecar is not optional**: the
+standardisation constants live in neither the architecture config nor the
+checkpoint, so a consumer holding only weights cannot reproduce them and decodes
+silently worse.
+
+This is a separate trainer from `leech.training.Trainer`, which is
+classification-locked through `pos_weight`, `num_out`, BCE/focal/CE and
+AUROC/F1 checkpointing. Five things it does that are easy to get wrong:
+
+- **The loss runs in fp32, outside autocast.** The lattice scan accumulates over
+  `chunk // stride` timesteps and fp16 loses the tail. The encoder still gets
+  autocast — that is where the matmuls are.
+- **Standardisation is streamed** over the corpus in float64, so a corpus larger
+  than RAM costs nothing to summarise.
+- **The quality gate is applied here, not at extraction**, which is what keeps
+  it sweepable. Partial score coverage is refused rather than silently training
+  on a non-random subset.
+- **The last epoch is not automatically shipped.** `select_checkpoint` falls
+  back to the best epoch when the last is worse by more than `select_tol`
+  (default 25%) — a divergence detector, not a ranking, because training loss
+  does not rank models at this scale.
+- **Per-epoch stats separate failure modes**: the worst single batch, the
+  largest pre-clip gradient norm, discarded `GradScaler` steps, and non-finite
+  gradient counts. An epoch mean alone cannot tell one blown batch from a
+  thousand mediocre ones.
+
 ## Encoder
 
 ::: leech.crf.encoder.CrfEncoder
@@ -202,6 +240,32 @@ Four rules it enforces, each of which fails silently when broken:
       show_root_heading: true
 
 ::: leech.crf.corpus.load_corpus_meta
+    options:
+      show_root_heading: true
+
+## Training API
+
+::: leech.crf.training.CrfTrainer
+    options:
+      show_root_heading: true
+
+::: leech.crf.training.CrfTrainConfig
+    options:
+      show_root_heading: true
+
+::: leech.crf.training.compute_standardisation
+    options:
+      show_root_heading: true
+
+::: leech.crf.training.apply_quality_gate
+    options:
+      show_root_heading: true
+
+::: leech.crf.training.resolve_split
+    options:
+      show_root_heading: true
+
+::: leech.crf.training.select_checkpoint
     options:
       show_root_heading: true
 
