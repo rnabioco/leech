@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The signal-level k-mer encoding comes from escapepod-signal** rather than
+  being held here (escapepod-rs#271 / #272; requires escapepod 0.16.0).
+  `rust/src/encoding.rs` and `sequence_to_int` are now calls into
+  `escapepod_signal::seq_encoding`.
+
+  leech held the only copy of this rule, inside a `crate-type = ["cdylib"]`
+  Python extension module — so a native runtime for a leech `signal_kmer` model
+  could not link it and had to transcribe it, which is a second definition that
+  diverges silently. It is also the natural pair to `escapepod_signal::mapping`,
+  which *produces* the base-to-signal map the encoding consumes: the producing
+  half was already upstream and the consuming half was not.
+
+  This is a delegation, so the only acceptable outcome is identity: 198 parity
+  tests pass unchanged, including `test_backend_parity.py`, which compares every
+  array in the npz between the Rust and Python backends against a Python
+  reference this change does not touch.
+
+  The k-mer *context slice* stays here: leech needs it as bases (it serializes
+  `sequence_with_kmer_context` as a string) where upstream's
+  `sequence_ints_with_context` returns ints. Same range, same padding, different
+  type — worth knowing before someone "finishes the job".
+
 ### Added
 
 - **ONNX export, for the classifier arms and the CRF encoder** (#217).

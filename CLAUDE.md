@@ -344,12 +344,13 @@ escapepod reads as one DP pass.
 Since escapepod v0.15.0 the settings themselves are escapepod's
 `RefineSettings::move_table_refinement` preset (escapepod-rs#257), so there is
 no longer a literal here to drift. **Do not hand-build `RefineSettings` in this
-crate again** — that is what the preset exists to prevent. Four primitives now
+crate again** — that is what the preset exists to prevent. Five primitives now
 come from upstream rather than being held locally: the preset, the POD5 reader
 cache (`escapepod_signal::cached_reader`), per-base statistics
 (`features::span_stats`, configured `SpanFill::Zero` / `SpanBounds::Clamp` /
-`MedianConvention::SortPartialCmp`), and the move-table and CIGAR coordinate
-mapping (`escapepod_signal::mapping`).
+`MedianConvention::SortPartialCmp`), the move-table and CIGAR coordinate mapping
+(`escapepod_signal::mapping`), and the signal-level k-mer encoding plus its base
+alphabet (`escapepod_signal::seq_encoding`, escapepod-rs#272).
 
 ### The corpus is written and merged in exactly one place each
 
@@ -529,20 +530,14 @@ the graph. The contract names the function and its parameters rather than
 leaving them to be re-derived — the same choice escapepod-rs's charging bundle
 makes by carrying its recipe in `metadata.json`.
 
-**But "one definition" is not yet true, and the fix is upstream.** `leech-core`
-ships the encoder, and it is tempting to say a consumer should just call it —
-except `leech_core` is `crate-type = ["cdylib"]`, a Python extension module, so
-escapepod-rs cannot link it. The primitive itself
-(`rust/src/encoding.rs::encode_signal_kmer_inner`) is pure, dependency-free and
-carries no model vocabulary: sequence ints, a base-to-signal map, a signal
-length and a k-mer context in, a `(4 * kmer_len, signal_len)` scatter out. That
-is an `escapepod-signal` primitive by every rule this stack already applies —
-and escapepod-signal owns `mapping`, which *produces* the map this consumes, so
-today the producer is upstream and the consumer is downstream. Moving it is
-rnabioco/escapepod-rs#271. Until it does,
-any Rust consumer has to transcribe it, which is a second definition, and the
-mitigation is a cross-language golden of the kind the CRF decode and the
-charging features already have.
+**And the rule has exactly one definition, upstream.** It briefly did not:
+`leech_core` held the only copy, inside a `crate-type = ["cdylib"]` Python
+extension module that Rust cannot link, so a native runtime had to transcribe
+it. `escapepod_signal::seq_encoding` owns it now (escapepod-rs#271 / #272), and
+`rust/src/encoding.rs` is a call into it — the natural pairing, since
+`escapepod_signal::mapping` *produces* the base-to-signal map this consumes.
+A Rust consumer links the crate; a Python one calls `_rs_encode_signal_kmer`,
+which is the same code. **Do not reimplement it on either side.**
 
 **Verification crosses the serialization boundary.** `verify_onnx` runs
 onnxruntime against torch and returns the max absolute difference, which is what
