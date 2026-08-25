@@ -445,6 +445,30 @@ scores is a different and worse decode, and is the obvious thing to simplify
 away. The floor goes on the probability, not the log, so it cannot be folded
 into the softmax.
 
+**The manifest is the seam, and vocabulary stays on the far side of it.**
+`leech.crf.manifest` takes one table — `read_id, pod5, anchor_end, target` plus
+optional `label`/`group`/`batch`/`quality_score`/`quality_margin`/`split` — and
+nothing about where those facts came from. Which reads belong to which barcode,
+which flowcell, how a label's trustworthiness was scored: that is the producing
+project's business. `target` is the **resolved sequence**; a class name may ride
+along in `label` for reporting, but nothing here looks one up. escapepod-models'
+extractor took a `--panel` argument purely to turn a class name into a target
+string, and that one thread is what kept it tied to a single assay.
+
+Two rules the manifest exists to enforce, both silent when broken:
+
+- **Label quality travels as numbers, never as a `keep` boolean.** The gate is
+  applied at training time so it stays sweepable — gating the ldx labels moved
+  accuracy from 0.875 to 0.97, and a boolean decided at extraction would mean
+  re-cutting an 8 GB corpus per threshold. `quality_coverage()` is there because
+  an *unscored* read cannot pass a gate and is therefore dropped without a word:
+  a partially scored table once cut a corpus from 56% to 13.5% of its reads,
+  non-randomly.
+- **`anchor_end` and `target` are coupled.** `check_geometry` refuses a window
+  too short to hold its target rather than warning, because a short window
+  trains, converges, and quietly discriminates on fewer bases than designed.
+  Pass a *measured* `samples_per_base` — leech has dwell times — not a constant.
+
 The analytic forward-backward in `_analytic.py` is the loss path; the plain
 scans in `loss.py` are the readable reference the tests check it against, and
 the Triton kernels check against those. Keep all three — the fallback chain is

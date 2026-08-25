@@ -63,6 +63,12 @@ _LAZY: dict[str, str] = {
     "encoder_config_from_toml": "leech.crf.encoder",
     "load_crf_state_dict": "leech.crf.encoder",
     "CtcCrfLoss": "leech.crf.loss",
+    "CrfManifest": "leech.crf.manifest",
+    "OPTIONAL_COLUMNS": "leech.crf.manifest",
+    "REQUIRED_COLUMNS": "leech.crf.manifest",
+    "check_geometry": "leech.crf.manifest",
+    "emitted_target": "leech.crf.manifest",
+    "load_manifest": "leech.crf.manifest",
 }
 
 __all__ = [
@@ -70,14 +76,20 @@ __all__ = [
     "BLANK_SCORE",
     "CONFIG_DIR",
     "DEFAULT_CONFIG",
+    "OPTIONAL_COLUMNS",
+    "REQUIRED_COLUMNS",
     "CrfEncoder",
     "CtcCrfLoss",
     "EncoderConfig",
+    "CrfManifest",
     "best_path",
+    "check_geometry",
     "decode_batch",
+    "emitted_target",
     "encoder_config_from_toml",
     "load_config",
     "load_crf_state_dict",
+    "load_manifest",
 ]
 
 

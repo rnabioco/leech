@@ -24,9 +24,11 @@ loss = criterion(scores.float(), targets, target_lengths)
 sequences = decode_batch(scores, cfg.n_base, cfg.state_len)
 ```
 
-The subpackage imports **only torch and numpy** — not pysam, polars, or
-escapepod. That is deliberate: escapepod-models installs leech into a
-conda-forge environment with `--no-deps` and needs the CRF path alone.
+Importing the subpackage costs **nothing but torch and numpy**, and only when a
+symbol that needs them is touched — never pysam or escapepod. That is
+deliberate: escapepod-models installs leech into a conda-forge environment with
+`--no-deps` and needs the CRF path alone. (`load_manifest` pulls polars, but
+only when you actually read a manifest.)
 
 ## Four things to know before using it
 
@@ -59,6 +61,36 @@ consumer that assumes the wrong one silently transposes rather than failing.
 The lattice scan accumulates over `chunk // stride` timesteps and fp16 loses the
 tail of that sum. Autocast the encoder — that is where the matmuls and the speed
 are — and cast the scores back before the loss.
+
+## The manifest seam
+
+`leech.crf` cuts a corpus from a **manifest**: one row per read, naming what
+leech needs and nothing about where it came from.
+
+| column | required | meaning |
+|---|---|---|
+| `read_id` | yes | the read, as POD5 and BAM both name it |
+| `pod5` | yes | file or directory holding that read's signal |
+| `anchor_end` | yes | signal index the window ends at (exclusive) |
+| `target` | yes | the **resolved** CRF target sequence |
+| `label` | no | class name, for evaluation and reporting |
+| `group` | no | reporting/balancing bucket (defaults to `label`) |
+| `batch` | no | acquisition batch, for leave-one-batch-out holdout |
+| `quality_score` / `quality_margin` | no | label quality, gated at *training* time |
+| `split` | no | `train`/`test`, when the producer carved one |
+
+```python
+from leech.crf import load_manifest, check_geometry
+
+man = load_manifest("manifest.parquet", require=("batch",))
+check_geometry(window=3000, target_len=48, samples_per_base=56.0)
+print(len(man), man.batches(), man.quality_coverage())
+```
+
+Everything above the manifest is vocabulary — panels, codes, oligos, gates —
+and belongs to whatever project defines those. Everything below is signal ML.
+There is deliberately **no `keep` boolean**: quality travels as numbers so the
+gate stays sweepable without re-cutting the corpus.
 
 ## Encoder
 
@@ -98,6 +130,24 @@ are — and cast the scores back before the loss.
       show_source: true
 
 ::: leech.crf.decode.best_path
+    options:
+      show_root_heading: true
+
+## Manifest
+
+::: leech.crf.manifest.load_manifest
+    options:
+      show_root_heading: true
+
+::: leech.crf.manifest.CrfManifest
+    options:
+      show_root_heading: true
+
+::: leech.crf.manifest.check_geometry
+    options:
+      show_root_heading: true
+
+::: leech.crf.manifest.emitted_target
     options:
       show_root_heading: true
 

@@ -116,6 +116,28 @@ def test_config_path_costs_no_torch_import():
     assert result.stdout.strip() == "False", "importing DEFAULT_CONFIG pulled torch"
 
 
+def test_manifest_api_costs_no_polars_import():
+    """Resolving `load_manifest` imports `leech.crf.manifest` — and must stop there.
+
+    Sharper than the blanket guard above, which only imports the package: this
+    one actually pulls the module in, so a top-level `import polars` there would
+    fail it where the blanket check would not notice. polars is a real leech
+    dependency, but escapepod-models supplies leech's imports from conda under a
+    --no-deps install, and a module that pulls one it does not need turns a
+    working env into an ImportError at first use.
+    """
+    probe = (
+        "import sys, leech.crf; "
+        "f = leech.crf.load_manifest; "
+        "assert 'leech.crf.manifest' in sys.modules; "
+        "print('polars' in sys.modules)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=True
+    )
+    assert result.stdout.strip() == "False", "resolving load_manifest pulled polars"
+
+
 def test_model_symbols_still_resolve_through_the_lazy_table():
     """The laziness must not turn a real export into an AttributeError."""
     from leech.crf import CrfEncoder, CtcCrfLoss, decode_batch
