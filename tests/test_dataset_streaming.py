@@ -15,6 +15,7 @@ import pytest
 import torch
 
 from leech.chunking import (
+    ChunkTable,
     csr_gather_index,
     iter_npz_row_blocks,
     load_chunks,
@@ -23,6 +24,19 @@ from leech.chunking import (
     save_chunks,
 )
 from leech.dataset import LeechDataset
+
+#: Per-chunk arrays: streamed or deferred, so they are not metadata and the
+#: columnar store does not carry them.
+ARRAY_FIELDS = frozenset(
+    {
+        "signal",
+        "signal_residual",
+        "dwell",
+        "features",
+        "seq_to_sig_map",
+        "sequence_with_kmer_context",
+    }
+)
 
 STORED_SIGNAL_LEN = 64
 FEAT_WIDTH = 13
@@ -114,10 +128,12 @@ def assert_datasets_equal(streamed: LeechDataset, eager: LeechDataset) -> None:
         for key in left:
             assert torch.equal(left[key], right[key]), f"item {idx} field {key}"
 
-    # Metadata the samplers and training config read off the chunk dicts.
-    for a, b in zip(streamed.chunks, eager.chunks, strict=True):
-        for key in ("read_id", "label_int", "source_group", "base_idx", "feature_start"):
-            assert a.get(key) == b.get(key), f"chunk metadata {key}"
+    # Every metadata field, however it is stored: the columnar path must be
+    # indistinguishable from the chunk dicts to samplers, the label tally and
+    # the training-config introspection that read them.
+    for i, (a, b) in enumerate(zip(streamed.chunks, eager.chunks, strict=True)):
+        for key in (set(a) | set(b)) - ARRAY_FIELDS:
+            assert a.get(key) == b.get(key), f"chunk {i} metadata {key}"
 
 
 class TestNpzStreaming:
@@ -209,6 +225,21 @@ class TestStreamingParity:
                 seq_encoding="base_onehot",
             )
         )
+
+    def test_streaming_path_stores_metadata_columnar(self, tmp_path):
+        """The chunk dicts are the last per-chunk Python object at this scale."""
+        path = tmp_path / "chunks.npz"
+        save_chunks(make_chunks(12), path)
+        streamed = LeechDataset(
+            chunk_path=path,
+            signal_len=STORED_SIGNAL_LEN,
+            kmer_len=KMER_LEN,
+            model_type="ConvLSTMDwell",
+            seq_encoding="base_onehot",
+        )
+        assert isinstance(streamed.chunks, ChunkTable)
+        # Text the run never reads is not loaded at all.
+        assert "sequence_with_kmer_context" not in streamed.chunks[0]
 
     def test_asymmetric_crop(self, tmp_path):
         path = tmp_path / "chunks.npz"

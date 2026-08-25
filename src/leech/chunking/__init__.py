@@ -25,6 +25,7 @@ from leech.chunking.serialization import (
     npz_member_names,
     save_chunks,
 )
+from leech.chunking.table import ChunkRow, ChunkTable
 
 __all__ = [
     # Extraction
@@ -42,6 +43,8 @@ __all__ = [
     "load_seq_to_sig_csr",
     "npz_array_members",
     "npz_member_names",
+    "ChunkTable",
+    "ChunkRow",
     "csr_from_object_rows",
     "csr_gather_index",
     "csr_offsets_from_lens",

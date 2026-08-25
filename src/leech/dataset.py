@@ -45,6 +45,7 @@ import torch
 from torch.utils.data import Dataset
 
 from leech.chunking import (
+    ChunkTable,
     iter_npz_row_blocks,
     load_chunks,
     load_seq_to_sig_csr,
@@ -496,11 +497,12 @@ class LeechDataset(Dataset):
         else:
             raise ValueError("Either chunk_path or chunks must be provided")
 
-        # Filter chunks with valid numeric labels (label_int). The streaming
-        # path has already applied this, and recorded the same mask so npz rows
-        # stay aligned with self.chunks — a mismatch here would pair signals
-        # with the wrong labels silently.
-        self.chunks = [c for c in self.chunks if c["label_int"] is not None]
+        # Filter chunks with valid numeric labels (label_int). The columnar
+        # path applied this at load, recording the same mask so npz rows stay
+        # aligned with self.chunks — a mismatch here would pair signals with
+        # the wrong labels silently.
+        if not isinstance(self.chunks, ChunkTable):
+            self.chunks = [c for c in self.chunks if c["label_int"] is not None]
 
         if len(self.chunks) == 0:
             raise ValueError(f"No valid chunks found{f' in {chunk_path}' if chunk_path else ''}")
@@ -576,11 +578,17 @@ class LeechDataset(Dataset):
         # or a row-block stream over the npz. Both yield the same field names,
         # so the loop below does not care which.
         array_iter = iter(self._array_stream) if self._array_stream is not None else None
+        # The one metadata field read for every chunk on the default encoding.
+        # Reading the column directly hands `_encode_sequence` the bytes it
+        # wants and skips a row view per chunk; dicts have nothing to hoist.
+        sequence_column = (
+            self.chunks.values("sequence") if isinstance(self.chunks, ChunkTable) else None
+        )
         stream_dwell_width = (
             self._array_stream.dwell_width if self._array_stream is not None else None
         )
 
-        for chunk in self.chunks:
+        for row, chunk in enumerate(self.chunks):
             arrays = chunk if array_iter is None else next(array_iter)
 
             if self._effective_seq_encoding == "signal_kmer":
@@ -601,7 +609,8 @@ class LeechDataset(Dataset):
                     self._seq_to_sig.append(s2s)
             else:
                 # Pre-encode sequence (vectorized, no Python loop)
-                fill_encoded_seqs.append(self._encode_sequence(chunk["sequence"]))
+                sequence = chunk["sequence"] if sequence_column is None else sequence_column[row]
+                fill_encoded_seqs.append(self._encode_sequence(sequence))
 
             # Pre-create label tensor: long for multi-class, float for binary
             if self._multiclass:
@@ -717,17 +726,18 @@ class LeechDataset(Dataset):
         # so we keep self.chunks alive but null out the per-chunk arrays.
         # Without this, each chunk dict keeps a ~50 KB numpy view alive and
         # the same COW blowup hits during DataLoader fork.
-        for chunk in self.chunks:
-            for key in (
-                "signal",
-                "signal_residual",
-                "dwell",
-                "features",
-                "seq_to_sig_map",
-                "sequence_with_kmer_context",
-            ):
-                if key in chunk:
-                    chunk[key] = None
+        if not isinstance(self.chunks, ChunkTable):
+            for chunk in self.chunks:
+                for key in (
+                    "signal",
+                    "signal_residual",
+                    "dwell",
+                    "features",
+                    "seq_to_sig_map",
+                    "sequence_with_kmer_context",
+                ):
+                    if key in chunk:
+                        chunk[key] = None
 
         # Same reasoning for the streaming bookkeeping: one row per chunk each,
         # and a DataLoader that spawns workers pickles whatever is still here.
@@ -778,19 +788,17 @@ class LeechDataset(Dataset):
             self.chunks = load_chunks(chunk_path)
             return
 
-        # Nothing downstream reads the raw arrays off the chunk dicts — the
-        # stream supplies signal/residual/features, the dwell width comes from
-        # the member header, and the base-to-signal maps are expanded from CSR
-        # only when signal_kmer needs them. So never read them into the dicts.
-        defer = {"signal", "signal_residual", "dwell", "features", "seq_to_sig_map"}
-        if seq_encoding != "signal_kmer":
-            defer.add("sequence_with_kmer_context")
-        raw = load_chunks(chunk_path, defer=defer)
+        # Metadata goes into columns rather than a dict per chunk: the stream
+        # supplies signal/residual/features, the dwell width comes from the
+        # member header, and the base-to-signal maps are expanded from CSR only
+        # when signal_kmer needs them, so no per-chunk array is read at all.
+        skip = () if seq_encoding == "signal_kmer" else ("sequence_with_kmer_context",)
+        table = ChunkTable.from_npz(chunk_path, skip=skip)
 
-        keep = np.fromiter((c["label_int"] is not None for c in raw), dtype=bool, count=len(raw))
+        keep = table.require_values("label_int") >= 0
         stream.keep = keep
         self._array_stream = stream
-        self.chunks = [c for c, k in zip(raw, keep, strict=True) if k]
+        self.chunks = table if keep.all() else table.select(keep)
         if seq_encoding == "signal_kmer":
             self._s2s_csr = load_seq_to_sig_csr(chunk_path)
             self._s2s_rows = np.nonzero(keep)[0]
@@ -1073,19 +1081,22 @@ class LeechDataset(Dataset):
         return features
 
     @staticmethod
-    def _encode_sequence(sequence: str) -> torch.Tensor:
+    def _encode_sequence(sequence: str | bytes) -> torch.Tensor:
         """Vectorized one-hot encoding of a DNA sequence.
 
         Uses a pre-built ASCII lookup table instead of a Python for-loop.
 
         Args:
-            sequence: DNA sequence string (A, C, G, T, N)
+            sequence: DNA sequence (A, C, G, T, N), str or ASCII bytes. The
+                columnar metadata store holds sequences as bytes, and the
+                lookup wants bytes, so accept them and skip the round trip.
 
         Returns:
             One-hot encoded tensor of shape (4, len(sequence))
         """
-        indices = _BASE_MAP[np.frombuffer(sequence.encode(), dtype=np.uint8)]
-        encoded = np.zeros((4, len(sequence)), dtype=np.float32)
+        raw = sequence if isinstance(sequence, bytes) else sequence.encode()
+        indices = _BASE_MAP[np.frombuffer(raw, dtype=np.uint8)]
+        encoded = np.zeros((4, len(raw)), dtype=np.float32)
         valid = indices < 4
         encoded[indices[valid], np.where(valid)[0]] = 1.0
         return torch.from_numpy(encoded)

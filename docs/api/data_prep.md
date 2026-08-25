@@ -122,6 +122,22 @@ of the corpus.
       show_root_heading: true
       show_source: false
 
+### Chunk Metadata Table
+
+Per-chunk metadata as columns, read as a sequence of mappings — what
+`LeechDataset.chunks` holds when the corpus is loaded from a path.
+
+::: leech.chunking.table.ChunkTable
+    options:
+      show_root_heading: true
+      show_source: false
+      members:
+        - from_npz
+        - select
+        - values
+        - require_values
+        - nbytes
+
 ## Preparation Module (`leech.preparation`)
 
 ### Sequential Preparation

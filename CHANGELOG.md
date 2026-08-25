@@ -24,6 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   feature branch, and the base-to-signal maps unless `--seq-encoding
   signal_kmer` asks for them — up to 20 GB of decompression that used to
   happen on every load regardless.
+- **Chunk metadata is stored as columns, not a dict per chunk** (#211). The
+  dicts measured 780 bytes each — 5.2 GB for a 6.7M-chunk corpus — holding a
+  handful of small integers and a few hundred distinct strings. `ChunkTable`
+  keeps the npz's own arrays (text packed to bytes, integers narrowed) and
+  hands out a row view on demand: 112 B/chunk measured, with no conversion
+  transient, and `dataset.chunks` still reads as a sequence of mappings.
 - **`load_chunks`'s docstring no longer claims the data is memory-mapped.**
   `np.load` never maps a zip member, compressed or not; it is always a full
   read, which is what made this path look lazy when it was not.
