@@ -1,6 +1,6 @@
 [project]
 name = "leech"
-version = "0.6.7"
+version = "0.7.0"
 description = "Learning Enhanced Electrical Classifiers from Hanopore signals"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -59,7 +59,7 @@ check-rust = "leech._rust_accel:check_rust"
 # unpinned extra lets pip pair a current `leech` with a stale `leech-core`,
 # which is the hazard tests/test_rust_version_pairing.py exists to prevent.
 # Bump with the other two version strings; the test enforces all three agree.
-rust = ["leech-core==0.6.7"]
+rust = ["leech-core==0.7.0"]
 # Retained as a no-op alias: escapepod is now a required dependency, but
 # `--extra pod5` appears in existing docs, CI, and user scripts.
 pod5 = []

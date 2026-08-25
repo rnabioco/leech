@@ -347,6 +347,50 @@ cache (`escapepod_signal::cached_reader`), per-base statistics
 `MedianConvention::SortPartialCmp`), and the move-table and CIGAR coordinate
 mapping (`escapepod_signal::mapping`).
 
+### The corpus is written and merged in exactly one place each
+
+**`_merge_arrays_by_split` is the only merge.** All four public entry points
+(`merge_and_split_chunks`, `merge_and_kfold_split_chunks`,
+`merge_and_split_multiclass`, `merge_and_kfold_split_multiclass`) go through it.
+One of them used to carry an inline copy "to avoid re-reading per fold", and
+that copy never learned about the CSR `seq_to_sig_values`/`seq_to_sig_offsets`
+pair — it masked a flat, one-row-per-*entry* array with the per-chunk boolean
+mask, so `data merge --k-fold` on multiclass inputs raised `IndexError` on every
+corpus written after the CSR change. **Do not inline a second merge.** The
+cache it was buying cost 3.95x the corpus in RAM to save a sequential re-read
+this storage does at 724 MB/s.
+
+**Inputs must agree on their member set.** A file missing `focus_signal_pos` (or
+the residual channel) contributes no rows for that member and full rows for
+every other one, and the result is a corpus whose columns are off by the length
+of the short file — silently, in one input order, and as an `IndexError` on load
+in the other. The merge validates this up front and asserts every output member
+has one row per chunk before `np.savez`.
+
+**`prepare` never holds the corpus as a list.** `ChunkNpzWriter`/`ChunkSpool`
+take batches as they are extracted and spool each member to disk; peak is ~0.25x
+the payload rather than ~2.5x. The `.npz` it assembles is byte-compatible with
+`save_chunks`, which stays for callers that already have a list. The corpus is
+written twice (spill, then `.npz`) — that disk cost is the trade, and both
+prepare paths log it at the start of a run.
+
+**`None` is written as `""`, never as the string "None".** `chunk.get(field, "")`
+returns the default only when the key is *missing*; a key present with the value
+`None` — what `--label` gives when it is not passed, and what `load_chunks`
+gives for an absent group — reached `np.array(..., dtype=str)` and became the
+four-character string. That made a save/load round trip non-idempotent, so a
+merge renamed empty source groups to a group *called* "None" that
+`--balance-groups` then weighted like a real one. `_text()` in
+`chunking/serialization.py` is the one place this is enforced; both write paths
+share it through `iter_chunk_columns`.
+
+**Do not use `index_select` / `Tensor.copy_` in the loader.** They hand the
+memcpy to `at::parallel_for`. On an idle node that is marginally faster than
+numpy; on a loaded one it measured 115 ms/batch against 0.25 ms — 460x worse —
+and a training loop contends with its own forward/backward for that pool, while
+grid search runs N such processes. `LeechDataset`'s block fill and
+`__getitems__` gather go through numpy for this reason.
+
 ### Key Classes and Functions
 
 **`MoveTable` (features.py)**
@@ -578,7 +622,7 @@ The workflow is designed to integrate with the leech CLI commands and supports b
 
 ## Current Status
 
-The codebase is feature-complete (v0.6.5):
+The codebase is feature-complete (v0.7.0):
 - ✓ Feature extraction with dwell offset tuning and signal map refinement
 - ✓ 29 model architectures: ConvLSTM (Base/Dwell × BN/GN/LN/Attn), TCN (Dwell/DwellGN/DwellLN/DwellResidual/DwellResidualGN/DwellResidualLN/DwellResidualMotor/DwellResidualDwellAttn/DwellSplitResidual/DwellSplitResidualLN), Transformer (Dwell/DwellResidual), ResNet, ConvOnly, SignalCNN
 - ✓ Config-driven model layer: bonito-style layer registry (`models/nn.py`) + TOML architecture declarations (`models/configs/`)

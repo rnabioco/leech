@@ -69,14 +69,33 @@ Based on your findings, update the following files:
 
 After making updates, verify the documentation builds successfully:
 
-1. **Run mkdocs build**: Execute `uv run mkdocs build --strict` to build the documentation site
-   - The `--strict` flag treats warnings as errors, ensuring high quality
+1. **Run the build**: this project builds with **zensical**, not mkdocs — there
+   is no `mkdocs.yml` in the tree, and `.github/workflows/docs.yml` runs
+   `zensical build`. Match it:
+
+   ```bash
+   uv run --only-group docs zensical build
+   ```
+
+   Zensical reports issues rather than taking a `--strict` flag; treat any
+   reported issue as a failure. To avoid re-syncing the project venv (which
+   drops the `leech_core` extension and the test extras), build in a throwaway
+   environment instead:
+
+   ```bash
+   UV_PROJECT_ENVIRONMENT=~/.cache/leech-docs-venv uv sync --only-group docs
+   UV_PROJECT_ENVIRONMENT=~/.cache/leech-docs-venv uv run --no-sync zensical build
+   ```
+
 2. **Check for errors**: If the build fails, report:
    - Build errors (syntax issues, invalid configuration)
    - Broken internal links between documentation pages
    - Missing files referenced in navigation
-   - Invalid mkdocstrings references or malformed API docs
-3. **Fix build issues**: If errors are found, fix them and rebuild until `mkdocs build --strict` succeeds
+   - Invalid mkdocstrings references or malformed API docs — note that
+     mkdocstrings collects **statically**, without importing `leech`, so a lazy
+     `__getattr__` export resolves at runtime but not in the docs build
+3. **Fix build issues**: If errors are found, fix them and rebuild until
+   `zensical build` reports no issues
 4. **Report build status**:
    - ✓ Documentation builds successfully
    - ✗ Build failed - list errors that need fixing

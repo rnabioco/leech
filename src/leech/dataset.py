@@ -106,7 +106,12 @@ def _byte_matrix(column: np.ndarray | None) -> np.ndarray | None:
     """
     if column is None or column.dtype.kind != "S":
         return None
-    return np.ascontiguousarray(column).view(np.uint8).reshape(len(column), column.dtype.itemsize)
+    width = column.dtype.itemsize
+    # `view(np.uint8)` resolves to an overload whose dtype parameter numpy types
+    # as `type[uint8] | property`, which is not an `np.dtype` — passing the
+    # dtype instance picks the overload that is.
+    flat = np.ascontiguousarray(column).view(np.dtype(np.uint8))
+    return flat.reshape(len(column), width)
 
 
 # Models that require dwell/signal features as third input
