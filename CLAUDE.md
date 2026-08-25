@@ -521,12 +521,23 @@ documented call. **It stays a documented call**, because the scatter needs the
 base-to-signal map, which comes from the move table — an ONNX prefix would still
 have to take that map as an input, so it moves where the scatter happens without
 removing the consumer's obligation, and it would bake `signal_kmer_context` into
-the graph. `leech-core` already ships the encoder (`_rs_encode_signal_kmer`), so
-depending on it keeps one definition; reimplementing creates a second that
-diverges silently, which is exactly how a downstream repo reproduced a
-superseded feature definition for two months. The contract names the function
-and its parameters rather than leaving them to be re-derived — the same choice
-escapepod-rs's charging bundle makes by carrying the recipe in `metadata.json`.
+the graph. The contract names the function and its parameters rather than
+leaving them to be re-derived — the same choice escapepod-rs's charging bundle
+makes by carrying its recipe in `metadata.json`.
+
+**But "one definition" is not yet true, and the fix is upstream.** `leech-core`
+ships the encoder, and it is tempting to say a consumer should just call it —
+except `leech_core` is `crate-type = ["cdylib"]`, a Python extension module, so
+escapepod-rs cannot link it. The primitive itself
+(`rust/src/encoding.rs::encode_signal_kmer_inner`) is pure, dependency-free and
+carries no model vocabulary: sequence ints, a base-to-signal map, a signal
+length and a k-mer context in, a `(4 * kmer_len, signal_len)` scatter out. That
+is an `escapepod-signal` primitive by every rule this stack already applies —
+and escapepod-signal owns `mapping`, which *produces* the map this consumes, so
+today the producer is upstream and the consumer is downstream. Until it moves,
+any Rust consumer has to transcribe it, which is a second definition, and the
+mitigation is a cross-language golden of the kind the CRF decode and the
+charging features already have.
 
 **Verification crosses the serialization boundary.** `verify_onnx` runs
 onnxruntime against torch and returns the max absolute difference, which is what

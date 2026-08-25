@@ -87,9 +87,11 @@ def describe_inputs(config: dict, example_inputs: tuple) -> list[InputSpec]:
             "leech.features.encode_signal_kmer(signal, seq_to_sig_map, sequence, "
             f"context={list(kmer_context)}) — a scatter of the one-hot k-mer context "
             "along the signal axis. It lives in the dataset, not the model, so it is "
-            "NOT in this graph. leech-core ships it as `_rs_encode_signal_kmer`; call "
-            "that rather than reimplementing it, or the two definitions diverge "
-            "silently."
+            "NOT in this graph. Python consumers should call leech-core's "
+            "`_rs_encode_signal_kmer`. A non-Python consumer currently has to "
+            "reimplement it — leech_core is a cdylib and cannot be linked from Rust — "
+            "so pin any reimplementation against a golden rather than trusting it; "
+            "two definitions of this rule diverge silently."
         )
     else:
         produced_by = "one-hot encoding of the k-mer context, 4 channels"
