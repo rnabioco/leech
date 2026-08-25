@@ -35,7 +35,9 @@ Example:
 
 import logging
 import os
+from collections.abc import Sequence
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -71,6 +73,41 @@ _BASE_MAP[ord("a")] = 0
 _BASE_MAP[ord("c")] = 1
 _BASE_MAP[ord("g")] = 2
 _BASE_MAP[ord("t")] = 3
+
+# Byte -> base int for the block-wise signal_kmer path, derived from
+# `sequence_to_int` rather than restated so the two cannot drift. Bytes a
+# fixed-width bytes column cannot hold (>= 128, which never survive the ASCII
+# packing in `_read_text_member`) map to -1, the same "not a base" value.
+_BASE_INT_MAP = np.full(256, -1, dtype=np.int8)
+_BASE_INT_MAP[:128] = sequence_to_int("".join(map(chr, range(128))))
+
+
+def _gather_rows(tensor: torch.Tensor, rows: np.ndarray) -> torch.Tensor:
+    """Take ``rows`` out of ``tensor`` along dim 0, off the ATen thread pool.
+
+    ``tensor[torch.as_tensor(rows)]`` dispatches to ``index_select``, which
+    splits the copy across ``at::parallel_for``. Measured on a 200k-chunk
+    corpus, batch 256: 0.12 ms per batch on an idle node against 0.25 ms for
+    the numpy gather — and **115 ms** on the same node under load, because
+    every batch pays to hand a memcpy to as many threads as the machine has
+    cores, against a run queue that already has work on it. A training loop
+    contends with its own forward and backward for that pool, so take the
+    version whose cost does not depend on who else is running.
+    """
+    return torch.from_numpy(tensor.numpy()[rows])
+
+
+def _byte_matrix(column: np.ndarray | None) -> np.ndarray | None:
+    """A ``(rows, width)`` uint8 view of a fixed-width bytes column, or None.
+
+    None means the column is absent or held as unicode — the fallback
+    `ChunkTable` takes for text that is not ASCII — and the caller has to read
+    it one row at a time.
+    """
+    if column is None or column.dtype.kind != "S":
+        return None
+    return np.ascontiguousarray(column).view(np.uint8).reshape(len(column), column.dtype.itemsize)
+
 
 # Models that require dwell/signal features as third input
 FEATURE_MODELS = ModelInferenceWrapper.FEATURE_MODELS
@@ -235,6 +272,37 @@ class _TensorFill:
         if len(self._pending) >= self._BATCH_ROWS:
             self._flush()
 
+    def extend(self, batch: torch.Tensor) -> None:
+        """Write a whole ``(rows, *row_shape)`` batch into the buffer at once.
+
+        The block-wise filler prepares a row block in one vectorized go, so it
+        already holds the rows contiguously — there is nothing to stage and
+        nothing to stack. Interleaves with :meth:`append`: whatever is pending
+        is flushed first, so rows land in call order either way.
+
+        The copy goes through numpy rather than ``Tensor.copy_`` for the same
+        reason :func:`_gather_rows` does: the ATen copy splits a memcpy across
+        ``at::parallel_for``, and when the thread pool is contended — grid
+        search runs one of these processes per worker — that turns a block
+        copy into a scheduling problem. Measured on a loaded node, it was the
+        difference between the block-wise filler winning 2x and losing.
+        """
+        rows = int(batch.shape[0])
+        if self._items:  # already degraded to list access
+            self._items.extend(batch[i].clone() for i in range(rows))
+            return
+        if self._tensor is None:
+            self._tensor = torch.empty((self.capacity, *batch.shape[1:]), dtype=batch.dtype)
+        elif (
+            tuple(batch.shape[1:]) != tuple(self._tensor.shape[1:])
+            or batch.dtype != self._tensor.dtype
+        ):
+            self._degrade_batch(batch)
+            return
+        self._flush()
+        np.copyto(self._tensor[self._n : self._n + rows].numpy(), batch.numpy())
+        self._n += rows
+
     def _flush(self) -> None:
         if not self._pending:
             return
@@ -245,16 +313,24 @@ class _TensorFill:
 
     def _degrade(self, tensor: torch.Tensor) -> None:
         """Fall back to a list of per-chunk tensors, keeping what was filled."""
+        self._start_list(tuple(tensor.shape))
+        self._items.append(tensor)
+
+    def _degrade_batch(self, batch: torch.Tensor) -> None:
+        """:meth:`_degrade` for a whole block."""
+        self._start_list(tuple(batch.shape[1:]))
+        self._items.extend(batch[i].clone() for i in range(int(batch.shape[0])))
+
+    def _start_list(self, shape: tuple[int, ...]) -> None:
         logger.warning(
             "%s shapes differ (%s vs %s), falling back to list access",
             self.name,
-            tuple(tensor.shape),
+            shape,
             tuple(self._tensor.shape[1:]),
         )
         self._flush()
         self._items = [self._tensor[i].clone() for i in range(self._n)]
         self._tensor = None
-        self._items.append(tensor)
 
     def finish(self) -> tuple[torch.Tensor | None, list[torch.Tensor]]:
         """Return ``(stacked_tensor, fallback_list)``; exactly one is populated."""
@@ -283,11 +359,16 @@ class _ArrayStream:
         dwell_width: ``len(chunk["dwell"])``, constant in the flat format and
             read from the member header — the only thing the tensorize loop
             needs from the dwells, so that member is never read.
+        row_shapes: Chunk field name -> the shape of one row of that member,
+            also from the header. Lets the block-wise filler decide up front
+            whether a whole corpus can be vectorized without reading a byte
+            of it.
     """
 
     path: Path
     members: dict[str, str]
     dwell_width: int | None
+    row_shapes: dict[str, tuple[int, ...]] = dataclass_field(default_factory=dict)
     keep: np.ndarray | None = None
 
     @classmethod
@@ -320,7 +401,12 @@ class _ArrayStream:
                 return None
             wanted["features"] = "features_flat"
         dwell_width = members["dwells_flat"][0][1] if "dwells_flat" in members else None
-        return cls(path=path, members=wanted, dwell_width=dwell_width)
+        return cls(
+            path=path,
+            members=wanted,
+            dwell_width=dwell_width,
+            row_shapes={field: tuple(members[member][0][1:]) for field, member in wanted.items()},
+        )
 
     def __iter__(self):
         """Yield one dict of arrays per kept row, in ``LeechDataset.chunks`` order.
@@ -338,6 +424,35 @@ class _ArrayStream:
             rows = len(next(iter(blocks.values())))
             for j in np.nonzero(self.keep[start : start + rows])[0]:
                 yield {field: blocks[member][j].copy() for field, member in self.members.items()}
+
+    def blocks(self):
+        """Yield ``(out_start, arrays)`` a row block at a time, kept rows only.
+
+        The same rows :meth:`__iter__` yields, in the same order, handed over
+        as ``(rows, ...)`` arrays instead of one row at a time. Consuming them
+        block-wise is what keeps the tensorize loop off the 72 µs/chunk path:
+        the per-row copy, stack, encode and ``torch.tensor`` calls all become
+        one vectorized call per block.
+
+        ``out_start`` is the row's index in ``LeechDataset.chunks``, which the
+        ``keep`` mask makes different from its npz row. The arrays are fresh
+        (the fancy index copies), so unlike :meth:`__iter__` there is no
+        recycled buffer to worry about within a block — but the *next* block
+        still invalidates nothing the caller kept, because nothing is shared.
+        """
+        if self.keep is None:
+            raise RuntimeError("_ArrayStream.keep must be set before iterating")
+        out_start = 0
+        for start, blocks in iter_npz_row_blocks(self.path, list(self.members.values())):
+            rows = len(next(iter(blocks.values())))
+            selected = np.nonzero(self.keep[start : start + rows])[0]
+            if len(selected) == 0:
+                continue
+            yield (
+                out_start,
+                {field: blocks[member][selected] for field, member in self.members.items()},
+            )
+            out_start += len(selected)
 
 
 def _expand_seq_to_sig_csr(
@@ -561,8 +676,13 @@ class LeechDataset(Dataset):
         else:
             self.signal_channels = 1
 
-        # Detect multi-class: if any label_int > 1, use long dtype for CrossEntropyLoss
-        max_label = max(c["label_int"] for c in self.chunks)
+        # Detect multi-class: if any label_int > 1, use long dtype for
+        # CrossEntropyLoss. Off the column when there is one — the generator
+        # form builds a row view per chunk, 150 ms per 200k chunks for a max.
+        if isinstance(self.chunks, ChunkTable):
+            max_label = int(self.chunks.require_values("label_int").max())
+        else:
+            max_label = max(c["label_int"] for c in self.chunks)
         self._multiclass = max_label > 1
 
         # For signal_kmer encoding, the on-the-fly inputs are ~30 B/chunk
@@ -573,84 +693,26 @@ class LeechDataset(Dataset):
         # (88 floats/chunk; not worth deferring).
         self._seq_ints: list[np.ndarray] = []
         self._seq_to_sig: list[np.ndarray] = []
+        self._seq_ints_tensor: torch.Tensor | None = None
 
         # Arrays come either from the chunk dicts (pre-loaded / legacy corpus)
-        # or a row-block stream over the npz. Both yield the same field names,
-        # so the loop below does not care which.
-        array_iter = iter(self._array_stream) if self._array_stream is not None else None
-        # The one metadata field read for every chunk on the default encoding.
-        # Reading the column directly hands `_encode_sequence` the bytes it
-        # wants and skips a row view per chunk; dicts have nothing to hoist.
-        sequence_column = (
-            self.chunks.values("sequence") if isinstance(self.chunks, ChunkTable) else None
-        )
-        stream_dwell_width = (
-            self._array_stream.dwell_width if self._array_stream is not None else None
-        )
-
-        for row, chunk in enumerate(self.chunks):
-            arrays = chunk if array_iter is None else next(array_iter)
-
-            if self._effective_seq_encoding == "signal_kmer":
-                seq_ctx = chunk["sequence_with_kmer_context"]
-                seq_ints = sequence_to_int(seq_ctx).astype(np.int8)
-                self._seq_ints.append(seq_ints)
-
-                if self._s2s_csr is None:
-                    # Non-streaming path: one map per chunk dict. The streaming
-                    # path expands all of them at once, after this loop.
-                    s2s = chunk["seq_to_sig_map"].astype(np.int64, copy=True)
-                    if self.left_context is not None and self.right_context is not None:
-                        stored_focus = chunk.get("focus_signal_pos")
-                        focus_pos = stored_focus if stored_focus is not None else int(s2s[-1]) // 2
-                        crop_start = focus_pos - self.left_context
-                        s2s -= crop_start
-                        np.clip(s2s, 0, signal_len, out=s2s)
-                    self._seq_to_sig.append(s2s)
-            else:
-                # Pre-encode sequence (vectorized, no Python loop)
-                sequence = chunk["sequence"] if sequence_column is None else sequence_column[row]
-                fill_encoded_seqs.append(self._encode_sequence(sequence))
-
-            # Pre-create label tensor: long for multi-class, float for binary
-            if self._multiclass:
-                fill_labels.append(torch.tensor(chunk["label_int"], dtype=torch.long))
-            else:
-                fill_labels.append(torch.tensor([chunk["label_int"]], dtype=torch.float32))
-
-            # Pre-tensorize signal: pad/crop once instead of every __getitem__ call
-            signal = arrays["signal"]
-            if signal.dtype != np.float32:
-                signal = signal.astype(np.float32)
-            signal_residual = arrays.get("signal_residual")
-            if signal_residual is not None and signal_residual.dtype != np.float32:
-                signal_residual = signal_residual.astype(np.float32)
-            fill_signals.append(
-                self._prepare_signal(
-                    signal, signal_residual, focus_signal_pos=chunk.get("focus_signal_pos")
-                )
-            )
-
-            # Pre-tensorize features: apply dwell_offset slicing once
-            if self._needs_features:
-                dwell_width = (
-                    stream_dwell_width if stream_dwell_width is not None else len(chunk["dwell"])
-                )
-                fill_features.append(self._prepare_features(arrays["features"], dwell_width, chunk))
-
-            # Confound label for adversarial training. The encoder reads the
-            # configured chunk field and maps it to a class int (-1 = ignore).
-            if self._confound_encoder is not None:
-                confound_class = self._confound_encoder.encode(chunk)
-                fill_confounds.append(torch.tensor(confound_class, dtype=torch.long))
-
-            # CL regression target (cl_value / 255.0; sentinel -1.0 for missing)
-            if self._cl_regression:
-                cl_val = chunk.get("cl_value")
-                if cl_val is not None and cl_val >= 0:
-                    fill_cl_targets.append(torch.tensor(cl_val / 255.0, dtype=torch.float32))
-                else:
-                    fill_cl_targets.append(torch.tensor(-1.0, dtype=torch.float32))
+        # or a row-block stream over the npz. Both fill the same accumulators.
+        # A streamed corpus is handled a whole block at a time: the arrays
+        # arrive in blocks of ~1,500 rows, and taking them apart to prepare one
+        # row at a time cost 58-67 us per chunk — six to seven minutes of
+        # single-threaded startup on a 6.7M-chunk corpus, none of it I/O.
+        fills = {
+            "signals": fill_signals,
+            "encoded_seqs": fill_encoded_seqs,
+            "labels": fill_labels,
+            "features": fill_features,
+            "confounds": fill_confounds,
+            "cl_targets": fill_cl_targets,
+        }
+        if self._block_fill_supported():
+            self._fill_from_blocks(fills)
+        else:
+            self._fill_from_rows(fills)
 
         # Every per-chunk tensor now lives in one contiguous buffer. That isn't
         # just for cache friendliness — it's required for fork-safety. A
@@ -672,16 +734,23 @@ class LeechDataset(Dataset):
         # gracefully ignores them: seq_ints=-1 hits the encoder's `base < 0`
         # skip; seq_to_sig=signal_len makes its `sig_start < signal_len` check
         # fail, writing nothing for the padded positions.
-        self._seq_ints_tensor: torch.Tensor | None = None
+        #
+        # The block-wise filler builds the padded int8 matrix straight off the
+        # text column and leaves ``_seq_ints_tensor`` set; the per-chunk path
+        # leaves a list to pad here. Either way the CSR expansion below runs.
         self._seq_to_sig_tensor: torch.Tensor | None = None
-        if self._effective_seq_encoding == "signal_kmer" and self._seq_ints:
-            max_seq_ints_len = max(s.shape[0] for s in self._seq_ints)
-            n = len(self._seq_ints)
-            padded_seq_ints = np.full((n, max_seq_ints_len), -1, dtype=np.int8)
-            for i, si in enumerate(self._seq_ints):
-                padded_seq_ints[i, : si.shape[0]] = si
-            self._seq_ints_tensor = torch.from_numpy(padded_seq_ints)
-            self._seq_ints = []
+        if self._effective_seq_encoding == "signal_kmer" and (
+            self._seq_ints or self._seq_ints_tensor is not None
+        ):
+            if self._seq_ints:
+                max_seq_ints_len = max(s.shape[0] for s in self._seq_ints)
+                n = len(self._seq_ints)
+                padded_seq_ints = np.full((n, max_seq_ints_len), -1, dtype=np.int8)
+                for i, si in enumerate(self._seq_ints):
+                    padded_seq_ints[i, : si.shape[0]] = si
+                self._seq_ints_tensor = torch.from_numpy(padded_seq_ints)
+                self._seq_ints = []
+            n = int(self._seq_ints_tensor.shape[0])
 
             if self._s2s_csr is not None:
                 # Streaming path: expand every map at once from the CSR pair,
@@ -759,6 +828,22 @@ class LeechDataset(Dataset):
         # Approx samples per base for cross-layer shift/mask
         self._samples_per_base = signal_len / max(kmer_len, 1)
 
+        # Whether __getitems__ can gather a batch straight out of the
+        # contiguous tensors. Every field has to be one: a field that degraded
+        # to a list of per-chunk tensors has no batch to gather.
+        self._batched_fetch = (
+            self._signals_tensor is not None
+            and self._labels_tensor is not None
+            and (not self._needs_features or self._features_tensor is not None)
+            and (not self._has_confound or self._confound_labels_tensor is not None)
+            and (not self._cl_regression or self._cl_targets_tensor is not None)
+            and (
+                (self._seq_ints_tensor is not None and self._seq_to_sig_tensor is not None)
+                if self._effective_seq_encoding == "signal_kmer"
+                else self._encoded_seqs_tensor is not None
+            )
+        )
+
         _n_encoded = (
             self._encoded_seqs_tensor.shape[0]
             if self._encoded_seqs_tensor is not None
@@ -768,6 +853,413 @@ class LeechDataset(Dataset):
             f"Pre-tensorized {len(self.chunks)} chunks "
             f"({_n_encoded} sequences encoded, encoding={self._effective_seq_encoding})"
         )
+
+    # =========================================================================
+    # Tensorizing: one row at a time, or a whole row block at a time
+    # =========================================================================
+
+    def _fill_from_rows(self, fills: dict[str, _TensorFill]) -> None:
+        """Prepare one chunk at a time — the original, and still the reference.
+
+        Used for pre-loaded chunk lists, corpora too old to stream, and every
+        option combination :meth:`_block_fill_supported` declines. The
+        block-wise filler must agree with this one bit for bit;
+        ``tests/test_dataset_streaming.py`` holds it to that.
+        """
+        array_iter = iter(self._array_stream) if self._array_stream is not None else None
+        # The one metadata field read for every chunk on the default encoding.
+        # Reading the column directly hands `_encode_sequence` the bytes it
+        # wants and skips a row view per chunk; dicts have nothing to hoist.
+        sequence_column = (
+            self.chunks.values("sequence") if isinstance(self.chunks, ChunkTable) else None
+        )
+        stream_dwell_width = (
+            self._array_stream.dwell_width if self._array_stream is not None else None
+        )
+        signal_len = self.signal_len
+
+        for row, chunk in enumerate(self.chunks):
+            arrays = chunk if array_iter is None else next(array_iter)
+
+            if self._effective_seq_encoding == "signal_kmer":
+                seq_ctx = chunk["sequence_with_kmer_context"]
+                seq_ints = sequence_to_int(seq_ctx).astype(np.int8)
+                self._seq_ints.append(seq_ints)
+
+                if self._s2s_csr is None:
+                    # Non-streaming path: one map per chunk dict. The streaming
+                    # path expands all of them at once, after this loop.
+                    s2s = chunk["seq_to_sig_map"].astype(np.int64, copy=True)
+                    if self.left_context is not None and self.right_context is not None:
+                        stored_focus = chunk.get("focus_signal_pos")
+                        focus_pos = stored_focus if stored_focus is not None else int(s2s[-1]) // 2
+                        crop_start = focus_pos - self.left_context
+                        s2s -= crop_start
+                        np.clip(s2s, 0, signal_len, out=s2s)
+                    self._seq_to_sig.append(s2s)
+            else:
+                # Pre-encode sequence (vectorized, no Python loop)
+                sequence = chunk["sequence"] if sequence_column is None else sequence_column[row]
+                fills["encoded_seqs"].append(self._encode_sequence(sequence))
+
+            # Pre-create label tensor: long for multi-class, float for binary
+            if self._multiclass:
+                fills["labels"].append(torch.tensor(chunk["label_int"], dtype=torch.long))
+            else:
+                fills["labels"].append(torch.tensor([chunk["label_int"]], dtype=torch.float32))
+
+            # Pre-tensorize signal: pad/crop once instead of every __getitem__ call
+            signal = arrays["signal"]
+            if signal.dtype != np.float32:
+                signal = signal.astype(np.float32)
+            signal_residual = arrays.get("signal_residual")
+            if signal_residual is not None and signal_residual.dtype != np.float32:
+                signal_residual = signal_residual.astype(np.float32)
+            fills["signals"].append(
+                self._prepare_signal(
+                    signal, signal_residual, focus_signal_pos=chunk.get("focus_signal_pos")
+                )
+            )
+
+            # Pre-tensorize features: apply dwell_offset slicing once
+            if self._needs_features:
+                dwell_width = (
+                    stream_dwell_width if stream_dwell_width is not None else len(chunk["dwell"])
+                )
+                fills["features"].append(
+                    self._prepare_features(arrays["features"], dwell_width, chunk)
+                )
+
+            # Confound label for adversarial training. The encoder reads the
+            # configured chunk field and maps it to a class int (-1 = ignore).
+            if self._confound_encoder is not None:
+                confound_class = self._confound_encoder.encode(chunk)
+                fills["confounds"].append(torch.tensor(confound_class, dtype=torch.long))
+
+            # CL regression target (cl_value / 255.0; sentinel -1.0 for missing)
+            if self._cl_regression:
+                cl_val = chunk.get("cl_value")
+                if cl_val is not None and cl_val >= 0:
+                    fills["cl_targets"].append(torch.tensor(cl_val / 255.0, dtype=torch.float32))
+                else:
+                    fills["cl_targets"].append(torch.tensor(-1.0, dtype=torch.float32))
+
+    def _block_fill_supported(self) -> bool:
+        """Can this corpus and option set be tensorized a block at a time?
+
+        One decision for the whole dataset rather than one per block: every
+        case the vectorized filler cannot express is a property of the corpus
+        or of the options, and all of them are readable before the first block
+        arrives — a text column whose rows are not all the same length, a dwell
+        template (whose append is inherently per chunk), an asymmetric crop
+        whose in-bounds width differs from ``signal_len``, a feature window
+        that runs off the array. When any holds, everything takes
+        :meth:`_fill_from_rows`, which is the definition of the right answer.
+        """
+        table = self.chunks
+        stream = self._array_stream
+        if stream is None or not isinstance(table, ChunkTable):
+            return False
+        if self._dwell_templates is not None:
+            return False  # the per-AA template append reads one chunk at a time
+
+        if self._effective_seq_encoding == "signal_kmer":
+            if _byte_matrix(table.values("sequence_with_kmer_context")) is None:
+                return False
+        else:
+            flat = _byte_matrix(table.values("sequence"))
+            if flat is None:
+                return False
+            # numpy strips trailing NULs from a fixed-width row, so a padded
+            # row is a short sequence: ragged, and the row path degrades it to
+            # a list of per-chunk tensors.
+            if flat.shape[1] and bool(np.any(flat[:, -1] == 0)):
+                return False
+
+        stored_len = stream.row_shapes["signal"][0]
+        if self.left_context is not None and self.right_context is not None:
+            width = self.left_context + self.right_context
+            if stored_len == 0:
+                return False
+            if width != self.signal_len:
+                # The overhang branch pads to signal_len while the in-bounds
+                # branch is `width` wide; when they disagree the output is
+                # ragged and only the row path can produce it.
+                starts = self._focus_positions(stored_len) - self.left_context
+                if np.any(starts < 0) or np.any(starts + width > stored_len):
+                    return False
+
+        if self._needs_features:
+            shape = stream.row_shapes["features"]
+            if len(shape) != 2 or shape[0] * shape[1] == 0:
+                return False
+            dwell_width = stream.dwell_width
+            if (
+                dwell_width is not None
+                and dwell_width > self.kmer_len
+                and self.model_type not in WIDE_FEATURE_MODELS
+            ):
+                starts = self._feature_slice_starts(dwell_width)
+                if np.any(starts < 0) or np.any(starts + self.kmer_len > shape[1]):
+                    return False  # let the row path raise the documented ValueError
+        return True
+
+    def _fill_from_blocks(self, fills: dict[str, _TensorFill]) -> None:
+        """Prepare a whole row block at a time.
+
+        Same outputs as :meth:`_fill_from_rows`, reached with one vectorized
+        call per block instead of one Python call per chunk. Everything the
+        row loop reads out of the metadata one chunk at a time — labels,
+        sequences, focus positions, feature windows, confound classes, CL
+        targets — is a column, so it is read once for the corpus and sliced
+        per block; only the signal and feature arrays are genuinely per block.
+        """
+        table = self.chunks
+        stream = self._array_stream
+        assert stream is not None
+
+        if self._effective_seq_encoding == "signal_kmer":
+            self._seq_ints_tensor = self._seq_ints_from_column()
+            sequence_bytes = None
+        else:
+            # A view of the column, not a copy: the one-hot expansion is 4
+            # floats per base and only ever exists for one block at a time.
+            sequence_bytes = _byte_matrix(table.values("sequence"))
+
+        labels = self._label_column()
+        confounds = self._confound_column() if self._has_confound else None
+        cl_targets = self._cl_target_column() if self._cl_regression else None
+
+        stored_len = stream.row_shapes["signal"][0]
+        asymmetric = self.left_context is not None and self.right_context is not None
+        focus = self._focus_positions(stored_len) if asymmetric else None
+        feature_starts = (
+            self._feature_slice_starts(stream.dwell_width)
+            if self._needs_features and stream.dwell_width is not None
+            else None
+        )
+
+        for start, arrays in stream.blocks():
+            stop = start + len(arrays["signal"])
+
+            signal = arrays["signal"]
+            if signal.dtype != np.float32:
+                signal = signal.astype(np.float32)
+            residual = arrays.get("signal_residual")
+            if residual is not None and residual.dtype != np.float32:
+                residual = residual.astype(np.float32)
+            fills["signals"].extend(
+                self._prepare_signals_block(
+                    signal, residual, None if focus is None else focus[start:stop]
+                )
+            )
+
+            if sequence_bytes is not None:
+                fills["encoded_seqs"].extend(
+                    self._encode_sequences_block(sequence_bytes[start:stop])
+                )
+            fills["labels"].extend(labels[start:stop])
+            if self._needs_features:
+                fills["features"].extend(
+                    self._prepare_features_block(
+                        arrays["features"],
+                        stream.dwell_width,
+                        None if feature_starts is None else feature_starts[start:stop],
+                    )
+                )
+            if confounds is not None:
+                fills["confounds"].extend(confounds[start:stop])
+            if cl_targets is not None:
+                fills["cl_targets"].extend(cl_targets[start:stop])
+
+    # -- column readers: the metadata half of the block-wise filler ----------
+
+    def _label_column(self) -> torch.Tensor:
+        """Every chunk's label, in the dtype and shape the model expects.
+
+        Long ``(N,)`` for multi-class (CrossEntropyLoss), float ``(N, 1)`` for
+        binary — the stacked form of the per-chunk ``torch.tensor`` calls.
+        """
+        raw = self.chunks.require_values("label_int")
+        if self._multiclass:
+            return torch.from_numpy(raw.astype(np.int64))
+        return torch.from_numpy(raw.astype(np.float32)).unsqueeze(1)
+
+    def _cl_target_column(self) -> torch.Tensor:
+        """``cl_value / 255.0`` per chunk, with -1.0 where the value is missing."""
+        raw = self.chunks.values("cl_value")
+        n = len(self.chunks)
+        if raw is None:
+            return torch.full((n,), -1.0, dtype=torch.float32)
+        return torch.from_numpy(np.where(raw >= 0, raw / 255.0, -1.0).astype(np.float32))
+
+    def _confound_column(self) -> torch.Tensor:
+        """Confound class per chunk (-1 = ignore), mapped through the encoder.
+
+        The encoder's table is keyed by the chunk's *translated* value (a str,
+        or an int with the missing-value sentinel resolved), so the mapping is
+        applied to the column's distinct values — a few hundred at most — and
+        broadcast back rather than looked up per chunk.
+        """
+        encoder = self._confound_encoder
+        assert encoder is not None
+        table = self.chunks
+        n = len(table)
+        raw = table.values(encoder.source)
+        if raw is None:
+            # The corpus has no such field; every chunk reads as None.
+            return torch.full((n,), encoder.value_to_class.get(None, -1), dtype=torch.long)
+        uniques, first_row, inverse = np.unique(raw, return_index=True, return_inverse=True)
+        lookup = np.array(
+            [
+                encoder.value_to_class.get(table.value(encoder.source, int(row)), -1)
+                for row in first_row
+            ],
+            dtype=np.int64,
+        )
+        return torch.from_numpy(lookup[inverse.reshape(-1)])
+
+    def _focus_positions(self, stored_len: int) -> np.ndarray:
+        """Focus signal position per chunk, or the centre when none is stored."""
+        column = self.chunks.values("focus_signal_pos")
+        if column is None:
+            return np.full(len(self.chunks), stored_len // 2, dtype=np.int64)
+        return column.astype(np.int64)
+
+    def _feature_slice_starts(self, dwell_width: int) -> np.ndarray:
+        """Per-chunk k-mer-aligned start into the feature array.
+
+        The column form of the ``feature_start`` resolution in
+        :meth:`_prepare_features`. ``feature_left`` is not represented here
+        because it is never a column — only a legacy chunk-dict field, which
+        goes down the row path anyway.
+        """
+        table = self.chunks
+        kmer_context = self.kmer_len // 2
+        column = table.values("feature_start")
+        if column is not None:
+            feat_start = column.astype(np.int64)
+        else:
+            margin = table.values("dwell_margin_left")
+            if margin is not None:
+                feat_start = -(kmer_context + margin.astype(np.int64))
+            else:
+                feat_start = np.full(len(table), -(dwell_width - 1) // 2, dtype=np.int64)
+        return (-kmer_context) - feat_start + self.dwell_offset
+
+    def _seq_ints_from_column(self) -> torch.Tensor | None:
+        """The padded int8 ``seq_ints`` matrix, straight off the text column.
+
+        ``sequence_to_int`` maps anything that is not a base to -1, which is
+        also the padding value the encoder skips — so the NUL padding numpy
+        already holds in a fixed-width bytes column encodes to exactly what
+        the per-chunk path pads with, and no mask is needed.
+        """
+        flat = _byte_matrix(self.chunks.values("sequence_with_kmer_context"))
+        if flat is None:
+            return None
+        width = flat.shape[1]
+        if width:
+            # Trailing NULs are padding; the widest real sequence sets the
+            # matrix width, exactly as max(len) does on the row path.
+            trailing = (flat[:, ::-1] != 0).argmax(axis=1)
+            empty = ~flat.any(axis=1)
+            lengths = np.where(empty, 0, width - trailing)
+            width = int(lengths.max()) if len(lengths) else 0
+        return torch.from_numpy(np.ascontiguousarray(_BASE_INT_MAP[flat[:, :width]]))
+
+    # -- array preparers: the block twins of _prepare_signal/_prepare_features
+
+    @staticmethod
+    def _encode_sequences_block(flat: np.ndarray) -> torch.Tensor:
+        """One-hot a block of equal-length sequences at once.
+
+        ``flat`` is the ``(rows, kmer_len)`` uint8 view of the bytes column.
+        Same output as stacking :meth:`_encode_sequence` over the rows.
+        """
+        rows, width = flat.shape
+        indices = _BASE_MAP[flat]
+        encoded = np.zeros((rows, 4, width), dtype=np.float32)
+        valid = indices < 4
+        row_idx, col_idx = np.nonzero(valid)
+        encoded[row_idx, indices[valid], col_idx] = 1.0
+        return torch.from_numpy(encoded)
+
+    def _prepare_signals_block(
+        self,
+        signal: np.ndarray,
+        signal_residual: np.ndarray | None,
+        focus: np.ndarray | None,
+    ) -> torch.Tensor:
+        """Pad/crop a ``(rows, stored_len)`` signal block. Twin of :meth:`_prepare_signal`.
+
+        The asymmetric crop is the only per-row part: each chunk's window
+        starts at its own focus position, so it is one gather with the
+        out-of-range positions zeroed — which is what the per-chunk zero-pad
+        branch computes, one row at a time.
+        """
+        rows, stored_len = signal.shape
+        if focus is not None:
+            left, right = self.left_context, self.right_context
+            assert left is not None and right is not None  # focus implies both
+            width = left + right
+            starts = focus - left
+            columns = starts[:, None] + np.arange(width, dtype=np.int64)
+            inside = (columns >= 0) & (columns < stored_len)
+            np.clip(columns, 0, stored_len - 1, out=columns)
+            gather = np.arange(rows)[:, None]
+            signal = signal[gather, columns]
+            signal[~inside] = 0.0
+            if signal_residual is not None:
+                signal_residual = signal_residual[gather, columns]
+                signal_residual[~inside] = 0.0
+        elif stored_len < self.signal_len:
+            signal = np.pad(signal, ((0, 0), (0, self.signal_len - stored_len)), mode="constant")
+            if signal_residual is not None:
+                signal_residual = np.pad(
+                    signal_residual, ((0, 0), (0, self.signal_len - stored_len)), mode="constant"
+                )
+        elif stored_len > self.signal_len:
+            start = (stored_len - self.signal_len) // 2
+            signal = signal[:, start : start + self.signal_len]
+            if signal_residual is not None:
+                signal_residual = signal_residual[:, start : start + self.signal_len]
+
+        if signal_residual is not None:
+            if self._signal_mode == "both":
+                return torch.from_numpy(np.stack([signal, signal_residual], axis=1))
+            elif self._signal_mode == "residual":
+                return torch.from_numpy(np.ascontiguousarray(signal_residual))
+        return torch.from_numpy(np.ascontiguousarray(signal))
+
+    def _prepare_features_block(
+        self,
+        features: np.ndarray,
+        dwell_width: int | None,
+        starts: np.ndarray | None,
+    ) -> torch.Tensor:
+        """Slice a ``(rows, channels, width)`` feature block. Twin of :meth:`_prepare_features`.
+
+        ``starts`` comes from :meth:`_feature_slice_starts` and is already
+        known to be in range — :meth:`_block_fill_supported` checked it, and
+        sends the corpus down the row path when it is not, so the documented
+        ValueError still comes from the one place that raises it.
+        """
+        if features.dtype != np.float32:
+            features = features.astype(np.float32)
+        if (
+            starts is not None
+            and dwell_width is not None
+            and dwell_width > self.kmer_len
+            and self.model_type not in WIDE_FEATURE_MODELS
+        ):
+            first = int(starts[0])
+            if bool(np.all(starts == first)):
+                features = features[:, :, first : first + self.kmer_len]
+            else:
+                columns = starts[:, None] + np.arange(self.kmer_len, dtype=np.int64)
+                features = np.take_along_axis(features, columns[:, None, :], axis=2)
+        return torch.from_numpy(np.ascontiguousarray(features))
 
     def _load_from_path(self, chunk_path: Path, *, signal_mode: str, seq_encoding: str) -> None:
         """Load chunk metadata from an npz, deferring the arrays a stream can supply.
@@ -811,14 +1303,24 @@ class LeechDataset(Dataset):
         """
         rows = self._s2s_rows
         assert rows is not None
-        focus = np.zeros(len(rows), dtype=np.int64)
-        missing: list[int] = []
-        for i, chunk in enumerate(self.chunks):
-            stored = chunk.get("focus_signal_pos")
-            if stored is None:
-                missing.append(i)
-            else:
-                focus[i] = stored
+        # A column is all-or-nothing: either every chunk carries a focus
+        # position or none does, so reading it whole answers both questions
+        # without a row view per chunk (150 ms per 200k chunks for the loop).
+        if isinstance(self.chunks, ChunkTable):
+            column = self.chunks.values("focus_signal_pos")
+            if column is not None:
+                return column.astype(np.int64)
+            focus = np.zeros(len(rows), dtype=np.int64)
+            missing: list[int] = list(range(len(rows)))
+        else:
+            focus = np.zeros(len(rows), dtype=np.int64)
+            missing = []
+            for i, chunk in enumerate(self.chunks):
+                stored = chunk.get("focus_signal_pos")
+                if stored is None:
+                    missing.append(i)
+                else:
+                    focus[i] = stored
         if missing:
             idx = np.asarray(missing)
             starts = offsets[rows[idx]]
@@ -1256,17 +1758,127 @@ class LeechDataset(Dataset):
 
         return result
 
+    def __getitems__(self, indices: Sequence[int]) -> dict[str, torch.Tensor] | list[dict]:
+        """Fetch a whole batch at once, already collated.
 
-def collate_fn(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
+        ``DataLoader``'s fetcher calls this instead of ``__getitem__`` once per
+        index when a dataset defines it (torch >= 2.0), and hands whatever it
+        returns to ``collate_fn`` — which passes an already-collated batch
+        through untouched. Everything the per-sample path does is a gather out
+        of a contiguous tensor, and one gather of B rows is far cheaper than B
+        gathers plus a ``torch.stack`` per field: measured on a 200k-chunk
+        corpus at batch 256, 925,425 chunks/s against 101,042 — 9.2x.
+
+        Falls back to the per-sample path — returning a list for ``collate_fn``
+        to stack — whenever a field is held as a list of per-chunk tensors, or
+        when cross-layer shift/masking is on, since those draw one offset per
+        sample and roll by it.
+        """
+        if not self._batched_fetch or self._shift_max_bases > 0 or self._time_mask_bases > 0:
+            return [self[int(i)] for i in indices]
+
+        rows = np.asarray(indices, dtype=np.int64)
+        # A gather copies, so nothing below aliases the stored tensors and
+        # augmentation needs no clone.
+        signal = _gather_rows(self._signals_tensor, rows)
+
+        if self._effective_seq_encoding == "signal_kmer":
+            # encode_signal_kmer is per sample on both paths — batching it
+            # needs a Rust batch entry point, which is out of scope here.
+            seq_ints = self._seq_ints_tensor.numpy()[rows]
+            seq_to_sig = self._seq_to_sig_tensor.numpy()[rows]
+            sequence = torch.from_numpy(
+                np.stack(
+                    [
+                        encode_signal_kmer(
+                            seq_ints[i], seq_to_sig[i], self.signal_len, self.signal_kmer_context
+                        )
+                        for i in range(len(rows))
+                    ]
+                )
+            )
+        else:
+            sequence = _gather_rows(self._encoded_seqs_tensor, rows)
+
+        features = (
+            _gather_rows(self._features_tensor, rows) if self._needs_features else torch.empty(0)
+        )
+
+        if self.augmentation is not None:
+            signal = self._apply_augmentation_batch(signal)
+        if self._feature_noise_scale > 0 and self._needs_features:
+            features = self._apply_feature_noise(features)
+
+        result: dict[str, torch.Tensor] = {
+            "signal": signal,
+            "sequence": sequence,
+            "label": _gather_rows(self._labels_tensor, rows),
+        }
+        if self._needs_features:
+            result["features"] = features
+        if self._has_confound:
+            result["confound_label"] = _gather_rows(self._confound_labels_tensor, rows)
+        if self._cl_regression:
+            result["cl_target"] = _gather_rows(self._cl_targets_tensor, rows)
+        return result
+
+    def _apply_augmentation_batch(self, signal: torch.Tensor) -> torch.Tensor:
+        """:meth:`_apply_augmentation` over a leading batch dimension.
+
+        One draw per *sample*, not one per batch: the jitter is elementwise
+        anyway, and the scale is drawn as a ``(B, 1, ...)`` tensor so each row
+        gets its own factor exactly as the per-sample path does.
+        """
+        batch = signal.shape[0]
+        # Per-channel dicts describe a 2-channel sample, which is dim 3 here.
+        channelwise = signal.dim() == 3
+
+        jitter_std = self.augmentation.get("jitter_std", 0.0)
+        if jitter_std:
+            if isinstance(jitter_std, dict) and channelwise:
+                noise = torch.zeros_like(signal)
+                for ch_idx, ch_name in enumerate(["signal", "signal_residual"]):
+                    if jitter_std.get(ch_name, 0.0) > 0:
+                        noise[:, ch_idx] = (
+                            torch.randn(batch, signal.shape[-1]) * jitter_std[ch_name]
+                        )
+                signal = signal + noise
+            elif isinstance(jitter_std, (int, float)) and jitter_std > 0:
+                signal = signal + torch.randn_like(signal) * jitter_std
+
+        scale_range = self.augmentation.get("scale_range", (1.0, 1.0))
+        if scale_range and scale_range != (1.0, 1.0):
+            if isinstance(scale_range, dict) and channelwise:
+                for ch_idx, ch_name in enumerate(["signal", "signal_residual"]):
+                    ch_range = scale_range.get(ch_name, (1.0, 1.0))
+                    if ch_range != (1.0, 1.0):
+                        scale = torch.empty(batch, 1).uniform_(ch_range[0], ch_range[1])
+                        signal[:, ch_idx] = signal[:, ch_idx] * scale
+            else:
+                shape = (batch, *([1] * (signal.dim() - 1)))
+                scale = torch.empty(shape).uniform_(scale_range[0], scale_range[1])
+                signal = signal * scale
+        return signal
+
+
+def collate_fn(
+    batch: list[dict[str, torch.Tensor]] | dict[str, torch.Tensor],
+) -> dict[str, torch.Tensor]:
     """
     Collate function for DataLoader.
 
     Args:
-        batch: List of samples from __getitem__
+        batch: List of samples from ``__getitem__``, or the already-collated
+            batch ``LeechDataset.__getitems__`` returns.
 
     Returns:
         Batched tensors
     """
+    if isinstance(batch, dict):
+        # __getitems__ gathered the batch out of the contiguous tensors in one
+        # go; there is nothing left to stack.
+        return batch
+
     # Stack all tensors
     signals = torch.stack([item["signal"] for item in batch])
     sequences = torch.stack([item["sequence"] for item in batch])

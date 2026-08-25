@@ -289,6 +289,17 @@ class ChunkTable(Sequence):
         column = self.columns.get(field)
         return None if column is None else column.raw
 
+    def value(self, field: str, index: int):
+        """One field of one row, without materialising a :class:`ChunkRow`.
+
+        Same result as ``table[index].get(field)`` — including the
+        missing-value translation ``values`` deliberately skips — for callers
+        that need the translated form of a handful of rows (the distinct
+        values of a column, say) rather than of every row.
+        """
+        column = self.columns.get(field)
+        return None if column is None else column.value(index)
+
     def require_values(self, field: str) -> np.ndarray:
         """The raw column for ``field``, raising if the corpus lacks it."""
         column = self.columns.get(field)
