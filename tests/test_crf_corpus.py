@@ -313,6 +313,16 @@ def test_absent_quality_columns_become_nan_not_zero(tmp_path, fake_pod5):
     assert np.isnan(meta["gate_score"]).all()
 
 
+def test_a_missing_corpus_names_both_layouts(tmp_path):
+    """`--corpus` takes a stem, so reporting whichever suffix was tried last
+    points at a path the caller never wrote."""
+    with pytest.raises(FileNotFoundError) as exc:
+        load_corpus(tmp_path / "absent")
+    message = str(exc.value)
+    assert "absent_X.npy" in message and "absent.npz" in message
+    assert "STEM" in message
+
+
 def test_load_corpus_meta_is_empty_for_a_legacy_layout(tmp_path):
     np.savez(
         tmp_path / "old.npz",

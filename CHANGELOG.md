@@ -37,6 +37,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   New `onnx` extra (`onnx`, `onnxruntime`, `onnxscript`). CI installs it so the
   round-trip tests run rather than skip.
 
+- **`leech model train-crf`**, the CLI for the CTC-CRF trainer. Sits beside
+  `model train` rather than in a group of its own: it is the same workflow step,
+  a different task. Every `CrfTrainConfig` field is exposed, and a test asserts
+  each option actually reaches the config — a click option that silently does
+  not is how a sweep ends up running the default every time.
+
+  The summary reports the emission rule (`target_len -> emits target_len -
+  state_len`) because widening the window to get a longer decode is the mistake
+  it prevents, and prints a second table only when the run discarded steps or
+  saw non-finite gradients, since a discarded step is otherwise invisible.
+
 ### Added
 
 - **`leech.crf.training`: a CTC-CRF trainer.** `CrfTrainer` runs the schedule
