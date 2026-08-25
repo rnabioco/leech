@@ -367,6 +367,37 @@ class TestRowAlignment:
             np.testing.assert_array_equal(streamed._signals_tensor[i, 0].numpy(), expected)
 
 
+class TestShapeMismatchFallback:
+    """A field whose per-chunk shapes disagree still works, via list access."""
+
+    def test_ragged_sequences_fall_back_to_a_list(self, tmp_path, caplog):
+        chunks = make_chunks(10)
+        for i, chunk in enumerate(chunks):  # 11, 10, 11, 10, ... bases
+            chunk["sequence"] = chunk["sequence"][: KMER_LEN - (i % 2)]
+
+        path = tmp_path / "chunks.npz"
+        save_chunks(chunks, path)
+        with caplog.at_level("WARNING", logger="leech.dataset"):
+            streamed, eager = build(
+                path,
+                signal_len=STORED_SIGNAL_LEN,
+                kmer_len=KMER_LEN,
+                model_type="ConvLSTMDwell",
+                seq_encoding="base_onehot",
+            )
+
+        assert "shapes differ" in caplog.text
+        assert streamed._encoded_seqs_tensor is None
+        assert len(streamed._encoded_seqs) == len(chunks)
+        # The rows filled before the mismatch survive it.
+        for i, chunk in enumerate(chunks):
+            assert streamed._encoded_seqs[i].shape == (4, len(chunk["sequence"]))
+            assert torch.equal(streamed._encoded_seqs[i], eager._encoded_seqs[i])
+        # Everything else still fills a contiguous tensor.
+        assert streamed._signals_tensor is not None
+        assert torch.equal(streamed._signals_tensor, eager._signals_tensor)
+
+
 class TestLegacyFormats:
     """Old corpora keep working — they simply do not stream."""
 
