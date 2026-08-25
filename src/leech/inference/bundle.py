@@ -20,6 +20,7 @@ from leech.inference.aggregation import (
     aggregate_pairwise_weighted,
 )
 from leech.inference.helpers import (
+    BatchAccumulator,
     _check_config_consistency,
     _encode_sequence_for_inference,
     _write_prediction_tags,
@@ -39,6 +40,49 @@ from leech.models.inference_wrapper import ModelInferenceWrapper, TracedModelWra
 from leech.preparation.reader import build_leech_read
 
 logger = logging.getLogger("leech.inference")
+
+
+def _write_bundle_mega_batch(
+    aln_batch: list[pysam.AlignedSegment],
+    read_probs: dict[str, np.ndarray],
+    pairs: list,
+    pair_to_idx: dict,
+    aggregate_fn,
+    pair_names_str: str,
+    bam_out: pysam.AlignmentFile,
+    raw: bool,
+    min_confidence: int,
+    min_margin: int,
+) -> int:
+    """Aggregate per-read probabilities and write one mega-batch of alignments.
+
+    Every alignment is written, tagged or not; the return value is how many
+    carried a prediction. All three extraction paths below shared a verbatim
+    copy of this loop.
+    """
+    n_written = 0
+    for aln in aln_batch:
+        prob_vec = read_probs.get(aln.query_name)
+        if prob_vec is None:
+            bam_out.write(aln)
+            continue
+
+        probs = [float(prob_vec[pair_to_idx[pair]]) for pair in pairs]
+        predicted_aa, confidence, _ = aggregate_fn(pairs, probs)
+
+        _write_prediction_tags(
+            aln,
+            predicted_aa,
+            confidence,
+            pair_names_str,
+            probs,
+            raw,
+            min_confidence,
+            min_margin,
+        )
+        bam_out.write(aln)
+        n_written += 1
+    return n_written
 
 
 def run_bundle_inference(
@@ -372,22 +416,21 @@ def run_bundle_inference(
     n_pairs = len(pairs)
 
     read_probs: dict[str, np.ndarray] = {}  # read_id -> shape (n_pairs,)
-    batch_signals: list[torch.Tensor] = []
-    batch_sequences: list[torch.Tensor] = []
-    batch_features: list[torch.Tensor] = []
-    batch_read_ids: list[str] = []
     _shape_validated = False
     n_chunks = 0
     n_batches_done = 0
 
-    def _flush_batch() -> None:
+    def _run_bundle_batch(sigs: list, seqs: list, feats: list, rids: list) -> None:
+        """Flush callback: run every model in the bundle over one batch."""
         nonlocal n_batches_done
-        if not batch_signals:
-            return
 
-        sig_t = torch.stack(batch_signals).to(device)
-        seq_t = torch.stack(batch_sequences).to(device)
-        feat_t = torch.stack(batch_features).to(device) if needs_features else None
+        sig_t = torch.stack(sigs).to(device)
+        seq_t = torch.stack(seqs).to(device)
+        feat_t = None
+        if needs_features:
+            valid_feats = [f for f in feats if f is not None]
+            if valid_feats:
+                feat_t = torch.stack(valid_feats).to(device)
 
         with torch.inference_mode():
             if is_vmap and vmapped_forward is not None:
@@ -402,7 +445,7 @@ def run_bundle_inference(
                 all_logits = vmap_platt_a[:, None, None] * all_logits + vmap_platt_b[:, None, None]
                 all_p = torch.sigmoid(all_logits).squeeze(-1).cpu().numpy()
             else:
-                all_p = np.empty((n_pairs, len(batch_signals)), dtype=np.float32)
+                all_p = np.empty((n_pairs, len(sigs)), dtype=np.float32)
                 for pair in pairs:
                     batch_dict: dict[str, torch.Tensor] = {
                         "signal": sig_t,
@@ -417,14 +460,12 @@ def run_bundle_inference(
                         logits = a * logits + b
                     all_p[pair_to_idx[pair]] = torch.sigmoid(logits).cpu().numpy().flatten()
 
-        for i, rid in enumerate(batch_read_ids):
+        for i, rid in enumerate(rids):
             read_probs[rid] = all_p[:, i]
 
-        batch_signals.clear()
-        batch_sequences.clear()
-        batch_features.clear()
-        batch_read_ids.clear()
         n_batches_done += 1
+
+    accumulator = BatchAccumulator(batch_size, _run_bundle_batch)
 
     n_reads = 0
     n_predicted = 0
@@ -554,7 +595,7 @@ def run_bundle_inference(
             # main thread collects pysam metadata for a mega-batch, rust
             # consumes the metadata + POD5 path and returns extracted chunks,
             # main thread batches them into torch tensors and runs the existing
-            # multi-model _flush_batch closure.
+            # multi-model batch accumulator.
             assert _rs_extract_inference_chunks is not None
             assert _rs_kwargs is not None
 
@@ -628,43 +669,31 @@ def run_bundle_inference(
                             validate_inference_shapes(sig, feat, config)
                             _shape_validated = True
 
-                        batch_signals.append(torch.from_numpy(sig))
-                        batch_sequences.append(torch.from_numpy(seq_arr))
-                        batch_read_ids.append(read_id)
-                        if needs_features and feat is not None:
-                            batch_features.append(torch.from_numpy(feat))
-
                         n_chunks += 1
-                        if len(batch_signals) >= batch_size:
-                            _flush_batch()
+                        accumulator.add(
+                            torch.from_numpy(sig),
+                            torch.from_numpy(seq_arr),
+                            torch.from_numpy(feat) if needs_features and feat is not None else None,
+                            read_id,
+                        )
 
                 # Flush remaining chunks for this mega-batch
-                _flush_batch()
+                accumulator.flush()
 
                 # -- Aggregate per-read and write BAM for this mega-batch --
-                batch_preds = 0
-                for aln in aln_batch:
-                    prob_vec = read_probs.get(aln.query_name)
-                    if prob_vec is None:
-                        bam_out.write(aln)
-                        continue
-
-                    probs = [float(prob_vec[pair_to_idx[pair]]) for pair in pairs]
-                    predicted_aa, confidence, _ = aggregate_fn(pairs, probs)
-
-                    _write_prediction_tags(
-                        aln,
-                        predicted_aa,
-                        confidence,
-                        pair_names_str,
-                        probs,
-                        raw,
-                        min_confidence,
-                        min_margin,
-                    )
-                    bam_out.write(aln)
-                    n_predicted += 1
-                    batch_preds += 1
+                batch_preds = _write_bundle_mega_batch(
+                    aln_batch,
+                    read_probs,
+                    pairs,
+                    pair_to_idx,
+                    aggregate_fn,
+                    pair_names_str,
+                    bam_out,
+                    raw,
+                    min_confidence,
+                    min_margin,
+                )
+                n_predicted += batch_preds
 
                 mega_batch_idx += 1
                 logger.info(
@@ -699,7 +728,7 @@ def run_bundle_inference(
             # enc_seq, feat) tuples. The main process collects results, dedupes
             # to one chunk per read (matching the serial path's positions[0]
             # behavior), batches, and runs the multi-model GPU forward via the
-            # shared _flush_batch closure.
+            # shared batch accumulator.
             from leech.inference.single import _inference_worker
 
             assert inf_config is not None  # constructed above
@@ -782,49 +811,37 @@ def run_bundle_inference(
                                     template_min_pos=dwell_template_min_pos,
                                 )
 
-                            signal_t = torch.from_numpy(sig)
-                            seq_t = torch.from_numpy(enc_seq)
-                            batch_signals.append(signal_t)
-                            batch_sequences.append(seq_t)
-                            batch_read_ids.append(read_id)
-                            if needs_features and feat is not None:
-                                batch_features.append(torch.from_numpy(feat))
-
                             if not _shape_validated:
                                 validate_inference_shapes(sig, feat, config)
                                 _shape_validated = True
 
                             n_chunks += 1
-                            if len(batch_signals) >= batch_size:
-                                _flush_batch()
+                            accumulator.add(
+                                torch.from_numpy(sig),
+                                torch.from_numpy(enc_seq),
+                                torch.from_numpy(feat)
+                                if needs_features and feat is not None
+                                else None,
+                                read_id,
+                            )
 
                     # Flush remaining chunks for this mega-batch
-                    _flush_batch()
+                    accumulator.flush()
 
                     # -- Aggregate per-read and write BAM for this mega-batch --
-                    batch_preds = 0
-                    for aln in aln_batch:
-                        prob_vec = read_probs.get(aln.query_name)
-                        if prob_vec is None:
-                            bam_out.write(aln)
-                            continue
-
-                        probs = [float(prob_vec[pair_to_idx[pair]]) for pair in pairs]
-                        predicted_aa, confidence, _ = aggregate_fn(pairs, probs)
-
-                        _write_prediction_tags(
-                            aln,
-                            predicted_aa,
-                            confidence,
-                            pair_names_str,
-                            probs,
-                            raw,
-                            min_confidence,
-                            min_margin,
-                        )
-                        bam_out.write(aln)
-                        n_predicted += 1
-                        batch_preds += 1
+                    batch_preds = _write_bundle_mega_batch(
+                        aln_batch,
+                        read_probs,
+                        pairs,
+                        pair_to_idx,
+                        aggregate_fn,
+                        pair_names_str,
+                        bam_out,
+                        raw,
+                        min_confidence,
+                        min_margin,
+                    )
+                    n_predicted += batch_preds
 
                     mega_batch_idx += 1
                     logger.info(
@@ -955,10 +972,8 @@ def run_bundle_inference(
                         continue
 
                     n_chunks += 1
-                    batch_signals.append(signal_t)
-                    batch_sequences.append(seq_t)
-                    batch_read_ids.append(leech_read.read_id)
 
+                    feat_t = None
                     if needs_features:
                         features_array = chunk["features"]
                         assert isinstance(features_array, np.ndarray)
@@ -976,7 +991,7 @@ def run_bundle_inference(
                             dwell_templates=dwell_templates_arr,
                             template_min_pos=dwell_template_min_pos,
                         )
-                        batch_features.append(torch.from_numpy(features_array))
+                        feat_t = torch.from_numpy(features_array)
 
                     if not _shape_validated:
                         _feat_for_check = (
@@ -985,36 +1000,25 @@ def run_bundle_inference(
                         validate_inference_shapes(sig, _feat_for_check, config)
                         _shape_validated = True
 
-                    if len(batch_signals) >= batch_size:
-                        _flush_batch()
+                    accumulator.add(signal_t, seq_t, feat_t, leech_read.read_id)
 
                 # Flush remaining chunks for this mega-batch
-                _flush_batch()
+                accumulator.flush()
 
                 # -- Aggregate per-read and write BAM for this mega-batch --
-                batch_preds = 0
-                for aln in aln_batch:
-                    prob_vec = read_probs.get(aln.query_name)
-                    if prob_vec is None:
-                        bam_out.write(aln)
-                        continue
-
-                    probs = [float(prob_vec[pair_to_idx[pair]]) for pair in pairs]
-                    predicted_aa, confidence, _ = aggregate_fn(pairs, probs)
-
-                    _write_prediction_tags(
-                        aln,
-                        predicted_aa,
-                        confidence,
-                        pair_names_str,
-                        probs,
-                        raw,
-                        min_confidence,
-                        min_margin,
-                    )
-                    bam_out.write(aln)
-                    n_predicted += 1
-                    batch_preds += 1
+                batch_preds = _write_bundle_mega_batch(
+                    aln_batch,
+                    read_probs,
+                    pairs,
+                    pair_to_idx,
+                    aggregate_fn,
+                    pair_names_str,
+                    bam_out,
+                    raw,
+                    min_confidence,
+                    min_margin,
+                )
+                n_predicted += batch_preds
 
                 mega_batch_idx += 1
                 logger.info(

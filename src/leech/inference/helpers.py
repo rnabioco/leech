@@ -3,6 +3,7 @@
 import array
 import json
 import logging
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -514,6 +515,94 @@ def _write_mega_batch_predictions(
                 n_preds += 1
             bam_out.write(aln)
     return n_preds
+
+
+class BatchAccumulator:
+    """Four parallel chunk buffers, a size check, and a flush — in one place.
+
+    Every extraction path in :mod:`leech.inference` produces the same four
+    parallel streams (signal, sequence, feature, per-chunk metadata) and turns
+    them into fixed-size model batches. That state machine used to be written
+    out three times — twice in ``single.py`` (multiprocessing workers, threaded
+    Rust) and once in ``bundle.py`` — so the paths differed in more than the
+    only thing that actually differs between them: what produces the chunks.
+
+    ``flush_fn`` is handed the four buffers *after* they have been detached
+    from the accumulator, so it is free to keep them. The sequential path in
+    ``single.py`` relies on that: it submits them to a single-worker GPU thread
+    and keeps filling the next batch while that runs.
+
+    Element types are whatever the caller appends — ``single.py`` accumulates
+    numpy arrays for :func:`_run_batch`, ``bundle.py`` accumulates torch
+    tensors for its own multi-model flush.
+    """
+
+    __slots__ = ("batch_size", "features", "flush_fn", "meta", "sequences", "signals")
+
+    def __init__(self, batch_size: int, flush_fn: Callable[[list, list, list, list], None]):
+        self.batch_size = batch_size
+        self.flush_fn = flush_fn
+        self.signals: list = []
+        self.sequences: list = []
+        self.features: list = []
+        self.meta: list = []
+
+    def __len__(self) -> int:
+        return len(self.signals)
+
+    def take(self) -> tuple[list, list, list, list]:
+        """Detach and return the current buffers, leaving the accumulator empty."""
+        buffers = (self.signals, self.sequences, self.features, self.meta)
+        self.signals = []
+        self.sequences = []
+        self.features = []
+        self.meta = []
+        return buffers
+
+    def flush(self) -> None:
+        """Run ``flush_fn`` on the buffered chunks. No-op when empty."""
+        if not self.signals:
+            return
+        self.flush_fn(*self.take())
+
+    def add(self, signal, sequence, feature, meta) -> None:
+        """Append one chunk, flushing once the batch is full."""
+        self.signals.append(signal)
+        self.sequences.append(sequence)
+        self.features.append(feature)
+        self.meta.append(meta)
+        if len(self.signals) >= self.batch_size:
+            self.flush()
+
+
+def prepare_signal_channels(chunk: dict, signal_len: int) -> np.ndarray:
+    """Pad/crop a chunk's signal to ``signal_len`` and stack the residual channel.
+
+    Returns ``(signal_len,)`` for a single-channel model, or
+    ``(2, signal_len)`` when the chunk carries a k-mer residual channel. Shared
+    by both Python extraction paths in ``single.py``; they had byte-identical
+    copies of this.
+    """
+    signal_array = chunk["signal"]
+    sig = signal_array.astype(np.float32)
+    sig_residual = chunk.get("signal_residual")
+    if len(sig) < signal_len:
+        sig = np.pad(sig, (0, signal_len - len(sig)), mode="constant")
+        if sig_residual is not None:
+            sig_residual = np.pad(
+                sig_residual.astype(np.float32),
+                (0, signal_len - len(sig_residual)),
+                mode="constant",
+            )
+    elif len(sig) > signal_len:
+        start = (len(sig) - signal_len) // 2
+        sig = sig[start : start + signal_len]
+        if sig_residual is not None:
+            sig_residual = sig_residual.astype(np.float32)[start : start + signal_len]
+    if sig_residual is not None:
+        sig_residual = sig_residual.astype(np.float32)
+        sig = np.stack([sig, sig_residual], axis=0)
+    return sig
 
 
 def _run_batch_multiclass(

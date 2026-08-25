@@ -1134,3 +1134,261 @@ class TestRunBundleInferenceTagsIntegration:
             tagged = [r for r in bam if r.has_tag("aa")]
         assert len(tagged) > 0
         assert all(r.get_tag("aa") == "unc" for r in tagged)
+
+
+# ---------------------------------------------------------------------------
+# BatchAccumulator: the one batching state machine (was written three times —
+# multiprocessing workers and threaded Rust in single.py, and bundle.py)
+# ---------------------------------------------------------------------------
+
+
+class TestBatchAccumulator:
+    """Unit tests for leech.inference.helpers.BatchAccumulator."""
+
+    @staticmethod
+    def _recording_accumulator(batch_size):
+        from leech.inference.helpers import BatchAccumulator
+
+        flushed = []
+
+        def flush(sigs, seqs, feats, meta):
+            flushed.append((sigs, seqs, feats, meta))
+
+        return BatchAccumulator(batch_size, flush), flushed
+
+    def test_flushes_exactly_at_batch_size(self):
+        acc, flushed = self._recording_accumulator(3)
+        for i in range(7):
+            acc.add(f"s{i}", f"q{i}", f"f{i}", ("r", i))
+        # 7 chunks, batch 3 -> two full flushes, one chunk still buffered
+        assert [len(b[0]) for b in flushed] == [3, 3]
+        assert len(acc) == 1
+        acc.flush()
+        assert [len(b[0]) for b in flushed] == [3, 3, 1]
+        assert len(acc) == 0
+
+    def test_buffers_stay_parallel(self):
+        acc, flushed = self._recording_accumulator(2)
+        acc.add("s0", "q0", None, ("r0", 0))
+        acc.add("s1", "q1", "f1", ("r1", 1))
+        sigs, seqs, feats, meta = flushed[0]
+        assert sigs == ["s0", "s1"]
+        assert seqs == ["q0", "q1"]
+        assert feats == [None, "f1"]
+        assert meta == [("r0", 0), ("r1", 1)]
+
+    def test_flush_is_a_noop_when_empty(self):
+        acc, flushed = self._recording_accumulator(4)
+        acc.flush()
+        acc.flush()
+        assert flushed == []
+
+    def test_flush_detaches_the_buffers(self):
+        """The GPU thread keeps the flushed lists while extraction refills."""
+        acc, flushed = self._recording_accumulator(2)
+        acc.add("s0", "q0", "f0", ("r0", 0))
+        acc.add("s1", "q1", "f1", ("r1", 1))
+        held = flushed[0]
+        acc.add("s2", "q2", "f2", ("r2", 2))
+        # Appending after the flush must not mutate what the callback was given.
+        assert held[0] == ["s0", "s1"]
+        assert acc.signals == ["s2"]
+
+    def test_add_flushes_when_batch_size_is_one(self):
+        acc, flushed = self._recording_accumulator(1)
+        acc.add("s0", "q0", "f0", ("r0", 0))
+        assert [len(b[0]) for b in flushed] == [1]
+        assert len(acc) == 0
+
+
+# ---------------------------------------------------------------------------
+# Extraction-path parity: every path through run_inference must agree
+#
+# `single.py` carries two complete extraction paths (multiprocessing workers
+# and the threaded sequential path), and each backend feeds a different chunk
+# producer into the same batching state machine. The paths are only allowed to
+# differ in what produces chunks — never in what gets predicted.
+# ---------------------------------------------------------------------------
+
+_PREDICTION_TAGS = ("aa", "ac", "am", "pn", "pp", "MP", "ML")
+
+
+def _dump_prediction_tags(bam_path):
+    """Per-read prediction tags from an output BAM, as plain comparable Python."""
+    rows = []
+    with pysam.AlignmentFile(str(bam_path), "rb") as bam:
+        for aln in bam:
+            row = {"qname": aln.query_name}
+            for tag in _PREDICTION_TAGS:
+                if aln.has_tag(tag):
+                    value = aln.get_tag(tag)
+                    if isinstance(value, str):
+                        row[tag] = value
+                    elif hasattr(value, "__len__"):
+                        row[tag] = list(value)
+                    else:
+                        row[tag] = value
+            rows.append(row)
+    return rows
+
+
+# Driver comparing the multiprocessing path against the sequential one. It runs
+# in its own interpreter, and runs `--workers 2` FIRST, because the sequential
+# path leaves its ThreadPoolExecutors running (`shutdown(wait=False)`) and
+# forking an `mp.Pool` after that deadlocks. That hazard predates this test,
+# which is also why both runs live in one subprocess rather than two.
+_WORKER_PATH_DRIVER = """
+import json, sys
+from pathlib import Path
+import pysam
+from leech.bundling import load_model_from_multiclass_bundle
+from leech.inference import run_inference
+
+bundle, pod5, bam, ref, workdir = sys.argv[1:6]
+work = Path(workdir)
+
+
+def dump(path):
+    rows = []
+    with pysam.AlignmentFile(str(path), "rb") as f:
+        for aln in f:
+            row = {"qname": aln.query_name}
+            for tag in ("aa", "ac", "am", "pn", "pp", "MP", "ML"):
+                if aln.has_tag(tag):
+                    v = aln.get_tag(tag)
+                    if isinstance(v, str):
+                        row[tag] = v
+                    elif hasattr(v, "__len__"):
+                        row[tag] = list(v)
+                    else:
+                        row[tag] = v
+            rows.append(row)
+    return rows
+
+
+for workers in (2, 0):
+    model, config = load_model_from_multiclass_bundle(Path(bundle), device="cpu")
+    out_bam = work / ("w%d.bam" % workers)
+    run_inference(
+        model_and_config=(model, config),
+        pod5_path=Path(pod5),
+        bam_path=Path(bam),
+        output_path=out_bam,
+        device="cpu",
+        batch_size=8,
+        reverse_signal=True,
+        reference_fasta=Path(ref),
+        num_workers=workers,
+        chunk_size=4,
+        backend="python",
+        read_batch_size=7,
+    )
+    (work / ("w%d.json" % workers)).write_text(json.dumps(dump(out_bam), sort_keys=True))
+"""
+
+
+@pytest.mark.skipif(not TRNA_FIXTURES_AVAILABLE, reason="tRNA fixtures not available")
+class TestExtractionPathParity:
+    """Same input, same model, same predictions — whichever path extracted the chunks."""
+
+    CLASS_NAMES = ["Ala", "Gly", "Met"]
+
+    def _predict(self, tmp_path, bundle_path, name, *, backend, num_workers=0):
+        from leech.bundling import load_model_from_multiclass_bundle
+        from leech.inference import run_inference
+
+        model, config = load_model_from_multiclass_bundle(bundle_path, device="cpu")
+        out = tmp_path / f"{name}.bam"
+        run_inference(
+            model_and_config=(model, config),
+            pod5_path=TRNA_POD5,
+            bam_path=TRNA_BAM,
+            output_path=out,
+            device="cpu",
+            batch_size=8,
+            reverse_signal=True,
+            reference_fasta=TRNA_REF,
+            num_workers=num_workers,
+            chunk_size=4,
+            backend=backend,
+            read_batch_size=7,
+        )
+        return _dump_prediction_tags(out)
+
+    def test_rust_and_python_extraction_agree(self, tmp_path):
+        """The two chunk producers on the sequential path predict identically.
+
+        ``--backend rust`` consumes chunks straight from leech_core;
+        ``--backend python`` builds them through ``_extract_one_read``. Both
+        feed the same accumulator, so a divergence here is in the batching,
+        not in the chunks.
+        """
+        pytest.importorskip("leech_core")
+        bundle_path = _create_multiclass_bundle(tmp_path, self.CLASS_NAMES)
+        py_rows = self._predict(tmp_path, bundle_path, "seq_py", backend="python")
+        rs_rows = self._predict(tmp_path, bundle_path, "seq_rs", backend="rust")
+        assert len(py_rows) > 0
+        assert any("aa" in r for r in py_rows)
+        assert py_rows == rs_rows
+
+    def test_batch_boundaries_do_not_move_predictions(self, tmp_path):
+        """The accumulator flushes at ``batch_size`` and drains the remainder.
+
+        A batch of 3 therefore splits the chunk stream differently than one
+        that swallows the whole file; the predictions must not notice.
+        """
+        from leech.bundling import load_model_from_multiclass_bundle
+        from leech.inference import run_inference
+
+        bundle_path = _create_multiclass_bundle(tmp_path, self.CLASS_NAMES)
+        rows = []
+        for batch_size in (3, 4096):
+            model, config = load_model_from_multiclass_bundle(bundle_path, device="cpu")
+            out = tmp_path / f"bs{batch_size}.bam"
+            run_inference(
+                model_and_config=(model, config),
+                pod5_path=TRNA_POD5,
+                bam_path=TRNA_BAM,
+                output_path=out,
+                device="cpu",
+                batch_size=batch_size,
+                reverse_signal=True,
+                reference_fasta=TRNA_REF,
+                backend="python",
+            )
+            rows.append(_dump_prediction_tags(out))
+        assert any("aa" in r for r in rows[0])
+        assert rows[0] == rows[1]
+
+    def test_worker_path_matches_sequential_path(self, tmp_path):
+        """``--workers N`` predicts exactly what the sequential path predicts.
+
+        The two accumulate into batches differently — the worker path flushes
+        at the end of every worker result set, the sequential path at the end
+        of every mega-batch — and neither is allowed to move a prediction.
+
+        Runs in a fresh interpreter (see ``_WORKER_PATH_DRIVER``).
+        """
+        import json
+        import subprocess
+        import sys
+
+        bundle_path = _create_multiclass_bundle(tmp_path, self.CLASS_NAMES)
+        subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                _WORKER_PATH_DRIVER,
+                str(bundle_path),
+                str(TRNA_POD5),
+                str(TRNA_BAM),
+                str(TRNA_REF),
+                str(tmp_path),
+            ],
+            check=True,
+            timeout=900,
+        )
+        parallel = json.loads((tmp_path / "w2.json").read_text())
+        sequential = json.loads((tmp_path / "w0.json").read_text())
+        assert any("aa" in r for r in sequential)
+        assert parallel == sequential
