@@ -1519,7 +1519,10 @@ def train_model(
                 # npz arrays are stored under the pluralized field name.
                 for _key in (spec.source, f"{spec.source}s"):
                     if _key in _npz:
-                        source_values = _npz[_key].tolist()
+                        # The column, not `.tolist()`: boxing one Python string
+                        # per chunk costs ~400 MB on a 6.7M-chunk corpus, and
+                        # the encoder only needs the distinct values.
+                        source_values = _npz[_key]
                         break
 
         # Resolve label_map for label-keyed confounds (e.g. disc_base).
