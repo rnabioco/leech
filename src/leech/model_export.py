@@ -1,4 +1,10 @@
-"""Model export and serialization (torch.export and legacy TorchScript)."""
+"""Model export and serialization (torch.export, ONNX, and legacy TorchScript).
+
+The ONNX path exists because `torch.export` makes a model loadable by
+anything with PyTorch and by nothing else — a runtime consuming ONNX cannot
+load one at all. See :mod:`leech.onnx_export` for the exporter and, in
+particular, for why the legacy `dynamo=False` path is not an option here.
+"""
 
 import io
 import json
@@ -183,4 +189,59 @@ def export_single_model(model_dir: Path, output_path: Path) -> Path:
     torch.export.save(ep, str(output_path), extra_files={"leech_meta.txt": meta})
 
     logger.info(f"Exported model to {output_path}")
+    return output_path
+
+
+def export_single_model_onnx(
+    model_dir: Path, output_path: Path, *, verify: bool = True, opset: int | None = None
+) -> Path:
+    """Export a trained arm to ONNX, with the contract a consumer needs beside it.
+
+    Writes ``output_path`` and ``output_path.with_suffix(".json")``. The sidecar
+    is not decoration: which input is which, and that the output is a single BCE
+    logit rather than a two-class softmax, are both invisible in the graph and
+    wrong-by-default if guessed.
+
+    Args:
+        model_dir: directory with ``config.json`` and ``model_best.pt``.
+        output_path: where to write the ``.onnx``.
+        verify: run the graph against torch and record the difference.
+        opset: defaults to :data:`leech.onnx_export.OPSET`.
+    """
+    from leech.model_loading import load_model_from_checkpoint
+    from leech.onnx_export import OPSET, contract, describe_inputs, export_onnx, verify_onnx
+
+    opset = opset or OPSET
+    model, config = load_model_from_checkpoint(model_dir, device="cpu")
+    example = _build_example_inputs(model, config, batch_size=2)
+    specs = describe_inputs(config, example)
+    names = [spec.name for spec in specs]
+
+    output_path = Path(output_path)
+    export_onnx(
+        model, example, output_path, input_names=names, output_names=["logits"], opset=opset
+    )
+
+    max_diff = verify_onnx(output_path, model, example, input_names=names) if verify else None
+    meta = contract(
+        specs,
+        [
+            {
+                "name": "logits",
+                "shape": ["batch", 1],
+                "dtype": "float32",
+                "convention": "a SINGLE BCE logit, not a two-class softmax. "
+                "P(positive) = sigmoid(logits).",
+            }
+        ],
+        opset=opset,
+        extra={"model_name": config.get("model_name"), "leech_config": config},
+    )
+    if max_diff is not None:
+        meta["verification"] = {
+            "onnxruntime_vs_torch_max_abs_diff": max_diff,
+            "float32_eps": 1.1920929e-07,
+        }
+    output_path.with_suffix(".json").write_text(json.dumps(meta, indent=2))
+    logger.info("Exported ONNX model to %s (+ .json contract)", output_path)
     return output_path

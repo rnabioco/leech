@@ -491,6 +491,63 @@ scans in `loss.py` are the readable reference the tests check it against, and
 the Triton kernels check against those. Keep all three — the fallback chain is
 what makes a wrong kernel visible.
 
+### ONNX export: one exporter, and what a graph cannot carry
+
+`leech.onnx_export` serves both the classifier arms (`leech model export
+--format onnx`) and the CRF encoder (`leech.crf.export`). It exists because
+`torch.export` makes a model loadable by anything with PyTorch and by nothing
+else — escapepod-rs consumes ONNX and could not load a leech model at all.
+
+**Always the dynamo exporter, opset 18.** `dynamo=False` is the obvious first
+attempt and fails on these architectures with `Unsupported: ONNX export of
+operator adaptive_avg_pool1d`. That is an exporter limitation, not a model
+problem, but the message reads like one; `tests/test_onnx_export.py` pins the
+working path so a regression to the legacy exporter says so.
+
+**Every export writes a contract beside the graph**, because two things a
+consumer needs are invisible in it: which input is which (arity and channel
+counts are visible, roles are not), and what the output means — leech
+classifiers emit a *single BCE logit*, not a two-class softmax, and reading it
+as the latter makes every call wrong without erroring. The CRF's contract adds
+standardisation (in neither the config nor the checkpoint) and the emitted
+references (`target[state_len:]`, computed from the `state_len` the encoder
+declares so no caller can pass full-length targets by hand).
+
+**The `signal_kmer` sequence input is not in the graph, and that is deliberate.**
+It is `encode_signal_kmer` output — a scatter of the one-hot k-mer context along
+the signal axis, built in the *dataset* from the base-to-signal map. Two options
+were on the table: bake it into the graph as an ONNX prefix, or keep it a
+documented call. **It stays a documented call**, because the scatter needs the
+base-to-signal map, which comes from the move table — an ONNX prefix would still
+have to take that map as an input, so it moves where the scatter happens without
+removing the consumer's obligation, and it would bake `signal_kmer_context` into
+the graph. The contract names the function and its parameters rather than
+leaving them to be re-derived — the same choice escapepod-rs's charging bundle
+makes by carrying its recipe in `metadata.json`.
+
+**But "one definition" is not yet true, and the fix is upstream.** `leech-core`
+ships the encoder, and it is tempting to say a consumer should just call it —
+except `leech_core` is `crate-type = ["cdylib"]`, a Python extension module, so
+escapepod-rs cannot link it. The primitive itself
+(`rust/src/encoding.rs::encode_signal_kmer_inner`) is pure, dependency-free and
+carries no model vocabulary: sequence ints, a base-to-signal map, a signal
+length and a k-mer context in, a `(4 * kmer_len, signal_len)` scatter out. That
+is an `escapepod-signal` primitive by every rule this stack already applies —
+and escapepod-signal owns `mapping`, which *produces* the map this consumes, so
+today the producer is upstream and the consumer is downstream. Moving it is
+rnabioco/escapepod-rs#271. Until it does,
+any Rust consumer has to transcribe it, which is a second definition, and the
+mitigation is a cross-language golden of the kind the CRF decode and the
+charging features already have.
+
+**Verification crosses the serialization boundary.** `verify_onnx` runs
+onnxruntime against torch and returns the max absolute difference, which is what
+an in-process assert cannot check. The CRF encoder measures 3.58e-07 against a
+float32 eps of 1.19e-07; the production classifier arms measured 4.77e-07 and
+1.19e-06 (rnabioco/leech#217). It also pins onnxruntime's thread pool, whose
+default affinity call fails inside any cgroup-restricted allocation and floods
+stderr.
+
 ### Key Classes and Functions
 
 **`MoveTable` (features.py)**
@@ -773,9 +830,11 @@ The codebase is feature-complete (v0.7.0):
 - ✓ CTC-CRF sequence models (`leech.crf`): encoder, training objective with an
   analytic forward-backward, optional Triton lattice kernels, and the two-pass
   Viterbi decode — ported from escapepod-models, torch + numpy only. Plus the
-  manifest seam, the corpus builder (`plan_corpus`/`build_corpus`) and the
-  trainer (`CrfTrainer`). The ONNX export and the metrics/eval half are not
-  here yet.
+  manifest seam, the corpus builder (`plan_corpus`/`build_corpus`), the trainer
+  (`CrfTrainer`) and the ONNX export. The metrics/eval half is not here yet.
+- ✓ ONNX export for the classifier arms and the CRF encoder
+  (`leech model export --format onnx`, `leech.crf.export`), dynamo exporter at
+  opset 18, each with a contract sidecar and a round-trip check against torch
 
 All core functionality is implemented and ready for use.
 

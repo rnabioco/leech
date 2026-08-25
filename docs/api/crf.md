@@ -162,6 +162,36 @@ AUROC/F1 checkpointing. Five things it does that are easy to get wrong:
   gradient counts. An epoch mean alone cannot tell one blown batch from a
   thousand mediocre ones.
 
+## Exporting for a native runtime
+
+`export_crf_onnx` writes `crf_encoder.onnx` plus a `metadata.json` contract.
+The **encoder only** — the decode is not expressible in standard ONNX ops, which
+is why `escapepod-demux` owns it.
+
+```python
+from leech.crf.export import export_crf_onnx
+
+export_crf_onnx("run/", "export/", sidecar="run/", references={"code01": target})
+```
+
+```
+input   signal  [batch, 1, chunk]                 float32, BATCH-major
+output  scores  [chunk // stride, batch, n_score] float32, TIME-major
+```
+
+Time-major output is the trap: the boundary CNN in the same stack is batch-major
+`[B, 2, L]`, so a consumer reusing that assumption silently transposes rather
+than failing, and needs its own load-time shape probe.
+
+The sidecar is not decoration. **Standardisation is in neither the architecture
+config nor the checkpoint** — the trainer derives it from the corpus — so a
+consumer holding only weights cannot standardise and decodes silently worse.
+Passing `references=` writes what the model *emits* (`target[state_len:]`),
+computed once from the `state_len` the encoder declares, so no caller can supply
+full-length targets by hand and inflate every edit distance.
+
+Requires the `onnx` extra: `uv sync --extra onnx`.
+
 ## Encoder
 
 ::: leech.crf.encoder.CrfEncoder
@@ -266,6 +296,16 @@ AUROC/F1 checkpointing. Five things it does that are easy to get wrong:
       show_root_heading: true
 
 ::: leech.crf.training.select_checkpoint
+    options:
+      show_root_heading: true
+
+## Export API
+
+::: leech.crf.export.export_crf_onnx
+    options:
+      show_root_heading: true
+
+::: leech.crf.export.load_training_sidecar
     options:
       show_root_heading: true
 

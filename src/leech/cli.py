@@ -1062,17 +1062,35 @@ def calibrate(model_dir, val_data, device, batch_size, num_workers, method, reg_
     "-o",
     required=True,
     type=click.Path(path_type=Path),
-    help="Output TorchScript .pt file path",
+    help="Output file path (.pt for torch, .onnx for onnx)",
 )
-def export(model_dir, output):
-    """Export a trained model as a standalone .pt file.
+@click.option(
+    "--format",
+    "fmt",
+    type=click.Choice(["torch", "onnx"]),
+    default="torch",
+    show_default=True,
+    help="torch: loadable with torch.export.load(). onnx: loadable by any ONNX "
+    "runtime, and the only option for a consumer without PyTorch.",
+)
+def export(model_dir, output, fmt):
+    """Export a trained model as a standalone file.
 
-    The exported file is loadable with just torch.export.load() — no leech
-    codebase required. Model config is embedded in the file.
+    \b
+    torch  loadable with torch.export.load() — no leech required; config is
+           embedded in the file.
+    onnx   loadable by any ONNX runtime. Writes a `.json` contract beside the
+           graph naming each input's role and the output convention (a single
+           BCE logit, NOT a two-class softmax), neither of which a consumer can
+           recover from the graph.
+
+    With `--seq-encoding signal_kmer`, the `sequence` input is produced outside
+    the model, in the dataset. The contract names how; `leech-core` ships that
+    encoder, and calling it keeps one definition of the rule.
     """
     from leech.commands.bundle import handle_export
 
-    handle_export(model_dir=model_dir, output=output)
+    handle_export(model_dir=model_dir, output=output, fmt=fmt)
 
 
 @model.command()

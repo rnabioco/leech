@@ -237,7 +237,7 @@ def handle_bundle_info(bundle: Path) -> dict[str, Any]:
     return metadata
 
 
-def handle_export(model_dir: Path, output: Path) -> Path:
+def handle_export(model_dir: Path, output: Path, fmt: str = "torch") -> Path:
     """
     Handle the export command logic.
 
@@ -250,7 +250,12 @@ def handle_export(model_dir: Path, output: Path) -> Path:
     """
     from leech.model_export import export_single_model
 
-    output_path = export_single_model(model_dir, output)
+    if fmt == "onnx":
+        from leech.model_export import export_single_model_onnx
+
+        output_path = export_single_model_onnx(model_dir, output)
+    else:
+        output_path = export_single_model(model_dir, output)
     size_mb = output_path.stat().st_size / (1024 * 1024)
 
     table = Table(title="Export Summary", show_header=True, header_style="bold magenta")
