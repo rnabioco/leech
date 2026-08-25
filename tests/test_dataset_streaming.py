@@ -8,7 +8,15 @@ preallocated tensor from row blocks read straight off the npz.
 The hard gate here is parity: a dataset built from a path (streaming) must be
 bit-identical to one built from pre-loaded chunks (eager), field by field, over
 the option matrix that changes how chunks are prepared.
+
+Streaming now also prepares a whole row block at a time rather than a chunk at
+a time (the loop cost 72 us per chunk, ~8 minutes of startup on a 6.7M-chunk
+corpus). ``TestBlockFillParity`` is the gate on that: the block-wise filler and
+the per-chunk one — which is the old loop, moved but not altered — must produce
+identical tensors over the same matrix.
 """
+
+import contextlib
 
 import numpy as np
 import pytest
@@ -23,6 +31,7 @@ from leech.chunking import (
     npz_member_names,
     save_chunks,
 )
+from leech.chunking.table import ChunkRow
 from leech.dataset import LeechDataset
 
 #: Per-chunk arrays: streamed or deferred, so they are not metadata and the
@@ -52,33 +61,47 @@ def make_chunks(
     with_maps: bool = True,
     unlabeled: tuple[int, ...] = (),
     seed: int = 0,
+    ragged_sequences: bool = False,
+    varying_feature_start: bool = False,
+    without_focus: bool = False,
+    classes: int = 2,
 ) -> list[dict]:
     """Build a small synthetic corpus.
 
     Focus positions vary per chunk so an asymmetric crop lands inside the
     stored signal for some rows and overhangs it (the zero-pad branch) for
     others — the per-row gather the streaming path has to reproduce.
+
+    ``ragged_sequences``, ``varying_feature_start`` and ``without_focus`` each
+    put one column into a shape the block-wise filler has to notice: a text
+    column whose rows are not all the same length, a per-chunk feature window,
+    and a corpus with no focus position at all.
     """
     rng = np.random.default_rng(seed)
     chunks = []
     for i in range(n):
+        sequence = "".join(rng.choice(list("ACGT"), KMER_LEN))
         chunk = {
             "signal": rng.standard_normal(signal_len).astype(np.float32),
-            "sequence": "".join(rng.choice(list("ACGT"), KMER_LEN)),
+            "sequence": sequence[: KMER_LEN - (i % 2)] if ragged_sequences else sequence,
             "dwell": rng.integers(1, 9, FEAT_WIDTH).astype(np.float32),
             "features": rng.standard_normal((NUM_FEATURES, FEAT_WIDTH)).astype(np.float32),
-            "label": "charged" if i % 2 else "uncharged",
-            "label_int": None if i in unlabeled else i % 2,
+            "label": f"class{i % classes}"
+            if classes > 2
+            else ("charged" if i % 2 else "uncharged"),
+            "label_int": None if i in unlabeled else i % classes,
             "read_id": f"read_{i:03d}",
             "base_idx": 100 + i,
             "source_group": "Ala" if i % 3 else "Gly",
             "reference_name": "tRNA-Ala-AGC",
-            "feature_start": -(FEAT_WIDTH // 2),
+            "feature_start": -(FEAT_WIDTH // 2) + (i % 2 if varying_feature_start else 0),
             "feature_end": FEAT_WIDTH // 2,
             "cl_value": i % 5,
             # 8, 22, 36, 50, 8, ... : the first and last overhang a 20/24 crop.
             "focus_signal_pos": 8 + 14 * (i % 4),
         }
+        if without_focus:
+            del chunk["focus_signal_pos"]
         if with_residual:
             chunk["signal_residual"] = rng.standard_normal(signal_len).astype(np.float32)
         if with_maps:
@@ -96,6 +119,70 @@ def build(path, **kwargs) -> tuple[LeechDataset, LeechDataset]:
     streamed = LeechDataset(chunk_path=path, **kwargs)
     eager = LeechDataset(chunks=load_chunks(path), **kwargs)
     return streamed, eager
+
+
+@contextlib.contextmanager
+def forced_row_fill(monkeypatch):
+    """Make every dataset built inside take the per-chunk filler.
+
+    ``_block_fill_supported`` returning False is exactly the pre-block-wise
+    behaviour: ``_fill_from_rows`` is the original loop, moved but not altered.
+    """
+    monkeypatch.setattr(LeechDataset, "_block_fill_supported", lambda self: False)
+    try:
+        yield
+    finally:
+        monkeypatch.undo()
+
+
+def build_both_fillers(monkeypatch, path, **kwargs) -> tuple[LeechDataset, LeechDataset]:
+    """Return (block-filled, row-filled) datasets from the same file and options."""
+    blocked = LeechDataset(chunk_path=path, **kwargs)
+    with forced_row_fill(monkeypatch):
+        rowed = LeechDataset(chunk_path=path, **kwargs)
+    return blocked, rowed
+
+
+#: (name, make_chunks kwargs, LeechDataset kwargs). Every option that changes
+#: how a chunk is prepared, so the block-wise filler is held to the per-chunk
+#: one everywhere it is allowed to run.
+BASE_OPTIONS = {
+    "signal_len": STORED_SIGNAL_LEN,
+    "kmer_len": KMER_LEN,
+    "model_type": "ConvLSTMDwell",
+    "seq_encoding": "base_onehot",
+}
+ASYM_OPTIONS = {**BASE_OPTIONS, "signal_len": 44, "left_context": 20, "right_context": 24}
+KMER_OPTIONS = {**BASE_OPTIONS, "seq_encoding": "signal_kmer", "signal_kmer_context": (2, 2)}
+
+FILL_MATRIX = [
+    ("signal_mode_both", {}, BASE_OPTIONS),
+    ("signal_mode_signal", {}, {**BASE_OPTIONS, "signal_mode": "signal"}),
+    ("signal_mode_residual", {}, {**BASE_OPTIONS, "signal_mode": "residual"}),
+    ("no_residual", {"with_residual": False}, BASE_OPTIONS),
+    ("asymmetric_crop", {}, ASYM_OPTIONS),
+    ("asymmetric_wide_features", {}, {**ASYM_OPTIONS, "model_type": "TCNDwellResidualLN"}),
+    ("no_feature_branch", {}, {**BASE_OPTIONS, "model_type": "ConvLSTMBase"}),
+    ("wide_features", {}, {**BASE_OPTIONS, "model_type": "TCNDwellResidualLN"}),
+    ("dwell_offset", {}, {**BASE_OPTIONS, "dwell_offset": 1}),
+    ("signal_kmer", {}, KMER_OPTIONS),
+    ("signal_kmer_asymmetric", {}, {**KMER_OPTIONS, **ASYM_OPTIONS, "seq_encoding": "signal_kmer"}),
+    ("signal_kmer_without_maps", {"with_maps": False}, KMER_OPTIONS),
+    ("cl_regression", {}, {**BASE_OPTIONS, "cl_regression": True}),
+    ("multiclass", {"classes": 4}, BASE_OPTIONS),
+    ("unlabeled_rows", {"unlabeled": (0, 1, 6, 11)}, BASE_OPTIONS),
+    ("varying_feature_start", {"varying_feature_start": True}, BASE_OPTIONS),
+    ("without_focus", {"without_focus": True}, BASE_OPTIONS),
+    ("without_focus_asymmetric", {"without_focus": True}, ASYM_OPTIONS),
+    (
+        "without_focus_signal_kmer",
+        {"without_focus": True},
+        {**KMER_OPTIONS, **ASYM_OPTIONS, "seq_encoding": "signal_kmer"},
+    ),
+    ("short_stored_signal", {"signal_len": 40}, BASE_OPTIONS),
+    ("long_stored_signal", {"signal_len": 100}, BASE_OPTIONS),
+    ("many_blocks", {"n": 900}, BASE_OPTIONS),
+]
 
 
 def assert_datasets_equal(streamed: LeechDataset, eager: LeechDataset) -> None:
@@ -368,6 +455,103 @@ class TestStreamingParity:
         assert_datasets_equal(streamed, eager)
 
 
+class TestBlockFillParity:
+    """Preparing a row block at a time must equal preparing a chunk at a time."""
+
+    @pytest.mark.parametrize("name,corpus,options", FILL_MATRIX, ids=[c[0] for c in FILL_MATRIX])
+    @pytest.mark.parametrize("compressed", [True, False])
+    def test_block_filler_matches_row_filler(
+        self, tmp_path, monkeypatch, name, corpus, options, compressed
+    ):
+        path = tmp_path / "chunks.npz"
+        save_chunks(make_chunks(**corpus), path, compressed=compressed)
+        blocked, rowed = build_both_fillers(monkeypatch, path, **options)
+        assert_datasets_equal(blocked, rowed)
+
+    @pytest.mark.parametrize("name,corpus,options", FILL_MATRIX, ids=[c[0] for c in FILL_MATRIX])
+    def test_block_filler_matches_preloaded_chunks(self, tmp_path, name, corpus, options):
+        """And the whole point: the block-wise path still equals the eager one."""
+        path = tmp_path / "chunks.npz"
+        save_chunks(make_chunks(**corpus), path)
+        streamed, eager = build(path, **options)
+        assert streamed._block_fill_supported()
+        assert_datasets_equal(streamed, eager)
+
+    def test_block_fill_declines_dwell_templates(self, tmp_path):
+        """The per-AA template append reads one chunk at a time; say so."""
+        table = tmp_path / "templates.tsv"
+        rows = ["aa\tposition\tdwell_mean"]
+        for aa in ("Ala", "Gly"):
+            for pos in range(-6, 7):
+                rows.append(f"{aa}\t{pos}\t{4.0 + pos * 0.1}")
+        table.write_text("\n".join(rows) + "\n")
+
+        path = tmp_path / "chunks.npz"
+        save_chunks(make_chunks(12), path)
+        dataset = LeechDataset(chunk_path=path, dwell_template_table=table, **BASE_OPTIONS)
+        assert not dataset._block_fill_supported()
+
+    def test_block_fill_declines_ragged_sequences(self, tmp_path):
+        """A NUL-padded row in the text column is a short sequence, not a base."""
+        path = tmp_path / "chunks.npz"
+        save_chunks(make_chunks(10, ragged_sequences=True), path)
+        dataset = LeechDataset(chunk_path=path, **BASE_OPTIONS)
+        assert not dataset._block_fill_supported()
+        assert dataset._encoded_seqs_tensor is None  # degraded, as before
+
+    def test_block_fill_declines_a_feature_window_off_the_array(self, tmp_path):
+        """The documented ValueError must still come from the row path."""
+        path = tmp_path / "chunks.npz"
+        save_chunks(make_chunks(8), path)
+        with pytest.raises(ValueError, match="exceeds feature width"):
+            LeechDataset(chunk_path=path, dwell_offset=99, **BASE_OPTIONS)
+
+    def test_block_fill_declines_a_ragged_asymmetric_crop(self, tmp_path):
+        """An in-bounds width that differs from signal_len makes the output ragged.
+
+        ``left + right`` is the width of the in-bounds branch while the
+        overhang branch pads to ``signal_len``; when they disagree and some
+        row overhangs, only the per-chunk path can produce the result.
+        """
+        path = tmp_path / "chunks.npz"
+        save_chunks(make_chunks(12), path)
+        options = {**BASE_OPTIONS, "signal_len": 50, "left_context": 20, "right_context": 24}
+        dataset = LeechDataset(chunk_path=path, **options)
+        assert not dataset._block_fill_supported()
+
+    def test_construction_does_not_build_a_row_view_per_chunk(self, tmp_path, monkeypatch):
+        """No pass over the chunks may materialise a ChunkRow per chunk.
+
+        Three did: the tensorize loop itself, the multi-class label tally and
+        the asymmetric-crop focus lookup. Each cost ~150 ms per 200k chunks
+        and ~5 s on the corpus in #211, before a single batch was served.
+        """
+        path = tmp_path / "chunks.npz"
+        save_chunks(make_chunks(600), path)
+
+        built = []
+        original = ChunkRow.__init__
+
+        def counting(self, table, index):
+            built.append(index)
+            original(self, table, index)
+
+        monkeypatch.setattr(ChunkRow, "__init__", counting)
+        LeechDataset(
+            chunk_path=path,
+            signal_len=44,
+            kmer_len=KMER_LEN,
+            model_type="ConvLSTMDwell",
+            seq_encoding="signal_kmer",
+            signal_kmer_context=(2, 2),
+            left_context=20,
+            right_context=24,
+        )
+        # A couple of probes (does the first chunk have a map?) are fine; a
+        # count that scales with the corpus is the regression.
+        assert len(built) < 10, f"{len(built)} row views built for 600 chunks"
+
+
 class TestRowAlignment:
     """Rows dropped by label filtering must not shift the stream."""
 
@@ -496,12 +680,15 @@ class TestLegacyFormats:
 class TestPeakMemory:
     """Guards on the two copies #211 removed."""
 
-    def test_init_never_allocates_a_second_copy(self, tmp_path, monkeypatch):
-        """Every stack during init writes into the preallocated output.
+    @pytest.mark.parametrize("filler", ["block", "row"])
+    def test_init_never_allocates_a_second_copy(self, tmp_path, monkeypatch, filler):
+        """Nothing during init allocates a copy of the output.
 
         ``torch.stack(items)`` allocates the whole result while ``items`` is
-        still alive — that was the third copy in #211. Writing through ``out=``
-        in bounded batches is what replaced it.
+        still alive — that was the third copy in #211. The per-chunk filler
+        replaced it with ``out=`` writes in bounded batches; the block-wise one
+        copies a prepared block straight into the buffer and does not stack at
+        all. Either way, no stack may allocate.
         """
         from leech.dataset import _TensorFill
 
@@ -516,6 +703,8 @@ class TestPeakMemory:
             return real_stack(tensors, *args, **kwargs)
 
         monkeypatch.setattr(torch, "stack", record)
+        if filler == "row":
+            monkeypatch.setattr(LeechDataset, "_block_fill_supported", lambda self: False)
         dataset = LeechDataset(
             chunk_path=path,
             signal_len=STORED_SIGNAL_LEN,
@@ -524,10 +713,41 @@ class TestPeakMemory:
             seq_encoding="base_onehot",
         )
         assert dataset._signals_tensor.shape[0] == 600
-        assert calls, "expected the fill to stack in batches"
         allocating = [n for n, has_out in calls if not has_out]
         assert not allocating, f"{len(allocating)} stacks allocated instead of writing to out="
-        assert max(n for n, _ in calls) <= _TensorFill._BATCH_ROWS
+        if filler == "row":
+            assert calls, "expected the per-chunk fill to stack in batches"
+            assert max(n for n, _ in calls) <= _TensorFill._BATCH_ROWS
+        else:
+            assert not calls, "the block-wise fill has nothing to stack"
+
+    def test_block_fill_holds_one_block_of_transient(self, tmp_path):
+        """Preparing a block must not scale the transient with the corpus.
+
+        The block-wise filler vectorizes, and vectorizing is exactly how a
+        transient the size of the output gets allocated by accident. tracemalloc
+        sees numpy but not torch, so this measures the prepared blocks.
+        """
+        import tracemalloc
+
+        options = {**BASE_OPTIONS, "signal_len": 2048}
+
+        def peak(n_chunks):
+            path = tmp_path / f"chunks_{n_chunks}.npz"
+            save_chunks(make_chunks(n_chunks, signal_len=2048), path, compressed=False)
+            tracemalloc.start()
+            dataset = LeechDataset(chunk_path=path, **options)
+            assert dataset._block_fill_supported()
+            _, measured = tracemalloc.get_traced_memory()
+            tracemalloc.stop()
+            del dataset
+            return measured
+
+        small, large = peak(750), peak(1500)
+        assert large < small * 1.5, (
+            f"block-wise peak grew from {small / 1e6:.1f} MB to {large / 1e6:.1f} MB "
+            f"when the corpus doubled — a block is being sized by the corpus"
+        )
 
     def test_streaming_peak_does_not_scale_with_corpus(self, tmp_path):
         """The point of streaming: the array copy is bounded by the block size.

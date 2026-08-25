@@ -203,6 +203,35 @@ class TestStorage:
         assert ChunkTable.from_npz(path).values("dwell_margin_left") is None
 
 
+class TestSingleValue:
+    """``value(field, index)`` is a row read without the row.
+
+    Callers that need the *translated* form of a handful of rows — mapping a
+    column's distinct values through a lookup table, say — should not have to
+    build a ``ChunkRow`` to get it.
+    """
+
+    def test_matches_the_row_view(self, corpus):
+        path, chunks = corpus
+        table = ChunkTable.from_npz(path)
+        for index in range(len(table)):
+            row = table[index]
+            for field in row:
+                assert table.value(field, index) == row[field], f"{field} at {index}"
+
+    def test_applies_the_missing_value_translation(self, corpus):
+        path, _ = corpus
+        table = ChunkTable.from_npz(path)
+        # cl_value -1 and an empty source_group both mean None to a row.
+        assert table.value("cl_value", 0) is None
+        assert table.value("source_group", 0) is None
+        assert table.value("cl_value", 1) == 1
+
+    def test_absent_field_reads_as_none(self, corpus):
+        path, _ = corpus
+        assert ChunkTable.from_npz(path).value("dwell_margin_left", 0) is None
+
+
 class TestLegacyCorpora:
     def test_dwell_margin_left_replaces_the_signed_window(self, tmp_path):
         """Pre-feature_start corpora carry dwell_margin_lefts instead."""
