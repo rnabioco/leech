@@ -51,6 +51,28 @@ def resolve_feature_window(
     return start, end, end - start + 1
 
 
+def merge_feature_channels(
+    dwell_features: dict[str, np.ndarray],
+    signal_features: dict[str, np.ndarray],
+) -> list[tuple[str, np.ndarray]]:
+    """Order the per-base feature arrays into the chunk's feature rows.
+
+    Row order *is* the model's input channel order, so it is part of every
+    trained checkpoint: reordering it silently feeds `level_mean` into the
+    filter that learned `dwell_log`. It is the dict-merge order it has always
+    been -- dwell rows in `compute_dwell_features` order, then the level rows
+    in `compute_signal_features` order, then the three k-mer residual rows that
+    `preparation.reader` folds into `signal_features` -- and it must stay equal
+    to the order `rust/src/inference_pipeline/processing.rs` pushes rows in.
+    `tests/test_data_prep.py::TestFeatureChannelOrder` pins it.
+
+    Resolved once per read rather than once per focus base: all-bases mode
+    calls `get_chunk` thousands of times per read and each call was rebuilding
+    this dict.
+    """
+    return list({**dwell_features, **signal_features}.items())
+
+
 class LeechRead:
     """
     Container for a single read's data with all features.
@@ -64,6 +86,9 @@ class LeechRead:
         dwells: Per-base dwell times
         dwell_features: Dict of dwell-derived features
         signal_features: Dict of signal-level features
+        feature_channels: The two dicts merged into the ordered ``(name,
+            array)`` feature rows every chunk is cut from. Resolved once here;
+            mutating either dict afterwards will not be picked up.
         labels: Optional labels for training (e.g., 0=uncharged, 1=charged)
         metadata: Additional metadata (alignment info, etc.)
         full_signal: When ref-anchored mode crops ``signal`` to the aligned
@@ -98,6 +123,7 @@ class LeechRead:
         self.dwells = dwells
         self.dwell_features = dwell_features
         self.signal_features = signal_features
+        self.feature_channels = merge_feature_channels(dwell_features, signal_features)
         self.labels = labels
         self.metadata = metadata if metadata is not None else {}
         self.signal_residual = signal_residual
@@ -292,9 +318,10 @@ class LeechRead:
         else:
             dwell_chunk = raw_dwell
 
-        # Compile additional features (also with wider window, safe boundary)
+        # Compile additional features (also with wider window, safe boundary).
+        # Channel order was fixed once in __init__ -- see merge_feature_channels.
         features = []
-        for _feat_name, feat_array in {**self.dwell_features, **self.signal_features}.items():
+        for _feat_name, feat_array in self.feature_channels:
             if safe_start < safe_end:
                 raw_feat = feat_array[safe_start:safe_end]
             else:

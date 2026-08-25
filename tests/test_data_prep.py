@@ -1070,6 +1070,127 @@ class TestMergeArraysBySplit:
             assert c["source_group"] == "my_source"
 
 
+class TestFeatureChannelOrder:
+    """Audit R3: feature rows are ordered once per read, and the order is fixed.
+
+    Row order is the model's input channel order, so it is baked into every
+    trained checkpoint. It used to be whatever `{**dwell, **signal}` produced
+    inside `get_chunk`, rebuilt per focus base and asserted nowhere.
+    """
+
+    EXPECTED = [
+        "dwell",
+        "dwell_log",
+        "dwell_mean",
+        "dwell_std",
+        "dwell_ratio",
+        "level_mean",
+        "level_median",
+        "level_std",
+        "level_range",
+        "kmer_expected",
+        "kmer_residual",
+        "kmer_residual_abs",
+    ]
+
+    @staticmethod
+    def _build_read(num_bases=40, dwell=8, seed=3):
+        """A LeechRead whose feature dicts are built the way `reader.py` builds them."""
+        from leech.features import (
+            compute_dwell_features,
+            compute_kmer_residual_features,
+            compute_signal_features,
+        )
+
+        rng = np.random.default_rng(seed)
+        seq_to_sig = np.arange(num_bases + 1, dtype=np.int64) * dwell
+        signal = rng.standard_normal(num_bases * dwell).astype(np.float32)
+        sequence = "".join(rng.choice(list("ACGT"), num_bases))
+        dwells = np.diff(seq_to_sig)
+
+        dwell_feats = compute_dwell_features(dwells)
+        signal_feats = compute_signal_features(signal, seq_to_sig)
+        # preparation.reader folds the residual rows into signal_features.
+        signal_feats.update(
+            compute_kmer_residual_features(signal, seq_to_sig, sequence, {}, kmer_len=1)
+        )
+        return LeechRead(
+            read_id="chan_order",
+            sequence=sequence,
+            signal=signal,
+            seq_to_sig_map=seq_to_sig,
+            dwells=dwells,
+            dwell_features=dwell_feats,
+            signal_features=signal_feats,
+        )
+
+    def test_channel_names_and_order(self):
+        read = self._build_read()
+        assert [name for name, _ in read.feature_channels] == self.EXPECTED
+
+    def test_chunk_rows_follow_the_channel_order(self):
+        """`get_chunk` must emit rows in `feature_channels` order, one per channel."""
+        read = self._build_read()
+        chunk = read.get_chunk(base_idx=20, signal_context=(40, 40), kmer_context=5)
+        assert chunk is not None
+        rows = chunk["features"]
+        assert rows.shape == (len(self.EXPECTED), 11)
+        for row_idx, (_name, array) in enumerate(read.feature_channels):
+            np.testing.assert_array_equal(rows[row_idx], array[15:26])
+
+    def test_row_order_matches_the_rust_pipeline(self):
+        """The order chunks are cut in must be the order Rust pushes rows in.
+
+        Compared by value against `_test_process_read`, not against a copied
+        name list, so the two cannot drift apart with the test still passing.
+        The Rust helper emits the nine dwell+level rows; the three k-mer
+        residual rows are appended after them on both sides.
+        """
+        pytest.importorskip("leech_core")
+        from leech._rust_accel import _rs_test_process_read
+        from leech.features import compute_dwell_features, compute_signal_features
+
+        num_bases, mean_dwell, stride, trim_offset = 40, 8, 5, 10
+        rng = np.random.default_rng(11)
+        total_positions = num_bases * mean_dwell
+        moves = np.zeros(total_positions, dtype=np.uint8)
+        moves[::mean_dwell] = 1
+        num_samples = trim_offset + total_positions * stride
+        raw_signal = rng.integers(400, 800, num_samples).astype(np.int16)
+
+        rs_norm, rs_map, rs_dwells, rs_feats = _rs_test_process_read(
+            raw_signal.tolist(),
+            moves.tolist(),
+            stride,
+            trim_offset,
+            num_samples,
+            reverse_signal=False,
+        )
+        rs_norm = np.asarray(rs_norm)
+        rs_map = np.asarray(rs_map)
+
+        # Python feature dicts over the same normalized signal and map, so the
+        # only thing under test is which row each feature lands in.
+        read = LeechRead(
+            read_id="rust_order",
+            sequence="A" * (len(rs_map) - 1),
+            signal=rs_norm,
+            seq_to_sig_map=rs_map,
+            dwells=np.asarray(rs_dwells),
+            dwell_features=compute_dwell_features(np.asarray(rs_dwells)),
+            signal_features=compute_signal_features(rs_norm, rs_map),
+        )
+        assert len(read.feature_channels) == rs_feats.shape[0]
+        for row_idx, (name, array) in enumerate(read.feature_channels):
+            np.testing.assert_allclose(
+                array,
+                rs_feats[row_idx],
+                rtol=1e-5,
+                atol=1e-6,
+                err_msg=f"feature '{name}' is not Rust row {row_idx}",
+            )
+
+
 class _FakeAlignment:
     """Duck-typed stand-in exposing exactly what `ReadInfo.__init__` reads.
 
