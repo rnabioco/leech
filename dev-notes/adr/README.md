@@ -22,6 +22,10 @@ ADRs capture important architectural decisions along with their context and cons
 - [ADR 0003: Model Component Abstraction](0003-model-component-abstraction.md) - Reusable neural network branch components
 - [ADR 0004: Inference Wrapper Pattern](0004-inference-wrapper-pattern.md) - Unified forward pass interface
 
+### Data Loading
+
+- [ADR 0006: Memory-Mapped Chunk Corpora](0006-memory-mapped-chunk-corpora.md) - Why the training read path stays resident, and what to do instead (#211)
+
 ## ADR Format
 
 Each ADR follows this structure:
