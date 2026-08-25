@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **ONNX export, for the classifier arms and the CRF encoder** (#217).
+  `leech model export --format onnx` beside the existing `--format torch`
+  (unchanged default), and `leech.crf.export.export_crf_onnx`. `torch.export`
+  makes a model loadable by anything with PyTorch and by nothing else; a runtime
+  consuming ONNX — which is what escapepod-rs runs — could not load a leech
+  model at all.
+
+  Both use the **dynamo exporter at opset 18**. `dynamo=False`, the obvious
+  first attempt, fails on these architectures with an `adaptive_avg_pool1d`
+  error that reads like a model problem and is an exporter limitation; that is
+  documented where someone will hit it, and a regression test pins it.
+
+  Each export writes a **contract** beside the graph, carrying the two things a
+  consumer needs and cannot recover from it: which input is which (including
+  that the `signal_kmer` sequence input is built in the dataset, not the model,
+  and that `leech-core` ships that encoder), and what the output means — a
+  single BCE logit, not a two-class softmax. The CRF's contract additionally
+  carries standardisation, which is in neither the config nor the checkpoint,
+  and its emitted references (`target[state_len:]`), computed from the
+  `state_len` the encoder declares.
+
+  Verified across the serialization boundary rather than in process:
+  onnxruntime against torch, 3.58e-07 for the CRF encoder against a float32 eps
+  of 1.19e-07.
+
+  New `onnx` extra (`onnx`, `onnxruntime`, `onnxscript`). CI installs it so the
+  round-trip tests run rather than skip.
+
+### Added
+
 - **`leech.crf.training`: a CTC-CRF trainer.** `CrfTrainer` runs the schedule
   and writes `model.pt` plus a `model.json` sidecar. The sidecar is not optional:
   the standardisation constants live in neither the architecture config nor the

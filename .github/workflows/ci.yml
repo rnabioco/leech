@@ -117,8 +117,12 @@ jobs:
           # don't import snakemake/plotnine). Full install (Rust extension +
           # escapepod); fall back without the Rust extension (leech_core) but keep
           # escapepod (a PyPI wheel), which leech imports unconditionally.
-          uv pip install --torch-backend=cpu -e ".[test,rust,pod5]" \
-            || uv pip install --torch-backend=cpu -e ".[test,pod5]"
+          # `onnx` is here so the export round-trip tests actually RUN rather
+          # than skipping: they compare onnxruntime against torch across the
+          # serialization boundary, which is the check an in-process assert
+          # cannot make.
+          uv pip install --torch-backend=cpu -e ".[test,rust,pod5,onnx]" \
+            || uv pip install --torch-backend=cpu -e ".[test,pod5,onnx]"
 
       - name: Run tests
         env:

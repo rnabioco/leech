@@ -63,6 +63,16 @@ rust = ["leech-core==0.8.0"]
 # Retained as a no-op alias: escapepod is now a required dependency, but
 # `--extra pod5` appears in existing docs, CI, and user scripts.
 pod5 = []
+# ONNX export (`leech model export --format onnx`, `leech.crf.export`).
+# Optional because torch alone can export the graph -- it is the round-trip
+# VERIFY, which compares onnxruntime against torch across the serialization
+# boundary, that needs these. That check is what catches what an in-process
+# assert cannot, so the extra is worth having rather than skipping the step.
+onnx = [
+  "onnx>=1.17.0",
+  "onnxruntime>=1.20.0",
+  "onnxscript>=0.1.0",  # required by torch.onnx.export(dynamo=True)
+]
 # Minimal deps to run the test suite (used by CI's test job).
 test = [
   "pytest>=8.0.0",
@@ -72,6 +82,7 @@ test = [
 # Full local dev env: test runners + lint/type/QA tooling.
 dev = [
   "leech[test]",
+  "leech[onnx]",
   "ruff>=0.16.1",  # Modern linter/formatter (replaces black + flake8)
   "ty>=0.0.66",
   "ruff>=0.16.1",  # Modern linter/formatter (replaces black + flake8)
