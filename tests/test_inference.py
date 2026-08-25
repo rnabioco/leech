@@ -1202,6 +1202,151 @@ class TestBatchAccumulator:
 
 
 # ---------------------------------------------------------------------------
+# _stack_to_device: pinned staging buffers for the host->device batch copy
+# ---------------------------------------------------------------------------
+
+
+class TestStackToDevice:
+    """The pinned staging path must return exactly what the pageable one did."""
+
+    @staticmethod
+    def _batch(n, shape, seed):
+        import numpy as np
+
+        rng = np.random.default_rng(seed)
+        return [rng.standard_normal(shape, dtype=np.float32) for _ in range(n)]
+
+    def test_cpu_matches_plain_stack(self):
+        import numpy as np
+
+        from leech.inference.helpers import _stack_to_device
+
+        arrays = self._batch(5, (2, 7), 0)
+        got = _stack_to_device(arrays, "cpu", "signal")
+        assert torch.equal(got, torch.from_numpy(np.stack(arrays)))
+
+    def test_cpu_preserves_dtype_and_shape(self):
+        import numpy as np
+
+        from leech.inference.helpers import _stack_to_device
+
+        arrays = [np.arange(6, dtype=np.float32).reshape(2, 3) for _ in range(3)]
+        got = _stack_to_device(arrays, "cpu", "features")
+        assert got.shape == (3, 2, 3)
+        assert got.dtype == torch.float32
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+    def test_cuda_matches_pageable_copy(self):
+        import numpy as np
+
+        from leech.inference.helpers import _stack_to_device
+
+        arrays = self._batch(9, (2, 11), 1)
+        got = _stack_to_device(arrays, "cuda", "signal")
+        want = torch.from_numpy(np.stack(arrays)).to("cuda")
+        assert got.is_cuda
+        assert torch.equal(got, want)
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+    def test_cuda_reuse_does_not_leak_stale_rows(self):
+        """A reused staging buffer must never hand back the previous batch's rows.
+
+        The buffer is grown, not reallocated, so a shorter batch reads a view
+        over rows that still hold the longer batch's data.
+        """
+        import numpy as np
+
+        from leech.inference.helpers import _stack_to_device
+
+        big = self._batch(16, (2, 5), 2)
+        _stack_to_device(big, "cuda", "signal")
+        for n in (16, 4, 12, 1, 16):
+            arrays = self._batch(n, (2, 5), 100 + n)
+            got = _stack_to_device(arrays, "cuda", "signal").cpu()
+            assert torch.equal(got, torch.from_numpy(np.stack(arrays)))
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs CUDA")
+    def test_cuda_slots_do_not_alias(self):
+        """signal/sequence/features must not share one staging buffer."""
+        import numpy as np
+
+        from leech.inference.helpers import _stack_to_device
+
+        a = self._batch(4, (2, 5), 3)
+        b = self._batch(4, (2, 5), 4)
+        ta = _stack_to_device(a, "cuda", "signal")
+        tb = _stack_to_device(b, "cuda", "sequence")
+        assert torch.equal(ta.cpu(), torch.from_numpy(np.stack(a)))
+        assert torch.equal(tb.cpu(), torch.from_numpy(np.stack(b)))
+
+
+# ---------------------------------------------------------------------------
+# _run_batch / _run_batch_multiclass: probabilities reach `pending` unchanged
+# ---------------------------------------------------------------------------
+
+
+class _FixedLogitsWrapper:
+    """Model stand-in returning preset logits, ignoring its inputs."""
+
+    requires_features = False
+
+    def __init__(self, logits):
+        self._logits = logits
+
+    def forward_batch(self, batch, device):
+        return self._logits
+
+
+class TestRunBatchProbabilities:
+    """`tolist()` on the whole batch must equal `float(p)` per element."""
+
+    def test_multiclass_probs_are_exact_float_promotions(self):
+        import numpy as np
+
+        from leech.inference.helpers import _run_batch_multiclass
+
+        logits = torch.tensor([[0.1, -2.0, 3.5], [-1.0, 0.25, 0.75]], dtype=torch.float32)
+        n = logits.shape[0]
+        signals = [np.zeros((1, 4), dtype=np.float32) for _ in range(n)]
+        seqs = [np.zeros((4, 3), dtype=np.float32) for _ in range(n)]
+        meta = [("readA", 0), ("readB", 1)]
+        pending: dict = {}
+        _run_batch_multiclass(
+            signals, seqs, [None, None], meta, _FixedLogitsWrapper(logits), False, "cpu", pending
+        )
+
+        probs = torch.softmax(logits, dim=-1).numpy()
+        for i, (read_id, base_idx) in enumerate(meta):
+            stored = pending[read_id][0]
+            assert stored[0] == base_idx
+            assert stored[1] == int(np.argmax(probs[i]))
+            assert stored[2] == float(probs[i].max())
+            # exactly what the per-element float() comprehension produced
+            assert stored[3] == [float(p) for p in probs[i]]
+            assert all(type(p) is float for p in stored[3])
+
+    def test_binary_probs_are_exact_float_promotions(self):
+        import numpy as np
+
+        from leech.inference.helpers import _run_batch
+
+        logits = torch.tensor([[0.3], [-1.7], [2.25]], dtype=torch.float32)
+        n = logits.shape[0]
+        signals = [np.zeros((1, 4), dtype=np.float32) for _ in range(n)]
+        seqs = [np.zeros((4, 3), dtype=np.float32) for _ in range(n)]
+        meta = [("readA", 0), ("readA", 5), ("readB", 2)]
+        pending: dict = {}
+        _run_batch(
+            signals, seqs, [None] * n, meta, _FixedLogitsWrapper(logits), False, "cpu", pending
+        )
+
+        want = torch.sigmoid(logits).numpy().flatten()
+        assert pending["readA"] == [(0, float(want[0])), (5, float(want[1]))]
+        assert pending["readB"] == [(2, float(want[2]))]
+        assert all(type(p) is float for _, p in pending["readA"])
+
+
+# ---------------------------------------------------------------------------
 # Extraction-path parity: every path through run_inference must agree
 #
 # `single.py` carries two complete extraction paths (multiprocessing workers

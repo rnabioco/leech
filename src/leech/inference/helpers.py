@@ -3,7 +3,8 @@
 import array
 import json
 import logging
-from collections.abc import Callable
+import threading
+from collections.abc import Callable, Hashable
 from pathlib import Path
 
 import numpy as np
@@ -605,6 +606,71 @@ def prepare_signal_channels(chunk: dict, signal_len: int) -> np.ndarray:
     return sig
 
 
+# Per-thread pinned staging buffers for host->device batch copies.
+#
+# `torch.from_numpy(np.stack(x)).to(device)` copies out of pageable memory: the
+# driver has to stage it through a pinned bounce buffer of its own, and the copy
+# is synchronous, so the calling thread blocks for its full duration. On the
+# sequential inference path that thread is the dedicated GPU worker, and the
+# extraction threads feeding it sit idle meanwhile. Staging into a pinned buffer
+# we own lets `np.stack` write straight into page-locked memory and the copy be
+# issued with `non_blocking=True`.
+#
+# Reuse is only safe while no copy out of the buffer is still in flight. Every
+# caller here happens to end its batch with a `.cpu()` on the same stream, which
+# synchronizes -- but that is an invariant a future caller could quietly break,
+# so each buffer carries a CUDA event recorded after its copy and waits on it
+# before being overwritten. In the normal case the event is long since complete
+# and the wait returns immediately. Buffers are thread-local on top of that, so
+# two threads never share one.
+_pinned_staging = threading.local()
+
+
+def _stack_to_device(arrays: list[np.ndarray], device: str, slot: Hashable) -> torch.Tensor:
+    """Stack ``arrays`` into one tensor on ``device``.
+
+    On CUDA the stack lands in a per-thread pinned staging buffer (keyed by
+    ``slot`` plus row shape and dtype) and the copy is issued asynchronously.
+    Everywhere else this is exactly ``torch.from_numpy(np.stack(arrays)).to(device)``.
+
+    ``slot`` names the input the batch belongs to ("signal", "sequence",
+    "features"); two inputs must not share a buffer. Every row is expected to
+    have the row shape and dtype of ``arrays[0]`` — which is what every caller
+    produces (float32 throughout) and what plain ``np.stack`` requires for the
+    shape anyway.
+    """
+    if not device.startswith("cuda"):
+        return torch.from_numpy(np.stack(arrays)).to(device)
+
+    first = arrays[0]
+    n = len(arrays)
+    key = (slot, first.shape, first.dtype.str)
+    cache = getattr(_pinned_staging, "buffers", None)
+    if cache is None:
+        cache = {}
+        _pinned_staging.buffers = cache
+    entry = cache.get(key)
+    if entry is None or entry[0].shape[0] < n:
+        entry = (
+            torch.empty(
+                (n,) + first.shape,
+                dtype=torch.from_numpy(first).dtype,
+                pin_memory=True,
+            ),
+            torch.cuda.Event(),
+        )
+        cache[key] = entry
+    else:
+        # Do not overwrite a buffer whose last copy is still in flight.
+        entry[1].synchronize()
+    buf, copied = entry
+    view = buf[:n]
+    np.stack(arrays, out=view.numpy())
+    out = view.to(device, non_blocking=True)
+    copied.record()
+    return out
+
+
 def _run_batch_multiclass(
     signals: list[np.ndarray],
     sequences: list[np.ndarray],
@@ -618,14 +684,14 @@ def _run_batch_multiclass(
     cl_regression_head: "torch.nn.Module | None" = None,
 ) -> None:
     """Run a multi-class batch: store (base_idx, class_idx, confidence, all_probs, cl_pred) per read."""
-    signal_t = torch.from_numpy(np.stack(signals)).to(device)
-    seq_t = torch.from_numpy(np.stack(sequences)).to(device)
+    signal_t = _stack_to_device(signals, device, "signal")
+    seq_t = _stack_to_device(sequences, device, "sequence")
     batch = {"signal": signal_t, "sequence": seq_t}
 
     if requires_features:
         valid_feats = [f for f in features if f is not None]
         if valid_feats:
-            batch["features"] = torch.from_numpy(np.stack(valid_feats)).to(device)
+            batch["features"] = _stack_to_device(valid_feats, device, "features")
 
     with torch.inference_mode():
         logits = model_wrapper.forward_batch(batch, device)
@@ -646,15 +712,16 @@ def _run_batch_multiclass(
         ):
             cl_preds = cl_regression_head(model_wrapper.captured_repr).cpu().numpy()
 
-    for i, ((read_id, base_idx), cls_idx, conf, prob_vec) in enumerate(
-        zip(meta, class_indices.flatten(), confidences.flatten(), probs, strict=True)
+    # One `tolist()` for the whole batch, not `float(p)` per class per chunk.
+    # numpy promotes float32 -> Python float identically either way.
+    prob_lists = probs.tolist()
+    for i, ((read_id, base_idx), cls_idx, conf) in enumerate(
+        zip(meta, class_indices.flatten(), confidences.flatten(), strict=True)
     ):
         cl_val = float(cl_preds[i]) if cl_preds is not None else None
         if read_id not in pending:
             pending[read_id] = []
-        pending[read_id].append(
-            (base_idx, int(cls_idx), float(conf), [float(p) for p in prob_vec], cl_val)
-        )
+        pending[read_id].append((base_idx, int(cls_idx), float(conf), prob_lists[i], cl_val))
 
 
 def _run_batch(
@@ -668,23 +735,23 @@ def _run_batch(
     pending: dict[str, list[tuple[int, float]]],
 ) -> None:
     """Run a batch through the model and accumulate results into pending."""
-    signal_t = torch.from_numpy(np.stack(signals)).to(device)
-    seq_t = torch.from_numpy(np.stack(sequences)).to(device)
+    signal_t = _stack_to_device(signals, device, "signal")
+    seq_t = _stack_to_device(sequences, device, "sequence")
     batch = {"signal": signal_t, "sequence": seq_t}
 
     if requires_features:
         valid_feats = [f for f in features if f is not None]
         if valid_feats:
-            batch["features"] = torch.from_numpy(np.stack(valid_feats)).to(device)
+            batch["features"] = _stack_to_device(valid_feats, device, "features")
 
     with torch.inference_mode():
         logits = model_wrapper.forward_batch(batch, device)
         probs = torch.sigmoid(logits).cpu().numpy().flatten()
 
-    for (read_id, base_idx), prob in zip(meta, probs, strict=True):
+    for (read_id, base_idx), prob in zip(meta, probs.tolist(), strict=True):
         if read_id not in pending:
             pending[read_id] = []
-        pending[read_id].append((base_idx, float(prob)))
+        pending[read_id].append((base_idx, prob))
 
 
 # =============================================================================
