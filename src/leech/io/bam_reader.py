@@ -138,12 +138,13 @@ class ReadInfo:
         self.is_reverse = aln.is_reverse
         self.cigar_tuples = aln.cigartuples
 
-        # Reference sequence (may be None if not available)
-        try:
-            self.reference_sequence: str | None = aln.get_reference_sequence()
-        except Exception as e:
-            logger.debug("Could not get reference sequence for %s: %s", aln.query_name, e)
-            self.reference_sequence = None
+        # Reference sequence: reconstructed on first read, not here. See the
+        # `reference_sequence` property -- `get_reference_sequence()` walks the
+        # MD tag and the CIGAR and is most of the cost of building a ReadInfo
+        # (74% of it on 6.8 kb reads), while only reference-anchored runs read
+        # the result.
+        self._aln: pysam.AlignedSegment | None = aln
+        self._reference_sequence: str | None = None
 
         # Extract move table data
         # mv_tag is an array: [stride, move1, move2, ...]
@@ -163,6 +164,49 @@ class ReadInfo:
             )
         except (KeyError, TypeError):
             self.cl_value = None
+
+    @property
+    def reference_sequence(self) -> str | None:
+        """Reference sequence over the aligned region, or None if unavailable.
+
+        Reconstructed from the alignment on first access and cached. The
+        alignment reference is dropped at the same moment, for two reasons: a
+        ``pysam.AlignedSegment`` is several KB per read (1.3-1.7x a ReadInfo,
+        measured) and this class exists to be the *lightweight* stand-in, and
+        it is not picklable, while ReadInfo is sent to multiprocessing workers
+        by both prepare and inference.
+
+        Which is also why :meth:`__getstate__` forces the value out before
+        pickling. Returning None to a worker instead would not raise anywhere:
+        ``build_leech_read`` would quietly fall back to the basecalled
+        sequence, and an ``anchor="reference"`` run would cut every chunk in
+        the wrong coordinate frame.
+        """
+        aln = self._aln
+        if aln is None:
+            return self._reference_sequence
+        # One attempt, cached either way; drop the alignment before anything
+        # can raise so a failure cannot leave it pinned.
+        self._aln = None
+        try:
+            self._reference_sequence = aln.get_reference_sequence()
+        except Exception as e:
+            logger.debug("Could not get reference sequence for %s: %s", self.read_id, e)
+            self._reference_sequence = None
+        return self._reference_sequence
+
+    def materialize_reference_sequence(self) -> None:
+        """Resolve :attr:`reference_sequence` now and release the alignment.
+
+        For callers that hold many ReadInfos at once and have no alignment list
+        of their own keeping those objects alive anyway (:func:`collect_read_infos`).
+        """
+        _ = self.reference_sequence
+
+    def __getstate__(self) -> dict:
+        """Pickle support: resolve the reference sequence, drop the alignment."""
+        _ = self.reference_sequence  # also clears self._aln
+        return self.__dict__
 
     def to_move_table(self) -> MoveTable:
         """
@@ -249,6 +293,12 @@ def collect_read_infos(
     for aln in iter_bam_alignments(bam_path, min_mapq=min_mapq, require_tags=require_tags):
         try:
             read_info = ReadInfo(aln)
+            # This one collects the whole BAM into a list with nothing else
+            # holding the alignments alive, so the lazy reference sequence is
+            # resolved here rather than pinning an AlignedSegment per read for
+            # the life of the list. Use `iter_read_info_batches` to get the
+            # laziness with bounded memory.
+            read_info.materialize_reference_sequence()
             read_infos.append(read_info)
         except Exception as e:
             logger.warning(f"Skipping read {aln.query_name}: {e}")
@@ -269,6 +319,11 @@ def iter_read_info_batches(
 
     Streaming alternative to collect_read_infos() that allows overlapping
     BAM reading with downstream processing.
+
+    Unlike ``collect_read_infos`` this keeps :attr:`ReadInfo.reference_sequence`
+    lazy: a batch is bounded, so pinning its alignments until each read is
+    either used or pickled costs a few MB, and a run that never asks for the
+    reference sequence (``anchor="basecall"``) never pays to rebuild it.
 
     Args:
         bam_path: Path to BAM file
