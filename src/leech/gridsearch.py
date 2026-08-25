@@ -649,7 +649,10 @@ def run_grid_search(config: GridSearchConfig) -> Path:
                 logger.info(f"Completed grid point {i}/{len(grid_points)}")
                 save_grid_summary(results, summary_path)
     else:
-        # Sequential execution
+        # Sequential execution. Grid points must not share a chunk list:
+        # LeechDataset drops each chunk's arrays once it has tensorized them,
+        # so the second point got chunks whose `signal` was None and died with
+        # "'NoneType' object has no attribute 'dtype'".
         for i, args in enumerate(grid_args, 1):
             logger.info(f"\n\nGrid point {i}/{len(grid_points)}")
             result = run_grid_point(**args)
