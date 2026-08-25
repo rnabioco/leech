@@ -4,6 +4,8 @@ Tests for data preparation module.
 Tests LeechRead, chunk extraction, and serialization.
 """
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 import torch
@@ -1066,6 +1068,112 @@ class TestMergeArraysBySplit:
         loaded = load_chunks(out_dir / "train.npz")
         for c in loaded:
             assert c["source_group"] == "my_source"
+
+
+class _FakeAlignment:
+    """Duck-typed stand-in exposing exactly what `ReadInfo.__init__` reads.
+
+    A `pysam.AlignedSegment` is a cdef class, so its methods cannot be patched;
+    counting calls needs an object of our own.
+    """
+
+    def __init__(self, ref_seq="ACGTACGTAC"):
+        self.query_name = "read_1"
+        self.query_sequence = "ACGTACGTAC"
+        self.mapping_quality = 60
+        self.reference_name = "chr1"
+        self.reference_start = 0
+        self.reference_end = 10
+        self.is_reverse = False
+        self.cigartuples = [(0, 10)]
+        self._ref_seq = ref_seq
+        self.ref_seq_calls = 0
+
+    def get_reference_sequence(self):
+        self.ref_seq_calls += 1
+        return self._ref_seq
+
+    def has_tag(self, tag):
+        return tag in ("mv", "ns")
+
+    def get_tag(self, tag):
+        if tag == "mv":
+            return [5] + [1] * 10
+        if tag == "ns":
+            return 50
+        raise KeyError(tag)
+
+
+class TestReadInfoReferenceSequence:
+    """Audit S7: the reference sequence is rebuilt lazily, not per construction."""
+
+    BAM = Path(__file__).parent / "fixtures" / "trna_mappings.bam"
+
+    def test_constructor_does_not_reconstruct_it(self):
+        from leech.io.bam_reader import ReadInfo
+
+        aln = _FakeAlignment()
+        info = ReadInfo(aln)
+        assert aln.ref_seq_calls == 0
+
+        assert info.reference_sequence == "ACGTACGTAC"
+        assert aln.ref_seq_calls == 1
+
+        # Cached, and the alignment is released once it has been used.
+        assert info.reference_sequence == "ACGTACGTAC"
+        assert aln.ref_seq_calls == 1
+        assert info._aln is None
+
+    def test_failure_to_reconstruct_still_yields_none(self):
+        from leech.io.bam_reader import ReadInfo
+
+        class Broken(_FakeAlignment):
+            def get_reference_sequence(self):
+                self.ref_seq_calls += 1
+                raise ValueError("MD tag not present")
+
+        aln = Broken()
+        info = ReadInfo(aln)
+        assert info.reference_sequence is None
+        assert info.reference_sequence is None
+        assert aln.ref_seq_calls == 1  # not retried per access
+
+    def test_matches_eager_reconstruction_on_a_real_bam(self):
+        from leech.io.bam_reader import ReadInfo, iter_bam_alignments
+
+        alns = list(iter_bam_alignments(self.BAM, min_mapq=0))
+        assert alns, "fixture BAM has no usable alignments"
+        for aln in alns:
+            assert ReadInfo(aln).reference_sequence == aln.get_reference_sequence()
+
+    def test_survives_pickling_without_being_touched_first(self):
+        """The trap: ReadInfo is pickled to `mp.Pool` prepare/inference workers.
+
+        A `pysam.AlignedSegment` cannot be pickled, and a worker that got None
+        instead would silently cut chunks from the basecall under
+        `anchor="reference"` rather than raise.
+        """
+        import pickle
+
+        from leech.io.bam_reader import ReadInfo, iter_bam_alignments
+
+        alns = list(iter_bam_alignments(self.BAM, min_mapq=0))
+        infos = [ReadInfo(aln) for aln in alns]  # deliberately not accessed
+        restored = pickle.loads(pickle.dumps(infos, protocol=pickle.HIGHEST_PROTOCOL))
+
+        assert [r.reference_sequence for r in restored] == [
+            aln.get_reference_sequence() for aln in alns
+        ]
+        assert all(r.sequence == aln.query_sequence for r, aln in zip(restored, alns, strict=True))
+
+    def test_collect_read_infos_holds_no_alignments(self):
+        """The unbounded collector must stay a lightweight container."""
+        from leech.io.bam_reader import collect_read_infos
+
+        infos = collect_read_infos(self.BAM, min_mapq=0)
+        assert infos
+        assert all(info._aln is None for info in infos)
+        assert all(info.reference_sequence for info in infos)
 
 
 if __name__ == "__main__":
