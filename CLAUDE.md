@@ -472,6 +472,20 @@ Two rules the manifest exists to enforce, both silent when broken:
   trains, converges, and quietly discriminates on fewer bases than designed.
   Pass a *measured* `samples_per_base` — leech has dwell times — not a constant.
 
+**Corpus planning is separate from extraction, and that is where the rules
+are.** `crf.plan_corpus` decides which reads and which split without touching a
+POD5; `crf.build_corpus` streams their signal to a memmap. Four rules, all
+silent when broken: a cap only caps if every class can reach it (`per_group="auto"`
+= the rarest class's *trainable* depth, test fraction reserved first); the split
+is carved before capping and ranked per class **globally across batches**, since
+per-`(batch, class)` ranking multiplies the cap by the batch count whenever
+classes are crossed with batch; batches are **interleaved, not concatenated**,
+or the whole test set comes from whichever batch sorts first and the headline
+number measures batch; and sharding happens **after** planning, so each shard
+keeps its share of one global split. Validated against the production ldx
+manifest: 1.14M rows plan to 391,174 reads, the same count that repo's extractor
+reports, with train balanced exactly across all 16 groups.
+
 The analytic forward-backward in `_analytic.py` is the loss path; the plain
 scans in `loss.py` are the readable reference the tests check it against, and
 the Triton kernels check against those. Keep all three — the fallback chain is

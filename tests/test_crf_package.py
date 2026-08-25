@@ -138,6 +138,26 @@ def test_manifest_api_costs_no_polars_import():
     assert result.stdout.strip() == "False", "resolving load_manifest pulled polars"
 
 
+def test_corpus_api_costs_no_polars_or_pysam_import():
+    """Resolving the corpus API must not pull polars or the POD5/BAM stack.
+
+    `corpus.py` needs polars to plan and `leech.io.pod5_reader` to extract, and
+    that reader pulls pysam and escapepod. Both are imported inside the
+    functions that use them, so planning code that never extracts — and any
+    consumer that merely imports the package — pays for neither.
+    """
+    probe = (
+        "import sys, leech.crf; "
+        "f = (leech.crf.plan_corpus, leech.crf.build_corpus, leech.crf.load_corpus); "
+        "assert 'leech.crf.corpus' in sys.modules; "
+        "print(sorted(m for m in ('polars', 'pysam', 'escapepod') if m in sys.modules))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=True
+    )
+    assert result.stdout.strip() == "[]", f"corpus API pulled {result.stdout.strip()}"
+
+
 def test_model_symbols_still_resolve_through_the_lazy_table():
     """The laziness must not turn a real export into an AttributeError."""
     from leech.crf import CrfEncoder, CtcCrfLoss, decode_batch

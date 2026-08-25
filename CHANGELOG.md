@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`leech.crf.corpus`: cut a CRF training corpus from a manifest.**
+  `plan_corpus` decides which reads and in which split, touching no POD5;
+  `build_corpus` extracts their signal, streaming it to a memory-mappable
+  `<out>_X.npy` beside a `<out>_meta.npz`. The signal is never held in RAM as a
+  whole — an 80-plex corpus is tens of gigabytes, and the memmap is what makes
+  the size a disk question instead of an allocation that fails.
+
+  The two stages are separate because everything subtle is in the plan, and a
+  corpus planned wrongly still trains and still reports a number. Four rules,
+  each pinned by a test: a cap only caps if every class can reach it
+  (`per_group="auto"` is the rarest class's *trainable* depth, with the test
+  fraction reserved first); the split is carved before capping and ranked per
+  class globally across batches, since per-`(batch, class)` ranking multiplies
+  the cap by the batch count whenever classes are crossed with batch; batches
+  are interleaved rather than concatenated, or the whole held-out set comes from
+  whichever batch sorts first and the headline number measures batch; and
+  sharding happens after planning, so every shard keeps its share of one global
+  split. Extracting nothing, or less than half the plan, is a hard error with a
+  different message for each — the causes differ, and a 0-row corpus otherwise
+  exits cleanly and reaches a GPU job.
+
+  Validated against the production ldx manifest: 1,139,602 rows plan to 391,174
+  reads at `chunk=3000`, the same count escapepod-models' extractor reports for
+  that input, with the training pool balanced exactly across all 16 groups and
+  held-out reads drawn from both flowcells.
+
+  `load_corpus` / `load_corpus_meta` read both this layout and the legacy
+  single-`.npz` one, so corpora written before the split layout keep loading.
+
 ## [0.8.0] - 2026-08-25
 
 Minor rather than patch: one new capability, no change to anything that

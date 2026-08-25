@@ -92,6 +92,38 @@ and belongs to whatever project defines those. Everything below is signal ML.
 There is deliberately **no `keep` boolean**: quality travels as numbers so the
 gate stays sweepable without re-cutting the corpus.
 
+## Building a corpus
+
+`plan_corpus` decides *which reads and in which split*, touching no POD5;
+`build_corpus` then extracts their signal, streaming it to a memory-mappable
+`<out>_X.npy` beside a `<out>_meta.npz`. The split is deliberately separate: it
+is where every subtle rule lives, and it is testable without a gigabyte of
+fixture.
+
+```python
+from leech.crf import load_manifest, plan_corpus, build_corpus, load_corpus
+
+plan = plan_corpus(load_manifest("manifest.parquet"), chunk=3000, per_group="auto")
+print(len(plan), plan.cap, plan.counts_by_split())
+build_corpus(plan, "corpus")
+signal, targets, groups, read_ids, split = load_corpus("corpus")   # signal is mmap'd
+```
+
+Four rules it enforces, each of which fails silently when broken:
+
+- **A cap only caps if every class can reach it.** `per_group="auto"` uses the
+  rarest class's *trainable* depth (the test fraction is reserved first), which
+  is the only value that actually balances. A larger explicit cap warns and
+  de-balances the corpus it was meant to balance.
+- **The split is carved before capping, ranked per class and globally across
+  batches.** Ranking per `(batch, class)` multiplies the cap by the number of
+  batches whenever classes are crossed with batch.
+- **Batches are interleaved, not concatenated.** Otherwise the whole test set
+  comes from whichever batch sorts first and the headline number measures batch.
+- **Shard after planning.** The plan is deterministic in `(manifest, seed)`, so
+  each shard keeps its share of one global split; filtering first would give
+  each shard its own test set drawn from one batch.
+
 ## Encoder
 
 ::: leech.crf.encoder.CrfEncoder
@@ -148,6 +180,28 @@ gate stays sweepable without re-cutting the corpus.
       show_root_heading: true
 
 ::: leech.crf.manifest.emitted_target
+    options:
+      show_root_heading: true
+
+## Corpus
+
+::: leech.crf.corpus.plan_corpus
+    options:
+      show_root_heading: true
+
+::: leech.crf.corpus.CorpusPlan
+    options:
+      show_root_heading: true
+
+::: leech.crf.corpus.build_corpus
+    options:
+      show_root_heading: true
+
+::: leech.crf.corpus.load_corpus
+    options:
+      show_root_heading: true
+
+::: leech.crf.corpus.load_corpus_meta
     options:
       show_root_heading: true
 
