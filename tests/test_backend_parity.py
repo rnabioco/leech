@@ -71,6 +71,8 @@ EXACT_FIELDS = {
     "source_groups",
     "reference_names",
     "seq_to_sig_maps",
+    "seq_to_sig_values",
+    "seq_to_sig_offsets",
     "sequences_with_kmer_context",
     "cl_values",
     "focus_signal_pos",
@@ -172,7 +174,7 @@ def _run_both_backends(config: PrepareConfig, tmp_path) -> tuple[dict, dict]:
 def _assert_field_equal(name: str, a: np.ndarray, b: np.ndarray) -> None:
     assert a.shape == b.shape, f"{name}: shape {a.shape} != {b.shape}"
     if a.dtype == object:
-        # Variable-length rows (seq_to_sig_maps). Compare row by row so a
+        # Variable-length rows (legacy object members). Compare row by row so a
         # length difference names the row rather than raising from numpy.
         for i, (ra, rb) in enumerate(zip(a, b, strict=True)):
             ra, rb = np.asarray(ra), np.asarray(rb)

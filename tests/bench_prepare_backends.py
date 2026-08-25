@@ -382,10 +382,15 @@ def _run_comparison(
             save_chunks(rs_matched, rs_npz, compressed=False)
 
             # Skip auxiliary keys that use different windowing approaches:
-            # - seq_to_sig_maps: Python=searchsorted-based, Rust=kmer-window-based
-            # - sequences_with_kmer_context: follows from seq_to_sig_maps windowing
+            # - seq_to_sig_*: Python=searchsorted-based, Rust=kmer-window-based
+            # - sequences_with_kmer_context: follows from the same windowing
             # These only matter for signal_kmer encoding (not base_onehot).
-            aux_keys = {"seq_to_sig_maps", "sequences_with_kmer_context"}
+            aux_keys = {
+                "seq_to_sig_maps",
+                "seq_to_sig_values",
+                "seq_to_sig_offsets",
+                "sequences_with_kmer_context",
+            }
             npz_match, npz_diffs = compare_npz(py_npz, rs_npz, atol=chunk_atol, skip_keys=aux_keys)
             for d in npz_diffs:
                 print(d)

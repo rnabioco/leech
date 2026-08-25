@@ -12,7 +12,19 @@ from leech.chunking.extractor import (
     find_focus_bases,
     resolve_feature_window,
 )
-from leech.chunking.serialization import get_chunk_statistics, load_chunks, save_chunks
+from leech.chunking.serialization import (
+    DEFERRABLE_FIELDS,
+    csr_from_object_rows,
+    csr_gather_index,
+    csr_offsets_from_lens,
+    get_chunk_statistics,
+    iter_npz_row_blocks,
+    load_chunks,
+    load_seq_to_sig_csr,
+    npz_array_members,
+    npz_member_names,
+    save_chunks,
+)
 
 __all__ = [
     # Extraction
@@ -25,4 +37,12 @@ __all__ = [
     "save_chunks",
     "load_chunks",
     "get_chunk_statistics",
+    "DEFERRABLE_FIELDS",
+    "iter_npz_row_blocks",
+    "load_seq_to_sig_csr",
+    "npz_array_members",
+    "npz_member_names",
+    "csr_from_object_rows",
+    "csr_gather_index",
+    "csr_offsets_from_lens",
 ]

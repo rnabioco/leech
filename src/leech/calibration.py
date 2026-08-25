@@ -23,7 +23,6 @@ import torch.nn as nn
 from torch.optim import LBFGS
 from torch.utils.data import DataLoader
 
-from leech.chunking import load_chunks
 from leech.dataset import LeechDataset, collate_fn, resolve_val_dataloader_workers
 from leech.models import get_model
 from leech.models.inference_wrapper import ModelInferenceWrapper
@@ -178,10 +177,11 @@ def calibrate_model(
     # so the dataset builds a feature tensor with the same channel count the
     # model was trained on — otherwise the Conv1d in the feature branch
     # crashes with "expected N channels, but got M channels".
-    val_chunks = load_chunks(val_data_path)
+    # chunk_path (not pre-loaded chunks) so the dataset streams the arrays out
+    # of the npz instead of holding a second full copy of them (#211).
     dwell_template_table = config.get("dwell_template_table") or None
     val_dataset = LeechDataset(
-        chunks=val_chunks,
+        chunk_path=val_data_path,
         model_type=model_name,
         signal_len=signal_len,
         kmer_len=kmer_len,
@@ -532,10 +532,11 @@ def calibrate_model_multiclass(
     # so the dataset builds a feature tensor with the same channel count the
     # model was trained on — otherwise the Conv1d in the feature branch
     # crashes with "expected N channels, but got M channels".
-    val_chunks = load_chunks(val_data_path)
+    # chunk_path (not pre-loaded chunks) so the dataset streams the arrays out
+    # of the npz instead of holding a second full copy of them (#211).
     dwell_template_table = config.get("dwell_template_table") or None
     val_dataset = LeechDataset(
-        chunks=val_chunks,
+        chunk_path=val_data_path,
         model_type=model_name,
         signal_len=signal_len,
         kmer_len=kmer_len,

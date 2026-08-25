@@ -35,6 +35,7 @@ Example:
 
 import logging
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -43,7 +44,13 @@ import polars as pl
 import torch
 from torch.utils.data import Dataset
 
-from leech.chunking import load_chunks
+from leech.chunking import (
+    iter_npz_row_blocks,
+    load_chunks,
+    load_seq_to_sig_csr,
+    npz_array_members,
+    npz_member_names,
+)
 from leech.constants import AUTO_DATALOADER_WORKERS
 from leech.features import encode_signal_kmer, sequence_to_int
 from leech.models.inference_wrapper import ModelInferenceWrapper
@@ -179,6 +186,178 @@ def append_dwell_template_channels(
     return np.concatenate([features, template_channels], axis=0)
 
 
+# Rows per block when expanding the CSR base-to-signal maps. Keeps the gather
+# index arrays to tens of MB regardless of corpus size.
+_S2S_BLOCK_ROWS = 65536
+
+
+class _TensorFill:
+    """Accumulate per-chunk tensors into one preallocated contiguous tensor.
+
+    ``torch.stack`` allocates the whole output *while the input list is still
+    alive*, so stacking N chunk tensors peaks at twice the output — 33 GB of
+    transient on a large corpus (#211). The output shape is known before the
+    loop, so fill a buffer allocated up front instead and peak at once the
+    output.
+
+    Chunk tensors whose shape disagrees with the first one fall back to the old
+    list, which ``__getitem__`` still handles.
+    """
+
+    def __init__(self, name: str, capacity: int):
+        self.name = name
+        self.capacity = capacity
+        self._tensor: torch.Tensor | None = None
+        self._items: list[torch.Tensor] = []
+        self._n = 0
+
+    def append(self, tensor: torch.Tensor) -> None:
+        if self._items:  # already degraded to list access
+            self._items.append(tensor)
+            return
+        if self._tensor is None:
+            self._tensor = torch.empty((self.capacity, *tensor.shape), dtype=tensor.dtype)
+        elif tuple(tensor.shape) != tuple(self._tensor.shape[1:]):
+            logger.warning(
+                "%s shapes differ (%s vs %s), falling back to list access",
+                self.name,
+                tuple(tensor.shape),
+                tuple(self._tensor.shape[1:]),
+            )
+            self._items = [self._tensor[i].clone() for i in range(self._n)]
+            self._tensor = None
+            self._items.append(tensor)
+            return
+        self._tensor[self._n] = tensor
+        self._n += 1
+
+    def finish(self) -> tuple[torch.Tensor | None, list[torch.Tensor]]:
+        """Return ``(stacked_tensor, fallback_list)``; exactly one is populated."""
+        if self._tensor is None:
+            # Nothing appended (the caller uses a different tensor) or shapes
+            # differed — both cases the old _try_stack signalled with None.
+            return None, self._items
+        return self._tensor[: self._n], []
+
+
+@dataclass
+class _ArrayStream:
+    """Row-block source for the per-chunk arrays of an npz corpus.
+
+    Reading the arrays this way — instead of through ``load_chunks``, which
+    materialises every member — keeps the numpy source out of the peak: only
+    one block per member is resident while the output tensors are filled.
+
+    Attributes:
+        path: The npz being streamed.
+        members: Chunk field name -> npz member name, for the fields this run
+            actually consumes. Members nothing reads are never decompressed.
+        keep: One bool per npz row: False for rows dropped by label filtering,
+            so the stream stays aligned with ``LeechDataset.chunks``.
+        dwell_width: ``len(chunk["dwell"])``, constant in the flat format and
+            read from the member header — the only thing the tensorize loop
+            needs from the dwells, so that member is never read.
+    """
+
+    path: Path
+    members: dict[str, str]
+    dwell_width: int | None
+    keep: np.ndarray | None = None
+
+    @classmethod
+    def build(
+        cls,
+        path: Path,
+        *,
+        needs_features: bool,
+        wants_residual: bool,
+    ) -> "_ArrayStream | None":
+        """Return a stream for ``path``, or None if it cannot be streamed.
+
+        Corpora written before the flat format store the arrays as pickled
+        object members; those still take the eager path.
+        """
+        members = npz_array_members(path)
+        if "signals_flat" not in members:
+            return None
+        wanted = {"signal": "signals_flat"}
+        if wants_residual:
+            if "signal_residuals_flat" in members:
+                wanted["signal_residual"] = "signal_residuals_flat"
+            elif "signal_residuals" in npz_member_names(path):
+                return None  # residuals present but not streamable
+        if needs_features:
+            # dwells_flat carries no values the loop needs, only its width —
+            # but without it there is no way to know that width without reading
+            # the per-chunk dwells, so fall back.
+            if "features_flat" not in members or "dwells_flat" not in members:
+                return None
+            wanted["features"] = "features_flat"
+        dwell_width = members["dwells_flat"][0][1] if "dwells_flat" in members else None
+        return cls(path=path, members=wanted, dwell_width=dwell_width)
+
+    def __iter__(self):
+        """Yield one dict of arrays per kept row, in ``LeechDataset.chunks`` order.
+
+        The arrays are views into recycled block buffers — valid until the next
+        iteration, which is all the tensorize loop needs since it copies each
+        row into the output tensor.
+        """
+        if self.keep is None:
+            raise RuntimeError("_ArrayStream.keep must be set before iterating")
+        for start, blocks in iter_npz_row_blocks(self.path, list(self.members.values())):
+            rows = len(next(iter(blocks.values())))
+            for j in np.nonzero(self.keep[start : start + rows])[0]:
+                yield {field: blocks[member][j] for field, member in self.members.items()}
+
+
+def _expand_seq_to_sig_csr(
+    values: np.ndarray,
+    offsets: np.ndarray,
+    rows: np.ndarray,
+    *,
+    signal_len: int,
+    crop_starts: np.ndarray | None,
+) -> np.ndarray:
+    """Expand CSR base-to-signal maps into one padded ``(len(rows), max_len)`` array.
+
+    Args:
+        values: Flat concatenated map values.
+        offsets: Row offsets, one per row plus a final total.
+        rows: npz row indices to expand, ascending.
+        signal_len: Padding value — the encoder's ``sig_start < signal_len``
+            test fails at padded positions, so they contribute nothing.
+        crop_starts: Per-row signal offset to subtract (asymmetric crop), or
+            None to keep the stored coordinates.
+
+    Returns:
+        int64 array of shape ``(len(rows), max_len)``.
+    """
+    lens = (offsets[rows + 1] - offsets[rows]).astype(np.int64)
+    n = len(rows)
+    max_len = int(lens.max()) if n else 0
+    padded = np.full((n, max_len), signal_len, dtype=np.int64)
+    starts = offsets[rows]
+
+    # Blocked so the gather indices stay small on a multi-million-chunk corpus.
+    for block_start in range(0, n, _S2S_BLOCK_ROWS):
+        block_end = min(block_start + _S2S_BLOCK_ROWS, n)
+        block_lens = lens[block_start:block_end]
+        total = int(block_lens.sum())
+        if total == 0:
+            continue
+        row_idx = np.repeat(np.arange(block_start, block_end), block_lens)
+        col_idx = np.arange(total) - np.repeat(np.cumsum(block_lens) - block_lens, block_lens)
+        gathered = values[np.repeat(starts[block_start:block_end], block_lens) + col_idx].astype(
+            np.int64
+        )
+        if crop_starts is not None:
+            gathered -= np.repeat(crop_starts[block_start:block_end], block_lens)
+            np.clip(gathered, 0, signal_len, out=gathered)
+        padded[row_idx, col_idx] = gathered
+    return padded
+
+
 class LeechDataset(Dataset):
     """
     PyTorch Dataset for leech training chunks.
@@ -269,27 +448,49 @@ class LeechDataset(Dataset):
         if dwell_template_table is not None:
             self._load_dwell_templates(Path(dwell_template_table))
 
-        # Use pre-loaded chunks or load from file
+        self._needs_features = model_type in FEATURE_MODELS
+
+        # Use pre-loaded chunks or load from file. Loading from a path streams
+        # the per-chunk arrays out of the npz a row block at a time instead of
+        # holding a full numpy copy alongside the tensors built from it (#211);
+        # pre-loaded chunks have already paid that cost.
+        self._array_stream: _ArrayStream | None = None
+        self._npz_members: set[str] = set()
+        self._s2s_csr: tuple[np.ndarray, np.ndarray] | None = None
+        self._s2s_rows: np.ndarray | None = None
         if chunks is not None:
             logger.info(f"Using {len(chunks)} pre-loaded chunks (skipping disk I/O)")
             self.chunks = chunks
         elif chunk_path is not None:
-            self.chunks = load_chunks(chunk_path)
+            self._load_from_path(
+                Path(chunk_path), signal_mode=signal_mode, seq_encoding=seq_encoding
+            )
         else:
             raise ValueError("Either chunk_path or chunks must be provided")
 
-        # Filter chunks with valid numeric labels (label_int)
+        # Filter chunks with valid numeric labels (label_int). The streaming
+        # path has already applied this, and recorded the same mask so npz rows
+        # stay aligned with self.chunks — a mismatch here would pair signals
+        # with the wrong labels silently.
         self.chunks = [c for c in self.chunks if c["label_int"] is not None]
 
         if len(self.chunks) == 0:
             raise ValueError(f"No valid chunks found{f' in {chunk_path}' if chunk_path else ''}")
 
-        # Pre-tensorize: encode sequences, labels, signals, and features once
+        # Pre-tensorize: encode sequences, labels, signals, and features once.
+        # Each accumulator fills one preallocated contiguous tensor — see
+        # _TensorFill for why stacking a list instead doubles the peak.
+        n_chunks = len(self.chunks)
+        fill_encoded_seqs = _TensorFill("Encoded-sequence", n_chunks)
+        fill_labels = _TensorFill("Label", n_chunks)
+        fill_signals = _TensorFill("Signal", n_chunks)
+        fill_features = _TensorFill("Feature", n_chunks)
+        fill_confounds = _TensorFill("Confound", n_chunks)
+        fill_cl_targets = _TensorFill("CL target", n_chunks)
         self._encoded_seqs: list[torch.Tensor] = []
         self._labels: list[torch.Tensor] = []
         self._signals: list[torch.Tensor] = []
         self._features: list[torch.Tensor] = []
-        self._needs_features = model_type in FEATURE_MODELS
         self._confound_encoder = confound_encoder
         self._has_confound = confound_encoder is not None
         self._confound_labels: list[torch.Tensor] = []
@@ -300,18 +501,31 @@ class LeechDataset(Dataset):
         self._effective_seq_encoding = seq_encoding
         if seq_encoding == "signal_kmer":
             first = self.chunks[0]
-            if not first.get("seq_to_sig_map") is not None or not first.get(
-                "sequence_with_kmer_context"
-            ):
+            if self._s2s_csr is not None:
+                # Streaming path: the maps were deferred out of the chunk dicts,
+                # so ask the CSR arrays whether the first chunk has one.
+                _offsets = self._s2s_csr[1]
+                _row = self._s2s_rows[0]
+                has_seq_to_sig = bool(_offsets[_row + 1] > _offsets[_row])
+            else:
+                has_seq_to_sig = first.get("seq_to_sig_map") is not None
+            if not has_seq_to_sig or not first.get("sequence_with_kmer_context"):
                 logger.warning(
                     "Chunks lack seq_to_sig_map/sequence_with_kmer_context; "
                     "falling back to base_onehot encoding"
                 )
                 self._effective_seq_encoding = "base_onehot"
+                self._s2s_csr = None
 
         # Detect signal_residual channel and apply signal_mode
         self._signal_mode = signal_mode
-        self._has_signal_residual = self.chunks[0].get("signal_residual") is not None
+        if self._array_stream is not None:
+            # Arrays were deferred, so presence is a property of the file.
+            self._has_signal_residual = bool(
+                {"signal_residuals_flat", "signal_residuals"} & self._npz_members
+            )
+        else:
+            self._has_signal_residual = self.chunks[0].get("signal_residual") is not None
         if signal_mode == "both" and self._has_signal_residual:
             self.signal_channels = 2
         else:
@@ -330,38 +544,51 @@ class LeechDataset(Dataset):
         self._seq_ints: list[np.ndarray] = []
         self._seq_to_sig: list[np.ndarray] = []
 
+        # Arrays come either from the chunk dicts (pre-loaded / legacy corpus)
+        # or a row-block stream over the npz. Both yield the same field names,
+        # so the loop below does not care which.
+        array_iter = iter(self._array_stream) if self._array_stream is not None else None
+        stream_dwell_width = (
+            self._array_stream.dwell_width if self._array_stream is not None else None
+        )
+
         for chunk in self.chunks:
+            arrays = chunk if array_iter is None else next(array_iter)
+
             if self._effective_seq_encoding == "signal_kmer":
                 seq_ctx = chunk["sequence_with_kmer_context"]
                 seq_ints = sequence_to_int(seq_ctx).astype(np.int8)
                 self._seq_ints.append(seq_ints)
 
-                s2s = chunk["seq_to_sig_map"].astype(np.int64, copy=True)
-                if self.left_context is not None and self.right_context is not None:
-                    stored_focus = chunk.get("focus_signal_pos")
-                    focus_pos = stored_focus if stored_focus is not None else int(s2s[-1]) // 2
-                    crop_start = focus_pos - self.left_context
-                    s2s -= crop_start
-                    np.clip(s2s, 0, signal_len, out=s2s)
-                self._seq_to_sig.append(s2s)
+                if self._s2s_csr is None:
+                    # Non-streaming path: one map per chunk dict. The streaming
+                    # path expands all of them at once, after this loop.
+                    s2s = chunk["seq_to_sig_map"].astype(np.int64, copy=True)
+                    if self.left_context is not None and self.right_context is not None:
+                        stored_focus = chunk.get("focus_signal_pos")
+                        focus_pos = stored_focus if stored_focus is not None else int(s2s[-1]) // 2
+                        crop_start = focus_pos - self.left_context
+                        s2s -= crop_start
+                        np.clip(s2s, 0, signal_len, out=s2s)
+                    self._seq_to_sig.append(s2s)
             else:
                 # Pre-encode sequence (vectorized, no Python loop)
-                self._encoded_seqs.append(self._encode_sequence(chunk["sequence"]))
+                fill_encoded_seqs.append(self._encode_sequence(chunk["sequence"]))
 
             # Pre-create label tensor: long for multi-class, float for binary
             if self._multiclass:
-                self._labels.append(torch.tensor(chunk["label_int"], dtype=torch.long))
+                fill_labels.append(torch.tensor(chunk["label_int"], dtype=torch.long))
             else:
-                self._labels.append(torch.tensor([chunk["label_int"]], dtype=torch.float32))
+                fill_labels.append(torch.tensor([chunk["label_int"]], dtype=torch.float32))
 
             # Pre-tensorize signal: pad/crop once instead of every __getitem__ call
-            signal = chunk["signal"]
+            signal = arrays["signal"]
             if signal.dtype != np.float32:
                 signal = signal.astype(np.float32)
-            signal_residual = chunk.get("signal_residual")
+            signal_residual = arrays.get("signal_residual")
             if signal_residual is not None and signal_residual.dtype != np.float32:
                 signal_residual = signal_residual.astype(np.float32)
-            self._signals.append(
+            fill_signals.append(
                 self._prepare_signal(
                     signal, signal_residual, focus_signal_pos=chunk.get("focus_signal_pos")
                 )
@@ -369,52 +596,36 @@ class LeechDataset(Dataset):
 
             # Pre-tensorize features: apply dwell_offset slicing once
             if self._needs_features:
-                self._features.append(self._prepare_features(chunk))
-            else:
-                self._features.append(torch.empty(0))
+                dwell_width = (
+                    stream_dwell_width if stream_dwell_width is not None else len(chunk["dwell"])
+                )
+                fill_features.append(self._prepare_features(arrays["features"], dwell_width, chunk))
 
             # Confound label for adversarial training. The encoder reads the
             # configured chunk field and maps it to a class int (-1 = ignore).
             if self._confound_encoder is not None:
                 confound_class = self._confound_encoder.encode(chunk)
-                self._confound_labels.append(torch.tensor(confound_class, dtype=torch.long))
+                fill_confounds.append(torch.tensor(confound_class, dtype=torch.long))
 
             # CL regression target (cl_value / 255.0; sentinel -1.0 for missing)
             if self._cl_regression:
                 cl_val = chunk.get("cl_value")
                 if cl_val is not None and cl_val >= 0:
-                    self._cl_targets.append(torch.tensor(cl_val / 255.0, dtype=torch.float32))
+                    fill_cl_targets.append(torch.tensor(cl_val / 255.0, dtype=torch.float32))
                 else:
-                    self._cl_targets.append(torch.tensor(-1.0, dtype=torch.float32))
+                    fill_cl_targets.append(torch.tensor(-1.0, dtype=torch.float32))
 
-        # Stack every per-chunk list into one contiguous tensor. This isn't just
-        # for cache friendliness — it's required for fork-safety. A DataLoader
-        # with num_workers > 0 forks worker processes that COW-inherit the
-        # parent's address space. CPython refcounts live inside each PyObject
-        # header, so a worker iterating a list of N tensors writes to N
+        # Every per-chunk tensor now lives in one contiguous buffer. That isn't
+        # just for cache friendliness — it's required for fork-safety. A
+        # DataLoader with num_workers > 0 forks worker processes that COW-inherit
+        # the parent's address space. CPython refcounts live inside each
+        # PyObject header, so a worker iterating a list of N tensors writes to N
         # separate page-resident headers and faults every page into a private
         # copy, multiplying peak RSS by (1 + num_workers). A single contiguous
         # tensor keeps its data buffer outside Python's GC, so the buffer
         # pages are genuinely shared across the fork.
-        def _try_stack(name: str, items: list[torch.Tensor]) -> torch.Tensor | None:
-            if not items:
-                # Expected when a feature mode isn't active (e.g. signal_kmer
-                # leaves _encoded_seqs empty); the consumer will use a different
-                # tensor instead.
-                return None
-            try:
-                return torch.stack(items)
-            except RuntimeError as e:
-                logger.warning("%s shapes differ, falling back to list access: %s", name, e)
-                return None
-
-        self._signals_tensor = _try_stack("Signal", self._signals)
-        if self._signals_tensor is not None:
-            self._signals = []
-
-        self._encoded_seqs_tensor = _try_stack("Encoded-sequence", self._encoded_seqs)
-        if self._encoded_seqs_tensor is not None:
-            self._encoded_seqs = []
+        self._signals_tensor, self._signals = fill_signals.finish()
+        self._encoded_seqs_tensor, self._encoded_seqs = fill_encoded_seqs.finish()
 
         # Compact signal_kmer inputs — only populated when encoding == signal_kmer.
         # Stacked into fork-safe int tensors. encode_signal_kmer is then called
@@ -428,39 +639,49 @@ class LeechDataset(Dataset):
         self._seq_to_sig_tensor: torch.Tensor | None = None
         if self._effective_seq_encoding == "signal_kmer" and self._seq_ints:
             max_seq_ints_len = max(s.shape[0] for s in self._seq_ints)
-            max_s2s_len = max(s.shape[0] for s in self._seq_to_sig)
             n = len(self._seq_ints)
             padded_seq_ints = np.full((n, max_seq_ints_len), -1, dtype=np.int8)
-            padded_s2s = np.full((n, max_s2s_len), signal_len, dtype=np.int64)
-            for i, (si, s2s) in enumerate(zip(self._seq_ints, self._seq_to_sig, strict=True)):
+            for i, si in enumerate(self._seq_ints):
                 padded_seq_ints[i, : si.shape[0]] = si
-                padded_s2s[i, : s2s.shape[0]] = s2s
             self._seq_ints_tensor = torch.from_numpy(padded_seq_ints)
-            self._seq_to_sig_tensor = torch.from_numpy(padded_s2s)
             self._seq_ints = []
+
+            if self._s2s_csr is not None:
+                # Streaming path: expand every map at once from the CSR pair,
+                # instead of one astype/clip per chunk.
+                values, offsets = self._s2s_csr
+                crop_starts = None
+                if self.left_context is not None and self.right_context is not None:
+                    crop_starts = self._crop_starts(values, offsets) - self.left_context
+                padded_s2s = _expand_seq_to_sig_csr(
+                    values,
+                    offsets,
+                    self._s2s_rows,
+                    signal_len=signal_len,
+                    crop_starts=crop_starts,
+                )
+                self._s2s_csr = None
+            else:
+                max_s2s_len = max(s.shape[0] for s in self._seq_to_sig)
+                padded_s2s = np.full((n, max_s2s_len), signal_len, dtype=np.int64)
+                for i, s2s in enumerate(self._seq_to_sig):
+                    padded_s2s[i, : s2s.shape[0]] = s2s
+            self._seq_to_sig_tensor = torch.from_numpy(padded_s2s)
             self._seq_to_sig = []
 
-        self._labels_tensor = _try_stack("Label", self._labels)
-        if self._labels_tensor is not None:
-            self._labels = []
+        self._labels_tensor, self._labels = fill_labels.finish()
 
         self._features_tensor: torch.Tensor | None = None
         if self._needs_features:
-            self._features_tensor = _try_stack("Feature", self._features)
-            if self._features_tensor is not None:
-                self._features = []
+            self._features_tensor, self._features = fill_features.finish()
 
         self._confound_labels_tensor: torch.Tensor | None = None
         if self._has_confound:
-            self._confound_labels_tensor = _try_stack("Confound", self._confound_labels)
-            if self._confound_labels_tensor is not None:
-                self._confound_labels = []
+            self._confound_labels_tensor, self._confound_labels = fill_confounds.finish()
 
         self._cl_targets_tensor: torch.Tensor | None = None
         if self._cl_regression:
-            self._cl_targets_tensor = _try_stack("CL target", self._cl_targets)
-            if self._cl_targets_tensor is not None:
-                self._cl_targets = []
+            self._cl_targets_tensor, self._cl_targets = fill_cl_targets.finish()
 
         # Drop the raw numpy arrays from self.chunks now that everything has
         # been pre-tensorized. External code (samplers, label tally, feature
@@ -502,6 +723,70 @@ class LeechDataset(Dataset):
             f"Pre-tensorized {len(self.chunks)} chunks "
             f"({_n_encoded} sequences encoded, encoding={self._effective_seq_encoding})"
         )
+
+    def _load_from_path(self, chunk_path: Path, *, signal_mode: str, seq_encoding: str) -> None:
+        """Load chunk metadata from an npz, deferring the arrays a stream can supply.
+
+        Sets ``self.chunks`` and, when the corpus is row-streamable,
+        ``self._array_stream`` (plus the CSR base-to-signal maps when the run
+        needs them). Falls back to loading everything eagerly for corpora
+        written before the flat array format.
+        """
+        self._npz_members = npz_member_names(chunk_path)
+        stream = _ArrayStream.build(
+            chunk_path,
+            needs_features=self._needs_features,
+            wants_residual=signal_mode in ("both", "residual"),
+        )
+        if stream is None:
+            logger.debug("%s is not row-streamable; loading arrays eagerly", chunk_path)
+            self.chunks = load_chunks(chunk_path)
+            return
+
+        # Nothing downstream reads the raw arrays off the chunk dicts — the
+        # stream supplies signal/residual/features, the dwell width comes from
+        # the member header, and the base-to-signal maps are expanded from CSR
+        # only when signal_kmer needs them. So never read them into the dicts.
+        defer = {"signal", "signal_residual", "dwell", "features", "seq_to_sig_map"}
+        if seq_encoding != "signal_kmer":
+            defer.add("sequence_with_kmer_context")
+        raw = load_chunks(chunk_path, defer=defer)
+
+        keep = np.fromiter((c["label_int"] is not None for c in raw), dtype=bool, count=len(raw))
+        stream.keep = keep
+        self._array_stream = stream
+        self.chunks = [c for c, k in zip(raw, keep, strict=True) if k]
+        if seq_encoding == "signal_kmer":
+            self._s2s_csr = load_seq_to_sig_csr(chunk_path)
+            self._s2s_rows = np.nonzero(keep)[0]
+
+    def _crop_starts(self, values: np.ndarray, offsets: np.ndarray) -> np.ndarray:
+        """Per-chunk focus signal position for the streamed base-to-signal maps.
+
+        Mirrors the per-chunk rule: the stored ``focus_signal_pos`` when the
+        corpus has one, else half the map's last value (old symmetric data).
+        """
+        rows = self._s2s_rows
+        assert rows is not None
+        focus = np.zeros(len(rows), dtype=np.int64)
+        missing: list[int] = []
+        for i, chunk in enumerate(self.chunks):
+            stored = chunk.get("focus_signal_pos")
+            if stored is None:
+                missing.append(i)
+            else:
+                focus[i] = stored
+        if missing:
+            idx = np.asarray(missing)
+            starts = offsets[rows[idx]]
+            ends = offsets[rows[idx] + 1]
+            if np.any(ends <= starts):
+                raise ValueError(
+                    "Chunk without focus_signal_pos has an empty seq_to_sig_map; "
+                    "cannot place the asymmetric crop"
+                )
+            focus[idx] = values[ends - 1].astype(np.int64) // 2
+        return focus
 
     def _prepare_signal(
         self,
@@ -577,10 +862,18 @@ class LeechDataset(Dataset):
             template_min_pos=self._template_min_pos,
         )
 
-    def _prepare_features(self, chunk: dict) -> torch.Tensor:
-        """Apply dwell_offset slicing and tensorize features. Called once during __init__."""
-        dwell = chunk["dwell"]
-        features = chunk["features"]
+    def _prepare_features(
+        self, features: np.ndarray, dwell_width: int, chunk: dict
+    ) -> torch.Tensor:
+        """Apply dwell_offset slicing and tensorize features. Called once during __init__.
+
+        Args:
+            features: The chunk's feature array, ``(num_features, feat_width)``.
+            dwell_width: ``len(chunk["dwell"])``. Only its width matters here,
+                so the streaming path takes it from the member header rather
+                than reading the dwells at all.
+            chunk: The chunk dict, for the feature-window metadata.
+        """
         if features.dtype != np.float32:
             features = features.astype(np.float32)
 
@@ -591,7 +884,7 @@ class LeechDataset(Dataset):
 
         if self.model_type in WIDE_FEATURE_MODELS:
             pass  # full-width features
-        elif len(dwell) > self.kmer_len:
+        elif dwell_width > self.kmer_len:
             # Determine feature_start (signed offset from focus).
             # New chunks have it directly; old chunks need conversion.
             if "feature_start" in chunk:
@@ -601,7 +894,7 @@ class LeechDataset(Dataset):
             elif "dwell_margin_left" in chunk:
                 feat_start = -(kmer_context + int(chunk["dwell_margin_left"]))
             else:
-                feat_start = -(len(dwell) - 1) // 2  # symmetric fallback
+                feat_start = -(dwell_width - 1) // 2  # symmetric fallback
             # kmer-aligned start within the feature array
             # Feature array starts at focus + feat_start, kmer starts at focus - kmer_context
             kmer_start = (-kmer_context) - feat_start
