@@ -213,6 +213,22 @@ class GridSearchConfig:
     selection_metric: str = "auto"
 
 
+def _training_label_column(path: Path) -> np.ndarray:
+    """Every valid ``label_int`` in a chunk corpus, without loading its arrays.
+
+    One npz member, so the signals and features -- the whole reason a corpus is
+    tens of gigabytes -- never enter the process. A negative label is the
+    missing-value sentinel, the same one ``ChunkTable`` and ``LeechDataset``
+    filter on. Corpora that predate the flat array format need the full read.
+    """
+    try:
+        with np.load(path, allow_pickle=False) as data:
+            labels = data["labels_int"]
+    except (KeyError, ValueError):
+        return np.array([c["label_int"] for c in load_chunks(path) if c["label_int"] is not None])
+    return labels[labels >= 0]
+
+
 def run_grid_point(
     train_data_path: Path,
     val_data_path: Path | None,
@@ -228,8 +244,6 @@ def run_grid_point(
     seed: int,
     early_stopping_patience: int = 10,
     dwell_offset: int = 0,
-    train_chunks: list[dict] | None = None,
-    val_chunks: list[dict] | None = None,
     pos_weight: float | None = None,
     weight_decay: float = 0.0,
     max_grad_norm: float = 0.0,
@@ -280,8 +294,6 @@ def run_grid_point(
         seed: Random seed
         early_stopping_patience: Stop training if validation loss doesn't improve for N epochs
         dwell_offset: Dwell feature offset (bases toward 3' end)
-        train_chunks: Pre-loaded training chunks (avoids redundant disk I/O)
-        val_chunks: Pre-loaded validation chunks (avoids redundant disk I/O)
         pos_weight: Pre-computed positive class weight (avoids redundant computation)
         motif: Motif string stored in config.json for inference
         motif_offset: Offset within motif
@@ -317,8 +329,6 @@ def run_grid_point(
             seed=seed,
             early_stopping_patience=early_stopping_patience,
             dwell_offset=dwell_offset,
-            train_chunks=train_chunks,
-            val_chunks=val_chunks,
             pos_weight=pos_weight,
             weight_decay=weight_decay,
             max_grad_norm=max_grad_norm,
@@ -398,30 +408,17 @@ def run_grid_point(
     return result
 
 
-# Module-level globals for multiprocessing pool workers
-_worker_train_chunks: list[dict] | None = None
-_worker_val_chunks: list[dict] | None = None
-_worker_pos_weight: float | None = None
-
-
-def _init_worker(
-    train_data_path: Path,
-    val_data_path: Path | None,
-    pos_weight: float | None,
-) -> None:
-    """Pool initializer: load chunks once per worker process."""
-    global _worker_train_chunks, _worker_val_chunks, _worker_pos_weight  # noqa: PLW0603
-    _worker_train_chunks = load_chunks(train_data_path)
-    _worker_val_chunks = load_chunks(val_data_path) if val_data_path is not None else None
-    _worker_pos_weight = pos_weight
-    logger.info(
-        f"Worker {multiprocessing.current_process().name}: loaded "
-        f"{len(_worker_train_chunks)} train chunks"
-    )
-
-
 def _grid_point_worker(args: dict) -> dict:
-    """Run a single grid point using worker-cached chunks."""
+    """Run a single grid point.
+
+    Each grid point re-reads the corpus rather than sharing a pre-loaded copy.
+    The cache this replaces held the whole decompressed corpus in every pool
+    process, which forced ``LeechDataset`` down its eager ``chunks=`` branch --
+    numpy arrays resident alongside the tensors built from them, times
+    ``--parallel N``. The streaming loader reads a row block at a time and this
+    storage does 724 MB/s sequentially (ADR 0006), so the re-read is cheap
+    where the resident copy was not.
+    """
     result = run_grid_point(
         train_data_path=args["train_data_path"],
         val_data_path=args["val_data_path"],
@@ -437,9 +434,7 @@ def _grid_point_worker(args: dict) -> dict:
         seed=args["seed"],
         early_stopping_patience=args["early_stopping_patience"],
         dwell_offset=args["dwell_offset"],
-        train_chunks=_worker_train_chunks,
-        val_chunks=_worker_val_chunks,
-        pos_weight=_worker_pos_weight,
+        pos_weight=args["pos_weight"],
         weight_decay=args["weight_decay"],
         max_grad_norm=args["max_grad_norm"],
         scheduler=args["scheduler"],
@@ -552,20 +547,11 @@ def run_grid_search(config: GridSearchConfig) -> Path:
     with open(config.output_dir / "grid_config.json", "w") as f:
         json.dump(config_dict, f, indent=2)
 
-    # Pre-load chunks once to avoid redundant disk I/O across grid points
-    logger.info("Pre-loading training chunks...")
-    train_chunks = load_chunks(config.train_data_path)
-    logger.info(f"Loaded {len(train_chunks)} training chunks")
-
-    val_chunks = None
-    if config.val_data_path is not None:
-        logger.info("Pre-loading validation chunks...")
-        val_chunks = load_chunks(config.val_data_path)
-        logger.info(f"Loaded {len(val_chunks)} validation chunks")
-
-    # Pre-compute class weights from training chunks (labels don't change across grid points)
-    valid_labels = [c["label_int"] for c in train_chunks if c["label_int"] is not None]
-    labels_array = np.array(valid_labels)
+    # Pre-compute class weights from the training labels (they don't change
+    # across grid points). Only the label column is needed, so read that --
+    # not the corpus.
+    labels_array = _training_label_column(config.train_data_path)
+    logger.info(f"Read {len(labels_array)} training labels")
     unique, counts = np.unique(labels_array, return_counts=True)
     pos_weight = None
     if len(unique) == 2:
@@ -615,6 +601,7 @@ def run_grid_search(config: GridSearchConfig) -> Path:
                 "seed": config.seed,
                 "early_stopping_patience": config.early_stopping_patience,
                 "dwell_offset": dwoff,
+                "pos_weight": pos_weight,
                 "weight_decay": config.weight_decay,
                 "max_grad_norm": config.max_grad_norm,
                 "scheduler": config.scheduler,
@@ -651,31 +638,25 @@ def run_grid_search(config: GridSearchConfig) -> Path:
     results: list[dict] = []
 
     if config.n_parallel > 1:
-        # Parallel execution: each worker loads chunks independently
+        # Parallel execution: each worker streams the corpus per grid point
         logger.info(
             f"Running {len(grid_points)} grid points with {config.n_parallel} parallel workers"
         )
         # CUDA does not support fork; use spawn to avoid hangs with multiple GPU workers
         ctx = multiprocessing.get_context("spawn" if config.device != "cpu" else "fork")
-        with ctx.Pool(
-            processes=config.n_parallel,
-            initializer=_init_worker,
-            initargs=(config.train_data_path, config.val_data_path, pos_weight),
-        ) as pool:
+        with ctx.Pool(processes=config.n_parallel) as pool:
             for i, result in enumerate(pool.imap_unordered(_grid_point_worker, grid_args), 1):
                 results.append(result)
                 logger.info(f"Completed grid point {i}/{len(grid_points)}")
                 save_grid_summary(results, summary_path)
     else:
-        # Sequential execution: reuse pre-loaded chunks in main process
+        # Sequential execution. Grid points must not share a chunk list:
+        # LeechDataset drops each chunk's arrays once it has tensorized them,
+        # so the second point got chunks whose `signal` was None and died with
+        # "'NoneType' object has no attribute 'dtype'".
         for i, args in enumerate(grid_args, 1):
             logger.info(f"\n\nGrid point {i}/{len(grid_points)}")
-            result = run_grid_point(
-                **args,
-                train_chunks=train_chunks,
-                val_chunks=val_chunks,
-                pos_weight=pos_weight,
-            )
+            result = run_grid_point(**args)
             results.append(result)
             save_grid_summary(results, summary_path)
 
