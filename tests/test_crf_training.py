@@ -22,6 +22,7 @@ from leech.crf import (
     apply_quality_gate,
     compute_standardisation,
     encode_targets,
+    epoch_order_rng,
     resolve_split,
     select_checkpoint,
 )
@@ -341,3 +342,68 @@ def test_fewer_training_reads_than_one_batch_is_refused(tiny_corpus, tiny_arch):
             config=CrfTrainConfig(batch_size=1024, device="cpu"),
             arch_config=tiny_arch,
         ).train()
+
+
+class TestBatchOrderIsIndependentOfTheSplit:
+    """The batch-order stream must not be the split's stream re-seeded.
+
+    Both are seeded from the same ``seed``, and on the corpus-split and
+    held-out-batch paths `resolve_split` shuffles an array of the *same length*
+    the epoch loop shuffles. A plain ``default_rng(seed)`` in the loop replays
+    the split's permutation, so epoch 1 trains on ``pi(pi(train))``. Nothing
+    observable goes wrong when it does, which is exactly why it needs a test.
+    """
+
+    @staticmethod
+    def _corpus_split_train_idx(n=512, seed=3):
+        clean = np.ones(n, dtype=bool)
+        split = np.array(["train"] * (n - n // 4) + ["test"] * (n // 4))
+        train, _, why = resolve_split(clean, corpus_split=split, seed=seed)
+        assert why == "the corpus's own split"
+        return train
+
+    def test_first_epoch_does_not_replay_the_split_permutation(self):
+        seed = 3
+        train = self._corpus_split_train_idx(seed=seed)
+
+        replayed = train.copy()
+        np.random.default_rng(seed).shuffle(replayed)  # what the bug produced
+
+        actual = train.copy()
+        epoch_order_rng(seed).shuffle(actual)
+
+        assert not np.array_equal(actual, replayed)
+
+    def test_the_stream_is_not_merely_offset_from_the_split_stream(self):
+        """Skipping a single draw would fix epoch 1 and leave every later epoch
+        as the split stream shifted by one, which is the same defect one epoch
+        further in. Check several epochs deep, not just the first."""
+        seed = 3
+        train = self._corpus_split_train_idx(seed=seed)
+
+        def draws(rng, n):
+            out = []
+            for _ in range(n):
+                order = train.copy()
+                rng.shuffle(order)
+                out.append(order)
+            return out
+
+        split_stream = draws(np.random.default_rng(seed), 6)
+        ours = draws(epoch_order_rng(seed), 5)
+
+        for epoch, got in enumerate(ours, 1):
+            assert not any(np.array_equal(got, s) for s in split_stream), (
+                f"epoch {epoch} reuses a draw from the split's stream"
+            )
+
+    def test_it_is_still_reproducible_from_the_seed(self):
+        train = self._corpus_split_train_idx()
+        a, b = train.copy(), train.copy()
+        epoch_order_rng(11).shuffle(a)
+        epoch_order_rng(11).shuffle(b)
+        assert np.array_equal(a, b)
+
+        c = train.copy()
+        epoch_order_rng(12).shuffle(c)
+        assert not np.array_equal(a, c)
