@@ -349,8 +349,20 @@ come from upstream rather than being held locally: the preset, the POD5 reader
 cache (`escapepod_signal::cached_reader`), per-base statistics
 (`features::span_stats`, configured `SpanFill::Zero` / `SpanBounds::Clamp` /
 `MedianConvention::SortPartialCmp`), the move-table and CIGAR coordinate mapping
-(`escapepod_signal::mapping`), and the signal-level k-mer encoding plus its base
-alphabet (`escapepod_signal::seq_encoding`, escapepod-rs#272).
+(`escapepod_signal::mapping`), and the whole signal-level k-mer path —
+the base alphabet, the context windowing and the encoding itself
+(`escapepod_signal::seq_encoding`, escapepod-rs#272 and #274).
+
+**All three halves of that path are now upstream, and that is the point.**
+`mapping` produces the base-to-signal map, `sequence_bases_with_context` cuts
+the window it covers plus the k-mer context, and `encode_signal_kmer` scatters
+the one-hot context along the signal axis. leech held the middle and the last
+for a while, inside a `cdylib` no Rust consumer could link. The windowing is the
+one to watch: `before` and `after` are **not** interchangeable there, swapping
+them displaces every k-mer, and the encoder cannot detect it because it only
+sees the total width. leech keeps the window as *bases* rather than ints because
+the corpus serializes `sequence_with_kmer_context` as a string —
+`sequence_ints_with_context` is the same window in the other alphabet.
 
 ### The corpus is written and merged in exactly one place each
 

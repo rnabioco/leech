@@ -26,10 +26,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   array in the npz between the Rust and Python backends against a Python
   reference this change does not touch.
 
-  The k-mer *context slice* stays here: leech needs it as bases (it serializes
-  `sequence_with_kmer_context` as a string) where upstream's
-  `sequence_ints_with_context` returns ints. Same range, same padding, different
-  type — worth knowing before someone "finishes the job".
+  The k-mer *context slice* delegates too, via `sequence_bases_with_context`
+  (escapepod-rs#274, escapepod 0.16.1). It could not at first: leech needs the
+  window as **bases**, since the corpus serializes `sequence_with_kmer_context`
+  as a string, where upstream only offered ints. Upstream now exposes both forms
+  over one windowing rule, with `sequence_to_int(bases) == ints` pinned by a
+  test there — so the three halves of the signal-level k-mer path (the map, the
+  window, the encoding) all live in `escapepod-signal` and none is duplicated
+  here.
+
+  That third one is the highest-stakes of the three: it is where `before` and
+  `after` are not interchangeable, and swapping them displaces every k-mer
+  silently because the encoder only sees the total width. It is also the most
+  directly checkable — `sequence_with_kmer_context` is one of the fields
+  `test_backend_parity.py` compares array-by-array between backends.
+
+  Only `rust/Cargo.toml`'s git tag moves to v0.16.1; the `escapepod` Python pin
+  stays `>=0.16.0`, because the new function is in the Rust crate and not in the
+  Python bindings.
 
 ### Added
 

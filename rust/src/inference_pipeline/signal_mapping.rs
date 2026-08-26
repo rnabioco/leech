@@ -112,15 +112,25 @@ pub(super) fn chunk_signal_kmer_inputs(
     map[0] = 0;
     map[last] = chunk_len as i64;
 
+    // The windowing comes from escapepod-signal, which also owns the map this
+    // sits between and the encoding it feeds. Kept as BASES rather than ints
+    // because the corpus serializes `sequence_with_kmer_context` as a string;
+    // `sequence_ints_with_context` is the same window in the other alphabet,
+    // and `sequence_to_int` of this is exactly that (escapepod-rs#274).
+    //
+    // This is the step where `before` and `after` are NOT interchangeable:
+    // swapping them displaces every k-mer silently, and the encoder cannot
+    // detect it because it only sees the total width.
     let (kmer_before, kmer_after) = skmer_ctx;
-    let ctx_lo = seq_start as i64 - kmer_before as i64;
-    let ctx_hi = seq_end as i64 + kmer_after as i64;
-    let ctx: Vec<u8> = (ctx_lo..ctx_hi)
-        .map(|i| match usize::try_from(i) {
-            Ok(u) if u < seq_bytes.len() => seq_bytes[u],
-            _ => b'N',
-        })
-        .collect();
+    let ctx = escapepod_signal::seq_encoding::sequence_bases_with_context(
+        seq_bytes,
+        seq_start,
+        seq_end - seq_start,
+        escapepod_signal::seq_encoding::KmerContext {
+            before: kmer_before,
+            after: kmer_after,
+        },
+    );
 
     (map, ctx)
 }
