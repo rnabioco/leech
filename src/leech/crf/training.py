@@ -61,6 +61,7 @@ __all__ = [
     "apply_quality_gate",
     "compute_standardisation",
     "encode_targets",
+    "epoch_order_rng",
     "resolve_split",
     "select_checkpoint",
     "train_crf",
@@ -263,6 +264,24 @@ def resolve_split(
     return idx[n_test:], idx[:n_test], why
 
 
+def epoch_order_rng(seed: int) -> np.random.Generator:
+    """The batch-order stream — deliberately *not* the split's.
+
+    :func:`resolve_split` seeds its own generator from this same ``seed``, and
+    on both the corpus-split and held-out-batch paths it shuffles an array of
+    the **same length** the epoch loop goes on to shuffle. A second
+    ``default_rng(seed)`` here therefore replays that generator's first draw
+    exactly: epoch 1 would train on ``pi(pi(train))``, a batch order determined
+    by the split shuffle rather than independent of it, and every later epoch
+    would be the split stream shifted by one.
+
+    Nothing about the run looks wrong when that happens — the order is still a
+    permutation, the loss still falls — which is why it is worth naming. Spawning
+    keeps ``seed`` reproducible and the two streams distinct.
+    """
+    return np.random.default_rng(np.random.SeedSequence(seed).spawn(2)[1])
+
+
 def encode_targets(targets, alphabet: str) -> np.ndarray:
     """Targets as ``(N, L)`` int64, 1-indexed over ``alphabet[1:]``.
 
@@ -417,7 +436,7 @@ class CrfTrainer:
             )
 
         torch.manual_seed(cfg.seed)
-        rng = np.random.default_rng(cfg.seed)
+        rng = epoch_order_rng(cfg.seed)
         encoded = encode_targets(self.targets, self.alphabet)
 
         model = CrfEncoder(self.encoder_cfg).to(device)

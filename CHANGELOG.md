@@ -44,6 +44,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **CRF training: the batch order no longer replays the split's shuffle.**
+  `resolve_split` seeds a generator from `seed`, and on the corpus-split and
+  held-out-batch paths it shuffles an array of the *same length* the epoch loop
+  goes on to shuffle. `CrfTrainer.train` then opened a second
+  `default_rng(seed)`, which replayed that generator's first draw exactly — so
+  epoch 1 trained on `pi(pi(train))`, a batch order determined by the split
+  rather than independent of it, and every later epoch was the split stream
+  shifted by one.
+
+  Nothing about a run looks wrong when this happens: the order is still a
+  permutation and the loss still falls, which is why it needed a test rather
+  than an eye. `epoch_order_rng` spawns a distinct stream from the same seed,
+  so runs stay reproducible and the two orders are independent.
+
+  This changes which batches a given seed sees, so numbers from a seed will not
+  reproduce across this release. Batch order alone moves a 32-epoch run's final
+  training loss by more than 2x — measured on this corpus with one loop body and
+  only the RNG stream varied — so treat a seed as one draw from that spread,
+  not as a fixed point.
+
 - **The k-mer context padding branch was compared by nothing.** At the default
   `signal_context=(200, 200)` no fixture read's context window runs off the end
   of the read — 0 of 18 chunks contain an `N` — so `test_backend_parity.py`,
