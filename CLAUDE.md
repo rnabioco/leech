@@ -869,8 +869,10 @@ The codebase is feature-complete (v0.7.0):
   analytic forward-backward, optional Triton lattice kernels, and the two-pass
   Viterbi decode — ported from escapepod-models, torch + numpy only. Plus the
   manifest seam, the corpus builder (`plan_corpus`/`build_corpus`), the trainer
-  (`CrfTrainer`, `leech model train-crf`) and the ONNX export. The metrics/eval
-  half is not here yet.
+  (`CrfTrainer`, `leech model train-crf`), the ONNX export, and the generic half
+  of evaluation (`crf.evaluate`: decode, edit-distance matching, per-group
+  balanced recall). Panels and reporting buckets stay with whatever defines
+  them.
 - ✓ ONNX export for the classifier arms and the CRF encoder
   (`leech model export --format onnx`, `leech.crf.export`), dynamo exporter at
   opset 18, each with a contract sidecar and a round-trip check against torch
