@@ -512,6 +512,24 @@ keeps its share of one global split. Validated against the production ldx
 manifest: 1.14M rows plan to 391,174 reads, the same count that repo's extractor
 reports, with train balanced exactly across all 16 groups.
 
+**Evaluation splits the same way the corpus does: generic here, vocabulary
+there.** `crf.evaluate` decodes, matches to a reference set by edit distance and
+reports per group; which classes exist and which share a flowcell belongs to
+whatever defines the panel. Three rules live here because each yields a
+plausible wrong number: match `target[state_len:]` and never the full-length
+target (an aligner puts the forced leading deletions where they help most, which
+discounts wrong references more than the right one, compressing the margin
+ranking depends on); report per group and **raise** on an empty grouping, since
+a null headline serializes fine and ships; and average recall per class, not
+per read, or the deepest class decides the number.
+
+`lev_vs_refs` scores one decode against the whole reference set at once. Its
+vectorisation recovers the serial insertion term as `j + cummin(tmp[k] - k)` —
+exact, not approximate, and asserted against the scalar implementation rather
+than commented. Keep `_lev_py` under its own name: `lev` is edlib where edlib
+imports, so a test written against `lev` would compare edlib with itself
+precisely on the machines that have it.
+
 The analytic forward-backward in `_analytic.py` is the loss path; the plain
 scans in `loss.py` are the readable reference the tests check it against, and
 the Triton kernels check against those. Keep all three — the fallback chain is

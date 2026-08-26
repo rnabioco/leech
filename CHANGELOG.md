@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`leech.crf.evaluate`: decode a corpus, match it to references, report per
+  group.** The generic half of CRF evaluation — what a *panel* is (which classes
+  exist, which share a flowcell) stays with whatever defines the panel; what
+  arrives here is a reference set, a grouping and a corpus.
+
+  Three rules it holds rather than leaving to callers, because each produces a
+  plausible-looking wrong number:
+
+  - **Match what the model emits.** `emitted_references` applies
+    `target[state_len:]` once. Scoring against full-length targets forces
+    `state_len` leading deletions into every alignment, which inflates every
+    distance *and compresses the margin* — an aligner puts those deletions where
+    they help most, discounting wrong references more than the right one.
+  - **Report per group.** When classes are crossed with batch, one pooled table
+    measures batch. `balanced_recall` takes the grouping as an argument (only
+    the caller knows whether their classes are confounded) and **raises** when
+    no group has reads, because a null headline serializes fine and ships.
+  - **Balanced, not raw.** A pooled accuracy over unbalanced classes is
+    dominated by the deepest class.
+
+  `lev_vs_refs` scores one decode against the whole reference set at once, which
+  is the shape of every evaluation loop; scoring R references one at a time is R
+  DP tables per read. Its vectorisation recovers the serial insertion term
+  exactly (`j + cummin(tmp[k] - k)`), and that identity is asserted against the
+  scalar implementation on random strings rather than assumed. edlib is used
+  where importable, with the pure-Python fallback kept under its own name so a
+  test compares the two rather than comparing edlib with itself.
+
+  Validated end to end on the production ldx corpus: 16 references at emitted
+  length 44 from 48, 4000 held-out reads decoded, and per-flowcell reporting
+  that correctly finds 8 classes in each — the pilot's code-flowcell confound,
+  which is exactly why pooling would be wrong.
+
 ### Fixed
 
 - **The k-mer context padding branch was compared by nothing.** At the default
