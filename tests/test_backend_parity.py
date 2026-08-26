@@ -232,6 +232,38 @@ class TestBackendFieldParity:
         py, rs = _run_both_backends(_config(base_justify=base_justify), tmp_path)
         _assert_npz_parity(py, rs)
 
+    @pytest.mark.parametrize("signal_context", [(2000, 2000), (6000, 6000)])
+    def test_kmer_context_padding(self, _rust_available, tmp_path, signal_context):
+        """The branch where the k-mer context runs off the end of the read.
+
+        At the default `(200, 200)` **no fixture read reaches it** — 0 of 18
+        chunks contain an `N` — so every other test in this file compares only
+        the in-range path. A wide signal window covers more bases, pushes the
+        context past the read, and exercises the padding: 9 of 18 chunks at
+        2000, all 18 at 6000.
+
+        That gap is the shape of failure this stack keeps hitting — a golden
+        that missed a wrong fallback because all 19 fixture reads took the other
+        branch, found only against a real corpus in 4 reads out of 842. It
+        matters more since the windowing became a call into escapepod-signal
+        (#222): the two sides pad against different-sounding bounds
+        (`len(sequence)` in Python, the sequence slice in Rust — the same
+        number, but only because `num_bases` is `len(self.sequence)`), and
+        nothing here compared them where it shows.
+
+        The `N` assertion is not decoration: without it a fixture change that
+        stopped producing edge chunks would leave this passing while testing
+        nothing.
+        """
+        py, rs = _run_both_backends(_config(signal_context=signal_context), tmp_path)
+        contexts = [str(v) for v in py["sequences_with_kmer_context"]]
+        assert any("N" in c for c in contexts), (
+            f"signal_context={signal_context} produced no padded context, so this "
+            f"test is vacuous — widen it until some chunk's k-mer window runs off "
+            f"the read"
+        )
+        _assert_npz_parity(py, rs)
+
     @pytest.mark.parametrize(
         ("feature_start", "feature_end"),
         [(None, None), (0, 20), (-5, 5), (-10, 10), (0, 0), (2, 8)],

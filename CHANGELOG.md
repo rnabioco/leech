@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The k-mer context padding branch was compared by nothing.** At the default
+  `signal_context=(200, 200)` no fixture read's context window runs off the end
+  of the read — 0 of 18 chunks contain an `N` — so `test_backend_parity.py`,
+  which otherwise compares every array in the npz between the two `data prepare`
+  backends, only ever exercised the in-range path.
+
+  That is the failure shape this stack keeps hitting: a golden that missed a
+  wrong fallback because all 19 fixture reads took the other branch, caught only
+  against a real corpus in 4 reads out of 842. It mattered more once the
+  windowing became a call into escapepod-signal (#222), since the two sides pad
+  against bounds that *sound* different (`len(sequence)` in Python, the sequence
+  slice in Rust) and nothing compared them where it shows.
+
+  `test_kmer_context_padding` widens the signal window until the branch is
+  reached (9 of 18 chunks at 2000, all 18 at 6000) and asserts the padding
+  actually happened — without which a fixture change that stopped producing edge
+  chunks would leave it passing while testing nothing. The backends do agree,
+  and now demonstrably rather than by inspection.
+
 ### Changed
 
 - **The signal-level k-mer encoding comes from escapepod-signal** rather than
