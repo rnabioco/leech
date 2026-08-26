@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-08-26
+
 ### Added
 
 - **`leech.crf.evaluate`: decode a corpus, match it to references, report per
@@ -41,6 +43,135 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   length 44 from 48, 4000 held-out reads decoded, and per-flowcell reporting
   that correctly finds 8 classes in each — the pilot's code-flowcell confound,
   which is exactly why pooling would be wrong.
+
+
+- **ONNX export, for the classifier arms and the CRF encoder** (#217).
+  `leech model export --format onnx` beside the existing `--format torch`
+  (unchanged default), and `leech.crf.export.export_crf_onnx`. `torch.export`
+  makes a model loadable by anything with PyTorch and by nothing else; a runtime
+  consuming ONNX — which is what escapepod-rs runs — could not load a leech
+  model at all.
+
+  Both use the **dynamo exporter at opset 18**. `dynamo=False`, the obvious
+  first attempt, fails on these architectures with an `adaptive_avg_pool1d`
+  error that reads like a model problem and is an exporter limitation; that is
+  documented where someone will hit it, and a regression test pins it.
+
+  Each export writes a **contract** beside the graph, carrying the two things a
+  consumer needs and cannot recover from it: which input is which (including
+  that the `signal_kmer` sequence input is built in the dataset, not the model,
+  and that `leech-core` ships that encoder), and what the output means — a
+  single BCE logit, not a two-class softmax. The CRF's contract additionally
+  carries standardisation, which is in neither the config nor the checkpoint,
+  and its emitted references (`target[state_len:]`), computed from the
+  `state_len` the encoder declares.
+
+  Verified across the serialization boundary rather than in process:
+  onnxruntime against torch, 3.58e-07 for the CRF encoder against a float32 eps
+  of 1.19e-07.
+
+  New `onnx` extra (`onnx`, `onnxruntime`, `onnxscript`). CI installs it so the
+  round-trip tests run rather than skip.
+
+- **`leech model train-crf`**, the CLI for the CTC-CRF trainer. Sits beside
+  `model train` rather than in a group of its own: it is the same workflow step,
+  a different task. Every `CrfTrainConfig` field is exposed, and a test asserts
+  each option actually reaches the config — a click option that silently does
+  not is how a sweep ends up running the default every time.
+
+  The summary reports the emission rule (`target_len -> emits target_len -
+  state_len`) because widening the window to get a longer decode is the mistake
+  it prevents, and prints a second table only when the run discarded steps or
+  saw non-finite gradients, since a discarded step is otherwise invisible.
+
+
+- **`leech.crf.training`: a CTC-CRF trainer.** `CrfTrainer` runs the schedule
+  and writes `model.pt` plus a `model.json` sidecar. The sidecar is not optional:
+  the standardisation constants live in neither the architecture config nor the
+  checkpoint, so weights alone cannot be used correctly.
+
+  Separate from `leech.training.Trainer`, which is classification-locked through
+  `pos_weight`, `num_out`, BCE/focal/CE and AUROC/F1 checkpointing — a sequence
+  task shares none of it, and forcing it through would put the production
+  classifier path at risk. The decisions are split out as plain functions
+  (`compute_standardisation`, `apply_quality_gate`, `resolve_split`,
+  `encode_targets`, `select_checkpoint`) so they are testable without a GPU; the
+  loop is mechanical, the decisions are where runs go wrong quietly.
+
+  Verified against production data, not just fixtures: standardisation over the
+  391,174 x 3000 ldx corpus reproduces the shipped model's recorded constants
+  (61.8216743766 / 9.5716818880) with a delta of **0.000e+00** on both, and the
+  train/test counts match what `plan_corpus` derives independently from the
+  manifest (283,296 / 107,878). A two-epoch GPU run trains at ~40 s/epoch with
+  loss falling 0.4446 -> 0.0639.
+
+
+- **`leech.crf.corpus`: cut a CRF training corpus from a manifest.**
+  `plan_corpus` decides which reads and in which split, touching no POD5;
+  `build_corpus` extracts their signal, streaming it to a memory-mappable
+  `<out>_X.npy` beside a `<out>_meta.npz`. The signal is never held in RAM as a
+  whole — an 80-plex corpus is tens of gigabytes, and the memmap is what makes
+  the size a disk question instead of an allocation that fails.
+
+  The two stages are separate because everything subtle is in the plan, and a
+  corpus planned wrongly still trains and still reports a number. Four rules,
+  each pinned by a test: a cap only caps if every class can reach it
+  (`per_group="auto"` is the rarest class's *trainable* depth, with the test
+  fraction reserved first); the split is carved before capping and ranked per
+  class globally across batches, since per-`(batch, class)` ranking multiplies
+  the cap by the batch count whenever classes are crossed with batch; batches
+  are interleaved rather than concatenated, or the whole held-out set comes from
+  whichever batch sorts first and the headline number measures batch; and
+  sharding happens after planning, so every shard keeps its share of one global
+  split. Extracting nothing, or less than half the plan, is a hard error with a
+  different message for each — the causes differ, and a 0-row corpus otherwise
+  exits cleanly and reaches a GPU job.
+
+  Validated against the production ldx manifest: 1,139,602 rows plan to 391,174
+  reads at `chunk=3000`, the same count escapepod-models' extractor reports for
+  that input, with the training pool balanced exactly across all 16 groups and
+  held-out reads drawn from both flowcells.
+
+  `load_corpus` / `load_corpus_meta` read both this layout and the legacy
+  single-`.npz` one, so corpora written before the split layout keep loading.
+
+### Changed
+
+- **The signal-level k-mer encoding comes from escapepod-signal** rather than
+  being held here (escapepod-rs#271 / #272; requires escapepod 0.16.0).
+  `rust/src/encoding.rs` and `sequence_to_int` are now calls into
+  `escapepod_signal::seq_encoding`.
+
+  leech held the only copy of this rule, inside a `crate-type = ["cdylib"]`
+  Python extension module — so a native runtime for a leech `signal_kmer` model
+  could not link it and had to transcribe it, which is a second definition that
+  diverges silently. It is also the natural pair to `escapepod_signal::mapping`,
+  which *produces* the base-to-signal map the encoding consumes: the producing
+  half was already upstream and the consuming half was not.
+
+  This is a delegation, so the only acceptable outcome is identity: 198 parity
+  tests pass unchanged, including `test_backend_parity.py`, which compares every
+  array in the npz between the Rust and Python backends against a Python
+  reference this change does not touch.
+
+  The k-mer *context slice* delegates too, via `sequence_bases_with_context`
+  (escapepod-rs#274, escapepod 0.16.1). It could not at first: leech needs the
+  window as **bases**, since the corpus serializes `sequence_with_kmer_context`
+  as a string, where upstream only offered ints. Upstream now exposes both forms
+  over one windowing rule, with `sequence_to_int(bases) == ints` pinned by a
+  test there — so the three halves of the signal-level k-mer path (the map, the
+  window, the encoding) all live in `escapepod-signal` and none is duplicated
+  here.
+
+  That third one is the highest-stakes of the three: it is where `before` and
+  `after` are not interchangeable, and swapping them displaces every k-mer
+  silently because the encoder only sees the total width. It is also the most
+  directly checkable — `sequence_with_kmer_context` is one of the fields
+  `test_backend_parity.py` compares array-by-array between backends.
+
+  Only `rust/Cargo.toml`'s git tag moves to v0.16.1; the `escapepod` Python pin
+  stays `>=0.16.0`, because the new function is in the Rust crate and not in the
+  Python bindings.
 
 ### Fixed
 
@@ -132,137 +263,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   actually happened — without which a fixture change that stopped producing edge
   chunks would leave it passing while testing nothing. The backends do agree,
   and now demonstrably rather than by inspection.
-
-### Changed
-
-- **The signal-level k-mer encoding comes from escapepod-signal** rather than
-  being held here (escapepod-rs#271 / #272; requires escapepod 0.16.0).
-  `rust/src/encoding.rs` and `sequence_to_int` are now calls into
-  `escapepod_signal::seq_encoding`.
-
-  leech held the only copy of this rule, inside a `crate-type = ["cdylib"]`
-  Python extension module — so a native runtime for a leech `signal_kmer` model
-  could not link it and had to transcribe it, which is a second definition that
-  diverges silently. It is also the natural pair to `escapepod_signal::mapping`,
-  which *produces* the base-to-signal map the encoding consumes: the producing
-  half was already upstream and the consuming half was not.
-
-  This is a delegation, so the only acceptable outcome is identity: 198 parity
-  tests pass unchanged, including `test_backend_parity.py`, which compares every
-  array in the npz between the Rust and Python backends against a Python
-  reference this change does not touch.
-
-  The k-mer *context slice* delegates too, via `sequence_bases_with_context`
-  (escapepod-rs#274, escapepod 0.16.1). It could not at first: leech needs the
-  window as **bases**, since the corpus serializes `sequence_with_kmer_context`
-  as a string, where upstream only offered ints. Upstream now exposes both forms
-  over one windowing rule, with `sequence_to_int(bases) == ints` pinned by a
-  test there — so the three halves of the signal-level k-mer path (the map, the
-  window, the encoding) all live in `escapepod-signal` and none is duplicated
-  here.
-
-  That third one is the highest-stakes of the three: it is where `before` and
-  `after` are not interchangeable, and swapping them displaces every k-mer
-  silently because the encoder only sees the total width. It is also the most
-  directly checkable — `sequence_with_kmer_context` is one of the fields
-  `test_backend_parity.py` compares array-by-array between backends.
-
-  Only `rust/Cargo.toml`'s git tag moves to v0.16.1; the `escapepod` Python pin
-  stays `>=0.16.0`, because the new function is in the Rust crate and not in the
-  Python bindings.
-
-### Added
-
-- **ONNX export, for the classifier arms and the CRF encoder** (#217).
-  `leech model export --format onnx` beside the existing `--format torch`
-  (unchanged default), and `leech.crf.export.export_crf_onnx`. `torch.export`
-  makes a model loadable by anything with PyTorch and by nothing else; a runtime
-  consuming ONNX — which is what escapepod-rs runs — could not load a leech
-  model at all.
-
-  Both use the **dynamo exporter at opset 18**. `dynamo=False`, the obvious
-  first attempt, fails on these architectures with an `adaptive_avg_pool1d`
-  error that reads like a model problem and is an exporter limitation; that is
-  documented where someone will hit it, and a regression test pins it.
-
-  Each export writes a **contract** beside the graph, carrying the two things a
-  consumer needs and cannot recover from it: which input is which (including
-  that the `signal_kmer` sequence input is built in the dataset, not the model,
-  and that `leech-core` ships that encoder), and what the output means — a
-  single BCE logit, not a two-class softmax. The CRF's contract additionally
-  carries standardisation, which is in neither the config nor the checkpoint,
-  and its emitted references (`target[state_len:]`), computed from the
-  `state_len` the encoder declares.
-
-  Verified across the serialization boundary rather than in process:
-  onnxruntime against torch, 3.58e-07 for the CRF encoder against a float32 eps
-  of 1.19e-07.
-
-  New `onnx` extra (`onnx`, `onnxruntime`, `onnxscript`). CI installs it so the
-  round-trip tests run rather than skip.
-
-- **`leech model train-crf`**, the CLI for the CTC-CRF trainer. Sits beside
-  `model train` rather than in a group of its own: it is the same workflow step,
-  a different task. Every `CrfTrainConfig` field is exposed, and a test asserts
-  each option actually reaches the config — a click option that silently does
-  not is how a sweep ends up running the default every time.
-
-  The summary reports the emission rule (`target_len -> emits target_len -
-  state_len`) because widening the window to get a longer decode is the mistake
-  it prevents, and prints a second table only when the run discarded steps or
-  saw non-finite gradients, since a discarded step is otherwise invisible.
-
-### Added
-
-- **`leech.crf.training`: a CTC-CRF trainer.** `CrfTrainer` runs the schedule
-  and writes `model.pt` plus a `model.json` sidecar. The sidecar is not optional:
-  the standardisation constants live in neither the architecture config nor the
-  checkpoint, so weights alone cannot be used correctly.
-
-  Separate from `leech.training.Trainer`, which is classification-locked through
-  `pos_weight`, `num_out`, BCE/focal/CE and AUROC/F1 checkpointing — a sequence
-  task shares none of it, and forcing it through would put the production
-  classifier path at risk. The decisions are split out as plain functions
-  (`compute_standardisation`, `apply_quality_gate`, `resolve_split`,
-  `encode_targets`, `select_checkpoint`) so they are testable without a GPU; the
-  loop is mechanical, the decisions are where runs go wrong quietly.
-
-  Verified against production data, not just fixtures: standardisation over the
-  391,174 x 3000 ldx corpus reproduces the shipped model's recorded constants
-  (61.8216743766 / 9.5716818880) with a delta of **0.000e+00** on both, and the
-  train/test counts match what `plan_corpus` derives independently from the
-  manifest (283,296 / 107,878). A two-epoch GPU run trains at ~40 s/epoch with
-  loss falling 0.4446 -> 0.0639.
-
-
-- **`leech.crf.corpus`: cut a CRF training corpus from a manifest.**
-  `plan_corpus` decides which reads and in which split, touching no POD5;
-  `build_corpus` extracts their signal, streaming it to a memory-mappable
-  `<out>_X.npy` beside a `<out>_meta.npz`. The signal is never held in RAM as a
-  whole — an 80-plex corpus is tens of gigabytes, and the memmap is what makes
-  the size a disk question instead of an allocation that fails.
-
-  The two stages are separate because everything subtle is in the plan, and a
-  corpus planned wrongly still trains and still reports a number. Four rules,
-  each pinned by a test: a cap only caps if every class can reach it
-  (`per_group="auto"` is the rarest class's *trainable* depth, with the test
-  fraction reserved first); the split is carved before capping and ranked per
-  class globally across batches, since per-`(batch, class)` ranking multiplies
-  the cap by the batch count whenever classes are crossed with batch; batches
-  are interleaved rather than concatenated, or the whole held-out set comes from
-  whichever batch sorts first and the headline number measures batch; and
-  sharding happens after planning, so every shard keeps its share of one global
-  split. Extracting nothing, or less than half the plan, is a hard error with a
-  different message for each — the causes differ, and a 0-row corpus otherwise
-  exits cleanly and reaches a GPU job.
-
-  Validated against the production ldx manifest: 1,139,602 rows plan to 391,174
-  reads at `chunk=3000`, the same count escapepod-models' extractor reports for
-  that input, with the training pool balanced exactly across all 16 groups and
-  held-out reads drawn from both flowcells.
-
-  `load_corpus` / `load_corpus_meta` read both this layout and the legacy
-  single-`.npz` one, so corpora written before the split layout keep loading.
 
 ## [0.8.0] - 2026-08-25
 

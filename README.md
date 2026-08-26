@@ -107,12 +107,24 @@ uv run leech predict \
   --output predictions.bam
 ```
 
+Models export to **ONNX** as well as TorchScript, so a runtime that is not
+PyTorch can load them:
+
+```bash
+uv run leech model export --model-dir models/ --format onnx -o model.onnx
+```
+
+Every export writes a contract beside the graph, carrying what the graph cannot:
+which input is which, and that a leech classifier emits a **single BCE logit**
+rather than a two-class softmax — reading it as the latter makes every call
+wrong without erroring.
+
 ## CLI overview
 
 | Group | Commands | Purpose |
 |-------|----------|---------|
 | `leech data` | `prepare`, `merge` | Extract features, merge and split datasets |
-| `leech model` | `train`, `optimize`, `bundle`, `bundle-info`, `calibrate`, `export` | Train, tune, calibrate, and package models |
+| `leech model` | `train`, `train-crf`, `optimize`, `bundle`, `bundle-info`, `calibrate`, `export` | Train, tune, calibrate, and package models |
 | `leech eval` | `test`, `compare`, `importance`, `ablation` | Evaluate and analyze models |
 | `leech predict` | | Run inference (single model or bundle) |
 
@@ -148,7 +160,19 @@ sequences = decode_batch(scores, cfg.n_base, cfg.state_len)
 
 Corpora are described by a [manifest](https://rnabioco.github.io/leech/api/crf/)
 — one row per read naming the signal window and its target — so the vocabulary
-of a given assay stays with whatever produced it. See the
+of a given assay stays with whatever produced it. `plan_corpus`/`build_corpus`
+cut a corpus from one, `leech model train-crf` trains on it, and
+`leech.crf.evaluate` decodes and scores against a reference set by edit
+distance:
+
+```bash
+uv run leech model train-crf --corpus corpus/ldx16 --output-dir models/crf/ \
+  --epochs 32 --batch-size 256
+```
+
+Note the emission rule: a CRF with `state_len` cannot emit the first
+`state_len` bases of its target, so a `target_len` target decodes to
+`target_len - state_len` bases **at any window width**. See the
 [CRF API reference](https://rnabioco.github.io/leech/api/crf/).
 
 ## Training features

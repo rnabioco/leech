@@ -869,7 +869,7 @@ The workflow is designed to integrate with the leech CLI commands and supports b
 
 ## Current Status
 
-The codebase is feature-complete (v0.7.0):
+The codebase is feature-complete (v0.9.0):
 - ✓ Feature extraction with dwell offset tuning and signal map refinement
 - ✓ 29 model architectures: ConvLSTM (Base/Dwell × BN/GN/LN/Attn), TCN (Dwell/DwellGN/DwellLN/DwellResidual/DwellResidualGN/DwellResidualLN/DwellResidualMotor/DwellResidualDwellAttn/DwellSplitResidual/DwellSplitResidualLN), Transformer (Dwell/DwellResidual), ResNet, ConvOnly, SignalCNN
 - ✓ Config-driven model layer: bonito-style layer registry (`models/nn.py`) + TOML architecture declarations (`models/configs/`)
