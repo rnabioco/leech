@@ -44,6 +44,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`signal_kmer` degraded to `base_onehot` on the strength of one chunk, and
+  the checkpoint did not record that it had** (#230). Three separable defects
+  that combined into a run which finishes, looks fine, and trained on a
+  different model input than was asked for.
+
+  The `--seq-encoding` default is `signal_kmer`, so a corpus written by one
+  leech version and read by another that finds no base-to-signal maps warns and
+  carries on. That reached production through a project running two pixi
+  environments: merges ran from the updated one, training from the stale one,
+  and eight arms trained on `(4, kmer_len)` instead of `(36, signal_len)`. They
+  were caught only because an unrelated memory ceiling OOM-killed the jobs; at
+  the previous ceiling all eight would have completed with AUROC values in the
+  right range from the wrong representation.
+
+  - **The decision was made from chunk 0.** It is now a whole-corpus count —
+    one vectorised pass over the CSR offsets and the context column, data
+    already in memory — and the message says what fraction is affected. Chunk 0
+    was wrong in both directions: one empty first row flipped a whole corpus to
+    `base_onehot`, and a corpus whose first row was fine encoded every later row
+    that had no map from data that isn't there. Those came out as **all-zero
+    sequence channels**, per chunk, with nothing raised and nothing logged —
+    the one defect of the three that was still silent rather than loud.
+
+    A corpus carries the maps for every chunk or for none. None is the
+    version-skew case the fallback exists for; anything in between is damage,
+    and it now raises rather than resolving, because both available answers are
+    the same silent representation change — encoding the uncovered rows anyway
+    gives them the all-zero channels above, and switching the whole corpus on
+    the strength of a few bad rows throws the encoding away for every good one.
+    `--seq-encoding base_onehot` reads such a corpus if that is what you want.
+  - **An encoding named on the command line is no longer substituted.**
+    `--seq-encoding signal_kmer` over a corpus that cannot supply it now stops
+    the run; taking the default still falls back, which is the case the fallback
+    exists for. `--encoding-fallback` / `--no-encoding-fallback` overrides the
+    choice either way (`LeechDataset(allow_encoding_fallback=...)` in code).
+  - **The config records what the run used, not what it asked for.** The model
+    is built from `LeechDataset.effective_seq_encoding` and `config.json` stores
+    it, so a fallen-back arm is auditable after the fact — one field, where
+    before there was no way to find out at all. That also keeps #217's ONNX
+    contract honest: it is derived from the same config, and exists precisely so
+    a non-Python consumer can trust the input spec. A config that misstates its
+    encoding is refused at export rather than published, which
+    `test_onnx_export.py` now pins.
+
+  Before this, the middle state was the worst of the three: the dataset half
+  fell back and the model half did not, so a run died at the first forward pass
+  with a channel-count `RuntimeError` naming neither the corpus nor the
+  encoding. Now the two halves agree, and the disagreement is reported where it
+  happens.
+
 - **CRF training: the batch order no longer replays the split's shuffle.**
   `resolve_split` seeds a generator from `seed`, and on the corpus-split and
   held-out-batch paths it shuffles an array of the *same length* the epoch loop

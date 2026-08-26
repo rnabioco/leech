@@ -76,7 +76,11 @@ def _build_loader_and_model(
         model_name,
         signal_len=signal_len,
         kmer_len=kmer_len,
-        seq_encoding=seq_encoding,
+        # What the dataset yields, not what was asked for — a signal_kmer
+        # request over a corpus with no base-to-signal maps degrades, and the
+        # sequence branch has to be built for the input it will actually get
+        # rather than die on a channel count at the first step (#230).
+        seq_encoding=dataset.effective_seq_encoding,
         num_features=num_features,
         signal_in_channels=signal_in_channels,
         num_out=num_out,

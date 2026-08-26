@@ -290,6 +290,7 @@ from a fresh optimizer and logs a warning.
 | `--base-justify STR` | `center` | Signal justification |
 | `--model-config FILE` | -- | JSON file with model architecture overrides |
 | `--seq-encoding STR` | `signal_kmer` | Sequence encoding: `base_onehot` or `signal_kmer` |
+| `--encoding-fallback / --no-encoding-fallback` | auto | Allow `signal_kmer` to fall back to `base_onehot` when the corpus has no base-to-signal maps. Auto = allowed only when `--seq-encoding` was left at its default |
 | `--num-workers INT` | `0` | DataLoader workers (0=auto) |
 | `--balance-groups / --no-balance-groups` | disabled | Balance sampling across source groups (e.g., per-AA) so each group contributes equally per epoch |
 

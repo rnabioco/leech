@@ -187,6 +187,9 @@ def calibrate_model(
         kmer_len=kmer_len,
         seq_encoding=seq_encoding,
         signal_kmer_context=signal_kmer_context,
+        # The trained model's sequence branch has a fixed channel count, so a
+        # base_onehot fallback here cannot produce a working run (#230).
+        allow_encoding_fallback=False,
         signal_mode=config.get("signal_mode", "both"),
         dwell_template_table=dwell_template_table,
     )
@@ -542,6 +545,9 @@ def calibrate_model_multiclass(
         kmer_len=kmer_len,
         seq_encoding=seq_encoding,
         signal_kmer_context=signal_kmer_context,
+        # The trained model's sequence branch has a fixed channel count, so a
+        # base_onehot fallback here cannot produce a working run (#230).
+        allow_encoding_fallback=False,
         signal_mode=config.get("signal_mode", "both"),
         dwell_template_table=dwell_template_table,
     )

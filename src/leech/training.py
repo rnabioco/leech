@@ -1378,6 +1378,7 @@ def train_model(
     base_justify: str = "center",
     seq_encoding: str = "signal_kmer",
     signal_kmer_context: tuple[int, int] = (4, 4),
+    allow_encoding_fallback: bool = True,
     left_context: int | None = None,
     right_context: int | None = None,
     balance_groups: bool = False,
@@ -1432,6 +1433,12 @@ def train_model(
         motif: Motif used for chunk extraction (recorded in config for provenance)
         motif_offset: Offset within motif for focus base (recorded in config)
         base_justify: Signal justification within focus base (recorded in config)
+        seq_encoding: Sequence encoding requested ("signal_kmer" or "base_onehot")
+        allow_encoding_fallback: Permit a "signal_kmer" request to degrade to
+            "base_onehot" when the corpus carries no base-to-signal maps. False
+            raises instead; a corpus that carries them for only some chunks
+            raises either way. However it resolves, the config records what was
+            used, not what was asked for.
         **model_kwargs: Additional model parameters (passed to model constructor)
 
     Returns:
@@ -1566,6 +1573,7 @@ def train_model(
         augmentation=augmentation,
         seq_encoding=seq_encoding,
         signal_kmer_context=signal_kmer_context,
+        allow_encoding_fallback=allow_encoding_fallback,
         left_context=left_context,
         right_context=right_context,
         confound_encoder=confound_encoder,
@@ -1589,12 +1597,34 @@ def train_model(
             chunks=val_chunks,
             seq_encoding=seq_encoding,
             signal_kmer_context=signal_kmer_context,
+            allow_encoding_fallback=allow_encoding_fallback,
             left_context=left_context,
             right_context=right_context,
             confound_encoder=confound_encoder,
             cl_regression=cl_regression,
             signal_mode=signal_mode,
             dwell_template_table=dwell_template_table,
+        )
+
+    # What the datasets actually yield, which is not always what was asked for:
+    # a signal_kmer request over a corpus with no base-to-signal maps degrades
+    # to base_onehot. That is a different model input, so the model has to be
+    # built from it and the saved config has to record it — otherwise the
+    # checkpoint claims an input it does not have, and #217's ONNX contract,
+    # derived from the same config, inherits the lie (#230).
+    effective_seq_encoding = train_dataset.effective_seq_encoding
+    if effective_seq_encoding != seq_encoding:
+        logger.warning(
+            "Training with seq_encoding=%r, not the requested %r; "
+            "the saved config records the effective value",
+            effective_seq_encoding,
+            seq_encoding,
+        )
+    if val_dataset is not None and val_dataset.effective_seq_encoding != effective_seq_encoding:
+        raise ValueError(
+            f"Train and validation data disagree on sequence encoding: "
+            f"{effective_seq_encoding!r} vs {val_dataset.effective_seq_encoding!r}. "
+            "One corpus carries base-to-signal maps and the other does not."
         )
 
     # One read of the label column, shared by the sampler, the num_out probe
@@ -1761,7 +1791,7 @@ def train_model(
     model_init_kwargs = {
         "signal_len": signal_len,
         "kmer_len": kmer_len,
-        "seq_encoding": seq_encoding,
+        "seq_encoding": effective_seq_encoding,
         "signal_kmer_context": signal_kmer_context,
         **model_kwargs,
     }
@@ -1854,7 +1884,9 @@ def train_model(
         "base_justify": base_justify,
         "left_context": left_context,
         "right_context": right_context,
-        "seq_encoding": seq_encoding,
+        # The effective encoding, not the requested one: a checkpoint that does
+        # not record what it trained on cannot be audited after the fact (#230).
+        "seq_encoding": effective_seq_encoding,
         "signal_kmer_context": list(signal_kmer_context),
         "epochs": epochs,
         "batch_size": batch_size,

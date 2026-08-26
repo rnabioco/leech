@@ -159,6 +159,11 @@ def evaluate_model(
         right_context=right_context,
         seq_encoding=seq_encoding,
         signal_kmer_context=signal_kmer_context,
+        # The encoding is the trained model's, not a preference: its sequence
+        # branch has a fixed channel count, so falling back to base_onehot
+        # cannot produce a working run — only a channel-count RuntimeError
+        # several steps later, naming neither the corpus nor the encoding (#230).
+        allow_encoding_fallback=False,
         signal_mode=signal_mode,
         dwell_template_table=dwell_template_table,
     )

@@ -525,6 +525,7 @@ class LeechDataset(Dataset):
         augmentation: dict | None = None,
         seq_encoding: str = "signal_kmer",
         signal_kmer_context: tuple[int, int] = (4, 4),
+        allow_encoding_fallback: bool = True,
         left_context: int | None = None,
         right_context: int | None = None,
         confound_encoder: "ConfoundEncoder | None" = None,
@@ -552,6 +553,13 @@ class LeechDataset(Dataset):
             augmentation: Signal augmentation config dict. Keys:
                 - jitter_std (float): Gaussian noise std dev (0 = disabled)
                 - scale_range (tuple[float, float]): Random scale range (1.0, 1.0 = disabled)
+            allow_encoding_fallback: When ``seq_encoding="signal_kmer"`` and the
+                corpus carries no base-to-signal maps at all, fall back to
+                ``base_onehot`` (warning) rather than raising. A corpus that
+                carries them for *some* chunks is damaged and raises either way.
+                Read :attr:`effective_seq_encoding` for what the dataset
+                actually yields — it is a different model input, not a tuning
+                difference, so callers that persist a config must record it.
             left_context: Left signal context (samples before focus base).
                 When both left_context and right_context are provided, crop
                 asymmetrically around the focus base instead of center-cropping.
@@ -647,23 +655,40 @@ class LeechDataset(Dataset):
         self._cl_regression = cl_regression
         self._cl_targets: list[torch.Tensor] = []
 
-        # Determine effective encoding: fall back to base_onehot if chunks lack signal_kmer data
+        # Determine effective encoding, from the whole corpus rather than from
+        # chunk 0 (#230). A corpus carries the signal_kmer inputs for every
+        # chunk or for none: none is the version-skew case the fallback exists
+        # for, and anything in between is damage.
         self._effective_seq_encoding = seq_encoding
         if seq_encoding == "signal_kmer":
-            first = self.chunks[0]
-            if self._s2s_csr is not None:
-                # Streaming path: the maps were deferred out of the chunk dicts,
-                # so ask the CSR arrays whether the first chunk has one.
-                _offsets = self._s2s_csr[1]
-                _row = self._s2s_rows[0]
-                has_seq_to_sig = bool(_offsets[_row + 1] > _offsets[_row])
-            else:
-                has_seq_to_sig = first.get("seq_to_sig_map") is not None
-            if not has_seq_to_sig or not first.get("sequence_with_kmer_context"):
-                logger.warning(
-                    "Chunks lack seq_to_sig_map/sequence_with_kmer_context; "
-                    "falling back to base_onehot encoding"
+            n_covered, n_total = self._signal_kmer_coverage()
+            if n_covered < n_total:
+                n_missing = n_total - n_covered
+                detail = (
+                    f"{n_missing} of {n_total} chunks ({n_missing / n_total:.1%}) lack "
+                    f"seq_to_sig_map/sequence_with_kmer_context"
+                    f"{f' in {chunk_path}' if chunk_path else ''}"
                 )
+                if n_covered:
+                    # Ragged, not legacy — and no automatic choice is right.
+                    # Encoding the uncovered rows anyway gives them all-zero
+                    # sequence channels; switching the whole corpus to
+                    # base_onehot on the strength of a few bad rows throws the
+                    # encoding away for every good one. Both are the silent
+                    # representation change this guard exists to prevent.
+                    raise ValueError(
+                        f"seq_encoding='signal_kmer': {detail}. A corpus carries "
+                        "base-to-signal maps for every chunk or for none; re-prepare "
+                        "it, or ask for --seq-encoding base_onehot explicitly."
+                    )
+                if not allow_encoding_fallback:
+                    raise ValueError(
+                        f"seq_encoding='signal_kmer' was requested but {detail}. "
+                        "Re-prepare the corpus with a leech version that writes "
+                        "base-to-signal maps, or ask for --seq-encoding base_onehot "
+                        "explicitly."
+                    )
+                logger.warning("%s; falling back to base_onehot encoding", detail)
                 self._effective_seq_encoding = "base_onehot"
                 self._s2s_csr = None
 
@@ -858,6 +883,55 @@ class LeechDataset(Dataset):
             f"Pre-tensorized {len(self.chunks)} chunks "
             f"({_n_encoded} sequences encoded, encoding={self._effective_seq_encoding})"
         )
+
+    @property
+    def effective_seq_encoding(self) -> str:
+        """The encoding this dataset actually yields.
+
+        Differs from the requested ``seq_encoding`` only when a
+        ``signal_kmer`` request fell back to ``base_onehot``. That is a
+        different model input — ``(36, signal_len)`` against ``(4, kmer_len)``
+        — so anything that builds a model or writes a config has to read this
+        rather than what was asked for (#230).
+        """
+        return self._effective_seq_encoding
+
+    def _signal_kmer_coverage(self) -> tuple[int, int]:
+        """How many chunks can supply signal_kmer inputs, out of how many.
+
+        A chunk needs both halves: a non-empty base-to-signal map and a k-mer
+        context string. Chunk 0 decided this for the whole corpus until #230,
+        which is wrong in both directions — a corpus whose first row happens to
+        have an empty map flips every other row to ``base_onehot``, and a
+        corpus where chunk 0 is fine but later rows are not passes the check
+        and encodes those rows from data that isn't there (they come out as
+        all-zero sequence channels, silently).
+        """
+        n_total = len(self.chunks)
+        if isinstance(self.chunks, ChunkTable):
+            # Streaming path: the maps were deferred out of the chunk dicts, so
+            # ask the CSR arrays. One vectorised pass over data already in
+            # memory rather than a row view per chunk.
+            context = self.chunks.values("sequence_with_kmer_context")
+            if self._s2s_csr is None or context is None:
+                return 0, n_total
+            offsets = self._s2s_csr[1]
+            rows = self._s2s_rows
+            assert rows is not None
+            has_map = offsets[rows + 1] > offsets[rows]
+            has_context = context != context.dtype.type("")
+            return int(np.count_nonzero(has_map & has_context)), n_total
+
+        n_covered = 0
+        for chunk in self.chunks:
+            seq_to_sig = chunk.get("seq_to_sig_map")
+            if (
+                seq_to_sig is not None
+                and len(seq_to_sig) > 0
+                and chunk.get("sequence_with_kmer_context")
+            ):
+                n_covered += 1
+        return n_covered, n_total
 
     # =========================================================================
     # Tensorizing: one row at a time, or a whole row block at a time
