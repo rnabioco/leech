@@ -98,17 +98,12 @@ pub(super) fn compute_signal_residual(
     residual
 }
 
+/// Bases as `0..3`, anything else `-1`. From `escapepod-signal`, which owns
+/// the alphabet the signal-level encodings are written in; the table here was
+/// identical, and two copies of an alphabet is how a `U` starts meaning
+/// something different on one side.
 pub(super) fn sequence_to_int(sequence: &[u8]) -> Vec<i8> {
-    sequence
-        .iter()
-        .map(|&c| match c {
-            b'A' | b'a' => 0,
-            b'C' | b'c' => 1,
-            b'G' | b'g' => 2,
-            b'T' | b't' | b'U' | b'u' => 3,
-            _ => -1,
-        })
-        .collect()
+    escapepod_signal::seq_encoding::sequence_to_int(sequence)
 }
 
 pub(super) fn encode_base_onehot(sequence: &[u8]) -> Vec<f32> {

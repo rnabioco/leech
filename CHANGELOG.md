@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The signal-level k-mer encoding comes from escapepod-signal** rather than
+  being held here (escapepod-rs#271 / #272; requires escapepod 0.16.0).
+  `rust/src/encoding.rs` and `sequence_to_int` are now calls into
+  `escapepod_signal::seq_encoding`.
+
+  leech held the only copy of this rule, inside a `crate-type = ["cdylib"]`
+  Python extension module — so a native runtime for a leech `signal_kmer` model
+  could not link it and had to transcribe it, which is a second definition that
+  diverges silently. It is also the natural pair to `escapepod_signal::mapping`,
+  which *produces* the base-to-signal map the encoding consumes: the producing
+  half was already upstream and the consuming half was not.
+
+  This is a delegation, so the only acceptable outcome is identity: 198 parity
+  tests pass unchanged, including `test_backend_parity.py`, which compares every
+  array in the npz between the Rust and Python backends against a Python
+  reference this change does not touch.
+
+  The k-mer *context slice* delegates too, via `sequence_bases_with_context`
+  (escapepod-rs#274, escapepod 0.16.1). It could not at first: leech needs the
+  window as **bases**, since the corpus serializes `sequence_with_kmer_context`
+  as a string, where upstream only offered ints. Upstream now exposes both forms
+  over one windowing rule, with `sequence_to_int(bases) == ints` pinned by a
+  test there — so the three halves of the signal-level k-mer path (the map, the
+  window, the encoding) all live in `escapepod-signal` and none is duplicated
+  here.
+
+  That third one is the highest-stakes of the three: it is where `before` and
+  `after` are not interchangeable, and swapping them displaces every k-mer
+  silently because the encoder only sees the total width. It is also the most
+  directly checkable — `sequence_with_kmer_context` is one of the fields
+  `test_backend_parity.py` compares array-by-array between backends.
+
+  Only `rust/Cargo.toml`'s git tag moves to v0.16.1; the `escapepod` Python pin
+  stays `>=0.16.0`, because the new function is in the Rust crate and not in the
+  Python bindings.
+
 ### Added
 
 - **ONNX export, for the classifier arms and the CRF encoder** (#217).
