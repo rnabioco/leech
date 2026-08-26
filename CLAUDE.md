@@ -326,7 +326,16 @@ it has not been told how to compare, so adding a field to the chunk format
 without classifying it is a test failure rather than a silent gap. That
 property is the point: every divergence so far (#185 counts, #186 signal_kmer,
 #189 window width, #193 values) was invisible to the check written for the
-previous one. Dwells and int/string fields compare exactly; float feature rows
+previous one.
+
+**A parity test only covers the branches its fixtures reach.** At the default
+`signal_context=(200, 200)` no fixture read's k-mer window runs off the end of
+the read — 0 of 18 chunks contain an `N` — so for a long time the padding branch
+of the context window was compared by nothing. `test_kmer_context_padding`
+widens the window until it is (9 of 18 at 2000, all 18 at 6000) and asserts the
+padding actually occurred, because without that assertion a fixture change that
+stopped producing edge chunks would leave the test passing while testing
+nothing. When you add a branch here, ask which fixture reaches it. Dwells and int/string fields compare exactly; float feature rows
 get a tolerance, because Python accumulates per-base statistics in float64 and
 casts while Rust accumulates in float32 — real noise of ~1e-7, against
 divergences that have all moved values by 0.5% or more.
