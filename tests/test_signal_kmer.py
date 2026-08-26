@@ -363,3 +363,164 @@ class TestDatasetSignalKmer:
         collated = collate_fn(batch)
 
         assert collated["sequence"].shape == (batch_size, 36, 400)
+
+
+# ---------------------------------------------------------------------------
+# The signal_kmer -> base_onehot fallback: whole corpus, and refusable (#230)
+# ---------------------------------------------------------------------------
+
+
+def _blank_signal_kmer(chunk: dict) -> dict:
+    """Strip a chunk's signal_kmer inputs, the way a corpus that lacks them does."""
+    chunk["seq_to_sig_map"] = np.zeros(0, dtype=np.int64)
+    chunk["sequence_with_kmer_context"] = ""
+    return chunk
+
+
+@pytest.fixture
+def signal_kmer_chunks(sample_leech_read):
+    """Chunks carrying both signal_kmer inputs: the map and the context string."""
+    chunks = []
+    kmer_context = 5
+    for base_idx in range(kmer_context, min(15, sample_leech_read.num_bases - kmer_context)):
+        chunk = sample_leech_read.get_chunk(
+            base_idx, signal_context=(200, 200), kmer_context=kmer_context
+        )
+        if chunk is None or chunk.get("sequence_with_kmer_context") is None:
+            continue
+        chunk["read_id"] = sample_leech_read.read_id
+        chunk["label_int"] = base_idx % 2
+        chunk["label"] = "charged" if (base_idx % 2) == 1 else "uncharged"
+        chunks.append(chunk)
+    if len(chunks) < 3:
+        pytest.skip("Need at least 3 chunks with signal_kmer context")
+    return chunks
+
+
+class TestEncodingFallbackPolicy:
+    """The fallback is a whole-corpus decision, and it can be refused.
+
+    Chunk 0 decided it for every chunk until #230, which is wrong in both
+    directions: one empty first row flipped a whole corpus to ``base_onehot``,
+    and a corpus whose first row was fine encoded every later row that had no
+    map from data that isn't there — silently, as all-zero sequence channels.
+    """
+
+    RAGGED = "carries base-to-signal maps for every chunk or for none"
+
+    KWARGS = {
+        "signal_len": 400,
+        "kmer_len": 11,
+        "model_type": "ConvLSTMDwell",
+        "seq_encoding": "signal_kmer",
+        "signal_kmer_context": (4, 4),
+    }
+
+    @staticmethod
+    def _corpus(chunks, tmp_path, name="chunks.npz"):
+        from leech.chunking.serialization import save_chunks
+
+        path = tmp_path / name
+        save_chunks(chunks, path)
+        return path
+
+    @staticmethod
+    def _all_but_first(chunks):
+        """Chunk 0 keeps its signal_kmer inputs; every other chunk loses them."""
+        copies = [dict(c) for c in chunks]
+        for chunk in copies[1:]:
+            _blank_signal_kmer(chunk)
+        return copies
+
+    def test_a_ragged_corpus_stops_the_run(self, signal_kmer_chunks, tmp_path):
+        """Chunk 0 keeps its map and the rest do not — neither answer is right.
+
+        Encoding the uncovered rows anyway gives them all-zero sequence
+        channels; switching the whole corpus to ``base_onehot`` on the strength
+        of a few bad rows throws the encoding away for every good one. Both are
+        the silent representation change this guard exists to prevent, so a
+        ragged corpus is reported rather than resolved.
+        """
+        from leech.dataset import LeechDataset
+
+        chunks = self._all_but_first(signal_kmer_chunks)
+        path = self._corpus(chunks, tmp_path)
+        with pytest.raises(ValueError, match=self.RAGGED):
+            LeechDataset(chunk_path=path, **self.KWARGS)
+
+    def test_a_ragged_corpus_stops_the_run_even_where_the_fallback_is_allowed(
+        self, signal_kmer_chunks, tmp_path
+    ):
+        """Permission to fall back is not permission to reinterpret a damaged corpus."""
+        from leech.dataset import LeechDataset
+
+        chunks = self._all_but_first(signal_kmer_chunks)
+        path = self._corpus(chunks, tmp_path)
+        with pytest.raises(ValueError, match=self.RAGGED):
+            LeechDataset(chunk_path=path, allow_encoding_fallback=True, **self.KWARGS)
+
+    def test_first_chunk_missing_is_reported_as_one_chunk(self, signal_kmer_chunks, tmp_path):
+        """One empty row is one row, not the whole corpus — the other direction."""
+        from leech.dataset import LeechDataset
+
+        chunks = [dict(c) for c in signal_kmer_chunks]
+        _blank_signal_kmer(chunks[0])
+        path = self._corpus(chunks, tmp_path)
+
+        with pytest.raises(ValueError, match=rf"\b1 of {len(chunks)} chunks"):
+            LeechDataset(chunk_path=path, **self.KWARGS)
+
+    def test_a_ragged_corpus_can_still_be_read_as_base_onehot(self, signal_kmer_chunks, tmp_path):
+        """The escape hatch is naming the encoding, not letting one be chosen."""
+        from leech.dataset import LeechDataset
+
+        chunks = self._all_but_first(signal_kmer_chunks)
+        path = self._corpus(chunks, tmp_path)
+        kwargs = {**self.KWARGS, "seq_encoding": "base_onehot"}
+        dataset = LeechDataset(chunk_path=path, **kwargs)
+        assert dataset.effective_seq_encoding == "base_onehot"
+        for i in range(len(dataset)):
+            assert torch.count_nonzero(dataset[i]["sequence"]) > 0
+
+    def test_a_corpus_with_no_maps_at_all_falls_back(self, signal_kmer_chunks, tmp_path, caplog):
+        """The version-skew case, and the one the fallback exists for."""
+        from leech.dataset import LeechDataset
+
+        chunks = [_blank_signal_kmer(dict(c)) for c in signal_kmer_chunks]
+        path = self._corpus(chunks, tmp_path)
+        with caplog.at_level("WARNING", logger="leech.dataset"):
+            dataset = LeechDataset(chunk_path=path, **self.KWARGS)
+
+        assert dataset.effective_seq_encoding == "base_onehot"
+        # The fraction is the point: a warning that does not say how much of the
+        # corpus is affected is the one that got read past for four releases.
+        assert f"{len(chunks)} of {len(chunks)}" in caplog.text
+
+    def test_fallback_can_be_refused(self, signal_kmer_chunks, tmp_path):
+        """An encoding asked for by name is not silently substituted."""
+        from leech.dataset import LeechDataset
+
+        chunks = [_blank_signal_kmer(dict(c)) for c in signal_kmer_chunks]
+        path = self._corpus(chunks, tmp_path)
+        with pytest.raises(ValueError, match="signal_kmer"):
+            LeechDataset(chunk_path=path, allow_encoding_fallback=False, **self.KWARGS)
+
+    def test_refusing_the_fallback_leaves_a_healthy_corpus_alone(
+        self, signal_kmer_chunks, tmp_path
+    ):
+        from leech.dataset import LeechDataset
+
+        path = self._corpus([dict(c) for c in signal_kmer_chunks], tmp_path)
+        dataset = LeechDataset(chunk_path=path, allow_encoding_fallback=False, **self.KWARGS)
+        assert dataset.effective_seq_encoding == "signal_kmer"
+        assert dataset[0]["sequence"].shape == (36, 400)
+
+    def test_streamed_and_preloaded_paths_agree(self, signal_kmer_chunks, tmp_path):
+        """The CSR coverage count and the per-dict one answer the same question."""
+        from leech.dataset import LeechDataset
+
+        chunks = self._all_but_first(signal_kmer_chunks)
+        with pytest.raises(ValueError, match=self.RAGGED):
+            LeechDataset(chunk_path=self._corpus(chunks, tmp_path), **self.KWARGS)
+        with pytest.raises(ValueError, match=self.RAGGED):
+            LeechDataset(chunks=[dict(c) for c in chunks], **self.KWARGS)

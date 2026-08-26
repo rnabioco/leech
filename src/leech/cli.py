@@ -9,6 +9,7 @@ from importlib.metadata import version as pkg_version
 from pathlib import Path
 
 import rich_click as click
+from click.core import ParameterSource
 
 from leech.cli_config import configure_rich_click, console
 from leech.cli_options import (
@@ -698,6 +699,13 @@ def merge(
     help="Sequence encoding type: signal_kmer (36, signal_len) or base_onehot (4, kmer_len)",
 )
 @click.option(
+    "--encoding-fallback/--no-encoding-fallback",
+    default=None,
+    help="Allow signal_kmer to fall back to base_onehot when the corpus carries no "
+    "base-to-signal maps. Default: allowed only when --seq-encoding was left at its "
+    "default, so an encoding you asked for by name is never substituted silently.",
+)
+@click.option(
     "--num-workers",
     type=int,
     default=0,
@@ -822,6 +830,7 @@ def train(
     motif_offset,
     base_justify,
     seq_encoding,
+    encoding_fallback,
     num_workers,
     balance_groups,
     oversample_minority,
@@ -840,6 +849,14 @@ def train(
     from leech.commands.train import handle_train
 
     confound = _resolve_confound_token(confound, confound_config)
+
+    # An encoding the user named is not a preference to be overruled: a corpus
+    # that cannot supply signal_kmer should stop the run, not quietly train a
+    # different model input. Taking the default is the case that deserves the
+    # fallback, and only that one (#230).
+    if encoding_fallback is None:
+        source = click.get_current_context().get_parameter_source("seq_encoding")
+        encoding_fallback = source is ParameterSource.DEFAULT
 
     handle_train(
         train_data=train_data,
@@ -881,6 +898,7 @@ def train(
         motif_offset=motif_offset,
         base_justify=base_justify,
         seq_encoding=seq_encoding,
+        allow_encoding_fallback=encoding_fallback,
         balance_groups=balance_groups,
         oversample_minority=oversample_minority,
         num_out=num_out,

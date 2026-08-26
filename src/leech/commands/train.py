@@ -57,6 +57,7 @@ def handle_train(
     motif_offset: int = 0,
     base_justify: str = "center",
     seq_encoding: str = "signal_kmer",
+    allow_encoding_fallback: bool = True,
     balance_groups: bool = False,
     oversample_minority: bool = False,
     adversarial_lambda: float = 0.0,
@@ -107,6 +108,9 @@ def handle_train(
         motif_offset: Offset within motif (provenance)
         base_justify: Signal justification (provenance)
         seq_encoding: Sequence encoding type
+        allow_encoding_fallback: Permit signal_kmer to degrade to base_onehot
+            when the corpus carries no base-to-signal maps (False raises
+            instead; a partially covered corpus raises either way)
         balance_groups: Balance sampling across source groups
         **model_kwargs: Additional model-specific parameters
 
@@ -156,6 +160,7 @@ def handle_train(
         "augment_feature_noise_scale",
         "num_workers",
         "seq_encoding",
+        "allow_encoding_fallback",
         "balance_groups",
         "oversample_minority",
         "device",
@@ -216,6 +221,7 @@ def handle_train(
         motif_offset=motif_offset,
         base_justify=base_justify,
         seq_encoding=seq_encoding,
+        allow_encoding_fallback=allow_encoding_fallback,
         balance_groups=balance_groups,
         oversample_minority=oversample_minority,
         adversarial_lambda=adversarial_lambda,

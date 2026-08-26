@@ -535,6 +535,49 @@ scans in `loss.py` are the readable reference the tests check it against, and
 the Triton kernels check against those. Keep all three — the fallback chain is
 what makes a wrong kernel visible.
 
+### The sequence encoding is decided once, from the whole corpus, and recorded
+
+`--seq-encoding signal_kmer` (the default) needs two per-chunk fields the
+corpus may not carry: the base-to-signal map and
+`sequence_with_kmer_context`. When it cannot, `LeechDataset` falls back to
+`base_onehot` — `(4, kmer_len)` where `signal_kmer` is `(36, signal_len)`. That
+is a **different model input, not a tuning difference**, and every rule below
+exists because it is one (#230).
+
+**The decision is a count over the whole corpus, never chunk 0.**
+`_signal_kmer_coverage` is one vectorised pass over the CSR offsets and the
+context column on the streaming path. Chunk 0 was wrong in both directions: one
+empty first row flipped an entire corpus to `base_onehot`, and a corpus whose
+first row was fine encoded every *later* row that had no map from data that
+isn't there — all-zero sequence channels, per chunk, nothing raised and nothing
+logged. Report the affected fraction; a warning that does not say how much of
+the corpus it covers is the one that gets read past.
+
+**A corpus carries the maps for every chunk or for none, and partial coverage
+raises.** None is version skew, which the fallback exists for. In between is
+damage, where both answers are the same silent representation change: encoding
+the uncovered rows gives them all-zero channels, and switching the whole corpus
+on a few bad rows discards the encoding for every good one. Do not pick one —
+`--seq-encoding base_onehot` is the caller's escape hatch, and it is explicit.
+
+**An encoding named on the command line is not a preference to be overruled.**
+`leech model train` distinguishes the two cases with click's
+`get_parameter_source`: the default falls back, an explicit `--seq-encoding`
+raises, and `--encoding-fallback` / `--no-encoding-fallback` overrides either
+way. In code it is `LeechDataset(allow_encoding_fallback=...)`, default True,
+so nothing outside training changes behaviour.
+
+**Build the model and write the config from
+`LeechDataset.effective_seq_encoding`, never from the requested value.** The
+two halves have to agree: with the dataset falling back and the model built
+from the request, a run dies at the first forward pass with a channel-count
+`RuntimeError` naming neither the corpus nor the encoding — and for a
+sequence-blind arm it does not die at all. A checkpoint that records the
+request instead of what it trained on cannot be audited afterwards, which is
+how this stayed invisible for four releases; and the ONNX contract below is
+derived from that same config, so the lie propagates to the one artifact whose
+whole purpose is to be trusted by a non-Python consumer.
+
 ### ONNX export: one exporter, and what a graph cannot carry
 
 `leech.onnx_export` serves both the classifier arms (`leech model export

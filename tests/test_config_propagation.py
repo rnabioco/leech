@@ -225,6 +225,211 @@ class TestCLIMotif:
 
 
 # ---------------------------------------------------------------------------
+# Sequence encoding: the config records what was used, not what was asked for
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def chunks_file_without_maps(sample_chunks, tmp_path):
+    """A corpus a signal_kmer run cannot be served from — the version-skew case."""
+    from leech.chunking.serialization import save_chunks
+
+    chunks = []
+    for chunk in sample_chunks:
+        stripped = dict(chunk)
+        stripped["seq_to_sig_map"] = np.zeros(0, dtype=np.int64)
+        stripped["sequence_with_kmer_context"] = ""
+        chunks.append(stripped)
+    path = tmp_path / "no_maps.npz"
+    save_chunks(chunks, path)
+    return path
+
+
+class TestSeqEncodingProvenance:
+    """A checkpoint that fell back has to say so (#230).
+
+    ``--seq-encoding signal_kmer`` over a corpus with no base-to-signal maps
+    trains on ``base_onehot`` — a different model input, ``(4, kmer_len)``
+    against ``(36, signal_len)``. Writing the requested value into config.json
+    left no way to audit the artifact afterwards, and #220's ONNX contract,
+    derived from the same config, would publish an input the model does not
+    have.
+    """
+
+    def test_config_records_the_effective_encoding(self, chunks_file_without_maps, tmp_path):
+        output_dir = tmp_path / "fallback"
+        train_model(
+            train_data_path=chunks_file_without_maps,
+            val_data_path=None,
+            output_dir=output_dir,
+            seq_encoding="signal_kmer",
+            **TRAIN_DEFAULTS,
+        )
+        config = _read_config(output_dir)
+        assert config["seq_encoding"] == "base_onehot"
+
+    def test_the_model_matches_the_config_it_is_saved_with(
+        self, chunks_file_without_maps, tmp_path
+    ):
+        """Config and weights have to describe the same sequence branch."""
+        import torch
+
+        from leech.models import get_model
+
+        output_dir = tmp_path / "fallback_weights"
+        train_model(
+            train_data_path=chunks_file_without_maps,
+            val_data_path=None,
+            output_dir=output_dir,
+            seq_encoding="signal_kmer",
+            **TRAIN_DEFAULTS,
+        )
+        config = _read_config(output_dir)
+        checkpoint = torch.load(
+            output_dir / "model_best.pt", map_location="cpu", weights_only=False
+        )
+        state = checkpoint.get("model_state_dict", checkpoint)
+
+        model = get_model(
+            config["model_name"],
+            signal_len=config["signal_len"],
+            kmer_len=config["kmer_len"],
+            seq_encoding=config["seq_encoding"],
+            signal_kmer_context=tuple(config["signal_kmer_context"]),
+            num_features=config["num_features"],
+            signal_in_channels=config["signal_in_channels"],
+            num_out=config["num_out"],
+        )
+        # Rebuilt from the saved config alone, the weights have to fit.
+        model.load_state_dict(state)
+
+    def test_encoding_stays_signal_kmer_when_the_corpus_can_supply_it(
+        self, temp_chunks_file, tmp_path
+    ):
+        output_dir = tmp_path / "no_fallback"
+        train_model(
+            train_data_path=temp_chunks_file,
+            val_data_path=None,
+            output_dir=output_dir,
+            seq_encoding="signal_kmer",
+            **TRAIN_DEFAULTS,
+        )
+        assert _read_config(output_dir)["seq_encoding"] == "signal_kmer"
+
+    def test_refusing_the_fallback_stops_the_run(self, chunks_file_without_maps, tmp_path):
+        with pytest.raises(ValueError, match="signal_kmer"):
+            train_model(
+                train_data_path=chunks_file_without_maps,
+                val_data_path=None,
+                output_dir=tmp_path / "refused",
+                seq_encoding="signal_kmer",
+                allow_encoding_fallback=False,
+                **TRAIN_DEFAULTS,
+            )
+
+    def test_cli_explicit_seq_encoding_is_not_substituted(self, chunks_file_without_maps, tmp_path):
+        """Naming the encoding on the command line makes the fallback an error."""
+        from click.testing import CliRunner
+
+        from leech.cli import cli
+
+        result = CliRunner().invoke(
+            cli,
+            [
+                "model",
+                "train",
+                "--train-data",
+                str(chunks_file_without_maps),
+                "--model",
+                "ConvLSTMDwell",
+                "--output-dir",
+                str(tmp_path / "cli_explicit"),
+                "--epochs",
+                "1",
+                "--batch-size",
+                "2",
+                "--device",
+                "cpu",
+                "--motif",
+                "CCAGGC",
+                "--seq-encoding",
+                "signal_kmer",
+            ],
+        )
+        assert result.exit_code != 0
+        assert isinstance(result.exception, ValueError)
+        assert "signal_kmer" in str(result.exception)
+
+    def test_cli_default_seq_encoding_still_falls_back(self, chunks_file_without_maps, tmp_path):
+        """Taking the default is the case the fallback exists for."""
+        from click.testing import CliRunner
+
+        from leech.cli import cli
+
+        output_dir = tmp_path / "cli_default"
+        result = CliRunner().invoke(
+            cli,
+            [
+                "model",
+                "train",
+                "--train-data",
+                str(chunks_file_without_maps),
+                "--model",
+                "ConvLSTMDwell",
+                "--output-dir",
+                str(output_dir),
+                "--epochs",
+                "1",
+                "--batch-size",
+                "2",
+                "--device",
+                "cpu",
+                "--motif",
+                "CCAGGC",
+            ],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+        assert _read_config(output_dir)["seq_encoding"] == "base_onehot"
+
+    def test_cli_encoding_fallback_flag_overrides_the_explicit_request(
+        self, chunks_file_without_maps, tmp_path
+    ):
+        from click.testing import CliRunner
+
+        from leech.cli import cli
+
+        output_dir = tmp_path / "cli_flag"
+        result = CliRunner().invoke(
+            cli,
+            [
+                "model",
+                "train",
+                "--train-data",
+                str(chunks_file_without_maps),
+                "--model",
+                "ConvLSTMDwell",
+                "--output-dir",
+                str(output_dir),
+                "--epochs",
+                "1",
+                "--batch-size",
+                "2",
+                "--device",
+                "cpu",
+                "--motif",
+                "CCAGGC",
+                "--seq-encoding",
+                "signal_kmer",
+                "--encoding-fallback",
+            ],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+        assert _read_config(output_dir)["seq_encoding"] == "base_onehot"
+
+
+# ---------------------------------------------------------------------------
 # Inference shape validator
 # ---------------------------------------------------------------------------
 

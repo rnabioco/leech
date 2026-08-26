@@ -219,6 +219,33 @@ def test_base_onehot_contract_does_not_mention_the_signal_kmer_encoder():
     assert "encode_signal_kmer" not in specs[1].produced_by
 
 
+def test_a_config_that_misstates_its_encoding_cannot_be_exported(tmp_path, model_config):
+    """The contract is derived from config.json, so the config has to be true.
+
+    #230: a run whose signal_kmer request fell back to base_onehot used to save
+    ``seq_encoding: signal_kmer`` anyway. Such a checkpoint is refused here —
+    the example inputs and the model are built from the same claim, and the
+    weights do not fit it — rather than published as a contract declaring a
+    36-channel input the model does not have. Training now records the
+    effective encoding, so this state is unreachable from `leech model train`;
+    the check is what keeps a hand-edited or older config from being trusted.
+    """
+    directory = tmp_path / "model"
+    directory.mkdir()
+    model = get_model("ConvLSTMDwell", **model_config)  # a base_onehot arm
+    torch.save({"model_state_dict": model.state_dict()}, directory / "model_best.pt")
+    misstated = {
+        "model_name": "ConvLSTMDwell",
+        **model_config,
+        "seq_encoding": "signal_kmer",
+        "signal_kmer_context": [4, 4],
+    }
+    (directory / "config.json").write_text(json.dumps(misstated))
+
+    with pytest.raises(RuntimeError, match="size mismatch"):
+        export_single_model_onnx(directory, tmp_path / "model.onnx", verify=False)
+
+
 # ── the shared exporter ────────────────────────────────────────────────────
 
 
