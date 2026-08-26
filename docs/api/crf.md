@@ -192,6 +192,42 @@ full-length targets by hand and inflate every edit distance.
 
 Requires the `onnx` extra: `uv sync --extra onnx`.
 
+## Evaluating
+
+`leech.crf.evaluate` is the generic half of scoring: decode a corpus, match each
+decode to its nearest reference, report per group. What a *panel* is — which
+classes exist, which share a flowcell — stays with whatever defines the panel.
+
+```python
+from leech.crf import (decode_corpus, emitted_references, call_references,
+                       balanced_recall)
+
+refs = emitted_references(targets, state_len=4)      # target[state_len:]
+decodes = decode_corpus(model, signal, test_idx, mean=..., std=..., chunk=3000)
+calls = call_references(decodes, refs, candidates=classes_in_this_group)
+report = balanced_recall(truth, calls, groups)
+```
+
+Three rules it holds:
+
+- **Match against what the model emits.** Scoring against full-length targets
+  forces `state_len` leading deletions into every alignment — inflating every
+  distance *and compressing the margin*, since an aligner places those deletions
+  where they help most, discounting wrong references more than the right one.
+- **Report per group, never one pooled table.** When classes are crossed with
+  batch, a pooled table measures batch. The grouping is an argument because only
+  the caller knows whether their classes are confounded; the refusal to pool is
+  here, and an empty grouping raises rather than reporting `null`.
+- **Balanced, not raw, recall.** A pooled accuracy over unbalanced classes is
+  dominated by the deepest class.
+
+`lev_vs_refs` scores one decode against the whole reference set at once — the
+shape of every evaluation loop. It recovers the serial insertion term exactly as
+`j + cummin(tmp[k] - k)`, and that identity is asserted against the scalar
+implementation rather than assumed. edlib is used when importable; the pure
+Python fallback stays named so the two can be compared on machines that have
+both.
+
 ## Encoder
 
 ::: leech.crf.encoder.CrfEncoder
@@ -306,6 +342,28 @@ Requires the `onnx` extra: `uv sync --extra onnx`.
       show_root_heading: true
 
 ::: leech.crf.export.load_training_sidecar
+    options:
+      show_root_heading: true
+
+## Evaluation API
+
+::: leech.crf.evaluate.decode_corpus
+    options:
+      show_root_heading: true
+
+::: leech.crf.evaluate.emitted_references
+    options:
+      show_root_heading: true
+
+::: leech.crf.evaluate.call_references
+    options:
+      show_root_heading: true
+
+::: leech.crf.evaluate.balanced_recall
+    options:
+      show_root_heading: true
+
+::: leech.crf.evaluate.lev_vs_refs
     options:
       show_root_heading: true
 
