@@ -589,7 +589,39 @@ else — escapepod-rs consumes ONNX and could not load a leech model at all.
 attempt and fails on these architectures with `Unsupported: ONNX export of
 operator adaptive_avg_pool1d`. That is an exporter limitation, not a model
 problem, but the message reads like one; `tests/test_onnx_export.py` pins the
-working path so a regression to the legacy exporter says so.
+working path so a regression to the legacy exporter says so. Re-measured on
+torch 2.12 after the pool below stopped emitting an aten adaptive pool — the
+reason still holds, because `torch.jit.trace` turns `.shape[-1]` into a Tensor
+and takes the replacement's dynamic-length fallback straight back to the aten
+op.
+
+**But dynamo alone is not sufficient — "it exports" is a weaker claim than "a
+runtime can load it", and only the second one ships.**
+`charging_tcn_rna004@v0.1.0` shipped a graph no released `escpod` could load
+(rnabioco/escapepod-models#96); onnxruntime loads it happily, which is exactly
+why `verify_onnx` had nothing to say and the failure surfaced at integration
+instead of at build time. Two independent causes, both fixed here, both
+invisible to the round-trip check:
+
+- **`adaptive_avg_pool1d` with an output size that does not divide the input**
+  (390 -> 11). Dynamo open-codes it as a rank-8 `GatherND` over an
+  all-constant index, which tract refuses pinned, unpinned and with
+  `value_info` cleared; no post-hoc rewrite helps.
+  `models.components.AdaptiveAvgPool1d` writes the same arithmetic as one
+  matmul against a constant `[L_in, L_out]` segment-mean matrix, using
+  PyTorch's own bin rule, in float32 outside autocast. **Do not swap
+  `nn.AdaptiveAvgPool1d` back in** for a non-dividing size — one
+  implementation is what keeps the registry layer, `resnet_dwell`,
+  `transformer_dwell` and the `tests/reference_*` oracles bit-exact against
+  each other. `signal_cnn`'s `AdaptiveAvgPool1d(1)` is deliberately left
+  alone: 1 divides everything and exports as `GlobalAveragePool`.
+- **`value_info`.** Dynamo writes one entry per intermediate (667 for that
+  model) carrying the batch axis as the *symbol* `batch`, because that is what
+  `dynamic_axes` asked for — so a consumer that pins the batch cannot unify,
+  and tract dies at the first convolution. `strip_value_info` drops them and
+  `export_onnx` always calls it. Nothing needs them: every runtime re-infers,
+  `onnx.checker` is satisfied, and the legacy exporter never wrote any, which
+  is why its graphs always loaded.
 
 **Every export writes a contract beside the graph**, because two things a
 consumer needs are invisible in it: which input is which (arity and channel
@@ -869,7 +901,7 @@ The workflow is designed to integrate with the leech CLI commands and supports b
 
 ## Current Status
 
-The codebase is feature-complete (v0.9.0):
+The codebase is feature-complete (v0.10.0):
 - ✓ Feature extraction with dwell offset tuning and signal map refinement
 - ✓ 29 model architectures: ConvLSTM (Base/Dwell × BN/GN/LN/Attn), TCN (Dwell/DwellGN/DwellLN/DwellResidual/DwellResidualGN/DwellResidualLN/DwellResidualMotor/DwellResidualDwellAttn/DwellSplitResidual/DwellSplitResidualLN), Transformer (Dwell/DwellResidual), ResNet, ConvOnly, SignalCNN
 - ✓ Config-driven model layer: bonito-style layer registry (`models/nn.py`) + TOML architecture declarations (`models/configs/`)
@@ -919,6 +951,9 @@ The codebase is feature-complete (v0.9.0):
 - ✓ ONNX export for the classifier arms and the CRF encoder
   (`leech model export --format onnx`, `leech.crf.export`), dynamo exporter at
   opset 18, each with a contract sidecar and a round-trip check against torch
+- ✓ Exported graphs load in a non-PyTorch runtime: matmul-based
+  `AdaptiveAvgPool1d` (no rank-8 `GatherND`) and `strip_value_info` on every
+  export — neither is visible to `verify_onnx`
 
 All core functionality is implemented and ready for use.
 
