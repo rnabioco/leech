@@ -7,6 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-08-30
+
+### Fixed
+
+- **Exported ONNX graphs load in a runtime that is not PyTorch.**
+  `charging_tcn_rna004@v0.1.0` shipped from this exporter with a graph no
+  released `escpod` binary could load — tract parses it and then gives up
+  during shape analysis (rnabioco/escapepod-models#96). onnxruntime loads it
+  fine, which is why `verify_onnx` had nothing to say and the failure surfaced
+  at integration rather than at build time: *"it exports and round-trips"* is a
+  weaker claim than *"a runtime can load it"*, and only the second one ships.
+
+  Two independent causes, both measured against tract 0.23.5 through the load
+  path `escapepod_classify` actually uses:
+
+  - **`adaptive_avg_pool1d` with an output size that does not divide the
+    input** (390 -> 11 here). The dynamo exporter open-codes it as
+    `Unsqueeze -> Transpose -> GatherND -> Transpose -> Where`: a rank-8 gather
+    over an all-constant index and mask, which tract refuses pinned, unpinned,
+    and with `value_info` cleared. No post-hoc rewrite helps.
+    `models.components.AdaptiveAvgPool1d` now writes the same arithmetic as one
+    matmul against a constant `[L_in, L_out]` segment-mean matrix, using
+    PyTorch's own bin rule (upsampling included — `ResNetDwell` pools 4 up to
+    11), in float32 outside autocast so the accumulation matches the aten op
+    under AMP. Agreement with the aten op is 2.4e-07 over a grid of lengths and
+    output sizes. One implementation, so the registry layer, `resnet_dwell`,
+    `transformer_dwell` and the `tests/reference_*` oracles move together and
+    the config-vs-reference parity tests stay bit-exact. `SignalCNN`'s
+    `AdaptiveAvgPool1d(1)` is untouched: 1 divides everything and exports as
+    `GlobalAveragePool`.
+  - **`value_info`.** Dynamo writes one entry per intermediate — 667 for this
+    model — carrying the batch axis as the *symbol* `batch`, because that is
+    what `dynamic_axes` asked for. A consumer that pins the batch then cannot
+    unify, and tract fails at the first convolution. `strip_value_info` drops
+    them, and `export_onnx` always calls it. Nothing needs them: every runtime
+    re-infers, `onnx.checker` is satisfied, and every graph escpod loads today
+    has zero. Initializers are untouched, external data references included.
+
+  Measured on the shipped `TCNDwellResidualLN` weights, no retrain: 479 -> 319
+  nodes, `GatherND` 2 -> 0, `Gather` 76 -> 0; tract loads, optimizes and runs at
+  batch 1 and 32 (was: five distinct failures), max |dlogit| 5.72e-06 against
+  torch over 256 real chunks with 0 decision disagreements; onnxruntime vs torch
+  1.335e-05 over 4096 real chunks (shipped graph: 1.4305e-05).
+
+### Changed
+
+- Numerical output moves by ~2.4e-07 for the architectures that use a
+  non-dividing adaptive pool (`ResNetDwell`, `TransformerDwell`, the TCN family
+  and any config using the `AdaptiveAvgPool1d` registry layer). Same weights,
+  same decisions — existing checkpoints load and predict as before, but exact
+  float equality with a v0.9.0 run does not hold.
+
+### Documentation
+
+- The exporter's case for the dynamo path is re-measured rather than inherited,
+  since the pool no longer emits an aten adaptive pool and that could have
+  retired the reason. It did not: `dynamo=False` still refuses both the aten
+  pool and leech's replacement, because `torch.jit.trace` turns `.shape[-1]`
+  into a Tensor and takes the dynamic-length fallback. A test pins it.
+
 ## [0.9.0] - 2026-08-26
 
 ### Added
