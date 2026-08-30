@@ -25,7 +25,7 @@ from leech.constants import (
     DEFAULT_SIGNAL_KMER_CONTEXT,
     DEFAULT_SIGNAL_LEN,
 )
-from leech.models.components import BaseModel, FeatureBranch
+from leech.models.components import AdaptiveAvgPool1d, BaseModel, FeatureBranch
 
 
 class ResidualBlock1D(nn.Module):
@@ -229,8 +229,8 @@ class ResNetDwell(BaseModel):
         # Pool ResNet outputs to kmer_len positions for cross-attention Q
         signal_final_ch = self.signal_resnet.final_channels
         seq_final_ch = self.seq_resnet.final_channels
-        self.signal_pool = nn.AdaptiveAvgPool1d(kmer_len)
-        self.seq_pool = nn.AdaptiveAvgPool1d(kmer_len)
+        self.signal_pool = AdaptiveAvgPool1d(kmer_len)
+        self.seq_pool = AdaptiveAvgPool1d(kmer_len)
 
         # Feature branch: Conv1d on full-width features for cross-attention K/V
         self.feature_branch = FeatureBranch(

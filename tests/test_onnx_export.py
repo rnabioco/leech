@@ -269,6 +269,130 @@ def test_export_uses_the_dynamo_path(tmp_path):
     assert verify_onnx(path, model, example, input_names=["x"]) < 1e-5
 
 
+def test_the_legacy_exporter_still_refuses_the_aten_adaptive_pool(tmp_path):
+    """The claim the module docstring rests on, measured rather than inherited.
+
+    It matters that this is checked and not assumed: leech's own
+    `AdaptiveAvgPool1d` no longer emits an aten adaptive pool, which could
+    plausibly have retired the reason for pinning the dynamo exporter. It did
+    not — `torch.jit.trace` makes `.shape[-1]` a Tensor, so the replacement
+    takes its dynamic-length fallback and lands on the same aten op.
+    """
+    from leech.models.components import AdaptiveAvgPool1d
+
+    example = (torch.randn(2, 3, 100),)
+    for name, pool in (("aten", torch.nn.AdaptiveAvgPool1d(7)), ("leech", AdaptiveAvgPool1d(7))):
+        model = torch.nn.Sequential(pool, torch.nn.Flatten(1)).eval()
+        with pytest.raises(Exception, match="adaptive_avg_pool1d"):
+            torch.onnx.export(
+                model,
+                example,
+                str(tmp_path / f"{name}.onnx"),
+                dynamo=False,
+                opset_version=OPSET,
+                input_names=["x"],
+                output_names=["y"],
+            )
+
+
+# ── what a non-Python runtime needs, and onnxruntime never notices ─────────
+
+
+def test_the_pool_exports_as_a_matmul_not_a_gather(tmp_path):
+    """A non-dividing adaptive pool must not reach the graph as `GatherND`.
+
+    390 -> 11 is the charging TCN's geometry. Dynamo open-codes the aten op as
+    `Unsqueeze -> Transpose -> GatherND -> Transpose -> Where`, a rank-8 gather
+    over an all-constant index that tract 0.23.5 cannot close — which is what
+    made `charging_tcn_rna004@v0.1.0` unloadable by every released `escpod`
+    (rnabioco/escapepod-models#96). onnxruntime runs it fine, so no round-trip
+    check can see this; only the op list can.
+    """
+    import onnx
+
+    from leech.models.components import AdaptiveAvgPool1d
+
+    model = torch.nn.Sequential(AdaptiveAvgPool1d(11), torch.nn.Flatten(1)).eval()
+    example = (torch.randn(2, 3, 390),)
+    path = export_onnx(
+        model, example, tmp_path / "pool.onnx", input_names=["x"], output_names=["y"]
+    )
+    ops = {n.op_type for n in onnx.load(str(path)).graph.node}
+    assert "GatherND" not in ops
+    assert "MatMul" in ops
+    assert verify_onnx(path, model, example, input_names=["x"]) < 1e-5
+
+
+def test_the_pool_matches_the_aten_op_it_replaces():
+    """Same arithmetic, to float32 rounding, across the bin-width edge cases.
+
+    `adaptive_avg_pool1d`'s bins are `[floor(j*L/K), ceil((j+1)*L/K))`, so
+    widths differ by one whenever K does not divide L — 390 -> 11 gives bins of
+    36 and 37. A matrix built on a different convention would agree on the
+    dividing cases and quietly disagree on exactly the ones that matter.
+
+    The grid includes `k > length`, which is not a degenerate case anyone should
+    skip: `ResNetDwell` pools a length-4 map up to 11, so the op UPSAMPLES
+    there. A range guard that rejected it shipped in the first draft of this
+    and was caught by two model tests rather than by this one; the grid now
+    covers it.
+    """
+    from leech.models.components import AdaptiveAvgPool1d
+
+    torch.manual_seed(0)
+    worst = 0.0
+    for length in (3, 4, 11, 12, 37, 100, 390, 400, 1024):
+        for k in (1, 5, 7, 11, 21):
+            x = torch.randn(3, 8, length)
+            want = torch.nn.functional.adaptive_avg_pool1d(x, k)
+            got = AdaptiveAvgPool1d(k)(x)
+            assert got.shape == want.shape
+            worst = max(worst, float((want - got).abs().max()))
+    assert worst < 10 * EPS, worst
+
+
+def test_export_writes_no_value_info(tmp_path):
+    """Dynamo records every intermediate's shape with the batch axis as a
+    SYMBOL; a consumer that pins the batch then cannot unify, and tract fails
+    at the first convolution with `Sym(batch) vs Val(1)`. Every graph escpod
+    loads carries zero entries."""
+    import onnx
+
+    model = torch.nn.Sequential(torch.nn.Conv1d(3, 4, 3), torch.nn.Flatten(1)).eval()
+    path = export_onnx(
+        model,
+        (torch.randn(2, 3, 32),),
+        tmp_path / "conv.onnx",
+        input_names=["x"],
+        output_names=["y"],
+    )
+    assert list(onnx.load(str(path)).graph.value_info) == []
+
+
+def test_strip_value_info_is_idempotent_and_reports(tmp_path):
+    """It returns how many it dropped, so a caller can log a real number, and
+    running it twice is not an error."""
+    import onnx
+
+    from leech.onnx_export import strip_value_info
+
+    model = torch.nn.Sequential(torch.nn.Conv1d(3, 4, 3), torch.nn.Flatten(1)).eval()
+    path = export_onnx(
+        model,
+        (torch.randn(2, 3, 32),),
+        tmp_path / "again.onnx",
+        input_names=["x"],
+        output_names=["y"],
+    )
+    # export_onnx already stripped, so there is nothing left to drop.
+    assert strip_value_info(path) == 0
+    proto = onnx.load(str(path))
+    proto.graph.value_info.extend(proto.graph.input)
+    onnx.save(proto, str(path))
+    assert strip_value_info(path) == len(proto.graph.input)
+    assert list(onnx.load(str(path)).graph.value_info) == []
+
+
 def test_verify_returns_the_actual_difference(tmp_path):
     model = torch.nn.Linear(4, 2).eval()
     example = (torch.randn(3, 4),)

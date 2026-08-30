@@ -31,7 +31,13 @@ from leech.constants import (
     DEFAULT_SIGNAL_KMER_CONTEXT,
     DEFAULT_SIGNAL_LEN,
 )
-from leech.models.components import BaseModel, FeatureBranch, SequenceBranch, SignalBranch
+from leech.models.components import (
+    AdaptiveAvgPool1d,
+    BaseModel,
+    FeatureBranch,
+    SequenceBranch,
+    SignalBranch,
+)
 
 
 class _ConvLSTMNoAttn(BaseModel):
@@ -90,9 +96,9 @@ class _ConvLSTMNoAttn(BaseModel):
                 num_features=num_features, conv_channels=conv_channels, **norm_kw
             )
 
-        self.signal_pool = nn.AdaptiveAvgPool1d(kmer_len)
+        self.signal_pool = AdaptiveAvgPool1d(kmer_len)
         if seq_encoding == "signal_kmer":
-            self.seq_pool = nn.AdaptiveAvgPool1d(kmer_len)
+            self.seq_pool = AdaptiveAvgPool1d(kmer_len)
 
         n_branches = 3 if _has_features else 2
         self.lstm = nn.LSTM(
@@ -240,9 +246,9 @@ class _ConvLSTMAttn(BaseModel):
                 num_features=num_features, conv_channels=conv_channels, **norm_kw
             )
 
-        self.signal_pool = nn.AdaptiveAvgPool1d(kmer_len)
+        self.signal_pool = AdaptiveAvgPool1d(kmer_len)
         if seq_encoding == "signal_kmer":
-            self.seq_pool = nn.AdaptiveAvgPool1d(kmer_len)
+            self.seq_pool = AdaptiveAvgPool1d(kmer_len)
 
         # BiLSTM on merged signal + sequence
         self.lstm = nn.LSTM(

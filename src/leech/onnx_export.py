@@ -17,6 +17,32 @@ That is an exporter limitation, not a model problem, but the message reads like
 one and will send whoever hits it looking in the wrong place. ``dynamo=True`` at
 opset 18 exports the same modules cleanly.
 
+Re-measured 2026-08-30, on torch 2.12, because
+:class:`leech.models.components.AdaptiveAvgPool1d` no longer emits an aten
+adaptive pool and that could have retired the reason. **It did not.** Both
+``nn.AdaptiveAvgPool1d(7)`` and leech's replacement, on a length-100 input,
+still fail ``dynamo=False`` with the message above — the replacement because
+``torch.jit.trace`` turns ``.shape[-1]`` into a Tensor, which takes its
+dynamic-length fallback straight back to the aten op. The paragraph stands as
+written; it is now measured rather than inherited.
+
+**But dynamo alone is not sufficient**, which is the half that was missing and
+cost `charging_tcn_rna004@v0.1.0` a release nothing could run
+(rnabioco/escapepod-models#96). Two of its graphs' properties were unloadable
+by tract, the ONNX runtime `escpod` links statically:
+
+* ``adaptive_avg_pool1d`` with a non-dividing output size, which dynamo
+  open-codes as a rank-8 ``GatherND``. Fixed in the model, by
+  :class:`leech.models.components.AdaptiveAvgPool1d`.
+* the ``value_info`` dynamo writes for every intermediate, carrying the batch
+  axis as a symbol. Fixed here, by :func:`strip_value_info`, which
+  :func:`export_onnx` now always calls.
+
+Neither is fixable in the consumer, and neither shows up in
+:func:`verify_onnx` — onnxruntime loads both graphs happily. "It exports and
+round-trips" is a weaker claim than "a runtime can load it", and only the
+second one ships.
+
 What a graph cannot carry
 -------------------------
 Two things a consumer needs and cannot recover from the ONNX file, so both are
@@ -50,6 +76,7 @@ __all__ = [
     "contract",
     "describe_inputs",
     "export_onnx",
+    "strip_value_info",
     "verify_onnx",
 ]
 
@@ -151,8 +178,53 @@ def export_onnx(
         output_names=output_names,
         dynamic_axes=dynamic_axes,
     )
-    logger.info("wrote %s (%.2f MB, opset %d)", path, path.stat().st_size / 1e6, opset)
+    dropped = strip_value_info(path)
+    logger.info(
+        "wrote %s (%.2f MB, opset %d, %d value_info entries dropped)",
+        path,
+        path.stat().st_size / 1e6,
+        opset,
+        dropped,
+    )
     return path
+
+
+def strip_value_info(path: str | Path) -> int:
+    """Drop the graph's inferred intermediate shapes. Returns how many went.
+
+    ``value_info`` is optional: it records the shapes the *exporter* inferred
+    for intermediate tensors, and every runtime re-infers them anyway. The
+    dynamo exporter writes one entry per intermediate — 667 of them for the
+    charging TCN — and writes the batch axis into them as the **symbol**
+    ``batch``, because that is what ``dynamic_axes`` asked for.
+
+    That is a contradiction waiting for a consumer that pins the batch.
+    ``escapepod_classify`` loads every graph with
+    ``with_input_fact(0, f32::fact([1, ...]))``, and tract then has to unify a
+    declared ``Sym(batch)`` with the pinned ``Val(1)``, which it cannot:
+
+        Failed analyse for node "node_conv1d" ConvHir: Unifying shapes
+        batch,64,390 and 1,64,390: Impossible to unify Sym(batch) with Val(1)
+
+    — at the *first convolution*, nowhere near anything interesting. Removing
+    the entries lets tract infer from the pinned input and the graph loads.
+    Nothing needs them: onnxruntime re-infers, ``onnx.checker`` is satisfied,
+    and the legacy TorchScript exporter never wrote them in the first place,
+    which is why the graphs it produced (``charging_feature_nn_rna004@v0.1.0``)
+    always loaded. See rnabioco/escapepod-models#96.
+
+    Initializers are left exactly as they are, external-data references
+    included: the proto is read without resolving them and written straight
+    back, so an ``.onnx.data`` sidecar keeps working.
+    """
+    import onnx
+
+    path = Path(path)
+    proto = onnx.load(str(path), load_external_data=False)
+    n = len(proto.graph.value_info)
+    del proto.graph.value_info[:]
+    onnx.save(proto, str(path))
+    return n
 
 
 def verify_onnx(

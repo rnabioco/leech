@@ -177,7 +177,10 @@ class LayerNorm(nn.LayerNorm):
 
 
 @register
-class AdaptiveAvgPool1d(nn.AdaptiveAvgPool1d):
+class AdaptiveAvgPool1d(components.AdaptiveAvgPool1d):
+    """See :class:`leech.models.components.AdaptiveAvgPool1d`: the arithmetic of
+    ``nn.AdaptiveAvgPool1d``, written as a matmul so the ONNX graph loads."""
+
     def to_dict(self, include_weights: bool = False) -> dict:
         return {"output_size": self.output_size}
 
