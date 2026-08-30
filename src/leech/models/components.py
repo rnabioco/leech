@@ -5,6 +5,9 @@ This module provides shared building blocks used across all model architectures,
 eliminating code duplication and making it easier to create new models.
 """
 
+import functools
+
+import numpy as np
 import torch
 import torch.nn as nn
 
@@ -15,6 +18,125 @@ from leech.constants import (
     DEFAULT_SEQ_KERNEL,
     DEFAULT_SIGNAL_KERNEL,
 )
+
+
+@functools.lru_cache(maxsize=128)
+def _segment_mean_weights(length: int, output_size: int) -> np.ndarray:
+    """The cached half of :func:`segment_mean_matrix`, as **numpy**.
+
+    Deliberately not a ``torch.Tensor``. Under ``torch.export``'s fake-tensor
+    tracing, ``torch.from_numpy`` returns a *FakeTensor*; cached, that fake
+    outlives the trace and poisons every later eager call — the model then
+    returns a tensor subclass and ``verify_onnx``'s ``.numpy()`` dies a long
+    way from the cause. Cache the array, build the tensor per call: the build
+    is a 4 KB copy and the bin arithmetic is what was worth caching.
+
+    Built in float64 so the reciprocals are exact before they are rounded once
+    into the model's dtype.
+
+    ``output_size > length`` is legal and is not a mistake: ``ResNetDwell``
+    pools a length-4 feature map up to ``kmer_len`` 11, and ``adaptive_avg_pool``
+    UPSAMPLES there by repeating bins. The bin formula covers it unchanged —
+    ``ceil((j+1)*L/K) > floor(j*L/K)`` for every ``j`` whenever ``L >= 1``, so no
+    bin is ever empty. An earlier version of this rejected it as out of range
+    and two model tests caught it.
+    """
+    if length < 1 or output_size < 1:
+        raise ValueError(f"length {length} and output_size {output_size} must both be >= 1")
+    w = np.zeros((length, output_size), dtype=np.float64)
+    for j in range(output_size):
+        start = (j * length) // output_size
+        end = -((-(j + 1) * length) // output_size)  # ceil((j+1)*L/K)
+        w[start:end, j] = 1.0 / (end - start)
+    return w
+
+
+def segment_mean_matrix(
+    length: int,
+    output_size: int,
+    *,
+    dtype: torch.dtype = torch.float32,
+    device: torch.device | str | None = None,
+) -> torch.Tensor:
+    """``[length, output_size]``: column *j* averages ``x[start_j:end_j]``.
+
+    PyTorch's adaptive-pool bin rule, written out: bin *j* covers
+    ``[floor(j*L/K), ceil((j+1)*L/K))``, so the bins tile the axis and their
+    widths differ by at most one. Right-multiplying by this matrix *is*
+    ``adaptive_avg_pool1d`` — see :class:`AdaptiveAvgPool1d` for why leech
+    spells it that way.
+    """
+    return torch.tensor(
+        _segment_mean_weights(int(length), int(output_size)), dtype=dtype, device=device
+    )
+
+
+class AdaptiveAvgPool1d(nn.AdaptiveAvgPool1d):
+    """``nn.AdaptiveAvgPool1d`` written as one matmul against a constant.
+
+    Same arithmetic, same ``output_size``, no parameters — and an ONNX graph a
+    non-Python runtime can actually load. ``aten::adaptive_avg_pool1d`` has no
+    ONNX op behind it when the output size does not divide the input size, so
+    every exporter has to open-code it:
+
+    * the **legacy TorchScript** exporter refuses outright
+      (``SymbolicValueError: ... output size that are not factor of input
+      size``);
+    * the **dynamo** exporter open-codes it as
+      ``Unsqueeze -> Transpose -> GatherND -> Transpose -> Where(masked_fill)``
+      followed by one ``Gather``+``Add`` per element of the widest bin. That is
+      a rank-8 gather over an all-constant index and mask, and tract 0.23.5
+      gives up on it during shape analysis — which is what made
+      ``charging_tcn_rna004@v0.1.0`` unloadable by the shipped ``escpod``
+      binaries (rnabioco/escapepod-models#96). No graph rewrite fixes it
+      afterwards: onnx-simplifier folds away every ``Shape`` node and still
+      leaves the ``GatherND``, and onnxruntime's optimiser keeps it and adds
+      ORT-only fusions on top.
+
+    Written out as a matmul, the same two pools become one ``MatMul`` each
+    against a ``[L_in, L_out]`` initializer, and the graph loads.
+
+    The matmul is forced to float32 outside autocast: ``adaptive_avg_pool1d``
+    is not on autocast's cast list, so it keeps its input dtype and accumulates
+    in float32, and a bare ``@`` under autocast would silently become an fp16
+    gemm. Keeping the accumulation in float32 is what makes this a rewrite of
+    the same function rather than a change to it.
+    """
+
+    def _output_size(self) -> int:
+        size = self.output_size
+        if isinstance(size, tuple | list):
+            (size,) = size
+        return int(size)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        length = x.shape[-1]
+        if not isinstance(length, int):
+            # The pooled axis is not a concrete length, so the bin edges are
+            # not knowable and there is no constant matrix to build. Fall back
+            # to the aten op — which is the graph this class exists to avoid,
+            # so it is worth knowing exactly when this fires:
+            #
+            #   eager                     never (a shape is an int)
+            #   torch.export / dynamo     only if the LAST axis is declared
+            #                             dynamic; leech's exports make only
+            #                             the batch axis dynamic, and the
+            #                             charging TCN's graph is 8 MatMuls
+            #                             and zero GatherND, so it does not
+            #   torch.compile, dynamic    yes, and correctly — an unknown
+            #                             length has no constant matrix
+            #   torch.jit.trace           YES. Tracing makes `.shape[-1]` a
+            #                             Tensor, so this branch is taken and
+            #                             the legacy TorchScript ONNX
+            #                             exporter still meets an
+            #                             `adaptive_avg_pool1d` it refuses.
+            #                             Measured, not assumed; see
+            #                             `leech.onnx_export`'s docstring.
+            return nn.functional.adaptive_avg_pool1d(x, self._output_size())
+        w = segment_mean_matrix(length, self._output_size(), dtype=torch.float32, device=x.device)
+        with torch.amp.autocast(x.device.type, enabled=False):
+            out = torch.matmul(x.float(), w)
+        return out.to(x.dtype)
 
 
 def make_norm(norm_type: str, num_channels: int) -> nn.Module:

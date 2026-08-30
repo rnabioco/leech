@@ -35,7 +35,7 @@ from leech.constants import (
     DEFAULT_SIGNAL_KMER_CONTEXT,
     DEFAULT_SIGNAL_LEN,
 )
-from leech.models.components import BaseModel, FeatureBranch, make_norm
+from leech.models.components import AdaptiveAvgPool1d, BaseModel, FeatureBranch, make_norm
 
 # Default: first 5 channels are dwell features
 NUM_DWELL_FEATURES = 5
@@ -237,7 +237,7 @@ class TCNDwell(BaseModel):
             dropout=dropout,
             norm_type=norm_type,
         )
-        self.signal_pool = nn.AdaptiveAvgPool1d(kmer_len)
+        self.signal_pool = AdaptiveAvgPool1d(kmer_len)
 
         # Sequence branch: TCN
         self.seq_tcn = TCN(
@@ -249,7 +249,7 @@ class TCNDwell(BaseModel):
             norm_type=norm_type,
         )
         if seq_encoding == "signal_kmer":
-            self.seq_pool = nn.AdaptiveAvgPool1d(kmer_len)
+            self.seq_pool = AdaptiveAvgPool1d(kmer_len)
 
         # Feature branch: Conv1d on full-width features for cross-attention K/V
         self.feature_branch = FeatureBranch(
@@ -380,7 +380,7 @@ class TCNDwellResidual(BaseModel):
             dropout=dropout,
             norm_type=norm_type,
         )
-        self.signal_pool = nn.AdaptiveAvgPool1d(kmer_len)
+        self.signal_pool = AdaptiveAvgPool1d(kmer_len)
 
         # Sequence branch: TCN
         self.seq_tcn = TCN(
@@ -392,7 +392,7 @@ class TCNDwellResidual(BaseModel):
             norm_type=norm_type,
         )
         if seq_encoding == "signal_kmer":
-            self.seq_pool = nn.AdaptiveAvgPool1d(kmer_len)
+            self.seq_pool = AdaptiveAvgPool1d(kmer_len)
 
         # Feature branch: Conv1d on full-width features for cross-attention K/V
         self.feature_branch = FeatureBranch(
@@ -513,7 +513,7 @@ class TCNDwellSplitResidual(BaseModel):
             dropout=dropout,
             norm_type=norm_type,
         )
-        self.signal_pool = nn.AdaptiveAvgPool1d(kmer_len)
+        self.signal_pool = AdaptiveAvgPool1d(kmer_len)
 
         self.residual_tcn = TCN(
             in_channels=1,
@@ -523,7 +523,7 @@ class TCNDwellSplitResidual(BaseModel):
             dropout=dropout,
             norm_type=norm_type,
         )
-        self.residual_pool = nn.AdaptiveAvgPool1d(kmer_len)
+        self.residual_pool = AdaptiveAvgPool1d(kmer_len)
 
         self.seq_tcn = TCN(
             in_channels=seq_in_channels,
@@ -534,7 +534,7 @@ class TCNDwellSplitResidual(BaseModel):
             norm_type=norm_type,
         )
         if seq_encoding == "signal_kmer":
-            self.seq_pool = nn.AdaptiveAvgPool1d(kmer_len)
+            self.seq_pool = AdaptiveAvgPool1d(kmer_len)
 
         self.feature_branch = FeatureBranch(
             num_features=num_features, conv_channels=conv_channels, norm_type=norm_type

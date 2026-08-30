@@ -27,7 +27,7 @@ from leech.constants import (
     DEFAULT_SIGNAL_KMER_CONTEXT,
     DEFAULT_SIGNAL_LEN,
 )
-from leech.models.components import BaseModel
+from leech.models.components import AdaptiveAvgPool1d, BaseModel
 
 
 class PositionalEncoding(nn.Module):
@@ -133,7 +133,7 @@ class TransformerDwell(BaseModel):
             ),
             nn.ReLU(),
         )
-        self.signal_pool = nn.AdaptiveAvgPool1d(kmer_len)
+        self.signal_pool = AdaptiveAvgPool1d(kmer_len)
 
         # Sequence branch: Project encoding to d_model dimensions
         self.seq_conv = nn.Sequential(
@@ -143,7 +143,7 @@ class TransformerDwell(BaseModel):
             nn.ReLU(),
         )
         if seq_encoding == "signal_kmer":
-            self.seq_pool = nn.AdaptiveAvgPool1d(kmer_len)
+            self.seq_pool = AdaptiveAvgPool1d(kmer_len)
 
         # Feature branch: Conv1d on full-width features for cross-attention K/V
         # Input: (batch, num_features, kmer_len + margin_left + margin_right)
