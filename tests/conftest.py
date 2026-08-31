@@ -4,6 +4,7 @@ Pytest fixtures for leech tests.
 Provides reusable test data and mock objects.
 """
 
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -11,6 +12,35 @@ import pytest
 
 from leech.chunking import LeechRead, save_chunks
 from leech.features import MoveTable
+
+
+@pytest.fixture(autouse=True)
+def _restore_leech_log_propagation():
+    """Keep ``caplog`` able to see records from the ``leech`` logger tree.
+
+    ``logging_config.setup_logging()`` sets ``propagate = False`` on the
+    ``leech`` logger so production output is not duplicated through the root
+    handlers. That flag lives on a process-global logger object, so the first
+    test that runs a CLI command through ``CliRunner`` turns it off for every
+    test that follows — and ``caplog`` attaches its handler to the *root*
+    logger, so any later assertion on ``caplog.text`` silently sees "".
+
+    The failure is therefore order-dependent and invisible in focused runs:
+    each affected test passes alone and fails in a full-suite run, with an
+    assertion against an empty string that reads like the code stopped logging.
+
+    Restoring the flag per test is the fix rather than a per-test fixture,
+    because the hazard applies to every current and future ``caplog`` test and
+    nothing about a new one signals that it needs opting in.
+    """
+    logger = logging.getLogger("leech")
+    previous = logger.propagate
+    logger.propagate = True
+    try:
+        yield
+    finally:
+        logger.propagate = previous
+
 
 # ---------------------------------------------------------------------------
 # Fixture paths — tRNA IVC data (20 Ala reads with CCAGGC motif)
