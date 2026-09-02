@@ -28,7 +28,7 @@ pyo3 = { version = "0.28", features = ["extension-module", "abi3-py312"] }
 numpy = "0.28"
 # Not on crates.io; pulled straight from the public GitHub repo. Pin by tag so
 # the build is reproducible — bump the tag to take a new escapepod release.
-escapepod-signal = { git = "https://github.com/rnabioco/escapepod-rs", tag = "v0.16.1" }
+escapepod-signal = { git = "https://github.com/rnabioco/escapepod-rs", tag = "v0.18.1" }
 rayon = "1"
 
 [profile.release]
