@@ -84,7 +84,7 @@ dev = [
   "leech[test]",
   "leech[onnx]",
   "ruff>=0.16.1",  # Modern linter/formatter (replaces black + flake8)
-  "ty>=0.0.66",
+  "ty>=0.0.64",
   "ruff>=0.16.1",  # Modern linter/formatter (replaces black + flake8)
   "ty>=0.0.64",
   "nbqa>=1.7.0",  # Quality assurance for Jupyter notebooks
