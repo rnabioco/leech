@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 from pathlib import Path
 
@@ -32,6 +33,7 @@ from leech.distributed import (
     DistributedWeightedSampler,
     _free_port,
     backend_for,
+    configure_rank_logging,
     device_for,
     validate_request,
 )
@@ -419,3 +421,36 @@ def test_each_rank_gets_its_own_device():
     assert device_for("cuda", ctx) == "cuda:2"
     assert device_for("cpu", ctx) == "cpu"
     assert device_for("cuda", SINGLE) == "cuda", "world 1 must not be renamed"
+
+
+# --------------------------------------------------------------------------
+# A spawned rank has to configure the logging the CLI would have
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _restore_leech_logger():
+    logger = logging.getLogger("leech")
+    handlers, level = list(logger.handlers), logger.level
+    yield
+    logger.handlers = handlers
+    logger.setLevel(level)
+
+
+def test_spawned_ranks_get_the_logging_the_cli_would_have(_restore_leech_logger):
+    """``setup_logging`` runs in the click entry point, which a rank never reaches.
+
+    Without this the run is silent about its own configuration -- the effective
+    batch, the sampler statistics, the encoding-fallback warning -- because the
+    ``leech`` logger has no handler in the spawned process.
+    """
+    logger = logging.getLogger("leech")
+    logger.handlers.clear()
+
+    configure_rank_logging(DistContext(rank=0, local_rank=0, world_size=2, backend="gloo"))
+    assert logger.handlers
+    assert logger.level == logging.INFO
+
+    configure_rank_logging(DistContext(rank=1, local_rank=1, world_size=2, backend="gloo"))
+    assert logger.level == logging.WARNING, "off-rank chatter hides the line that differs"
+    assert "[rank 1/2]" in logger.handlers[0].formatter._fmt

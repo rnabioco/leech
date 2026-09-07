@@ -162,6 +162,30 @@ def validate_request(gpus: int, device: str, *, has_inline_chunks: bool = False)
         )
 
 
+def configure_rank_logging(ctx: DistContext) -> None:
+    """Give a spawned rank the logging the CLI would have given it.
+
+    ``setup_logging`` runs once, in the click entry point. A spawned rank never
+    passes through it, so the ``leech`` logger has no handler and *every* INFO
+    line is dropped -- including rank 0's, which is where the effective batch,
+    the sampler statistics and the encoding-fallback warning are reported. The
+    run works and says nothing about itself, which is the worst of both.
+
+    Non-main ranks are held at WARNING (four ranks reciting the same corpus
+    statistics hides the one line that differs) and every line carries its rank,
+    so a warning from rank 2 cannot be read as a warning about the run.
+    """
+    from leech.logging_config import setup_logging
+
+    setup_logging(
+        level=logging.INFO if ctx.is_main else logging.WARNING,
+        format_string=(
+            f"%(asctime)s - [rank {ctx.rank}/{ctx.world_size}] "
+            "%(name)s - %(levelname)s - %(message)s"
+        ),
+    )
+
+
 def init(ctx: DistContext) -> None:
     """Join the process group and pin this rank's device."""
     if not ctx.enabled:
@@ -169,10 +193,7 @@ def init(ctx: DistContext) -> None:
     if ctx.backend == "nccl":
         torch.cuda.set_device(ctx.local_rank)
     td.init_process_group(backend=ctx.backend, rank=ctx.rank, world_size=ctx.world_size)
-    if not ctx.is_main:
-        # Four ranks logging the same corpus statistics is noise that hides the
-        # one line that differs.
-        logging.getLogger("leech").setLevel(logging.WARNING)
+    configure_rank_logging(ctx)
     logger.info("rank %d/%d initialized (%s)", ctx.rank, ctx.world_size, ctx.backend)
 
 
