@@ -2,6 +2,7 @@
 Training loop and utilities for leech models.
 """
 
+import contextlib
 import copy
 import json
 import logging
@@ -23,7 +24,7 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
-from torch.utils.data import DataLoader, WeightedRandomSampler
+from torch.utils.data import DataLoader, DistributedSampler, Sampler, WeightedRandomSampler
 
 import leech
 from leech.chunking.table import ChunkTable
@@ -33,6 +34,21 @@ from leech.dataset import (
     collate_fn,
     resolve_dataloader_workers,
     resolve_val_dataloader_workers,
+)
+from leech.distributed import (
+    SINGLE,
+    DistContext,
+    DistributedEvalSampler,
+    DistributedWeightedSampler,
+    all_reduce_sum,
+    all_reduce_tensor_sum,
+    backend_for,
+    barrier,
+    context_from_env,
+    device_for,
+    gather_arrays,
+    spawn,
+    validate_request,
 )
 from leech.losses import AdversarialHead, FocalBCEWithLogitsLoss, RegressionHead
 from leech.models import get_model
@@ -422,11 +438,23 @@ class Trainer:
         cl_regression: bool = False,
         cl_lambda: float = 1.0,
         checkpoint_metric: str = "auto",
+        dist: DistContext | None = None,
     ):
+        # Which rank this is. SINGLE has world_size 1, so every guard below is
+        # off and the path is exactly what it was before DDP existed.
+        self.dist = dist if dist is not None else SINGLE
+        self._is_main = self.dist.is_main
+        self._ddp_modules: list[nn.Module] = []
+
         # Wrap model with inference wrapper for unified forward pass
         self.model_wrapper = ModelInferenceWrapper(model, model_type)
         self.model = self.model_wrapper.model  # Keep reference to underlying model
         self.model.to(device)
+        # The forward goes through DDP; everything else -- state_dict, the
+        # repr-capture hook, the best-weights deepcopy -- stays on the unwrapped
+        # module, so a checkpoint written here has the same keys as a
+        # single-GPU one and needs no `module.` stripping downstream.
+        self.model_wrapper.forward_module = self._wrap_ddp(self.model, device)
         self.train_loader = train_loader
         self.val_loader = val_loader
         self.device = device
@@ -460,6 +488,7 @@ class Trainer:
 
         # Adversarial training (gradient reversal for confound invariance)
         self.adversarial_head: AdversarialHead | None = None
+        self._adv_forward: nn.Module | None = None
         self.adversarial_criterion: nn.CrossEntropyLoss | None = None
         self.adversarial_lambda = adversarial_lambda
         self.adversarial_anneal_epochs = adversarial_anneal_epochs
@@ -472,6 +501,11 @@ class Trainer:
                 lambda_=0.0 if adversarial_anneal_epochs > 0 else adversarial_lambda,
             )
             self.adversarial_head.to(device)
+            # The aux heads sit OUTSIDE the model but inside the optimizer, so
+            # without their own wrapper their gradients are never allreduced:
+            # every rank would keep a private head while the backbone stays in
+            # sync. Converges, reports plausible numbers, wrong.
+            self._adv_forward = self._wrap_ddp(self.adversarial_head, device)
             # ignore_index=-1 skips samples with unknown confound (e.g. uncharged)
             self.adversarial_criterion = nn.CrossEntropyLoss(ignore_index=-1)
             logger.info(
@@ -482,6 +516,7 @@ class Trainer:
 
         # CL regression head (continuous charging-level prediction)
         self.cl_regression_head: RegressionHead | None = None
+        self._cl_forward: nn.Module | None = None
         self.cl_lambda = cl_lambda
 
         if cl_regression:
@@ -492,6 +527,7 @@ class Trainer:
                 repr_dim = self.model_wrapper.enable_repr_capture()
             self.cl_regression_head = RegressionHead(input_dim=repr_dim)
             self.cl_regression_head.to(device)
+            self._cl_forward = self._wrap_ddp(self.cl_regression_head, device)
             logger.info(f"CL regression head enabled: repr_dim={repr_dim}, cl_lambda={cl_lambda}")
 
         # Setup optimizer (include adversarial + CL regression head params if present)
@@ -551,6 +587,14 @@ class Trainer:
             else:
                 self.criterion = nn.BCEWithLogitsLoss()
                 logger.info("Training without class weighting")
+        # Weighted CE normalizes by the summed weight of the samples it sees,
+        # not by their count, so it is the one loss here that does not
+        # decompose over shards. See _weighted_ce_global.
+        self._ce_needs_global_norm = (
+            self.dist.enabled
+            and loss_type == "cross_entropy"
+            and getattr(self.criterion, "weight", None) is not None
+        )
         if label_smoothing > 0 and loss_type != "cross_entropy":
             logger.info(f"Label smoothing={label_smoothing} (applied to binary targets)")
 
@@ -624,7 +668,7 @@ class Trainer:
             self.history["train_cl_loss"] = []
             self.history["val_cl_loss"] = []
 
-        if self.output_dir:
+        if self.output_dir and self._is_main:
             self.output_dir.mkdir(parents=True, exist_ok=True)
 
         # Resume from checkpoint (skip if file doesn't exist)
@@ -633,6 +677,43 @@ class Trainer:
                 self._resume_from_checkpoint(resume_checkpoint)
             else:
                 logger.info(f"Checkpoint not found, starting fresh: {resume_checkpoint}")
+
+    def _wrap_ddp(self, module: nn.Module, device: str) -> nn.Module:
+        """Wrap one module for gradient allreduce, or return it untouched.
+
+        Returns the module itself at ``world_size == 1``, so nothing about the
+        single-GPU path changes -- not the type, not the forward, not the keys.
+        """
+        if not self.dist.enabled:
+            return module
+        from torch.nn.parallel import DistributedDataParallel
+
+        wrapped = DistributedDataParallel(
+            module,
+            device_ids=[self.dist.local_rank] if device.startswith("cuda") else None,
+        )
+        self._ddp_modules.append(wrapped)
+        return wrapped
+
+    def _accumulating(self, is_final_micro_step: bool):
+        """Suppress the allreduce on every micro-step but the last.
+
+        Gradient accumulation with N sub-batches triggers N allreduces for
+        arithmetic that needs one: the reducer fires on each backward, and the
+        first N-1 results are thrown away by the next accumulation. ``no_sync``
+        defers them, and the final backward reduces the accumulated gradient.
+        """
+        if not self.dist.enabled or is_final_micro_step:
+            return contextlib.nullcontext()
+        stack = contextlib.ExitStack()
+        for module in self._ddp_modules:
+            stack.enter_context(module.no_sync())
+        return stack
+
+    def _print(self, *args: Any, **kwargs: Any) -> None:
+        """Console output from rank 0 only; four ranks interleaved is unreadable."""
+        if self._is_main:
+            console.print(*args, **kwargs)
 
     _VALID_CHECKPOINT_METRICS = ("auto", "val_acc", "val_f1", "val_auc")
 
@@ -711,7 +792,8 @@ class Trainer:
                 confound_labels,
                 confound_labels,
             )
-        adv_logits = self.adversarial_head(repr_vec)
+        assert self._adv_forward is not None
+        adv_logits = self._adv_forward(repr_vec)
         adv_loss = self.adversarial_criterion(adv_logits, confound_labels)
         adv_preds = torch.argmax(adv_logits, dim=-1)
         return adv_loss, adv_preds, confound_labels
@@ -730,7 +812,8 @@ class Trainer:
         mask = cl_targets >= 0
         if not mask.any():
             return torch.tensor(0.0, device=self.device)
-        preds = self.cl_regression_head(repr_vec[mask])
+        assert self._cl_forward is not None
+        preds = self._cl_forward(repr_vec[mask])
         return nn.functional.mse_loss(preds, cl_targets[mask])
 
     def _compute_batch_loss(
@@ -764,7 +847,11 @@ class Trainer:
         logits = self.model_wrapper.forward_batch(batch, self.device)
         if self.loss_type == "cross_entropy":
             # CrossEntropyLoss wants (B,) integer class labels
-            main_loss = self.criterion(logits, labels.squeeze(-1).long())
+            ce_targets = labels.squeeze(-1).long()
+            if self._ce_needs_global_norm:
+                main_loss = self._weighted_ce_global(logits, ce_targets)
+            else:
+                main_loss = self.criterion(logits, ce_targets)
         else:
             main_loss = self.criterion(logits, loss_targets)
 
@@ -783,6 +870,36 @@ class Trainer:
             loss = loss + self.cl_lambda * cl_loss
 
         return logits, labels, main_loss, loss, adv, cl_loss
+
+    def _weighted_ce_global(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        """Weighted cross-entropy normalized by the GLOBAL summed weight.
+
+        Every other loss in this trainer reduces by element count, which equal
+        shards make exact: DDP's gradient average over N shards of n/N samples
+        *is* the mean over n. ``CrossEntropyLoss(weight=...)`` is the exception
+        -- it divides by ``sum_i w[y_i]``, so each rank normalizes by its own
+        shard's class composition and the averaged gradient is the single-GPU
+        one only when the shards happen to draw the same classes. On a fixture
+        whose shards differ that is an 8% error in the loss, and nothing
+        raises: the run converges to a slightly different recipe than the same
+        command line asked for at ``--gpus 1``.
+
+        Each rank instead forms ``world_size * (its weighted sum) / (the global
+        weighted sum)``, whose average over ranks telescopes back to exactly
+        the global weighted mean. The denominator carries no gradient, so it is
+        an ordinary scalar allreduce -- microseconds against a step, and only
+        on this path.
+        """
+        weight = self.criterion.weight
+        numerator = nn.functional.cross_entropy(
+            logits,
+            targets,
+            weight=weight,
+            label_smoothing=self.label_smoothing,
+            reduction="sum",
+        )
+        denominator = all_reduce_tensor_sum(weight.detach()[targets].sum(), self.dist)
+        return self.dist.world_size * numerator / denominator
 
     def train_epoch(
         self, progress: Progress | None = None, task_id: TaskID | None = None
@@ -819,52 +936,55 @@ class Trainer:
             sub_batches = split_batch(batch, self.grad_accum_split)
             num_splits = len(sub_batches)
 
-            for sub_batch in sub_batches:
-                if self.use_mixed_precision:
-                    with torch.amp.autocast("cuda"):
+            for micro_step, sub_batch in enumerate(sub_batches):
+                # no_sync on every micro-step but the last: N sub-batches
+                # otherwise pay N allreduces for one step's arithmetic.
+                with self._accumulating(micro_step == num_splits - 1):
+                    if self.use_mixed_precision:
+                        with torch.amp.autocast("cuda"):
+                            logits, labels, main_loss, loss, adv, cl_loss = (
+                                self._compute_batch_loss(sub_batch)
+                            )
+                        if num_splits > 1:
+                            loss = loss / num_splits
+                        self.scaler.scale(loss).backward()
+                    else:
                         logits, labels, main_loss, loss, adv, cl_loss = self._compute_batch_loss(
                             sub_batch
                         )
-                    if num_splits > 1:
-                        loss = loss / num_splits
-                    self.scaler.scale(loss).backward()
-                else:
-                    logits, labels, main_loss, loss, adv, cl_loss = self._compute_batch_loss(
-                        sub_batch
-                    )
-                    if num_splits > 1:
-                        loss = loss / num_splits
-                    loss.backward()
+                        if num_splits > 1:
+                            loss = loss / num_splits
+                        loss.backward()
 
-                # Track metrics (sub-batch losses are averaged back to a
-                # per-batch mean so history is comparable across split settings)
-                tally.add("loss", main_loss, num_splits)
-                if adv is not None:
-                    adv_loss, adv_preds, adv_labels = adv
-                    tally.add("adv_loss", adv_loss, num_splits)
-                    # `mask.any()` would sync; the masked matches and the
-                    # masked count are all the accuracy needs, and both are
-                    # correct when the mask is empty.
-                    mask = adv_labels != -1
-                    tally.add("adv_correct", ((adv_preds == adv_labels) & mask).sum())
-                    tally.add("adv_seen", mask.sum())
-                if cl_loss is not None:
-                    tally.add("cl_loss", cl_loss, num_splits)
+                    # Track metrics (sub-batch losses are averaged back to a
+                    # per-batch mean so history is comparable across split settings)
+                    tally.add("loss", main_loss, num_splits)
+                    if adv is not None:
+                        adv_loss, adv_preds, adv_labels = adv
+                        tally.add("adv_loss", adv_loss, num_splits)
+                        # `mask.any()` would sync; the masked matches and the
+                        # masked count are all the accuracy needs, and both are
+                        # correct when the mask is empty.
+                        mask = adv_labels != -1
+                        tally.add("adv_correct", ((adv_preds == adv_labels) & mask).sum())
+                        tally.add("adv_seen", mask.sum())
+                    if cl_loss is not None:
+                        tally.add("cl_loss", cl_loss, num_splits)
 
-                labels_flat = labels.detach().flatten()
-                if self.loss_type == "cross_entropy" and self._num_out > 2:
-                    # Multi-class: argmax predictions
-                    preds = torch.argmax(logits, dim=-1).detach().flatten()
-                else:
-                    if self.loss_type == "cross_entropy":
-                        # Binary CE: probabilities via softmax, take class 1
-                        scores = torch.softmax(logits, dim=-1)[:, 1]
+                    labels_flat = labels.detach().flatten()
+                    if self.loss_type == "cross_entropy" and self._num_out > 2:
+                        # Multi-class: argmax predictions
+                        preds = torch.argmax(logits, dim=-1).detach().flatten()
                     else:
-                        scores = torch.sigmoid(logits)
-                    preds = scores.detach().flatten() > 0.5
-                matches = preds.to(torch.float64) == labels_flat.to(torch.float64)
-                tally.add("correct", matches.sum())
-                seen += labels_flat.numel()
+                        if self.loss_type == "cross_entropy":
+                            # Binary CE: probabilities via softmax, take class 1
+                            scores = torch.softmax(logits, dim=-1)[:, 1]
+                        else:
+                            scores = torch.sigmoid(logits)
+                        preds = scores.detach().flatten() > 0.5
+                    matches = preds.to(torch.float64) == labels_flat.to(torch.float64)
+                    tally.add("correct", matches.sum())
+                    seen += labels_flat.numel()
 
             # Gradient clipping + optimizer step (once per full batch)
             needs_clip = self.clip_grad_fn is not None or self.max_grad_norm > 0
@@ -889,20 +1009,40 @@ class Trainer:
         # Compute metrics. accuracy_score normalizes to matches / samples, so
         # the running counts reproduce it exactly for both the multi-class
         # (argmax) and the binary (threshold at 0.5) case.
-        avg_loss = tally.value("loss") / len(self.train_loader)
-        accuracy = tally.value("correct") / seen if seen else 0.0
+        #
+        # Under DDP each rank has tallied only its own shard, so the sums are
+        # reduced BEFORE they are divided -- and the divisor grows with the
+        # world, since every rank ran the same number of batches. Averaging the
+        # per-rank means instead would be the same number here and a different
+        # one the moment the shards stop being equal.
+        totals = {
+            "loss": tally.value("loss"),
+            "correct": tally.value("correct"),
+            "seen": float(seen),
+        }
+        if self.adversarial_head is not None:
+            totals["adv_loss"] = tally.value("adv_loss")
+            totals["adv_correct"] = tally.value("adv_correct")
+            totals["adv_seen"] = tally.value("adv_seen")
+        if self.cl_regression_head is not None:
+            totals["cl_loss"] = tally.value("cl_loss")
+        totals = all_reduce_sum(totals, self.dist, self.device)
+        num_batches = len(self.train_loader) * self.dist.world_size
+
+        avg_loss = totals["loss"] / num_batches
+        accuracy = totals["correct"] / totals["seen"] if totals["seen"] else 0.0
 
         # Adversarial metrics
         if self.adversarial_head is not None:
-            avg_adv_loss = tally.value("adv_loss") / max(1, len(self.train_loader))
-            adv_seen = tally.value("adv_seen")
-            adv_acc = tally.value("adv_correct") / adv_seen if adv_seen else 0.0
+            avg_adv_loss = totals["adv_loss"] / max(1, num_batches)
+            adv_seen = totals["adv_seen"]
+            adv_acc = totals["adv_correct"] / adv_seen if adv_seen else 0.0
             self.history["train_adv_loss"].append(avg_adv_loss)
             self.history["train_adv_acc"].append(adv_acc)
 
         # CL regression metrics
         if self.cl_regression_head is not None:
-            avg_cl_loss = tally.value("cl_loss") / max(1, len(self.train_loader))
+            avg_cl_loss = totals["cl_loss"] / max(1, num_batches)
             self.history["train_cl_loss"].append(avg_cl_loss)
 
         return avg_loss, accuracy
@@ -935,6 +1075,7 @@ class Trainer:
         # For multiclass: keep full softmax probabilities so we can compute
         # macro one-vs-rest AUROC (argmax-only preds lose that information).
         all_probs_mc: list[np.ndarray] = []
+        val_seen = 0
 
         with torch.inference_mode():
             for batch in self.val_loader:
@@ -979,8 +1120,12 @@ class Trainer:
                             nn.functional.mse_loss(cl_preds, cl_targets[cl_mask]),
                         )
 
-                # Track metrics
+                # Track metrics. The sample-weighted sum is what the
+                # distributed reduction divides; the unweighted per-batch mean
+                # below is kept for the single-GPU number, which must not move.
                 tally.add("loss", loss)
+                tally.add("loss_sum", loss * labels.shape[0])
+                val_seen += int(labels.shape[0])
                 if self.loss_type == "cross_entropy" and self._num_out > 2:
                     probs_mc = torch.softmax(logits, dim=-1).cpu().numpy()
                     all_probs_mc.append(probs_mc)
@@ -999,6 +1144,36 @@ class Trainer:
         avg_loss = tally.value("loss") / len(self.val_loader)
         preds_arr = np.concatenate(all_preds) if all_preds else np.zeros(0, dtype=np.float32)
         labels_arr = np.concatenate(all_labels) if all_labels else np.zeros(0, dtype=np.float32)
+
+        if self.dist.enabled:
+            # Every rank scored a different slice, and AUROC does not decompose
+            # over slices -- so the predictions themselves are gathered and the
+            # metrics computed once, globally. That makes the 2-GPU numbers
+            # equal to the 1-GPU ones rather than merely close.
+            preds_arr = np.concatenate(gather_arrays(preds_arr, self.dist))
+            labels_arr = np.concatenate(gather_arrays(labels_arr, self.dist))
+            if all_probs_mc:
+                all_probs_mc = [
+                    np.concatenate(
+                        gather_arrays(np.concatenate(all_probs_mc, axis=0), self.dist), axis=0
+                    )
+                ]
+            # The loss is the one metric that cannot be recovered exactly: a
+            # per-batch mean depends on where the batch boundaries fell, and
+            # sharding moves them. The sample-weighted mean is reported
+            # instead, which differs from the single-GPU number only by the
+            # weight of the tail batch.
+            reduced = all_reduce_sum(
+                {
+                    "loss_sum": tally.value("loss_sum"),
+                    "n": float(val_seen),
+                    "cl_loss": tally.value("cl_loss"),
+                    "batches": float(len(self.val_loader)),
+                },
+                self.dist,
+                self.device,
+            )
+            avg_loss = reduced["loss_sum"] / reduced["n"] if reduced["n"] else 0.0
         if self._num_out > 2:
             # Multi-class: preds are class indices; probs are needed for AUROC.
             accuracy = accuracy_score(labels_arr, preds_arr)
@@ -1037,7 +1212,10 @@ class Trainer:
 
         # CL regression validation metrics
         if self.cl_regression_head is not None:
-            avg_cl_loss = tally.value("cl_loss") / max(1, len(self.val_loader))
+            if self.dist.enabled:
+                avg_cl_loss = reduced["cl_loss"] / max(1.0, reduced["batches"])
+            else:
+                avg_cl_loss = tally.value("cl_loss") / max(1, len(self.val_loader))
             self.history["val_cl_loss"].append(avg_cl_loss)
 
         return avg_loss, accuracy, auc, f1
@@ -1067,6 +1245,7 @@ class Trainer:
                 self._ensure_best_checkpoint()
                 self.save_checkpoint("model_last.pt", epoch=self.start_epoch - 1)
                 self.save_history()
+            barrier(self.dist)
             return self.history
 
         # Create progress bars
@@ -1077,11 +1256,19 @@ class Trainer:
             TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
             TimeRemainingColumn(),
             console=console,
+            disable=not self._is_main,
         ) as progress:
             epoch_task = progress.add_task("[cyan]Training epochs...", total=total_epochs)
 
             for epoch in range(self.start_epoch, epochs + 1):
                 last_epoch = epoch
+                # Re-seed the shared draw. Skipping this trains every epoch on
+                # the same shard -- which converges, and reports metrics from a
+                # world_size-th of the corpus.
+                if self.dist.enabled:
+                    epoch_sampler = getattr(self.train_loader, "sampler", None)
+                    if hasattr(epoch_sampler, "set_epoch"):
+                        epoch_sampler.set_epoch(epoch)
                 # LR warmup. The cosine schedule folds warmup into its own
                 # LambdaLR multiplier, so only the plateau/none paths need the
                 # manual ramp here.
@@ -1176,7 +1363,7 @@ class Trainer:
                             self.history["val_cl_loss"][-1] if self.history["val_cl_loss"] else 0.0
                         )
                         cl_str = f" | CL: train={_tcl:.4f} val={_vcl:.4f}"
-                    console.print(
+                    self._print(
                         f"[cyan]Epoch {epoch}/{epochs}[/cyan] | "
                         f"Train Loss: {train_loss:.4f} Acc: {train_acc:.4f} | "
                         f"Val Loss: {val_loss:.4f} {acc_label}: {val_acc:.4f} "
@@ -1201,7 +1388,7 @@ class Trainer:
 
                         if self.output_dir:
                             self.save_checkpoint("model_best.pt", epoch=epoch)
-                            console.print(
+                            self._print(
                                 f"[bold green]✓ Saved best model "
                                 f"(val_acc: {val_acc:.4f}, val_f1: {val_f1:.4f}, "
                                 f"val_auc: {val_auc:.4f})[/bold green]"
@@ -1211,27 +1398,30 @@ class Trainer:
 
                     # Early stopping (disabled if patience is 0)
                     if early_stopping_patience > 0 and patience_counter >= early_stopping_patience:
-                        console.print(f"[yellow]Early stopping at epoch {epoch}[/yellow]")
+                        self._print(f"[yellow]Early stopping at epoch {epoch}[/yellow]")
                         break
                 else:
-                    console.print(
+                    self._print(
                         f"[cyan]Epoch {epoch}/{epochs}[/cyan] | "
                         f"Train Loss: {train_loss:.4f} Acc: {train_acc:.4f}"
                     )
 
                 progress.update(epoch_task, advance=1)
 
-        # Save final model
+        # Save final model. The writers are no-ops off rank 0; the barrier is
+        # what keeps a rank from tearing down its process group while rank 0 is
+        # still inside a collective-free write the others would outlive.
         if self.output_dir:
             self.save_checkpoint("model_last.pt", epoch=last_epoch)
             self._ensure_best_checkpoint()
             self.save_history()
+        barrier(self.dist)
 
         return self.history
 
     def _ensure_best_checkpoint(self) -> None:
         """Ensure model_best.pt exists, creating it from stored best weights if needed."""
-        if self.output_dir is None:
+        if self.output_dir is None or not self._is_main:
             return
 
         best_path = self.output_dir / "model_best.pt"
@@ -1274,8 +1464,12 @@ class Trainer:
         return epoch % self.save_optim_every == 0
 
     def save_checkpoint(self, filename: str, epoch: int = 0) -> None:
-        """Save model checkpoint."""
-        if self.output_dir is None:
+        """Save model checkpoint.
+
+        ``self.model`` is the unwrapped module even under DDP, so the keys are
+        the single-GPU keys -- no ``module.`` prefix for a consumer to strip.
+        """
+        if self.output_dir is None or not self._is_main:
             return
 
         checkpoint_path = self.output_dir / filename
@@ -1298,7 +1492,7 @@ class Trainer:
 
     def save_history(self) -> None:
         """Save training history to JSON."""
-        if self.output_dir is None:
+        if self.output_dir is None or not self._is_main:
             return
 
         history_path = self.output_dir / "metrics.json"
@@ -1332,6 +1526,31 @@ class Trainer:
         summary_path = self.output_dir / "summary.json"
         with open(summary_path, "w") as f:
             json.dump(summary, f, indent=2)
+
+
+def _train_worker(ctx: DistContext, kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Body of one spawned rank. Module level, because spawn pickles by reference."""
+    return train_model(**kwargs, _dist=ctx)
+
+
+def _spawn_train(
+    gpus: int, device: str, kwargs: dict[str, Any], output_dir: Path
+) -> dict[str, Any]:
+    """Run ``train_model`` in ``gpus`` processes and return rank 0's history.
+
+    ``mp.spawn`` cannot return a value, and rank 0 has already written the
+    history it would return, so the parent reads it back rather than
+    reconstructing it.
+    """
+    logger.info(f"Spawning {gpus} data-parallel ranks (device={device})")
+    spawn(_train_worker, kwargs, nprocs=gpus, backend=backend_for(device))
+    history_path = output_dir / "metrics.json"
+    if history_path.exists():
+        with open(history_path) as f:
+            history: dict[str, Any] = json.load(f)
+        return history
+    logger.warning(f"No metrics.json under {output_dir}; returning empty history")
+    return {}
 
 
 def train_model(
@@ -1392,6 +1611,8 @@ def train_model(
     cl_lambda: float = 1.0,
     signal_mode: str = "both",
     checkpoint_metric: str = "auto",
+    gpus: int = 1,
+    _dist: DistContext | None = None,
     **model_kwargs: Any,
 ) -> dict[str, Any]:
     """
@@ -1434,6 +1655,10 @@ def train_model(
         motif_offset: Offset within motif for focus base (recorded in config)
         base_justify: Signal justification within focus base (recorded in config)
         seq_encoding: Sequence encoding requested ("signal_kmer" or "base_onehot")
+        gpus: Data-parallel ranks for this run (1 = single device). --batch-size
+            stays the GLOBAL batch and is split across them, so the recipe --
+            step count, LR schedule, accumulation arithmetic -- is unchanged.
+        _dist: Set by the spawned worker; callers pass gpus, never this.
         allow_encoding_fallback: Permit a "signal_kmer" request to degrade to
             "base_onehot" when the corpus carries no base-to-signal maps. False
             raises instead; a corpus that carries them for only some chunks
@@ -1444,6 +1669,13 @@ def train_model(
     Returns:
         Training history dictionary with metrics
     """
+    # Captured before any other local binds, because under --gpus these exact
+    # arguments are replayed in every spawned rank: the capture has to be the
+    # call itself, not a reconstruction of it.
+    _call_kwargs = dict(locals())
+    _call_kwargs.pop("_dist", None)
+    _call_kwargs.update(_call_kwargs.pop("model_kwargs", {}))
+
     from leech.constants import generate_random_seed
 
     # Validate required provenance fields
@@ -1453,6 +1685,8 @@ def train_model(
             "A null motif causes inference to predict at every position, producing noise."
         )
 
+    dist_ctx = _dist if _dist is not None else (context_from_env() or SINGLE)
+
     # Generate random seed if not provided
     if seed is None:
         seed = generate_random_seed()
@@ -1460,12 +1694,28 @@ def train_model(
     else:
         logger.info(f"Using provided seed: {seed}")
 
+    if gpus > 1 and not dist_ctx.enabled:
+        # Parent process. The seed is resolved HERE and passed down: ranks that
+        # each generated their own would disagree about the sampler draw and
+        # record different provenance for what is one run.
+        validate_request(
+            gpus, device, has_inline_chunks=train_chunks is not None or val_chunks is not None
+        )
+        _call_kwargs["seed"] = seed
+        return _spawn_train(gpus, device, _call_kwargs, output_dir)
+
+    # Every rank is handed "cuda" and has to become "cuda:<local_rank>", or all
+    # of them land on device 0 -- which fits, runs, and parallelises nothing.
+    requested_device = device
+    device = device_for(device, dist_ctx)
+
     # Save seed to output directory
-    output_dir.mkdir(parents=True, exist_ok=True)
-    seed_file = output_dir / "training_seed.txt"
-    with open(seed_file, "w") as f:
-        f.write(f"{seed}\n")
-    logger.info(f"Saved seed to {seed_file}")
+    if dist_ctx.is_main:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        seed_file = output_dir / "training_seed.txt"
+        with open(seed_file, "w") as f:
+            f.write(f"{seed}\n")
+        logger.info(f"Saved seed to {seed_file}")
 
     # Set random seed
     torch.manual_seed(seed)
@@ -1632,12 +1882,14 @@ def train_model(
     train_labels = _label_column(train_dataset.chunks)
 
     # Create data loaders
-    effective_workers = resolve_dataloader_workers(num_workers, device)
+    effective_workers = resolve_dataloader_workers(num_workers, device, dist_ctx.world_size)
 
     # Seed the DataLoader generator from the run seed so shuffle order and each
     # worker's base seed are reproducible regardless of prior global-RNG use.
     loader_generator = torch.Generator()
-    loader_generator.manual_seed(seed)
+    # Offset by rank so two ranks do not draw identical augmentation noise for
+    # different data. At world 1 this is the seed itself.
+    loader_generator.manual_seed(seed + dist_ctx.rank)
 
     loader_kwargs: dict = {
         "collate_fn": collate_fn,
@@ -1659,6 +1911,24 @@ def train_model(
             f"reducing to {effective_batch_size}"
         )
 
+    # --batch-size is the GLOBAL batch and is split across ranks. The PyTorch
+    # convention is the opposite -- per-rank, effective batch grows with the
+    # GPU count -- and it is wrong for a run that has to stay comparable with
+    # the arms already measured: splitting leaves the optimizer-step count, the
+    # epoch-indexed LR schedule and the accumulation arithmetic exactly where
+    # they are, so the same command line means the same recipe at any --gpus.
+    per_rank_batch_size = effective_batch_size // dist_ctx.world_size
+    if per_rank_batch_size < 1:
+        raise ValueError(
+            f"--batch-size {effective_batch_size} cannot be split across {dist_ctx.world_size} "
+            "ranks; it is the global batch, not the per-rank one."
+        )
+    if dist_ctx.enabled:
+        logger.info(
+            f"Global batch {per_rank_batch_size * dist_ctx.world_size} = "
+            f"{per_rank_batch_size} per rank x {dist_ctx.world_size} ranks"
+        )
+
     # Validate mutually exclusive sampling strategies
     if balance_groups and oversample_minority:
         raise ValueError(
@@ -1672,16 +1942,13 @@ def train_model(
     # and a weight per chunk -- and np.unique returns both from one pass over
     # the column. The four passes this replaces each built a row view per
     # chunk, before a single batch had been loaded.
-    train_sampler = None
+    sample_weights: np.ndarray | None = None
     if balance_groups:
         # Compute per-chunk weights so each source group is equally represented
         codes, group_names, group_counts = _source_group_counts(train_dataset.chunks)
 
         if len(group_names) > 1:
-            weights = (1.0 / group_counts)[codes]
-            train_sampler = WeightedRandomSampler(
-                weights, num_samples=len(train_dataset), replacement=True
-            )
+            sample_weights = (1.0 / group_counts)[codes]
             logger.info(f"Balanced sampling enabled across {len(group_names)} source groups:")
             for rank in np.argsort(-group_counts, kind="stable"):
                 count = int(group_counts[rank])
@@ -1696,10 +1963,7 @@ def train_model(
         codes, class_labels, label_counts = _categorical_codes(train_labels)
 
         if len(class_labels) > 1:
-            weights = (1.0 / label_counts)[codes]
-            train_sampler = WeightedRandomSampler(
-                weights, num_samples=len(train_dataset), replacement=True
-            )
+            sample_weights = (1.0 / label_counts)[codes]
             logger.info(f"Minority oversampling enabled across {len(class_labels)} classes:")
             for lbl, count in sorted(
                 zip(class_labels.tolist(), label_counts.tolist(), strict=True)
@@ -1710,10 +1974,39 @@ def train_model(
                 "oversample_minority enabled but only 1 class found. Falling back to shuffle."
             )
 
+    # One place decides the training sampler, because the distributed case has
+    # to be a SHARD of the same draw rather than a second draw of its own.
+    # Handing WeightedRandomSampler to N ranks gives every rank the same
+    # oversampled indices: the run converges, reports plausible metrics, and has
+    # trained on world_size copies of one shard, with nothing raised.
+    train_sampler: Sampler | None = None
+    if sample_weights is not None:
+        if dist_ctx.enabled:
+            train_sampler = DistributedWeightedSampler(
+                sample_weights,
+                num_samples=len(train_dataset),
+                num_replicas=dist_ctx.world_size,
+                rank=dist_ctx.rank,
+                seed=seed,
+            )
+        else:
+            train_sampler = WeightedRandomSampler(
+                sample_weights, num_samples=len(train_dataset), replacement=True
+            )
+    elif dist_ctx.enabled:
+        train_sampler = DistributedSampler(
+            train_dataset,
+            num_replicas=dist_ctx.world_size,
+            rank=dist_ctx.rank,
+            shuffle=True,
+            seed=seed,
+            drop_last=True,
+        )
+
     # Use drop_last=True for training to avoid BatchNorm issues with batch_size=1
     train_loader = DataLoader(
         train_dataset,
-        batch_size=effective_batch_size,
+        batch_size=per_rank_batch_size,
         shuffle=(train_sampler is None),
         sampler=train_sampler,
         drop_last=True,
@@ -1742,10 +2035,18 @@ def train_model(
         # let every other case use workers.
         val_loader_kwargs: dict = {
             "collate_fn": collate_fn,
-            "num_workers": resolve_val_dataloader_workers(val_dataset, num_workers, device),
+            "num_workers": resolve_val_dataloader_workers(
+                val_dataset, num_workers, device, dist_ctx.world_size
+            ),
         }
         if device != "cpu":
             val_loader_kwargs["pin_memory"] = True
+        if dist_ctx.enabled:
+            # Unpadded, unlike DistributedSampler: its repeated samples would be
+            # counted twice in every validation metric.
+            val_loader_kwargs["sampler"] = DistributedEvalSampler(
+                len(val_dataset), num_replicas=dist_ctx.world_size, rank=dist_ctx.rank
+            )
         val_loader = DataLoader(
             val_dataset,
             batch_size=batch_size,
@@ -1869,7 +2170,8 @@ def train_model(
         logger.info("No prepare_config.json found, using correct defaults for preparation metadata")
 
     # Save config
-    output_dir.mkdir(parents=True, exist_ok=True)
+    if dist_ctx.is_main:
+        output_dir.mkdir(parents=True, exist_ok=True)
     config = {
         "model_name": model_name,
         "signal_len": signal_len,
@@ -1891,7 +2193,8 @@ def train_model(
         "epochs": epochs,
         "batch_size": batch_size,
         "learning_rate": learning_rate,
-        "device": device,
+        "device": requested_device,
+        "gpus": dist_ctx.world_size,
         "seed": seed,
         "use_class_weights": use_class_weights,
         "pos_weight": pos_weight
@@ -1957,8 +2260,9 @@ def train_model(
         **model_kwargs,
     }
 
-    with open(output_dir / "config.json", "w") as f:
-        json.dump(config, f, indent=2)
+    if dist_ctx.is_main:
+        with open(output_dir / "config.json", "w") as f:
+            json.dump(config, f, indent=2)
 
     # Create trainer
     trainer = Trainer(
@@ -1992,6 +2296,7 @@ def train_model(
         cl_regression=cl_regression,
         cl_lambda=cl_lambda,
         checkpoint_metric=checkpoint_metric,
+        dist=dist_ctx,
     )
 
     # Train

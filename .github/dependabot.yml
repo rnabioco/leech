@@ -15,8 +15,12 @@ updates:
     labels:
       - dependencies
 
-  # leech_core's Rust deps. escapepod-signal is a tag-pinned git dependency,
-  # which dependabot does not bump — move that tag by hand in rust/Cargo.toml.
+  # leech_core's Rust deps. Note that dependabot DOES move the tag-pinned
+  # escapepod-signal git dependency (PR #236 took it v0.16.1 -> v0.18.1), and
+  # cannot know that `escapepod` in pyproject.toml has to move with it —
+  # leech drives both, so a skew silently changes what `data prepare` computes.
+  # `.github/workflows/escapepod-sync.yml` catches that daily and proposes the
+  # matching bump.
   - package-ecosystem: cargo
     directory: "/rust"
     schedule:

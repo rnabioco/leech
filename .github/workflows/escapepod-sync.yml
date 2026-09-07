@@ -1,0 +1,101 @@
+name: escapepod pin sync
+
+# `rust/Cargo.toml` and `pyproject.toml` pin the same upstream, and leech drives
+# both backends from it -- so a version skew between them silently changes what
+# `data prepare` computes (issue #193). Dependabot bumps the tag-pinned crate on
+# its own and cannot know the PyPI package has to follow, so merging one of its
+# PRs leaves main skewed with nothing red.
+#
+# Daily rather than on-PR on purpose: failing dependabot's PR would leave a
+# human to do the second half by hand, where this proposes it already done.
+
+on:
+  schedule:
+    # 06:17 UTC. Off the hour: scheduled runs pile up on :00 and get delayed.
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: escapepod-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Check the escapepod pins agree
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Compare the pins
+        id: check
+        # Exits 1 when they disagree, which is the signal rather than a failure.
+        run: python .github/scripts/escapepod_sync.py --check || true
+
+      - name: Install uv
+        if: steps.check.outputs.skewed == 'true' && steps.check.outputs.actionable == 'true'
+        uses: astral-sh/setup-uv@v10.0.1
+
+      - name: Move both pins to ${{ steps.check.outputs.target }}
+        if: steps.check.outputs.skewed == 'true' && steps.check.outputs.actionable == 'true'
+        run: |
+          set -euo pipefail
+          # Rewrites both manifests and uv.lock's escapepod entry. It does NOT
+          # shell out to `uv lock`: that re-serializes the whole file against
+          # the running uv's conventions (measured at 670 changed lines here,
+          # ~300 packages gaining emscripten markers) and would bury the one
+          # line worth reviewing. `--upgrade-package escapepod` does the same.
+          python .github/scripts/escapepod_sync.py --fix
+          cargo update --manifest-path rust/Cargo.toml --package escapepod-signal
+
+      - name: Verify the rewritten lock resolves to the target
+        if: steps.check.outputs.skewed == 'true' && steps.check.outputs.actionable == 'true'
+        env:
+          TARGET: ${{ steps.check.outputs.target }}
+        # The guard on the hand-written entry. NOT `uv lock --check`, which also
+        # demands the lock match the running uv's serialization conventions --
+        # this lock does not (it predates the emscripten markers), so that gate
+        # fails on an untouched checkout and would block every proposal.
+        # `--frozen` resolves the lock as written and fails if the entry is
+        # incoherent, which is the risk of editing it by hand.
+        run: |
+          set -euo pipefail
+          uv export --frozen --no-emit-project --extra rust > /tmp/requirements.txt
+          grep -q "^escapepod==${TARGET} " /tmp/requirements.txt
+
+      - name: Open or update the pull request
+        if: steps.check.outputs.skewed == 'true' && steps.check.outputs.actionable == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET: ${{ steps.check.outputs.target }}
+        run: |
+          set -euo pipefail
+          BRANCH=chore/escapepod-pin-sync
+
+          if git diff --quiet; then
+            echo "Nothing left to propose after the rewrite."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -C "$BRANCH"
+          git add pyproject.toml uv.lock rust/Cargo.toml rust/Cargo.lock
+          git commit -m "build: move both escapepod pins to v${TARGET}"
+          git push --force-with-lease origin "$BRANCH"
+
+          # One long-lived branch, so a superseded proposal is updated in place
+          # rather than left open beside its replacement.
+          if gh pr view "$BRANCH" --json state -q .state 2>/dev/null | grep -q OPEN; then
+            echo "Existing PR updated by the push."
+            exit 0
+          fi
+
+          gh pr create \
+            --base main \
+            --head "$BRANCH" \
+            --title "build: move both escapepod pins to v${TARGET}" \
+            --body-file .github/escapepod-sync-pr-body.md

@@ -1993,7 +1993,7 @@ def _usable_cpus() -> int:
         return os.cpu_count() or 1
 
 
-def resolve_dataloader_workers(num_workers: int, device: str) -> int:
+def resolve_dataloader_workers(num_workers: int, device: str, local_world_size: int = 1) -> int:
     """Resolve how many DataLoader workers to actually use.
 
     ``num_workers=0`` means AUTO here, not "no workers": on CUDA it becomes
@@ -2013,6 +2013,11 @@ def resolve_dataloader_workers(num_workers: int, device: str) -> int:
     ``sched_getaffinity``, which respects the Slurm cpuset -- because a GPU job
     allocated 2 cores would otherwise fork 8 workers onto them and thrash. An
     explicit request is honoured as given; only "auto" is capped.
+
+    ``local_world_size`` divides that cap. Under ``--gpus N`` every rank sees
+    the *whole* allocation through ``sched_getaffinity`` -- the cpuset is the
+    job's, not the rank's -- so each of them would claim the full worker count
+    and the node would carry N times as many as the cap intends.
     """
     import multiprocessing
 
@@ -2024,16 +2029,20 @@ def resolve_dataloader_workers(num_workers: int, device: str) -> int:
     elif device == "cpu":
         effective = 0
     else:
-        effective = min(AUTO_DATALOADER_WORKERS, max(1, _usable_cpus() - 1))
+        per_rank_cpus = max(1, (_usable_cpus() - 1) // max(1, local_world_size))
+        effective = min(AUTO_DATALOADER_WORKERS, per_rank_cpus)
 
     logger.info(
         f"DataLoader workers: {effective} "
-        f"(requested={num_workers}, daemon={is_daemon}, device={device})"
+        f"(requested={num_workers}, daemon={is_daemon}, device={device}, "
+        f"local_world_size={local_world_size})"
     )
     return effective
 
 
-def resolve_val_dataloader_workers(val_dataset, num_workers: int, device: str) -> int:
+def resolve_val_dataloader_workers(
+    val_dataset, num_workers: int, device: str, local_world_size: int = 1
+) -> int:
     """Workers for the VALIDATION loader.
 
     Same rule as [`resolve_dataloader_workers`], with one exception: a dataset
@@ -2051,7 +2060,7 @@ def resolve_val_dataloader_workers(val_dataset, num_workers: int, device: str) -
     fault N PyObject headers into private copies and multiply peak RSS. So the
     exception is scoped to exactly that case rather than applied to every run.
     """
-    workers = resolve_dataloader_workers(num_workers, device)
+    workers = resolve_dataloader_workers(num_workers, device, local_world_size)
     if workers and getattr(val_dataset, "_signals_tensor", None) is None:
         logger.info(
             "Validation dataset is not contiguously stacked; using 0 DataLoader "

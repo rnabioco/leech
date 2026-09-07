@@ -93,6 +93,14 @@ class ModelInferenceWrapper:
             model_type: Model architecture name (e.g., "ConvLSTMDwell")
         """
         self.model = model
+        # What ``forward_batch`` actually calls. It is the model itself except
+        # under DDP, where the forward has to go through the wrapper for the
+        # gradient allreduce to be registered -- while ``self.model`` stays the
+        # unwrapped module, because that is what ``state_dict()`` keys,
+        # ``enable_repr_capture``'s head lookup and every checkpoint consumer
+        # expect. DDP does not forward attribute access to its module; compile
+        # does, which is why this only became necessary with the former.
+        self.forward_module: nn.Module = model
         self.model_type = model_type
         self.requires_features = model_type in self.FEATURE_MODELS
         self.captured_repr: torch.Tensor | None = None
@@ -163,9 +171,9 @@ class ModelInferenceWrapper:
         output: torch.Tensor
         if self.requires_features:
             features = batch["features"].to(device)
-            output = self.model(signal, sequence, features)
+            output = self.forward_module(signal, sequence, features)
         else:
-            output = self.model(signal, sequence)
+            output = self.forward_module(signal, sequence)
         return output
 
     def __call__(self, *args, **kwargs) -> torch.Tensor:

@@ -58,3 +58,33 @@ history = trainer.train(
 # Access training history
 print(f"Best validation loss: {min(history['val_loss'])}")
 ```
+
+## Multi-GPU training
+
+`leech model train --gpus N` runs N data-parallel ranks on one node. It is
+opt-in and single-node; `--gpus 1` (the default) is the single-device path
+unchanged.
+
+```bash title="Shell"
+# 4 A30s of one node; --gres=gpu:4 and ~4x the memory of a single-GPU run
+uv run leech model train --train-data chunks/train.npz --val-data chunks/val.npz \
+  --model TCNDwellResidualLN --output-dir models/ \
+  --batch-size 1024 --gpus 4
+```
+
+Two things to know before using it:
+
+- **`--batch-size` is the global batch and is split across ranks.** With
+  `--batch-size 1024 --gpus 4` each rank sees 256. The optimizer-step count, the
+  LR schedule and the gradient-accumulation arithmetic are therefore identical
+  at any `--gpus`, so a multi-GPU run stays comparable with arms already
+  measured. (This is the opposite of the usual PyTorch convention, where the
+  flag is per-rank and the effective batch grows with the GPU count.)
+- **Memory scales with the rank count.** Each rank loads its own copy of the
+  corpus, so a run whose single-GPU peak is ~40 GiB needs ~160 GiB at
+  `--gpus 4`. Size the job's `--mem` accordingly; the second rank is
+  OOM-killed during its load otherwise.
+
+The checkpoint a multi-GPU run writes is byte-compatible with a single-GPU one
+(same keys, no `module.` prefix), so `leech model export`, bundling and
+inference are unaffected.
