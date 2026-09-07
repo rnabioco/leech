@@ -41,6 +41,7 @@ from leech.distributed import (
     DistributedEvalSampler,
     DistributedWeightedSampler,
     all_reduce_sum,
+    all_reduce_tensor_sum,
     backend_for,
     barrier,
     context_from_env,
@@ -586,6 +587,14 @@ class Trainer:
             else:
                 self.criterion = nn.BCEWithLogitsLoss()
                 logger.info("Training without class weighting")
+        # Weighted CE normalizes by the summed weight of the samples it sees,
+        # not by their count, so it is the one loss here that does not
+        # decompose over shards. See _weighted_ce_global.
+        self._ce_needs_global_norm = (
+            self.dist.enabled
+            and loss_type == "cross_entropy"
+            and getattr(self.criterion, "weight", None) is not None
+        )
         if label_smoothing > 0 and loss_type != "cross_entropy":
             logger.info(f"Label smoothing={label_smoothing} (applied to binary targets)")
 
@@ -838,7 +847,11 @@ class Trainer:
         logits = self.model_wrapper.forward_batch(batch, self.device)
         if self.loss_type == "cross_entropy":
             # CrossEntropyLoss wants (B,) integer class labels
-            main_loss = self.criterion(logits, labels.squeeze(-1).long())
+            ce_targets = labels.squeeze(-1).long()
+            if self._ce_needs_global_norm:
+                main_loss = self._weighted_ce_global(logits, ce_targets)
+            else:
+                main_loss = self.criterion(logits, ce_targets)
         else:
             main_loss = self.criterion(logits, loss_targets)
 
@@ -857,6 +870,36 @@ class Trainer:
             loss = loss + self.cl_lambda * cl_loss
 
         return logits, labels, main_loss, loss, adv, cl_loss
+
+    def _weighted_ce_global(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        """Weighted cross-entropy normalized by the GLOBAL summed weight.
+
+        Every other loss in this trainer reduces by element count, which equal
+        shards make exact: DDP's gradient average over N shards of n/N samples
+        *is* the mean over n. ``CrossEntropyLoss(weight=...)`` is the exception
+        -- it divides by ``sum_i w[y_i]``, so each rank normalizes by its own
+        shard's class composition and the averaged gradient is the single-GPU
+        one only when the shards happen to draw the same classes. On a fixture
+        whose shards differ that is an 8% error in the loss, and nothing
+        raises: the run converges to a slightly different recipe than the same
+        command line asked for at ``--gpus 1``.
+
+        Each rank instead forms ``world_size * (its weighted sum) / (the global
+        weighted sum)``, whose average over ranks telescopes back to exactly
+        the global weighted mean. The denominator carries no gradient, so it is
+        an ordinary scalar allreduce -- microseconds against a step, and only
+        on this path.
+        """
+        weight = self.criterion.weight
+        numerator = nn.functional.cross_entropy(
+            logits,
+            targets,
+            weight=weight,
+            label_smoothing=self.label_smoothing,
+            reduction="sum",
+        )
+        denominator = all_reduce_tensor_sum(weight.detach()[targets].sum(), self.dist)
+        return self.dist.world_size * numerator / denominator
 
     def train_epoch(
         self, progress: Progress | None = None, task_id: TaskID | None = None
