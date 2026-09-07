@@ -16,6 +16,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import multiprocessing
 import os
 from pathlib import Path
 
@@ -35,6 +36,7 @@ from leech.distributed import (
     backend_for,
     configure_rank_logging,
     device_for,
+    spawn,
     validate_request,
 )
 from leech.training import Trainer, train_model
@@ -325,6 +327,127 @@ def test_two_rank_gradients_match_the_single_rank_gradients(tmp_path):
 
 
 # --------------------------------------------------------------------------
+# Weighted cross-entropy is the one loss that does not decompose over shards
+# --------------------------------------------------------------------------
+
+
+_CE_WEIGHTS = torch.tensor([1.0, 3.0, 0.5])
+
+
+class _TinyCls(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.net = nn.Sequential(nn.Linear(6, 12), nn.ReLU(), nn.Linear(12, 3))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+
+def _lopsided_batch() -> tuple[torch.Tensor, torch.Tensor]:
+    """A batch whose ``[rank::2]`` shards have different summed class weight.
+
+    That inequality is the whole failure mode, and a batch that happens to
+    split evenly (the natural fixture to write) reproduces the correct answer
+    from the incorrect code.
+    """
+    generator = torch.Generator().manual_seed(1234)
+    x = torch.randn(8, 6, generator=generator)
+    y = torch.tensor([1, 0, 1, 0, 1, 0, 2, 2])
+    assert _CE_WEIGHTS[y[0::2]].sum() != _CE_WEIGHTS[y[1::2]].sum()
+    return x, y
+
+
+class _CeShim:
+    """The three attributes ``_weighted_ce_global`` reads, plus the real method.
+
+    Bound off ``Trainer`` rather than reimplemented, so the test exercises the
+    shipped arithmetic instead of a copy of it that could agree while both are
+    wrong.
+    """
+
+    def __init__(self, ctx: DistContext, label_smoothing: float = 0.0) -> None:
+        self.criterion = nn.CrossEntropyLoss(weight=_CE_WEIGHTS, label_smoothing=label_smoothing)
+        self.label_smoothing = label_smoothing
+        self.dist = ctx
+
+    _weighted_ce_global = Trainer._weighted_ce_global
+
+
+def _weighted_ce_worker(rank: int, world: int, port: int, out_dir: str) -> None:
+    os.environ["MASTER_ADDR"] = "127.0.0.1"
+    os.environ["MASTER_PORT"] = str(port)
+    td.init_process_group("gloo", rank=rank, world_size=world)
+    try:
+        ctx = DistContext(rank=rank, local_rank=rank, world_size=world, backend="gloo")
+        x, y = _lopsided_batch()
+        shard = slice(rank, None, world)
+
+        for tag, loss_fn in (
+            ("fixed", _CeShim(ctx)._weighted_ce_global),
+            ("naive", nn.CrossEntropyLoss(weight=_CE_WEIGHTS)),
+        ):
+            torch.manual_seed(0)
+            model = _TinyCls()
+            ddp = nn.parallel.DistributedDataParallel(model)
+            loss_fn(ddp(x[shard]), y[shard]).backward()
+            if rank == 0:
+                torch.save(
+                    {n: p.grad.clone() for n, p in model.named_parameters()},
+                    Path(out_dir) / f"{tag}.pt",
+                )
+        td.barrier()
+    finally:
+        td.destroy_process_group()
+
+
+def test_two_rank_weighted_ce_gradients_match_the_single_rank_gradients(tmp_path):
+    """``CrossEntropyLoss(weight=...)`` normalizes by summed weight, not count.
+
+    So DDP's gradient average over shards that drew different classes is not
+    the single-GPU gradient, and nothing raises -- the run just trains on a
+    slightly different recipe than the command line asked for. The ``naive``
+    arm is asserted to diverge, because a test that only checked the fixed arm
+    would pass just as happily if the fixture split evenly.
+    """
+    import torch.multiprocessing as mp
+
+    torch.manual_seed(0)
+    reference_model = _TinyCls()
+    x, y = _lopsided_batch()
+    nn.CrossEntropyLoss(weight=_CE_WEIGHTS)(reference_model(x), y).backward()
+    reference = {n: p.grad.clone() for n, p in reference_model.named_parameters()}
+
+    mp.spawn(_weighted_ce_worker, args=(2, _free_port(), str(tmp_path)), nprocs=2, join=True)
+
+    fixed = torch.load(tmp_path / "fixed.pt")
+    for name, grad in reference.items():
+        assert torch.allclose(fixed[name], grad, atol=1e-6), name
+
+    naive = torch.load(tmp_path / "naive.pt")
+    assert not all(
+        torch.allclose(naive[name], grad, atol=1e-6) for name, grad in reference.items()
+    ), "the fixture no longer reaches the bug -- shards must differ in summed class weight"
+
+
+def test_unweighted_losses_need_no_correction():
+    """Only the weighted-CE path sets the flag; everything else reduces by count.
+
+    Equal shards make a count-normalized mean exact under DDP, so paying a
+    per-step collective on those paths would be cost for nothing.
+    """
+    x, y = _lopsided_batch()
+    logits = _TinyCls()(x)
+    a, b = slice(0, 4), slice(4, 8)
+    for name, fn in (
+        ("unweighted CE", nn.CrossEntropyLoss()),
+        ("label-smoothed CE", nn.CrossEntropyLoss(label_smoothing=0.1)),
+    ):
+        whole = fn(logits, y)
+        sharded = 0.5 * (fn(logits[a], y[a]) + fn(logits[b], y[b]))
+        assert torch.allclose(whole, sharded, atol=1e-6), name
+
+
+# --------------------------------------------------------------------------
 # The checkpoint a 2-rank run writes must be the one a 1-rank run writes
 # --------------------------------------------------------------------------
 
@@ -454,3 +577,48 @@ def test_spawned_ranks_get_the_logging_the_cli_would_have(_restore_leech_logger)
     configure_rank_logging(DistContext(rank=1, local_rank=1, world_size=2, backend="gloo"))
     assert logger.level == logging.WARNING, "off-rank chatter hides the line that differs"
     assert "[rank 1/2]" in logger.handlers[0].formatter._fmt
+
+
+# --------------------------------------------------------------------------
+# A spawned rank must still FORK its DataLoader workers
+# --------------------------------------------------------------------------
+
+
+def _record_start_method(ctx, kwargs) -> None:
+    import multiprocessing as pymp
+
+    Path(kwargs["out_dir"], f"rank{ctx.rank}.txt").write_text(pymp.get_start_method())
+
+
+def _record_start_method_raw(rank: int, out_dir: str) -> None:
+    import multiprocessing as pymp
+
+    Path(out_dir, f"raw{rank}.txt").write_text(pymp.get_start_method())
+
+
+def test_spawned_ranks_fork_their_dataloader_workers(tmp_path):
+    """Otherwise the corpus goes through /dev/shm once per worker per rank.
+
+    ``LeechDataset`` stacks into contiguous buffers so a fork COW-shares them;
+    a spawned rank inherits ``spawn`` as its default start method, and every
+    DataLoader it builds then pickles those buffers into shared memory
+    instead. It surfaces nowhere near the cause -- on the production corpus
+    the fourth rank's *validation* loader died with ``No space left on
+    device``, at 176 GiB RSS against a 244 GiB allocation.
+    """
+    spawn(_record_start_method, {"out_dir": str(tmp_path)}, nprocs=2, backend="gloo")
+    for rank in range(2):
+        assert (tmp_path / f"rank{rank}.txt").read_text() == "fork"
+
+
+def test_a_plain_spawned_child_would_have_inherited_spawn(tmp_path):
+    """The behaviour the fix exists for, asserted so the fix cannot become a no-op.
+
+    If CPython stops forcing the child's start method, the test above starts
+    passing for a different reason and this one fails to say so.
+    """
+    import torch.multiprocessing as mp
+
+    assert multiprocessing.get_start_method() == "fork", "parent baseline"
+    mp.spawn(_record_start_method_raw, args=(str(tmp_path),), nprocs=1, join=True)
+    assert (tmp_path / "raw0.txt").read_text() == "spawn"

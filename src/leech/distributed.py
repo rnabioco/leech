@@ -216,6 +216,29 @@ def _free_port() -> int:
         return int(sock.getsockname()[1])
 
 
+def use_fork_for_dataloader_workers() -> None:
+    """Put a spawned rank's child processes back on ``fork``.
+
+    ``multiprocessing.spawn.prepare`` forces a spawned child's default start
+    method to match how it was created, so inside a rank every DataLoader
+    builds its workers by *spawn* -- which pickles the dataset's stacked
+    tensors through ``/dev/shm`` instead of COW-sharing them. ``LeechDataset``
+    stacks into contiguous buffers precisely so a fork shares them for free
+    (see ``dataset.resolve_val_dataloader_workers``), and that invariant is
+    silently void at ``--gpus > 1`` without this.
+
+    It does not fail where it happens. The shm copies accumulate per worker per
+    rank, and on the production corpus the run died only when the *fourth*
+    rank's validation loader started, as ``No space left on device`` -- naming
+    a tmpfs, not a start method. Peak RSS was 176 GiB against a 244 GiB
+    allocation, so it does not look like a memory problem either.
+    """
+    if "fork" not in multiprocessing.get_all_start_methods():
+        return
+    if multiprocessing.get_start_method(allow_none=True) != "fork":
+        multiprocessing.set_start_method("fork", force=True)
+
+
 def _worker_entry(
     local_rank: int,
     entry: Callable[..., Any],
@@ -234,6 +257,7 @@ def _worker_entry(
         rank=local_rank, local_rank=local_rank, world_size=world_size, backend=backend
     )
     init(ctx)
+    use_fork_for_dataloader_workers()
     try:
         entry(ctx, kwargs)
     finally:
@@ -276,6 +300,19 @@ def all_reduce_sum(values: dict[str, float], ctx: DistContext, device: str) -> d
     buf = torch.tensor([values[k] for k in keys], dtype=torch.float64, device=device)
     td.all_reduce(buf, op=td.ReduceOp.SUM)
     return dict(zip(keys, buf.tolist(), strict=True))
+
+
+def all_reduce_tensor_sum(tensor: torch.Tensor, ctx: DistContext) -> torch.Tensor:
+    """Sum one scalar tensor across ranks, in place.
+
+    Unlike :func:`all_reduce_sum` this stays on the device and never reads the
+    value back, because it runs in the training step rather than at an epoch
+    boundary and ``.item()`` there would sync the host on every micro-step.
+    """
+    if not ctx.enabled:
+        return tensor
+    td.all_reduce(tensor, op=td.ReduceOp.SUM)
+    return tensor
 
 
 def gather_arrays(array: np.ndarray, ctx: DistContext) -> list[np.ndarray]:
