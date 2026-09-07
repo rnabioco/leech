@@ -1,0 +1,115 @@
+name: Dependabot auto-merge
+
+# Merges a dependabot PR once CI has actually passed on it.
+#
+# NOT GitHub's own auto-merge: that needs `allow_auto_merge` on the repo and,
+# to be worth anything, required status checks on `main`. This repo has neither
+# (`allow_auto_merge: false`, `main` unprotected), and with no required checks
+# GitHub's auto-merge merges *immediately* rather than waiting for CI — worse
+# than merging by hand. Triggering on `workflow_run` instead means "CI finished
+# and it was green" is the entry condition, by construction.
+#
+# Two updates are deliberately left for a person:
+#
+#   escapepod-signal  its PyPI twin `escapepod` must move in the same commit
+#                     (see the escapepod section of CLAUDE.md, and #193). Merging
+#                     the crate alone puts main in exactly the skew that
+#                     escapepod-sync.yml then has to repair.
+#   major bumps       a major is an API break by declaration; CI passing means
+#                     the suite still runs, not that the semantics held.
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: dependabot-auto-merge-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+jobs:
+  merge:
+    name: Merge if green and in policy
+    # `conclusion` gates on CI having passed; `actor` is a cheap pre-filter, and
+    # the authoritative author check is against the PR itself below.
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.actor.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Resolve the pull request for this run
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # workflow_run.pull_requests is empty for forks, so resolve by SHA.
+          number=$(gh api "repos/${REPO}/commits/${HEAD_SHA}/pulls" \
+            --jq '[.[] | select(.state == "open")] | first | .number // empty')
+          if [ -z "$number" ]; then
+            echo "No open PR for ${HEAD_SHA}; nothing to merge."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          author=$(gh pr view "$number" --repo "$REPO" --json author -q .author.login)
+          if [ "$author" != "app/dependabot" ]; then
+            echo "PR #${number} is authored by ${author}, not dependabot."
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "number=${number}" >> "$GITHUB_OUTPUT"
+          echo "found=true" >> "$GITHUB_OUTPUT"
+
+      - name: Check the update against policy
+        id: policy
+        if: steps.pr.outputs.found == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ steps.pr.outputs.number }}
+        run: |
+          set -euo pipefail
+          title=$(gh pr view "$NUMBER" --repo "$REPO" --json title -q .title)
+          echo "title: ${title}"
+
+          # "bump <name> from <a> to <b>" — the shape dependabot always uses.
+          name=$(sed -n 's/.*bump \([^ ]*\) from .* to .*/\1/p' <<<"$title")
+          from=$(sed -n 's/.*bump [^ ]* from \([^ ]*\) to .*/\1/p' <<<"$title")
+          to=$(sed -n 's/.*bump [^ ]* from [^ ]* to \([^ ]*\).*/\1/p' <<<"$title")
+          echo "name=${name} from=${from} to=${to}"
+
+          if [ -z "$name" ] || [ -z "$from" ] || [ -z "$to" ]; then
+            echo "::notice::Could not parse the update from the title; leaving it for a person."
+            echo "merge=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+
+          if [ "$name" = "escapepod-signal" ] || [ "$name" = "escapepod" ]; then
+            echo "::notice::${name} moves together with its twin; leaving it for a person."
+            echo "merge=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+
+          # Compare leading numeric components; tags carry a leading "v".
+          major_from=$(sed 's/^v//' <<<"$from" | cut -d. -f1)
+          major_to=$(sed 's/^v//' <<<"$to" | cut -d. -f1)
+          if [ "$major_from" != "$major_to" ]; then
+            echo "::notice::major bump ${from} -> ${to}; leaving it for a person."
+            echo "merge=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+
+          echo "merge=true" >> "$GITHUB_OUTPUT"
+
+      - name: Squash merge
+        if: steps.pr.outputs.found == 'true' && steps.policy.outputs.merge == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ steps.pr.outputs.number }}
+        run: gh pr merge "$NUMBER" --repo "$REPO" --squash --delete-branch

@@ -55,12 +55,13 @@ jobs:
         if: steps.check.outputs.skewed == 'true' && steps.check.outputs.actionable == 'true'
         env:
           TARGET: ${{ steps.check.outputs.target }}
-        # The guard on the hand-written entry. NOT `uv lock --check`, which also
-        # demands the lock match the running uv's serialization conventions --
-        # this lock does not (it predates the emscripten markers), so that gate
-        # fails on an untouched checkout and would block every proposal.
-        # `--frozen` resolves the lock as written and fails if the entry is
-        # incoherent, which is the risk of editing it by hand.
+        # The guard on the hand-written entry. Deliberately not `uv lock
+        # --check`: that also demands the lock match the *running* uv's
+        # serialization conventions, so it fails on an untouched checkout
+        # whenever the runner's uv is newer than the one that wrote the lock
+        # (this lock has been in that state, and would have blocked every
+        # proposal). `--frozen` resolves the lock as written and fails only if
+        # the entry is incoherent, which is the actual risk of editing by hand.
         run: |
           set -euo pipefail
           uv export --frozen --no-emit-project --extra rust > /tmp/requirements.txt
