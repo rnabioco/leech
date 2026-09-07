@@ -71,9 +71,16 @@ rule train_pairwise_aa:
         cpus_per_task=lambda wildcards, attempt: (
             16 if config.get("use_cpu_training", False) else 10
         ),
-        mem_mb=18000,
+        # Memory scales with train_gpus: each data-parallel rank loads its
+        # own copy of the corpus, so N ranks need N times the RAM. A multi-GPU
+        # run inside a single-GPU allocation is OOM-killed during the second
+        # rank's load, not merely slow -- the flag and the resource move
+        # together or not at all.
+        mem_mb=lambda wildcards, attempt: 18000 * config.get("train_gpus", 1),
         gres=lambda wildcards, attempt: (
-            "" if config.get("use_cpu_training", False) else "gpu:1"
+            ""
+            if config.get("use_cpu_training", False)
+            else f"gpu:{config.get('train_gpus', 1)}"
         ),
     params:
         output_dir=MODELS_DIR + "/pairwise/{pair}",
@@ -83,6 +90,7 @@ rule train_pairwise_aa:
         lr=config.get("learning_rate", 0.001),
         early_stopping=config.get("early_stopping_patience", 5),
         device="cpu" if config.get("use_cpu_training", False) else "cuda",
+        gpus=config.get("train_gpus", 1),
         config_flag=lambda wildcards, input: (
             f"--config {input.grid_search}"
             if config.get("use_grid_search", False)
@@ -100,6 +108,7 @@ rule train_pairwise_aa:
             --learning-rate {params.lr} \
             --early-stopping {params.early_stopping} \
             --device {params.device} \
+            --gpus {params.gpus} \
             {params.config_flag} \
             2>&1 | tee {log}
         """

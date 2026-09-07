@@ -88,6 +88,11 @@ uv run leech data merge -i label1=file1.npz -i label2=file2.npz --output-dir mer
 uv run leech model train --train-data chunks/train.json --val-data chunks/val.json \
   --model ConvLSTMDwell --output-dir models/
 
+# Train on several GPUs of one node (opt-in; --batch-size stays the GLOBAL
+# batch and is split across ranks, so the recipe is unchanged)
+uv run leech model train --train-data chunks/train.json --val-data chunks/val.json \
+  --model TCNDwellResidualLN --output-dir models/ --gpus 4
+
 # Train a CTC-CRF sequence model (emits a sequence, not a label)
 uv run leech model train-crf --corpus corpus/ldx16 --output-dir models/crf/ \
   --epochs 32 --batch-size 256
@@ -416,6 +421,91 @@ numpy; on a loaded one it measured 115 ms/batch against 0.25 ms — 460x worse �
 and a training loop contends with its own forward/backward for that pool, while
 grid search runs N such processes. `LeechDataset`'s block fill and
 `__getitems__` gather go through numpy for this reason.
+
+### Multi-GPU training: what shards, what stays global, what rank 0 owns
+
+`leech model train --gpus N` runs N data-parallel ranks on one node
+(`distributed.py`). Opt-in, single-node, **train only** — `eval test` was
+measured input-bound (53-79% GPU with every DataLoader worker pegged), so DDP
+buys it nothing and would only add risk to the path that produces the scores.
+At `--gpus 1` no process group is created, no object changes identity, and the
+RNG draw is what it was; `tests/test_distributed_training.py` pins that.
+
+**`--batch-size` stays the GLOBAL batch and is split across ranks.** The
+PyTorch convention is the opposite — per-rank, so the effective batch grows
+with the GPU count — and it is wrong here, because a leech run is one arm of a
+paired comparison: the same command line has to mean the same recipe at any
+`--gpus`, or every number already measured needs re-measuring. Splitting leaves
+the optimizer-step count, the LR schedule, `ClipGrad`'s quantile buffer and the
+`grad_accum_split` arithmetic exactly where they are, and DDP's gradient
+average over equal shards *is* the single-GPU batch mean.
+
+**The LR schedule here is epoch-indexed, so nothing about it needs correcting.**
+`linear_warmup_cosine_decay` drives a `LambdaLR` that `train()` steps once per
+epoch, as do the plateau path and the manual warmup ramp. Nothing in the
+trainer counts optimizer steps. Worth knowing before "fixing" a step count that
+does not exist.
+
+**Every rank must draw a disjoint shard, and `WeightedRandomSampler` does
+not.** Handed to N ranks it gives each of them the *same* oversampled draw: the
+run converges, reports plausible metrics, and has trained on `world_size`
+copies of one shard, with nothing raised. `DistributedWeightedSampler` draws
+the same global multinomial on every rank — private `torch.Generator`, seeded
+`seed + epoch`, never the global RNG, which would diverge the moment one rank
+consumed a random number the others did not — and takes
+`draw[rank::world_size]`. The union of the shards is then *exactly* the
+single-GPU draw rather than a resemblance of it, which is what the test
+asserts. `set_epoch()` is mandatory: without it every epoch is the same shard.
+The corpus this matters on is ~13% positive, so the weighted path is the one in
+use, not a corner case.
+
+**The checkpoint must keep the single-GPU keys.** DDP prefixes `state_dict`
+keys with `module.`; `torch.compile` already prefixes them with `_orig_mod.`,
+and every consumer (`model_loading.py`, `bundling.py`, `inference/bundle.py`)
+strips exactly that one. So the model is wrapped as `DDP(compile(model))` and
+`self.model` stays the *unwrapped* module — that is what `state_dict()`, the
+best-weights deepcopy and `enable_repr_capture`'s head lookup use, the last
+because DDP does not forward attribute access to its module while compile does.
+A prefixed `model_best.pt` either fails to load downstream or, under any
+`strict=False` path, loads nothing and exports an untrained graph.
+
+**The auxiliary heads need their own wrapper.** `AdversarialHead` and
+`RegressionHead` are in the optimizer but live outside the model, so a DDP
+around the model alone never allreduces their gradients: each rank keeps a
+private head while the backbone stays in sync. Each is wrapped separately, and
+`test_auxiliary_heads_are_wrapped_for_gradient_sync` fails if a head is added
+without one.
+
+**Accumulation runs under `no_sync()` on the non-final micro-steps.** Every
+`backward()` triggers an allreduce, so N sub-batches otherwise pay N times the
+communication for identical arithmetic.
+
+**Validation shards too, and gathers before it scores.** Leaving it on rank 0
+caps the whole change near 2x whatever the GPU count — ~5 min of validation
+against 20.4 min of training is Amdahl's whole argument. It shards with
+`DistributedEvalSampler`, which strides *without padding*: `DistributedSampler`
+repeats rows to equalize the shards, and those duplicates would land in the
+AUROC. Predictions are gathered and the metrics computed once, globally, so
+they are equal to the single-GPU numbers rather than close to them. The one
+exception is the validation loss, which is a mean over batches whose boundaries
+sharding moves; at `world_size > 1` it is reported as a sample-weighted mean
+instead.
+
+**Each rank loads its own copy of the corpus, so memory scales with N.**
+Measured on the production charging run (job 277764, `TCNDwellResidualLN`,
+6.72M chunks): cgroup peak 40.0 GiB, 37.9 GiB of it anonymous, against 36.5 GiB
+of npz — essentially 1:1 with the corpus. So 2 ranks want ~80 GiB and 4 want
+~160 GiB of a 250 GiB GPU node. **`--gpus` and the job's `mem_mb` move
+together**, or the second rank is OOM-killed during its load rather than
+running slowly; `pipeline/workflow/rules/train.smk` scales `mem_mb` and `gres`
+off one `train_gpus` config key for that reason. Taking 4 GPUs takes the whole
+node anyway, so the 68% of its RAM displaces nothing.
+
+Three requests are refused up front rather than failing later: `--gpus > 1`
+inside a daemonic process (a grid-search pool worker cannot spawn children),
+with pre-loaded chunks (they would be pickled to every rank), or above
+`torch.cuda.device_count()` (which otherwise hangs in NCCL init instead of
+raising).
 
 ### CTC-CRF: a second task, and five rules that do not announce themselves
 
@@ -797,6 +887,7 @@ src/leech/           # Main package source
 ├── calibration.py   # Post-hoc Platt scaling for model calibration
 ├── signal_refine.py # Signal map refinement via kmer level tables
 ├── _rust_accel.py   # Rust acceleration wrapper for vectorized operations
+├── distributed.py   # DDP ranks, sharded samplers, collectives (`--gpus N`)
 ├── configs.py       # Dataclass-based configuration management
 ├── constants.py     # Project-wide constants and defaults
 ├── logging_config.py  # Logging setup
@@ -940,6 +1031,9 @@ The codebase is feature-complete (v0.10.0):
   training, validation and eval: auto on GPU (capped by the job's CPU
   allocation), serial on CPU, never workers inside a daemonic pool worker;
   `eval test` takes `--num-workers`
+- ✓ Single-node multi-GPU training (`leech model train --gpus N`): DDP with
+  global-batch splitting, sharded weighted sampling, `no_sync` accumulation,
+  distributed validation, and single-GPU-identical checkpoint keys
 - ✓ CTC-CRF sequence models (`leech.crf`): encoder, training objective with an
   analytic forward-backward, optional Triton lattice kernels, and the two-pass
   Viterbi decode — ported from escapepod-models, torch + numpy only. Plus the

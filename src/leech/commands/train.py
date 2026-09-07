@@ -50,6 +50,7 @@ def handle_train(
     augment_shift_max_bases: float,
     augment_feature_noise_scale: float,
     num_workers: int,
+    gpus: int = 1,
     quantile_grad_clip: bool = False,
     grad_accum_split: int = 1,
     save_optim_every: int = 1,
@@ -104,6 +105,8 @@ def handle_train(
         augment_scale_min: Min random scale factor
         augment_scale_max: Max random scale factor
         num_workers: DataLoader workers
+        gpus: Data-parallel ranks (1 = single device); batch_size is the global
+            batch and is split across them
         motif: Motif used for chunk extraction (provenance)
         motif_offset: Offset within motif (provenance)
         base_justify: Signal justification (provenance)
@@ -217,6 +220,7 @@ def handle_train(
         augment_feature_noise_scale=augment_feature_noise_scale,
         resume_from=resume,
         num_workers=num_workers,
+        gpus=gpus,
         motif=motif,
         motif_offset=motif_offset,
         base_justify=base_justify,

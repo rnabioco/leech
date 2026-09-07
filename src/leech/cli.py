@@ -712,6 +712,19 @@ def merge(
     help="DataLoader workers (0=auto: up to 8 on GPU, capped by CPUs; 0 on CPU)",
 )
 @click.option(
+    "--gpus",
+    type=int,
+    default=1,
+    show_default=True,
+    help=(
+        "Data-parallel ranks on this node (1 = single GPU). --batch-size stays the "
+        "GLOBAL batch and is split across ranks, so the recipe -- step count, LR "
+        "schedule, accumulation -- is identical at any value. Needs the job to hold "
+        "that many GPUs (--gres=gpu:N) and roughly N x the memory, since each rank "
+        "loads its own copy of the corpus."
+    ),
+)
+@click.option(
     "--balance-groups/--no-balance-groups",
     default=False,
     help="Balance sampling across source groups (e.g., per-AA) so each group contributes equally per epoch",
@@ -832,6 +845,7 @@ def train(
     seq_encoding,
     encoding_fallback,
     num_workers,
+    gpus,
     balance_groups,
     oversample_minority,
     num_out,
@@ -894,6 +908,7 @@ def train(
         augment_shift_max_bases=augment_shift_max_bases,
         augment_feature_noise_scale=augment_feature_noise_scale,
         num_workers=num_workers,
+        gpus=gpus,
         motif=motif,
         motif_offset=motif_offset,
         base_justify=base_justify,
