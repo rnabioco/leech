@@ -355,6 +355,18 @@ every level-derived feature differ between backends for four releases (#193).
 `--scale-iters -1` means "no refinement" on both; do not clamp it to 0, which
 escapepod reads as one DP pass.
 
+**The two pins are the same rule, and they move together.** `rust/Cargo.toml`
+tags the `escapepod-signal` crate and `pyproject.toml` floors the `escapepod`
+PyPI package; they are one upstream, released in lockstep, and leech drives
+both. Dependabot bumps the tag-pinned crate on its own schedule (#236 took it
+v0.16.1 -> v0.18.1) and cannot know the Python package has to follow, so
+merging one of its PRs leaves main skewed with nothing red.
+`.github/workflows/escapepod-sync.yml` compares them daily and opens the
+matching bump; `tests/test_escapepod_sync.py` guards the tool, not the versions
+— asserting agreement in the suite would only turn every dependabot PR red.
+A bump is not validated by compiling. `tests/test_backend_parity.py` is what
+says the two backends still compute the same arrays.
+
 Since escapepod v0.15.0 the settings themselves are escapepod's
 `RefineSettings::move_table_refinement` preset (escapepod-rs#257), so there is
 no longer a literal here to drift. **Do not hand-build `RefineSettings` in this
@@ -492,14 +504,37 @@ sharding moves; at `world_size > 1` it is reported as a sample-weighted mean
 instead.
 
 **Each rank loads its own copy of the corpus, so memory scales with N.**
-Measured on the production charging run (job 277764, `TCNDwellResidualLN`,
-6.72M chunks): cgroup peak 40.0 GiB, 37.9 GiB of it anonymous, against 36.5 GiB
-of npz — essentially 1:1 with the corpus. So 2 ranks want ~80 GiB and 4 want
-~160 GiB of a 250 GiB GPU node. **`--gpus` and the job's `mem_mb` move
-together**, or the second rank is OOM-killed during its load rather than
-running slowly; `pipeline/workflow/rules/train.smk` scales `mem_mb` and `gres`
-off one `train_gpus` config key for that reason. Taking 4 GPUs takes the whole
-node anyway, so the 68% of its RAM displaces nothing.
+Measured end to end on the production charging corpus (`TCNDwellResidualLN`,
+6.72M chunks, 36.5 GiB of npz, 2 epochs on one 4×A30 node):
+
+| `--gpus` | job wall | speedup | peak RSS |
+|---|---|---|---|
+| 1 | 24:31 | 1.00x | 40.6 GiB |
+| 2 | 16:40 | 1.47x | 88.3 GiB |
+| 4 | 10:53 | 2.25x | 157.6 GiB |
+
+Roughly 1:1 with the corpus per rank, so **`--gpus` and the job's `mem_mb` move
+together** or the second rank is OOM-killed during its load rather than running
+slowly; `pipeline/workflow/rules/train.smk` scales `mem_mb` and `gres` off one
+`train_gpus` config key for that reason. Taking 4 GPUs takes the whole node
+anyway, so the 63% of its RAM displaces nothing.
+
+The speedup is sublinear and the wall clock says why: ~3 min of per-rank corpus
+load and the final eval do not shard, so they set the floor. Epoch time alone
+scales better (18:30 -> 10:14 -> 8:55). Report the end-to-end number.
+
+**A spawned rank must put its children back on `fork`.**
+`multiprocessing.spawn.prepare` forces a spawned child's default start method
+to match how it was created, so inside a rank every DataLoader builds its
+workers by *spawn* — which pickles the dataset's stacked tensors through
+`/dev/shm` rather than COW-sharing them. `LeechDataset` stacks into contiguous
+buffers precisely so a fork shares them for free, and that invariant is void at
+`--gpus > 1` without `distributed.use_fork_for_dataloader_workers()`.
+
+It does not fail where it happens, and it does not look like memory: shm pages
+are charged to the cgroup but not to RSS, so the run died at 176 GiB RSS
+against a 244 GiB allocation, in the *fourth* rank's validation loader, as
+`No space left on device`. Fixing it took the same run to 157.6 GiB.
 
 Three requests are refused up front rather than failing later: `--gpus > 1`
 inside a daemonic process (a grid-search pool worker cannot spawn children),
@@ -1033,7 +1068,11 @@ The codebase is feature-complete (v0.10.0):
   `eval test` takes `--num-workers`
 - ✓ Single-node multi-GPU training (`leech model train --gpus N`): DDP with
   global-batch splitting, sharded weighted sampling, `no_sync` accumulation,
-  distributed validation, and single-GPU-identical checkpoint keys
+  distributed validation, and single-GPU-identical checkpoint keys. Measured
+  2.25x end to end at `--gpus 4` on the production charging corpus
+- ✓ Daily check that the two escapepod pins agree
+  (`.github/workflows/escapepod-sync.yml`), opening the matching bump when
+  dependabot moves the crate without the PyPI package
 - ✓ CTC-CRF sequence models (`leech.crf`): encoder, training objective with an
   analytic forward-backward, optional Triton lattice kernels, and the two-pass
   Viterbi decode — ported from escapepod-models, torch + numpy only. Plus the
