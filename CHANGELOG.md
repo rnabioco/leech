@@ -7,6 +7,110 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-09-07
+
+### Added
+
+- **Single-node multi-GPU training: `leech model train --gpus N`.** N
+  data-parallel ranks on one node, opt-in, train only — `eval test` measured
+  input-bound (53-79% GPU with every DataLoader worker pegged), so DDP buys it
+  nothing and would only add risk to the path that produces the scores.
+
+  **`--batch-size` stays the GLOBAL batch and is split across ranks.** The
+  PyTorch convention is the opposite — per-rank, so the effective batch grows
+  with the GPU count — and it is wrong here, because a leech run is one arm of
+  a paired comparison: the same command line has to mean the same recipe at any
+  `--gpus`, or every number already measured needs re-measuring. Splitting
+  leaves the optimizer-step count, the LR schedule, `ClipGrad`'s quantile
+  buffer and the `grad_accum_split` arithmetic exactly where they are.
+
+  Measured on the production charging corpus (6.72M chunks, 36.5 GiB npz,
+  2 epochs, one 4xA30 node):
+
+  | `--gpus` | job wall | speedup | peak RSS |
+  |---|---|---|---|
+  | 1 | 24:31 | 1.00x | 40.6 GiB |
+  | 2 | 16:40 | 1.47x | 88.3 GiB |
+  | 4 | 10:53 | 2.25x | 157.6 GiB |
+
+  2.25x rather than 4x because ~3 min of per-rank corpus load and the final
+  eval do not shard. Memory is ~1:1 with the corpus per rank, so **`--gpus` and
+  the job's `mem_mb` have to move together** or the second rank is OOM-killed
+  during its load; `pipeline/workflow/rules/train.smk` scales both off one
+  `train_gpus` key.
+
+  Four things that would each have been silent: `WeightedRandomSampler` handed
+  to N ranks gives every rank the *same* oversampled draw, so
+  `DistributedWeightedSampler` shards one global multinomial and the union of
+  the shards is exactly the single-GPU epoch; validation shards without padding
+  and gathers before it scores, so the metrics are equal to the single-GPU
+  numbers rather than close to them; the checkpoint keeps the single-GPU
+  `state_dict` keys, since a `module.` prefix either fails to load downstream or
+  loads nothing under `strict=False` and exports an untrained graph; and the
+  auxiliary heads are wrapped individually, because they sit in the optimizer
+  but outside the model and a DDP around the model alone never allreduces them.
+
+- **Daily check that the two escapepod pins agree**
+  (`.github/workflows/escapepod-sync.yml`). `rust/Cargo.toml` tags the
+  `escapepod-signal` crate and `pyproject.toml` floors the `escapepod` PyPI
+  package; they are one upstream released in lockstep, and leech drives both.
+  Dependabot bumps the tag-pinned crate on its own schedule (#236) and cannot
+  know the Python package has to follow, so merging one of its PRs leaves main
+  skewed with nothing red. The check compares them daily and opens the matching
+  bump rather than failing dependabot's PR, which would leave a human to do the
+  second half by hand.
+
+- **Dependabot PRs merge themselves once CI has passed**
+  (`.github/workflows/dependabot-auto-merge.yml`). Not GitHub's native
+  auto-merge, which needs `allow_auto_merge` and required status checks on
+  `main` to mean anything — without required checks it merges immediately
+  rather than waiting for CI. Triggering on `workflow_run` makes "CI finished
+  and it was green" the entry condition instead. `escapepod-signal` and any
+  major bump stay with a person: the first because its PyPI twin has to move in
+  the same commit, the second because a green suite says the tests still run,
+  not that the semantics held.
+
+### Fixed
+
+- **Weighted `CrossEntropyLoss` is normalized by the global summed weight under
+  DDP.** Every other loss in the trainer reduces by element count, which equal
+  shards make exact; `CrossEntropyLoss(weight=...)` divides by the summed weight
+  of the samples it sees, so each rank normalized by its own shard's class
+  composition and the averaged gradient was the single-GPU one only when the
+  shards happened to draw alike. 8% off on a fixture whose shards differ, with
+  nothing raised.
+
+- **DataLoader workers fork inside spawned ranks.**
+  `multiprocessing.spawn.prepare` forces a spawned child's default start method
+  to match how it was created, so every DataLoader a rank built pickled the
+  dataset's stacked tensors through `/dev/shm` instead of COW-sharing them —
+  voiding the invariant those contiguous buffers exist for. It surfaces nowhere
+  near the cause and does not look like memory: shm pages are charged to the
+  cgroup but not to RSS, so the run died at 176 GiB RSS against a 244 GiB
+  allocation, in the fourth rank's *validation* loader, as `No space left on
+  device`. Fixing it took the same run to 157.6 GiB.
+
+- **Spawned ranks configure their logging.** `setup_logging` runs in the click
+  entry point, which a rank never reaches, so the `leech` logger had no handler
+  and every INFO line was dropped — including rank 0's, where the effective
+  batch, the sampler statistics and the encoding-fallback warning are reported.
+  The run worked and said nothing about itself.
+
+### Changed
+
+- **escapepod moved to v0.21.0 on both backends** — the `escapepod-signal`
+  crate and the `escapepod` PyPI package together, since a skew between them
+  lets the two prepare backends compute different dwells and different
+  level-derived features from the same read (the divergence behind #193).
+  Validated with `tests/test_backend_parity.py` against a `leech_core` actually
+  built on v0.21.0; a compile only says the API still exists.
+
+### Internal
+
+- `tests/test_workflows.py` fails when a GitHub Actions workflow does not
+  parse. Nothing else in the repo reads those files, and a scheduled workflow
+  that never fires is indistinguishable from one with nothing to report.
+
 ## [0.10.0] - 2026-08-30
 
 ### Fixed
