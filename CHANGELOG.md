@@ -7,6 +7,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`torch.compile` has never taken effect in `predict`.** `run_inference`
+  assigned the compiled module to `model_wrapper.model`, but `forward_batch`
+  calls `self.forward_module` (separate attributes — see
+  `ModelInferenceWrapper.__init__`), so every "compiled" run went on executing
+  the original eager module. Measured on the 20-class production bundle at
+  batch 1024 on an A30: 16,556 chunks/s assigning `.model` against 16,571
+  chunks/s with no compile at all, i.e. 1.00x.
+
+  Two further problems sat behind it. Compilation was skipped outright
+  whenever a CL-regression repr-capture hook was installed, which is every
+  production multiclass bundle — but only *CUDA graphs* cannot carry the
+  hook's Python side effect; plain inductor graph-breaks at the hook and still
+  fuses around it, worth 1.81x against the 1.83x no-hook ceiling (30,019 vs
+  30,227 vs 16,571 chunks/s eager). And every mega-batch ends in a short
+  batch, so an unpadded run presents ~19 distinct batch shapes and recompiles
+  for each; `_stack_to_device` now takes `pad_to` and the batch runners slice
+  the padding rows back off. The model is per-sample throughout (convolutions,
+  GroupNorm/LayerNorm, BatchNorm in eval), so padding cannot change a real
+  row's result.
+
+  The auto-enable threshold moves from 5,000 reads to 2,000,000. Compiling
+  this model costs ~60s wall and buys ~10% at the size `predict` is deployed
+  at, because extraction and not the GPU is that configuration's bottleneck —
+  so the old threshold made compilation a large net loss on ordinary runs: a
+  176k-read sample measured 45.8s uncompiled against 101.5s compiled.
+
+- **Extraction sub-batching was dead code.** `_SUB_BATCH_SIZE` was fixed at
+  50,000 reads against a default `read_batch_size` of 10,000, so the loop that
+  exists to feed the GPU continuously always ran exactly once and the consumer
+  saw nothing until a whole mega-batch had been extracted — the failure mode
+  escapepod-rs#361 documents on its own GPU pipeline. It is now a real,
+  configurable size (`LEECH_PREDICT_EXTRACT_CHUNK`), defaulting to the whole
+  mega-batch because splitting only pays on an allocation with idle cores.
+
+### Changed
+
+- **BAM writes go to a dedicated writer thread behind a bounded queue** rather
+  than a single future the consumer blocked on before it could submit the next
+  one. pysam is still touched by exactly one thread and writes still land in
+  mega-batch order; what changed is that the consumer no longer waits. Writing
+  a mega-batch takes longer than producing one (pysam tagging runs at ~7k
+  reads/s), so that wait was 22.9s of a 46s run on a 176k-read sample, and it
+  is when the GPU went idle — which is what made utilization arrive in bursts.
+  BGZF compression also moves into an htslib thread pool
+  (`LEECH_PREDICT_BAM_THREADS`) to get deflate off the GIL.
+
+- **GPU batches queue `LEECH_PREDICT_GPU_IN_FLIGHT` deep** instead of a
+  one-deep handshake that let the thread filling batches run at most one batch
+  ahead of the GPU. The executor is still `max_workers=1`, which is
+  load-bearing: it keeps GPU calls sequential, keeps `_stack_to_device`'s
+  thread-local pinned staging buffer single-owner, and keeps `pending[read_id]`
+  in extraction order.
+
+- **`cap_rayon_threads_for_slurm` reserves CPUs proportionally, not a flat
+  six.** `avail - 6` left 1 extraction thread at `--cpus-per-task 4` and 2 at
+  8, on the pipeline stage that is ~70% of the job's CPU. It now reserves a
+  quarter, capped at 4. Measured on a 176k-read sample, extraction scales
+  cleanly with this number up to the allocation's *physical* core count and
+  only ~12% further across the hyperthread siblings: 149.1s at 2 threads,
+  76.5s at 4, 40.1s at 8, 35.8s at 14, 34.3s at 16 — on 8 physical cores.
+
 ## [0.11.1] - 2026-09-12
 
 ### Changed

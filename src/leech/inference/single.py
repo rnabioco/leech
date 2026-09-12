@@ -18,6 +18,7 @@ from leech.inference.helpers import (
     BatchAccumulator,
     _check_config_consistency,
     _encode_sequence_for_inference,
+    _htslib_write_threads,
     _run_batch,
     _run_batch_multiclass,
     _write_mega_batch_predictions,
@@ -28,6 +29,7 @@ from leech.inference.helpers import (
     load_model_auto,
     prepare_inference_features,
     prepare_signal_channels,
+    resolve_pipeline_depths,
     validate_inference_shapes,
 )
 from leech.io.bam_reader import count_bam_reads, iter_bam_batches
@@ -499,7 +501,16 @@ def run_inference(
         )
         logger.info(f"TSV output: {output_path} ({len(_tsv_class_names)} classes)")
     else:
-        bam_out = pysam.AlignmentFile(str(output_path), "wb", template=bam_in)
+        # BGZF compression in htslib's own thread pool rather than on the
+        # writer thread. The writer is the one stage here that is pure Python
+        # plus a blocking C call: every record pays `set_tag` under the GIL and
+        # then a synchronous deflate. Handing the deflate to htslib threads
+        # takes it off the GIL entirely, which matters because the GPU worker
+        # needs the GIL for every eager kernel launch and the consumer holds it
+        # in a per-chunk loop.
+        bam_out = pysam.AlignmentFile(
+            str(output_path), "wb", template=bam_in, threads=_htslib_write_threads()
+        )
     bam_in.close()
 
     total_reads = 0
@@ -575,11 +586,22 @@ def run_inference(
     )
     mega_batch_idx = 0
 
-    # torch.compile the model for faster inference (CUDA graph + kernel fusion).
-    # Auto-skip for small runs (<5000 reads) where compilation overhead (~15-30s)
-    # outweighs the speedup. Also skip when repr capture hooks are active or
-    # when --no-compile is set.
-    _COMPILE_THRESHOLD = 5000
+    # torch.compile the model for faster inference (kernel fusion, and CUDA
+    # graphs when nothing blocks them). Auto-skip for runs too short to amortize
+    # compilation; also skip when --no-compile is set.
+    #
+    # Compiling this model costs ~60s wall -- measured on the 20-class
+    # production bundle on an A30, from the compile call to the first
+    # mega-batch landing -- and buys ~10% end to end at the size this pipeline
+    # is deployed at (16 logical CPUs, i.e. 8 physical cores, four jobs sharing
+    # a 64-core/4-GPU node), because extraction rather than the GPU is that
+    # configuration's bottleneck. Break-even is therefore around ten minutes of
+    # inference, ~2M reads at the ~3,800 reads/s it sustains there. The old
+    # 5,000-read threshold turned it on for essentially every run: a 176k-read
+    # sample measured 45.8s uncompiled against 101.5s compiled, 60s of
+    # compilation against a ~4s gain.
+    _COMPILE_THRESHOLD = 2_000_000
+    _compiled = False
     _has_repr_hook = (
         isinstance(model_wrapper, ModelInferenceWrapper) and model_wrapper._repr_hook is not None
     )
@@ -593,15 +615,34 @@ def run_inference(
         isinstance(model_wrapper, ModelInferenceWrapper)
         and device.startswith("cuda")
         and hasattr(torch, "compile")
-        and not _has_repr_hook
     ):
+        # Assign `forward_module`, not `model`. `forward_batch` calls
+        # `self.forward_module` (see ModelInferenceWrapper.__init__); replacing
+        # `self.model` leaves `forward_module` bound to the original eager
+        # module, so compiling was a no-op on every inference path that went
+        # through this branch. Measured on the production 20-class bundle,
+        # batch 1024: 16,556 chunks/s assigning `.model` against 16,571
+        # chunks/s with no compile at all -- 1.00x, i.e. nothing.
+        #
+        # Only CUDA graphs are incompatible with a repr-capture hook, because
+        # the hook's Python side effect cannot be replayed by a graph. Plain
+        # inductor just breaks the graph there and still fuses everything
+        # around it, so a bundle with a CL-regression head gets essentially the
+        # whole win rather than none of it: same benchmark, 30,019 chunks/s
+        # compiled-with-hook against 30,227 chunks/s reduce-overhead-no-hook
+        # and 16,571 eager -- 1.81x vs 1.83x. The old branch skipped compile
+        # outright whenever the hook was present, which is every production
+        # multiclass bundle.
+        _mode = "default" if _has_repr_hook else "reduce-overhead"
         try:
-            model_wrapper.model = torch.compile(model_wrapper.model, mode="reduce-overhead")  # ty: ignore[invalid-assignment]
-            logger.info("torch.compile enabled (mode=reduce-overhead)")
+            model_wrapper.forward_module = torch.compile(model_wrapper.model, mode=_mode)  # ty: ignore[invalid-assignment]
+            _compiled = True
+            logger.info(
+                f"torch.compile enabled (mode={_mode}"
+                + (", repr capture hook present)" if _has_repr_hook else ")")
+            )
         except Exception as e:
             logger.warning(f"torch.compile failed, using eager mode: {e}")
-    elif _has_repr_hook:
-        logger.info("torch.compile skipped (repr capture hooks incompatible with CUDA graphs)")
 
     if num_workers > 0:
         # ---- Parallel path (mega-batched) ----
@@ -749,59 +790,88 @@ def run_inference(
                     )
 
     else:
-        # ---- Sequential path (mega-batched, double-buffered GPU) ----
+        # ---- Sequential path (mega-batched, pipelined GPU) ----
+        from collections import deque
         from concurrent.futures import Future, ThreadPoolExecutor
+
+        (
+            _extract_chunk_reads,
+            _extract_queue_depth,
+            _gpu_in_flight,
+            _write_queue_depth,
+        ) = resolve_pipeline_depths(read_batch_size=read_batch_size, batch_size=batch_size)
 
         pending: dict[str, list] = {}
         _shape_validated = False
 
         calibration = config.get("calibration") if is_multiclass else None
+        # Only pad when compiled: a fixed batch shape is what keeps
+        # `torch.compile` from recompiling on every mega-batch's short tail
+        # (see `_stack_to_device`). Uncompiled, padding would just be wasted
+        # forward work on rows nobody reads.
+        _pad_to = batch_size if _compiled else None
         _batch_fn = (
             functools.partial(
                 _run_batch_multiclass,
                 calibration=calibration,
                 cl_regression_head=_cl_head,
+                pad_to=_pad_to,
             )
             if is_multiclass
-            else _run_batch
+            else functools.partial(_run_batch, pad_to=_pad_to)
         )
 
+        # One GPU worker, several batches queued behind it. `max_workers=1` is
+        # load-bearing, not conservatism: it keeps GPU calls sequential, keeps
+        # `_stack_to_device`'s thread-local pinned staging buffer single-owner,
+        # and makes the order in which batches append to `pending[read_id]`
+        # exactly the order they were extracted in. The depth is what changed --
+        # see `_gpu_in_flight` below.
         _gpu_executor = ThreadPoolExecutor(max_workers=1)
-        _gpu_future: Future | None = None
-        _bam_write_executor = ThreadPoolExecutor(max_workers=1)
-        _bam_write_future: Future | None = None
+        _gpu_futures: deque[Future] = deque()
 
         def _submit_gpu_batch(sigs, seqs, feats, meta) -> None:
-            """Flush callback: hand one batch to the GPU thread (double-buffered).
+            """Flush callback: hand one batch to the GPU thread.
 
             The accumulator has already detached these buffers, so the GPU
             thread owns them and extraction can keep filling the next batch.
+
+            This used to wait for the *immediately* preceding batch before
+            submitting, which is a one-deep handshake: the thread that fills
+            batches could never be more than one batch ahead of the GPU, so
+            every GPU batch stalled extraction for its full duration -- and a
+            "GPU batch" here is mostly host work (stack, D2H, scatter), not
+            kernel time. Queuing `_gpu_in_flight` batches instead lets
+            extraction run a whole prep cycle ahead; the executor still runs
+            them one at a time, in order.
             """
-            nonlocal _gpu_future
-            # Wait for previous GPU batch before submitting next
-            if _gpu_future is not None:
-                _gpu_future.result()
-            # Submit GPU work -- runs while main thread continues extraction
-            _gpu_future = _gpu_executor.submit(
-                _batch_fn,
-                sigs,
-                seqs,
-                feats,
-                meta,
-                model_wrapper,
-                requires_features,
-                device,
-                pending,
+            while len(_gpu_futures) >= _gpu_in_flight:
+                _gpu_futures.popleft().result()
+            _gpu_futures.append(
+                _gpu_executor.submit(
+                    _batch_fn,
+                    sigs,
+                    seqs,
+                    feats,
+                    meta,
+                    model_wrapper,
+                    requires_features,
+                    device,
+                    pending,
+                )
             )
 
         accumulator = BatchAccumulator(batch_size, _submit_gpu_batch)
 
         def _drain_gpu() -> None:
-            """Wait for any in-flight GPU batch to complete."""
-            nonlocal _gpu_future
-            if _gpu_future is not None:
-                _gpu_future.result()
-                _gpu_future = None
+            """Wait for every in-flight GPU batch to complete.
+
+            Called at a mega-batch boundary, where `pending` is about to be
+            snapshotted for writing, so every batch of this mega-batch must
+            have landed in it.
+            """
+            while _gpu_futures:
+                _gpu_futures.popleft().result()
 
         seq_signal_config = SignalConfig(
             reverse_signal=reverse_signal,
@@ -973,14 +1043,16 @@ def run_inference(
                 reference_sequences=reference_sequences,
             )
 
-        _SUB_BATCH_SIZE = 50_000  # Sub-batch Rust extraction for continuous GPU feeding
-
         def _extract_chunks_from_preloaded(preloaded, rs_meta):
-            """Yield chunks in sub-batches for continuous GPU feeding.
+            """Yield one *list* of chunks per extraction sub-batch.
 
-            Instead of extracting all reads at once (blocking GPU for ~2 min),
-            process ~25K reads at a time (~15-20s each) so chunks flow to GPU
-            after each sub-batch completes.
+            Yielding per sub-batch rather than per chunk is what lets the
+            producer hand each piece to the consumer as it is built, instead of
+            accumulating a whole mega-batch first. The sub-batch size is
+            `_extract_chunk_reads` (see `resolve_pipeline_depths`); it was a
+            fixed 50,000, which is five times the default `read_batch_size`, so
+            this loop always ran exactly once and the "continuous GPU feeding"
+            it was written for never happened.
             """
             (
                 rs_rids,
@@ -995,15 +1067,9 @@ def run_inference(
             ) = rs_meta
             assert _rs_extract_chunks_from_preloaded is not None
             n = len(rs_rids)
-            for start in range(0, n, _SUB_BATCH_SIZE):
-                end = min(start + _SUB_BATCH_SIZE, n)
-                if n > _SUB_BATCH_SIZE:
-                    logger.info(
-                        f"  Sub-batch {start // _SUB_BATCH_SIZE + 1}/"
-                        f"{(n + _SUB_BATCH_SIZE - 1) // _SUB_BATCH_SIZE}: "
-                        f"reads {start}-{end} of {n}"
-                    )
-                sub_chunks = _rs_extract_chunks_from_preloaded(
+            for start in range(0, n, _extract_chunk_reads):
+                end = min(start + _extract_chunk_reads, n)
+                yield _rs_extract_chunks_from_preloaded(
                     preloaded,
                     read_ids=rs_rids[start:end],
                     sequences=rs_seqs[start:end],
@@ -1016,7 +1082,6 @@ def run_inference(
                     reference_sequences=rs_refs[start:end] if anchor == "reference" else None,
                     **_rs_kwargs,
                 )
-                yield from sub_chunks
 
         def _consume_rust_chunks(chunks):
             """Iterate Rust chunks into batch buffers, flushing to GPU as needed."""
@@ -1041,50 +1106,96 @@ def run_inference(
                     _shape_validated = True
                 accumulator.add(sig, seq_arr, feat, (read_id, base_idx))
 
+        import queue as _queue
+        import threading as _threading
+        import time as _time
+
+        # One writer thread behind a bounded queue, rather than one write
+        # behind a single future the consumer blocks on.
+        #
+        # pysam is not thread-safe, so there is still exactly one thread
+        # touching `bam_out` and writes still happen in mega-batch order --
+        # that part is unchanged and must stay. What changed is who waits: the
+        # consumer used to call `.result()` on the previous write before it
+        # could submit the next one, so whenever writing a mega-batch took
+        # longer than producing one (it does -- pysam tagging is ~7k reads/s),
+        # the consumer sat blocked with the GPU queue empty. That stall was
+        # half the wall clock on a 176k-read sample, and it is what made GPU
+        # utilization arrive in bursts.
+        _write_queue: _queue.Queue = _queue.Queue(maxsize=_write_queue_depth)
+        _WRITE_SENTINEL = object()
+        _writer_error: BaseException | None = None
+
+        def _bam_writer_loop() -> None:
+            nonlocal _writer_error
+            while True:
+                item = _write_queue.get()
+                if item is _WRITE_SENTINEL:
+                    return
+                aln_batch_to_write, write_pending = item
+                try:
+                    if tsv_writer is not None:
+                        tsv_writer.write_predictions(
+                            aln_batch_to_write, write_pending, int_to_label
+                        )
+                    else:
+                        _write_mega_batch_predictions(
+                            aln_batch_to_write,
+                            write_pending,
+                            bam_out,
+                            is_multiclass,
+                            int_to_label,
+                            class_names_str,
+                            raw,
+                            min_confidence,
+                            min_margin,
+                        )
+                except BaseException as exc:  # surfaced by _wait_for_bam_write
+                    _writer_error = exc
+                    return
+
+        _writer_thread = _threading.Thread(target=_bam_writer_loop, daemon=True)
+        _writer_thread.start()
+
+        def _queue_bam_write(item) -> None:
+            """Hand one mega-batch to the writer, without risking a deadlock.
+
+            A plain blocking `put` on a bounded queue hangs forever if the
+            writer has already died: nothing will ever drain it again. Time the
+            put out and re-check instead, so a writer failure surfaces as its
+            own exception rather than as a stalled run.
+            """
+            while True:
+                if _writer_error is not None:
+                    raise RuntimeError("BAM writer thread failed") from _writer_error
+                try:
+                    _write_queue.put(item, timeout=5.0)
+                    return
+                except _queue.Full:
+                    continue
+
         def _wait_for_bam_write():
-            """Wait for any in-flight async BAM write to complete."""
-            nonlocal _bam_write_future
-            if _bam_write_future is not None:
-                _bam_write_future.result()
-                _bam_write_future = None
+            """Drain every queued write and stop the writer thread."""
+            if _writer_thread.is_alive():
+                _queue_bam_write(_WRITE_SENTINEL)
+            _writer_thread.join()
+            if _writer_error is not None:
+                raise RuntimeError("BAM writer thread failed") from _writer_error
 
         def _finalize_mega_batch(aln_batch_to_write):
-            """Flush GPU, submit async BAM write, update counters.
-
-            BAM writes are overlapped with the next mega-batch's extraction.
-            We serialize writes (wait for previous) since pysam is not thread-safe.
-            """
+            """Flush GPU, queue the BAM write, update counters."""
             nonlocal total_reads, total_predictions, mega_batch_idx
-            nonlocal pending, _bam_write_future
+            nonlocal pending
             accumulator.flush()
             _drain_gpu()
-            # Wait for any previous BAM write (serializes bam_out access)
-            _wait_for_bam_write()
             # Swap pending -> snapshot; next mega-batch gets a fresh dict
             write_pending = pending
             pending = {}
             batch_preds = len(write_pending)
-            # Submit write to background thread
-            if tsv_writer is not None:
-                _bam_write_future = _bam_write_executor.submit(
-                    tsv_writer.write_predictions,
-                    aln_batch_to_write,
-                    write_pending,
-                    int_to_label,
-                )
-            else:
-                _bam_write_future = _bam_write_executor.submit(
-                    _write_mega_batch_predictions,
-                    aln_batch_to_write,
-                    write_pending,
-                    bam_out,
-                    is_multiclass,
-                    int_to_label,
-                    class_names_str,
-                    raw,
-                    min_confidence,
-                    min_margin,
-                )
+            # Blocks only once `_write_queue_depth` mega-batches are already
+            # queued, which bounds memory without putting the writer on the
+            # consumer's critical path.
+            _queue_bam_write((aln_batch_to_write, write_pending))
             total_reads += len(aln_batch_to_write)
             total_predictions += batch_preds
             mega_batch_idx += 1
@@ -1092,10 +1203,6 @@ def run_inference(
                 f"Mega-batch {mega_batch_idx}/{n_total_mega_batches} complete: "
                 f"wrote {batch_preds} predictions for {len(aln_batch_to_write)} reads"
             )
-
-        import queue as _queue
-        import threading as _threading
-        import time as _time
 
         _t_total_start = _time.perf_counter()
 
@@ -1122,8 +1229,38 @@ def run_inference(
                     assert _rs_extract_chunks_from_preloaded is not None
 
                     _SENTINEL = object()
-                    _extraction_queue: _queue.Queue = _queue.Queue(maxsize=2)
+                    _extraction_queue: _queue.Queue = _queue.Queue(maxsize=_extract_queue_depth)
                     _producer_error: BaseException | None = None
+
+                    def _emit_mega_batch(preloaded, p_meta, p_aln) -> None:
+                        """Push one mega-batch to the consumer, a sub-batch at a time.
+
+                        The consumer needs `aln_batch` only to finalize, so it
+                        rides on the last item; every earlier item carries just
+                        chunks. Emitting per sub-batch is the point: the GPU
+                        starts on the first sub-batch while rayon is still
+                        extracting the rest, instead of waiting for the whole
+                        mega-batch to be materialized.
+                        """
+                        p_rids = p_meta[0]
+                        sub_batches = (
+                            list(_extract_chunks_from_preloaded(preloaded, p_meta))
+                            if p_rids
+                            else []
+                        )
+                        if not sub_batches:
+                            _extraction_queue.put(([], p_aln, len(p_rids), True))
+                            return
+                        last = len(sub_batches) - 1
+                        for i, chunks in enumerate(sub_batches):
+                            _extraction_queue.put(
+                                (
+                                    chunks,
+                                    p_aln if i == last else None,
+                                    len(p_rids) if i == last else 0,
+                                    i == last,
+                                )
+                            )
 
                     def _extraction_producer():
                         """Background thread: reads BAM -> metadata -> prefetch -> extract -> queue."""
@@ -1142,7 +1279,6 @@ def run_inference(
                                 if _prev is not None:
                                     p_future, p_meta, p_aln = _prev
                                     preloaded = p_future.result()
-                                    p_rids = p_meta[0]
 
                                     # Overlap: start metadata for CURRENT batch
                                     # while extracting PREVIOUS (Rust releases GIL)
@@ -1150,15 +1286,7 @@ def run_inference(
                                         _collect_bam_metadata, aln_batch
                                     )
 
-                                    chunk_list: list = []
-                                    if p_rids:
-                                        for chunk in _extract_chunks_from_preloaded(
-                                            preloaded, p_meta
-                                        ):
-                                            chunk_list.append(chunk)
-
-                                    # Push to queue (blocks if queue full -- backpressure)
-                                    _extraction_queue.put((p_aln, chunk_list, len(p_rids)))
+                                    _emit_mega_batch(preloaded, p_meta, p_aln)
 
                                     # Get metadata result (should be done by now)
                                     rs_meta = _meta_future.result()
@@ -1178,13 +1306,7 @@ def run_inference(
                             # Process final batch
                             if _prev is not None:
                                 p_future, p_meta, p_aln = _prev
-                                preloaded = p_future.result()
-                                p_rids = p_meta[0]
-                                chunk_list = []
-                                if p_rids:
-                                    for chunk in _extract_chunks_from_preloaded(preloaded, p_meta):
-                                        chunk_list.append(chunk)
-                                _extraction_queue.put((p_aln, chunk_list, len(p_rids)))
+                                _emit_mega_batch(p_future.result(), p_meta, p_aln)
 
                             _meta_exec.shutdown(wait=True)
                             _prefetch_exec.shutdown(wait=True)
@@ -1197,22 +1319,25 @@ def run_inference(
                     _producer_thread.start()
                     logger.info("Queue-based extraction pipeline started (producer thread)")
 
-                    # Consumer loop: pull from queue -> GPU -> finalize
+                    # Consumer loop: pull sub-batches -> GPU; finalize on the
+                    # sub-batch flagged as its mega-batch's last.
+                    _t_mb_start = _time.perf_counter()
                     while True:
                         item = _extraction_queue.get()
                         if item is _SENTINEL:
                             break
-                        aln_batch, chunk_list, n_rids = item
-                        _t_mb_start = _time.perf_counter()
-
-                        logger.info(
-                            f"Mega-batch: {len(aln_batch)} alignments, {n_rids} for Rust extraction"
-                        )
+                        chunk_list, aln_batch, n_rids, is_last = item
 
                         if chunk_list:
                             _consume_rust_chunks(iter(chunk_list))
+                        if not is_last:
+                            continue
                         _t_consume = _time.perf_counter()
 
+                        assert aln_batch is not None
+                        logger.info(
+                            f"Mega-batch: {len(aln_batch)} alignments, {n_rids} for Rust extraction"
+                        )
                         _finalize_mega_batch(aln_batch)
                         _t_finalize = _time.perf_counter()
 
@@ -1220,6 +1345,7 @@ def run_inference(
                             f"  Timing: consume+gpu={_t_consume - _t_mb_start:.2f}s "
                             f"finalize={_t_finalize - _t_consume:.2f}s"
                         )
+                        _t_mb_start = _t_finalize
                         progress.update(
                             task,
                             advance=0,
@@ -1315,18 +1441,18 @@ def run_inference(
             f"{total_reads / _t_total:.0f} reads/s)"
         )
 
-        # wait=True, not False. Every one of these pools is already drained here
-        # (`_drain_gpu` and `_wait_for_bam_write` above), so waiting costs
-        # nothing -- but `wait=False` leaves worker threads alive past the
-        # return, and the parallel path below forks an `mp.Pool`. A fork
-        # inherits the memory of a process with running threads, including any
-        # lock those threads hold, but not the threads themselves, so nothing
-        # ever releases it: calling `run_inference` with `num_workers=0` and
-        # then with `num_workers>0` in one process hung forever, with no error.
+        # wait=True, not False, and the writer thread is joined rather than
+        # left daemonized. Everything here is already drained (`_drain_gpu`
+        # above), so waiting costs nothing -- but `wait=False` leaves worker
+        # threads alive past the return, and the parallel path above forks an
+        # `mp.Pool`. A fork inherits the memory of a process with running
+        # threads, including any lock those threads hold, but not the threads
+        # themselves, so nothing ever releases it: calling `run_inference` with
+        # `num_workers=0` and then with `num_workers>0` in one process hung
+        # forever, with no error.
         _extract_pool.shutdown(wait=True)
         _gpu_executor.shutdown(wait=True)
-        _wait_for_bam_write()  # Ensure final BAM write completes before close
-        _bam_write_executor.shutdown(wait=True)
+        _wait_for_bam_write()  # Drain queued writes before closing the file
 
     if tsv_writer is not None:
         tsv_writer.close()
