@@ -1251,7 +1251,7 @@ wheels = [
 
 [[package]]
 name = "leech"
-version = "0.11.0"
+version = "0.11.1"
 source = { editable = "." }
 dependencies = [
     { name = "click", marker = "sys_platform != 'emscripten'" },
