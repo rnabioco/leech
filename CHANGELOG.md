@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-09-12
+
+### Changed
+
+- **escapepod pin bumped v0.21.0 -> v0.24.3** (`rust/Cargo.toml` tag and the
+  `escapepod` PyPI floor, moved together as always). Picks up upstream's DP
+  speedups to `dp_step_with_dwell_penalty` — the exact function leech's own
+  refinement preset (`RefineSettings::move_table_refinement`, which resolves
+  to `RefineAlgo::DwellPenalty`) drives on every base of every chunk during
+  `data prepare` and `predict`. Upstream measured roughly 8-11x on the DP
+  loop itself (criterion) and +25.5% / +8.7% end-to-end wall clock across the
+  contributing releases (v0.24.1, v0.24.3).
+
+  **Not bit-identical to v0.21.0 output.** Two of the upstream changes
+  (v0.24.1's cumsum-prefix-sum reordering, v0.24.3's halved `max_check`) are
+  documented, deliberate correctness tradeoffs for `RefineAlgo::DwellPenalty`
+  — escapepod's own real-data A/B saw up to 1.76% of reads shift `p_charged`
+  by some amount and 0.025% flip a discrete call. A `data prepare` run
+  against this release will not bit-match chunks prepared under leech
+  <=0.11.0. leech's own Python/Rust backend parity is unaffected, since both
+  backends call the same upstream function with the same settings. (#250,
+  #251)
+
 ## [0.11.0] - 2026-09-07
 
 ### Added

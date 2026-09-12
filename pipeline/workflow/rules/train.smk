@@ -80,7 +80,7 @@ rule train_pairwise_aa:
         gres=lambda wildcards, attempt: (
             ""
             if config.get("use_cpu_training", False)
-            else f"gpu:{config.get('train_gpus', 1)}"
+            else f"gpu:{config.get('train_gpus',1)}"
         ),
     params:
         output_dir=MODELS_DIR + "/pairwise/{pair}",
