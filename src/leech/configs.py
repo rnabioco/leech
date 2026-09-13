@@ -263,7 +263,6 @@ class TrainConfig:
 
     epochs: int = 50
     batch_size: int = 128
-    seed: int | None = None
     early_stopping_patience: int = 10
     use_class_weights: bool = True
     pos_weight: float | None = None

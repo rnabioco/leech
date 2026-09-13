@@ -191,6 +191,16 @@ def handle_train(
     for key in _explicit_keys:
         extra_kwargs.pop(key, None)
 
+    # Pre-existing gap, not introduced by #270: "num_out" is in
+    # _explicit_keys above (so a `--num-out` value reaching this function via
+    # **model_kwargs gets popped from extra_kwargs here) but this function
+    # has no `num_out` parameter of its own to forward it through instead --
+    # so `--num-out` on the CLI is silently dropped, and train_model always
+    # falls back to auto-detecting it from the training data's label column.
+    # Left as-is: fixing it is a choice about what `--num-out` should mean
+    # (an explicit override vs. only ever auto-detected) and is out of scope
+    # for this refactor, which preserves existing behavior exactly.
+
     # One recipe object (#270) instead of re-listing every option a fourth
     # time (cli.py, this function's signature, and train_model/Trainer are
     # the other three). dwell_template_table and gpus/num_workers/device/seed

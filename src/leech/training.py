@@ -450,6 +450,15 @@ class Trainer:
         # local names the rest of this method already used, so the body below
         # this block is untouched. train_model's own call site passes its
         # already-resolved cfg directly instead of re-listing ~20 of these.
+        #
+        # MAINTENANCE: train_model (below, search "if cfg is None") has the
+        # same build-then-unpack shape for its own, larger kwarg set. Both
+        # are real, load-bearing entry points (Trainer is constructed
+        # directly with loose kwargs at ~60 test call sites, not only via
+        # train_model), so this duplication couldn't be collapsed to one
+        # copy without breaking one of the two call surfaces. A recipe field
+        # added to only one of the two pairs here silently doesn't reach the
+        # other constructor's cfg=None fallback -- check both when adding one.
         if cfg is None:
             cfg = TrainConfig(
                 epochs=epochs,
@@ -1790,6 +1799,11 @@ def train_model(
     # those kwargs and unpacked back into the same local names the rest of
     # this function already uses, so nothing below this block changes.
     # handle_train passes cfg directly and skips rebuilding it.
+    #
+    # MAINTENANCE: Trainer.__init__ (above, search "if cfg is None") has the
+    # same build-then-unpack shape for a subset of these fields. A recipe
+    # field added here should also be added there if Trainer needs it too --
+    # see the note at that call site for why the two aren't one copy.
     if cfg is None:
         cfg = TrainConfig(
             epochs=epochs,
