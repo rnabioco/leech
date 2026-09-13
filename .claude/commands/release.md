@@ -48,45 +48,26 @@ If found, ask user what to do:
 
 ## Phase 3: Changelog Generation
 
-1. **Gather commits**: Run `git log --oneline --no-decorate $(git describe --tags --abbrev=0 2>/dev/null || git rev-list --max-parents=0 HEAD)..HEAD` to get commits since last release
-   - If no tags exist, get all commits from initial commit
+CHANGELOG.md is assembled from `changelog.d/` fragments by
+[towncrier](https://towncrier.readthedocs.io/) — see `changelog.d/README.md`.
+Individual PRs no longer hand-edit `CHANGELOG.md`; this phase renders what
+they left behind.
 
-2. **Categorize commits** by conventional commit prefixes or content analysis:
-   - **Features**: `feat:`, `add:`, new functionality
-   - **Fixes**: `fix:`, `bug:`, corrections
-   - **Improvements**: `refactor:`, `perf:`, enhancements
-   - **Documentation**: `docs:`, documentation updates
-   - **Internal**: `chore:`, `test:`, `ci:`, internal changes
+1. **Check for uncategorized changes**: `git log --oneline --no-decorate $(git describe --tags --abbrev=0 2>/dev/null || git rev-list --max-parents=0 HEAD)..HEAD` against the fragments present in `changelog.d/` (ignoring `.gitkeep` and `README.md`) — if a merged PR that should be user-visible has no fragment, add one now (`changelog.d/<PR#>.<type>.md`) before building, since towncrier only renders what's there.
 
-3. **Generate changelog entry** for `CHANGELOG.md`:
-   ```markdown
-   ## [X.Y.Z] - YYYY-MM-DD
+2. **Preview**: `uv run towncrier build --version X.Y.Z --draft` prints the rendered section without writing anything — review it.
 
-   ### Features
-   - Concise user-facing description
+3. **Fold in the pre-migration `[Unreleased]` section, if still present**: entries written by hand before the changelog.d migration land in this release too. Move their content into the appropriate `changelog.d/<PR#>.<type>.md` fragments (or merge them into the rendered output directly after the build) rather than losing them, then remove the stale `[Unreleased]` heading. This is a one-time step — once it's gone, skip this.
 
-   ### Fixes
-   - Bug fix descriptions
+4. **Build**: `uv run towncrier build --version X.Y.Z --date YYYY-MM-DD --yes` inserts a new `## [X.Y.Z] - YYYY-MM-DD` section at the marker (`<!-- towncrier release notes start -->`) in `CHANGELOG.md` and deletes the fragments it consumed.
 
-   ### Improvements
-   - Enhancement descriptions
+5. **Show the result to the user**: Display the new section of `CHANGELOG.md` and inform them they can edit it directly before confirming.
 
-   ### Documentation
-   - Doc update descriptions
-   ```
-
-4. **Show changelog to user**: Display the generated changelog entry and inform user they can:
-   - Edit CHANGELOG.md directly before confirming
-   - Review and modify any entries
-   - Add additional context or details
-
-5. **Prepend to CHANGELOG.md**: Insert the new entry at the top (after the header), keeping existing entries below
-
-**Style guidelines**:
+**Style guidelines** (for anyone writing a fragment, not just at release time):
 - Focus on user-facing changes (what users will notice)
 - Be concise but informative
 - Skip purely internal changes unless they affect users
-- Use present tense ("Add feature" not "Added feature")
+- Lead with the user-visible change in bold, same voice as existing entries
 
 **Note**: This changelog is for the project's CHANGELOG.md. GitHub release notes will be auto-generated from commits/PRs when you push the tag (configured in `.github/release.yml`). You can edit those on GitHub after the release is created.
 
@@ -147,7 +128,7 @@ Wait for user confirmation before proceeding.
 
 ## Phase 7: Release Finalization
 
-1. **Stage all changes**: `git add pyproject.toml rust/Cargo.toml rust/Cargo.lock CHANGELOG.md uv.lock [any other updated files]`
+1. **Stage all changes**: `git add pyproject.toml rust/Cargo.toml rust/Cargo.lock CHANGELOG.md changelog.d/ uv.lock [any other updated files]` (the `changelog.d/` fragments consumed by the build are deletions — `git add` picks those up)
 2. **Create commit**: `git commit -m "chore: release vX.Y.Z"`
 3. **Create annotated tag**: `git tag -a vX.Y.Z -m "Release vX.Y.Z"`
 4. **Display next steps**:

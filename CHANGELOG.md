@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+New entries are no longer added to this file by hand — see
+[`changelog.d/README.md`](changelog.d/README.md). The `[Unreleased]` section
+below holds entries written before that migration, for changes merged but not
+yet released; fold it into the next dated section (`towncrier build` inserts
+above it, at the marker) rather than deleting it.
+
+<!-- towncrier release notes start -->
+
 ## [Unreleased]
 
 ### Removed
