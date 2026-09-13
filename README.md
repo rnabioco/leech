@@ -125,7 +125,7 @@ wrong without erroring.
 |-------|----------|---------|
 | `leech data` | `prepare`, `merge` | Extract features, merge and split datasets |
 | `leech model` | `train`, `train-crf`, `optimize`, `bundle`, `bundle-info`, `calibrate`, `export` | Train, tune, calibrate, and package models |
-| `leech eval` | `test`, `compare`, `importance`, `ablation` | Evaluate and analyze models |
+| `leech eval` | `test` | Evaluate models |
 | `leech predict` | | Run inference (single model or bundle) |
 
 ## Model architectures

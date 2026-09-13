@@ -10,7 +10,7 @@ The CLI is organized into workflow-based command groups:
 |-------|----------|---------|
 | `leech data` | `prepare`, `merge` | Extract features, merge and split datasets |
 | `leech model` | `train`, `optimize`, `benchmark`, `bundle`, `bundle-info`, `calibrate`, `export`, `release`, `list`, `fetch` | Train, tune, calibrate, package, and publish models |
-| `leech eval` | `test`, `compare`, `importance`, `ablation` | Evaluate and analyze models |
+| `leech eval` | `test` | Evaluate models |
 | `leech predict` | *(top-level)* | Run inference on new data |
 
 ```bash
@@ -636,53 +636,6 @@ leech eval test --model FILE --test-data FILES --output FILE [OPTIONS]
     points (`at_youden`, `at_mcc`, `at_f1`) alongside `prevalence`. Prefer
     `at_youden` when the deployment class ratio is unknown or varies per
     sample -- it is the only one of the three that is prevalence-invariant.
-
-### leech eval compare
-
-Compare multiple trained models on the same test set.
-
-```bash
-leech eval compare -m DIR -m DIR -t FILE -o DIR [OPTIONS]
-```
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `-m, --model-dirs` | *(required)* | Model directories to compare (specify multiple) |
-| `-t, --test-data` | *(required)* | Test dataset |
-| `-o, --output-dir` | *(required)* | Output directory |
-| `--device STR` | auto | `cuda` or `cpu` |
-| `--no-plot` | `False` | Skip generating plots |
-
-### leech eval importance
-
-Compute feature importance scores.
-
-```bash
-leech eval importance -m FILE -t FILE -o DIR [OPTIONS]
-```
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `-m, --model` | *(required)* | Trained model checkpoint |
-| `-t, --test-data` | *(required)* | Test dataset |
-| `-o, --output-dir` | *(required)* | Output directory |
-| `--method STR` | `gradient` | `gradient` or `integrated_gradients` |
-| `--no-plot` | `False` | Skip generating plots |
-
-### leech eval ablation
-
-Test model performance with sequence ablation.
-
-```bash
-leech eval ablation -m FILE -t FILE -o DIR [OPTIONS]
-```
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `-m, --model` | *(required)* | Trained model checkpoint |
-| `-t, --test-data` | *(required)* | Test dataset |
-| `-o, --output-dir` | *(required)* | Output directory |
-| `--no-plot` | `False` | Skip generating plots |
 
 ---
 

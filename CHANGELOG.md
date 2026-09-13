@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **`leech eval compare`, `leech eval importance` and `leech eval ablation`.**
+  All three were wired to `src/leech/commands/analyze.py`, which imported
+  `leech.analysis.*` — a package that was never committed. `git log --all`
+  has no history for it. The commands' own module imported cleanly (its
+  top-level imports were stdlib-only), so `leech eval --help` looked fine and
+  only calling one of the three raised `ModuleNotFoundError`; nothing in CI
+  ever invoked them. Removed the commands, their `cli.py` registrations,
+  `commands/analyze.py`, and the corresponding docs. `leech eval test` is
+  unaffected. Re-implementing feature importance or sequence ablation is a
+  new feature with its own spec, not this fix. (#262)
+
 ## [0.11.1] - 2026-09-12
 
 ### Changed
