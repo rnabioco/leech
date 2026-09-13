@@ -133,7 +133,7 @@ class TestRustBatchDispatchIsConcurrent:
         driver has to "Rust silently dropped every read" -- it must not read
         as a clean no-motif batch either."""
 
-        def work(read_batch, config, motif_searcher):
+        def work(read_batch, config, motif_searcher, kmer_levels=None):
             return [], 0, 2  # 2 reads submitted, Rust returned nothing
 
         (outcome,) = _drive(monkeypatch, work, num_workers=1, n_batches=1)
@@ -146,7 +146,7 @@ class TestRustBatchDispatchIsConcurrent:
         """The other half of the same corner: nothing submitted (no read in
         the batch had a motif match) is a legitimate, non-failure outcome."""
 
-        def work(read_batch, config, motif_searcher):
+        def work(read_batch, config, motif_searcher, kmer_levels=None):
             return [], 0, 0  # nothing submitted -- no motif anywhere in the batch
 
         (outcome,) = _drive(monkeypatch, work, num_workers=1, n_batches=1)
