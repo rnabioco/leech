@@ -29,6 +29,7 @@ try:
     from leech_core import _test_process_read as _rs_test_process_read
     from leech_core import compute_signal_stats as _rs_compute_signal_stats
     from leech_core import encode_signal_kmer as _rs_encode_signal_kmer
+    from leech_core import encode_signal_kmer_batch as _rs_encode_signal_kmer_batch
     from leech_core import extract_chunks_from_preloaded as _rs_extract_chunks_from_preloaded
     from leech_core import extract_inference_chunks as _rs_extract_inference_chunks
     from leech_core import extract_levels as _rs_extract_levels
@@ -45,6 +46,7 @@ except ImportError:
     _rs_test_process_read = None
     _rs_compute_signal_stats = None
     _rs_encode_signal_kmer = None
+    _rs_encode_signal_kmer_batch = None
     _rs_extract_chunks_from_preloaded = None
     _rs_extract_inference_chunks = None
     _rs_extract_training_chunks = None
@@ -205,6 +207,7 @@ def check_rust() -> None:
         funcs = [
             "compute_signal_stats",
             "encode_signal_kmer",
+            "encode_signal_kmer_batch",
             "extract_chunks_from_preloaded",
             "extract_inference_chunks",
             "extract_levels",

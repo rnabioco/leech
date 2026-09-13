@@ -55,7 +55,7 @@ from leech.chunking import (
     npz_member_names,
 )
 from leech.constants import AUTO_DATALOADER_WORKERS
-from leech.features import encode_signal_kmer, sequence_to_int
+from leech.features import encode_signal_kmer, encode_signal_kmer_batch, sequence_to_int
 from leech.models import requires_features, wide_features
 
 if TYPE_CHECKING:
@@ -473,12 +473,16 @@ def _expand_seq_to_sig_csr(
             None to keep the stored coordinates.
 
     Returns:
-        int64 array of shape ``(len(rows), max_len)``.
+        int32 array of shape ``(len(rows), max_len)``. Values are always in
+        ``[0, signal_len]`` (the padding value included), which int32 holds
+        exactly at a fraction of int64's resident memory — real leverage on a
+        multi-million-chunk corpus, since this tensor is stacked once for the
+        whole dataset.
     """
     lens = (offsets[rows + 1] - offsets[rows]).astype(np.int64)
     n = len(rows)
     max_len = int(lens.max()) if n else 0
-    padded = np.full((n, max_len), signal_len, dtype=np.int64)
+    padded = np.full((n, max_len), signal_len, dtype=np.int32)
     starts = offsets[rows]
 
     # Blocked so the gather indices stay small on a multi-million-chunk corpus.
@@ -713,12 +717,15 @@ class LeechDataset(Dataset):
             max_label = max(c["label_int"] for c in self.chunks)
         self._multiclass = max_label > 1
 
-        # For signal_kmer encoding, the on-the-fly inputs are ~30 B/chunk
-        # (seq_ints + seq_to_sig_map) vs ~77 KB/chunk for the encoded output
-        # — a >2000x reduction. We stash the compact inputs here and run
-        # `encode_signal_kmer` lazily in __getitem__, where DataLoader workers
-        # parallelize it behind prefetch. base_onehot stays eagerly tensorized
-        # (88 floats/chunk; not worth deferring).
+        # For signal_kmer encoding, the on-the-fly inputs are a few hundred
+        # bytes/chunk (seq_ints int8 + seq_to_sig_map int32) vs ~77 KB/chunk
+        # for the encoded output — orders of magnitude smaller. We stash the
+        # compact inputs here and encode lazily: `__getitems__` calls
+        # `encode_signal_kmer_batch` once per DataLoader batch (rayon-parallel
+        # in Rust, issue #260) rather than looping the single-row encoder once
+        # per chunk; `__getitem__`'s single-item path still calls the
+        # single-row `encode_signal_kmer`. base_onehot stays eagerly
+        # tensorized (88 floats/chunk; not worth deferring).
         self._seq_ints: list[np.ndarray] = []
         self._seq_to_sig: list[np.ndarray] = []
         self._seq_ints_tensor: torch.Tensor | None = None
@@ -797,7 +804,7 @@ class LeechDataset(Dataset):
                 self._s2s_csr = None
             else:
                 max_s2s_len = max(s.shape[0] for s in self._seq_to_sig)
-                padded_s2s = np.full((n, max_s2s_len), signal_len, dtype=np.int64)
+                padded_s2s = np.full((n, max_s2s_len), signal_len, dtype=np.int32)
                 for i, s2s in enumerate(self._seq_to_sig):
                     padded_s2s[i, : s2s.shape[0]] = s2s
             self._seq_to_sig_tensor = torch.from_numpy(padded_s2s)
@@ -966,7 +973,7 @@ class LeechDataset(Dataset):
                 if self._s2s_csr is None:
                     # Non-streaming path: one map per chunk dict. The streaming
                     # path expands all of them at once, after this loop.
-                    s2s = chunk["seq_to_sig_map"].astype(np.int64, copy=True)
+                    s2s = chunk["seq_to_sig_map"].astype(np.int32, copy=True)
                     if self.left_context is not None and self.right_context is not None:
                         stored_focus = chunk.get("focus_signal_pos")
                         focus_pos = stored_focus if stored_focus is not None else int(s2s[-1]) // 2
@@ -1856,18 +1863,16 @@ class LeechDataset(Dataset):
         signal = _gather_rows(self._signals_tensor, rows)
 
         if self._effective_seq_encoding == "signal_kmer":
-            # encode_signal_kmer is per sample on both paths — batching it
-            # needs a Rust batch entry point, which is out of scope here.
+            # One rayon-parallel Rust call for the whole batch (issue #260),
+            # replacing a Python loop that called the single-row binding once
+            # per chunk — the structural reason the loader measured
+            # input-bound. Row i of the output is bit-identical to calling
+            # `encode_signal_kmer` on row i alone (`tests/test_signal_kmer.py`).
             seq_ints = self._seq_ints_tensor.numpy()[rows]
             seq_to_sig = self._seq_to_sig_tensor.numpy()[rows]
             sequence = torch.from_numpy(
-                np.stack(
-                    [
-                        encode_signal_kmer(
-                            seq_ints[i], seq_to_sig[i], self.signal_len, self.signal_kmer_context
-                        )
-                        for i in range(len(rows))
-                    ]
+                encode_signal_kmer_batch(
+                    seq_ints, seq_to_sig, self.signal_len, self.signal_kmer_context
                 )
             )
         else:
