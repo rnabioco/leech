@@ -626,7 +626,9 @@ def prepare_signal_channels(chunk: dict, signal_len: int) -> np.ndarray:
 _pinned_staging = threading.local()
 
 
-def _stack_to_device(arrays: list[np.ndarray], device: str, slot: Hashable) -> torch.Tensor:
+def _stack_to_device(
+    arrays: list[np.ndarray], device: str, slot: Hashable, pad_to: int | None = None
+) -> torch.Tensor:
     """Stack ``arrays`` into one tensor on ``device``.
 
     On CUDA the stack lands in a per-thread pinned staging buffer (keyed by
@@ -638,22 +640,38 @@ def _stack_to_device(arrays: list[np.ndarray], device: str, slot: Hashable) -> t
     have the row shape and dtype of ``arrays[0]`` — which is what every caller
     produces (float32 throughout) and what plain ``np.stack`` requires for the
     shape anyway.
+
+    ``pad_to`` zero-pads the batch dimension up to a fixed size. Only the
+    compiled path passes it, and it is what makes compiling worth anything
+    here: every mega-batch ends in a short batch, so an uncompiled-shape run
+    presents ~19 distinct batch sizes and ``torch.compile`` recompiles for each
+    one. Measured on the production bundle, that turned a 1.8x model speedup
+    into a 2.4x end-to-end *slowdown* (35s -> 83s). The model is per-sample
+    throughout (convolutions, GroupNorm/LayerNorm, BatchNorm in eval), so the
+    padding rows cannot affect the real ones; callers slice the output back.
     """
+    n = len(arrays)
+    total = n if pad_to is None else max(n, pad_to)
+
     if not device.startswith("cuda"):
-        return torch.from_numpy(np.stack(arrays)).to(device)
+        stacked = np.stack(arrays)
+        if total > n:
+            stacked = np.concatenate(
+                [stacked, np.zeros((total - n,) + stacked.shape[1:], dtype=stacked.dtype)]
+            )
+        return torch.from_numpy(stacked).to(device)
 
     first = arrays[0]
-    n = len(arrays)
     key = (slot, first.shape, first.dtype.str)
     cache = getattr(_pinned_staging, "buffers", None)
     if cache is None:
         cache = {}
         _pinned_staging.buffers = cache
     entry = cache.get(key)
-    if entry is None or entry[0].shape[0] < n:
+    if entry is None or entry[0].shape[0] < total:
         entry = (
             torch.empty(
-                (n,) + first.shape,
+                (total,) + first.shape,
                 dtype=torch.from_numpy(first).dtype,
                 pin_memory=True,
             ),
@@ -664,8 +682,11 @@ def _stack_to_device(arrays: list[np.ndarray], device: str, slot: Hashable) -> t
         # Do not overwrite a buffer whose last copy is still in flight.
         entry[1].synchronize()
     buf, copied = entry
-    view = buf[:n]
-    np.stack(arrays, out=view.numpy())
+    view = buf[:total]
+    np_view = view.numpy()
+    np.stack(arrays, out=np_view[:n])
+    if total > n:
+        np_view[n:] = 0
     out = view.to(device, non_blocking=True)
     copied.record()
     return out
@@ -682,19 +703,23 @@ def _run_batch_multiclass(
     pending: dict[str, list[tuple[int, int, float, list[float], float | None]]],
     calibration: dict | None = None,
     cl_regression_head: "torch.nn.Module | None" = None,
+    pad_to: int | None = None,
 ) -> None:
     """Run a multi-class batch: store (base_idx, class_idx, confidence, all_probs, cl_pred) per read."""
-    signal_t = _stack_to_device(signals, device, "signal")
-    seq_t = _stack_to_device(sequences, device, "sequence")
+    n = len(meta)
+    signal_t = _stack_to_device(signals, device, "signal", pad_to)
+    seq_t = _stack_to_device(sequences, device, "sequence", pad_to)
     batch = {"signal": signal_t, "sequence": seq_t}
 
     if requires_features:
         valid_feats = [f for f in features if f is not None]
         if valid_feats:
-            batch["features"] = _stack_to_device(valid_feats, device, "features")
+            batch["features"] = _stack_to_device(valid_feats, device, "features", pad_to)
 
     with torch.inference_mode():
         logits = model_wrapper.forward_batch(batch, device)
+        # Drop the padding rows before anything reads the batch dimension.
+        logits = logits[:n]
         if calibration is not None:
             from leech.calibration import apply_calibration
 
@@ -710,7 +735,7 @@ def _run_batch_multiclass(
             and isinstance(model_wrapper, ModelInferenceWrapper)
             and model_wrapper.captured_repr is not None
         ):
-            cl_preds = cl_regression_head(model_wrapper.captured_repr).cpu().numpy()
+            cl_preds = cl_regression_head(model_wrapper.captured_repr[:n]).cpu().numpy()
 
     # One `tolist()` for the whole batch, not `float(p)` per class per chunk.
     # numpy promotes float32 -> Python float identically either way.
@@ -733,19 +758,21 @@ def _run_batch(
     requires_features: bool,
     device: str,
     pending: dict[str, list[tuple[int, float]]],
+    pad_to: int | None = None,
 ) -> None:
     """Run a batch through the model and accumulate results into pending."""
-    signal_t = _stack_to_device(signals, device, "signal")
-    seq_t = _stack_to_device(sequences, device, "sequence")
+    n = len(meta)
+    signal_t = _stack_to_device(signals, device, "signal", pad_to)
+    seq_t = _stack_to_device(sequences, device, "sequence", pad_to)
     batch = {"signal": signal_t, "sequence": seq_t}
 
     if requires_features:
         valid_feats = [f for f in features if f is not None]
         if valid_feats:
-            batch["features"] = _stack_to_device(valid_feats, device, "features")
+            batch["features"] = _stack_to_device(valid_feats, device, "features", pad_to)
 
     with torch.inference_mode():
-        logits = model_wrapper.forward_batch(batch, device)
+        logits = model_wrapper.forward_batch(batch, device)[:n]
         probs = torch.sigmoid(logits).cpu().numpy().flatten()
 
     for (read_id, base_idx), prob in zip(meta, probs.tolist(), strict=True):
@@ -868,10 +895,112 @@ def cap_rayon_threads_for_slurm(max_cap: int | None = None) -> int:
         if max_cap is not None:
             avail = min(avail, max_cap)
     if "RAYON_NUM_THREADS" not in os.environ:
-        rayon_threads = max(1, avail - 6)  # reserve headroom for main + GPU I/O
+        # Reserve headroom for the threads that are *not* rayon (consumer, GPU
+        # worker, BAM writer, POD5 prefetch), but proportionally rather than as
+        # a flat subtraction. `avail - 6` reserved the same six CPUs whatever
+        # the allocation, which is most of a small one: it left 1 extraction
+        # thread at `--cpus-per-task 4` and 2 at 8, and extraction is where
+        # this pipeline spends ~70% of its CPU. Measured on a 176k-read sample
+        # (A30, one GPU), Rust extraction scales cleanly with this number to
+        # the allocation's *physical* core count and only ~12% further across
+        # the hyperthread siblings: 149.1s at 2 threads, 76.5s at 4, 40.1s at
+        # 8, 35.8s at 14, 34.3s at 16 on 8 physical cores. Reserving a quarter
+        # (min 1, max 4) keeps the other threads fed without capping extraction
+        # at a fraction of the job.
+        rayon_threads = max(1, avail - min(4, max(1, avail // 4)))
         os.environ["RAYON_NUM_THREADS"] = str(rayon_threads)
         logger.info(f"Set RAYON_NUM_THREADS={rayon_threads} (from {avail} available CPUs)")
     return avail
+
+
+def _htslib_write_threads() -> int:
+    """Threads for htslib's BGZF compression on the output BAM.
+
+    Small on purpose: these threads compete with Rust extraction for the same
+    cores, and compression is not the pipeline's bottleneck -- getting it off
+    the GIL is. Scales with the allocation and is overridable with
+    ``LEECH_PREDICT_BAM_THREADS``.
+    """
+    import os
+
+    raw = os.environ.get("LEECH_PREDICT_BAM_THREADS")
+    if raw is not None:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            logger.warning(f"LEECH_PREDICT_BAM_THREADS={raw!r} is not an integer; ignoring")
+    # One extra thread per 8 allocated CPUs, capped at 2. The deployment this
+    # is sized for gives each job 16 logical CPUs -- 8 physical cores, because
+    # four such jobs share one 64-core/4-GPU node -- and at that size the
+    # process already runs at ~90% of the box's effective core throughput.
+    # Extra compression threads there take cores from extraction, which is 70%
+    # of the job's CPU; the win is getting deflate off the GIL, not running
+    # more of it.
+    slurm_cpus = int(os.environ.get("SLURM_CPUS_PER_TASK", 0)) or (os.cpu_count() or 4)
+    return max(1, min(2, slurm_cpus // 8))
+
+
+def resolve_pipeline_depths(*, read_batch_size: int, batch_size: int) -> tuple[int, int, int, int]:
+    """Sizes for the four stages of ``run_inference``'s streaming pipeline.
+
+    Returns ``(extract_chunk_reads, extract_queue_depth, gpu_in_flight,
+    write_queue_depth)``. Each is overridable by the matching
+    ``LEECH_PREDICT_*`` environment variable, which is how the values below
+    were swept.
+
+    The pipeline is a chain of four stages on their own threads -- Rust
+    extraction, batch accumulation, one GPU worker, one BAM writer -- and on a
+    real workload each stage costs the same order of magnitude, so wall time is
+    set by how well they overlap rather than by any one of them. Measured on a
+    176,210-read sample (A30, one GPU): extraction 17-38s depending on cores,
+    GPU 20-28s, BAM write 14-23s.
+
+    ``extract_chunk_reads`` splits one mega-batch into several extraction calls
+    so the consumer can start on the first piece while rayon is still building
+    the rest. It defaults to the whole mega-batch, i.e. off, and that is a
+    measured choice rather than caution. Splitting helps only when there are
+    spare cores for the consumer to use: at this pipeline's deployment size --
+    16 logical CPUs, which is 8 physical cores, four jobs to a 64-core/4-GPU
+    node -- the process already runs at ~90% of the box's effective core
+    throughput, so interleaving consumer work with extraction just adds GIL
+    contention to a saturated machine and cost ~4 s on a 176k-read sample.
+    Lower it (``LEECH_PREDICT_EXTRACT_CHUNK``) on an allocation with idle
+    cores, where escapepod-rs#361's finding applies: a prep chunk as large as
+    the whole superbatch leaves "the GPU consumer... fully idle for the entire
+    duration of that one giant prep call".
+
+    The three depths follow escapepod-rs#361's other finding: a buffer has to
+    be deep enough to absorb one producer burst, or the producer blocks on a
+    full channel exactly as a one-deep handshake would. One prep cycle yields
+    about ``extract_chunk_reads / batch_size`` GPU batches, which is what
+    ``gpu_in_flight`` is sized against.
+    """
+    import os
+
+    def _env(name: str, default: int) -> int:
+        raw = os.environ.get(name)
+        if raw is None:
+            return default
+        try:
+            value = int(raw)
+        except ValueError:
+            logger.warning(f"{name}={raw!r} is not an integer; using {default}")
+            return default
+        if value < 1:
+            logger.warning(f"{name}={value} must be >= 1; using {default}")
+            return default
+        return value
+
+    extract_chunk_reads = _env("LEECH_PREDICT_EXTRACT_CHUNK", read_batch_size)
+    extract_queue_depth = _env("LEECH_PREDICT_EXTRACT_QUEUE", 4)
+    gpu_in_flight = _env("LEECH_PREDICT_GPU_IN_FLIGHT", 4)
+    write_queue_depth = _env("LEECH_PREDICT_WRITE_QUEUE", 2)
+    logger.info(
+        f"Pipeline depths: extract_chunk={extract_chunk_reads} reads, "
+        f"extract_queue={extract_queue_depth}, gpu_in_flight={gpu_in_flight}, "
+        f"write_queue={write_queue_depth}"
+    )
+    return extract_chunk_reads, extract_queue_depth, gpu_in_flight, write_queue_depth
 
 
 def build_rust_extraction_kwargs(

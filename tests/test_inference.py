@@ -1585,8 +1585,27 @@ print("OK")
 
         source = Path(inference_single.__file__).read_text()
         teardown = source[source.index("_extract_pool.shutdown") :]
-        teardown = teardown[: teardown.index("_bam_write_executor.shutdown") + 60]
+        teardown = teardown[: teardown.index("_wait_for_bam_write()") + 60]
         assert "wait=False" not in teardown, (
             "an executor in the sequential teardown shuts down with wait=False; "
             "the mp.Pool fork in the parallel path will inherit its held locks"
+        )
+
+    def test_the_bam_writer_thread_is_joined(self):
+        """Same hazard, other shape: the writer is a bare thread, not an executor.
+
+        It is created `daemon=True` so a crash elsewhere cannot wedge the
+        process, which also means nothing joins it implicitly -- and a live
+        thread at fork time is exactly what this class exists to prevent.
+        """
+        from pathlib import Path
+
+        from leech.inference import single as inference_single
+
+        source = Path(inference_single.__file__).read_text()
+        waiter = source[source.index("def _wait_for_bam_write") :]
+        waiter = waiter[: waiter.index("def _finalize_mega_batch")]
+        assert "_writer_thread.join()" in waiter, (
+            "the BAM writer thread is not joined in _wait_for_bam_write; a "
+            "daemon thread left running will be inherited by the mp.Pool fork"
         )
