@@ -1,4 +1,12 @@
 //! Inference chunk extraction, parallel processing, and PyO3 entry points.
+//!
+//! `process_one_read` and `_process_and_convert` are thin adapters over
+//! `escapepod_signal::chunk`: one `chunk::process_read` and `chunk::read_rows`
+//! call per read, one `chunk::cut_chunk` call per focus position
+//! (rnabioco/leech#258). The per-read signal processing, per-base statistics,
+//! refinement and sequence encoding that used to be duplicated here now live
+//! upstream; this file's job is marshalling PyO3 inputs in and numpy arrays
+//! out.
 
 use std::collections::HashMap;
 
@@ -7,22 +15,14 @@ use numpy::{PyArray1, PyArray2, PyReadonlyArray1};
 use pyo3::prelude::*;
 use rayon::prelude::*;
 
-use crate::encoding::encode_signal_kmer_inner;
+use escapepod_signal::chunk;
+
 use crate::kmer_levels::KmerLevels;
 use crate::pod5_io::PreloadedSignals;
 
 #[cfg(feature = "test-utils")]
-use super::features::compute_dwell_features;
-use super::features::{encode_base_onehot, sequence_to_int};
-#[cfg(feature = "test-utils")]
-use super::features_stats::compute_per_base_stats;
-#[cfg(feature = "test-utils")]
-use super::numeric::normalize_median_mad;
-use super::processing::process_read_signal;
-use super::signal_mapping::chunk_signal_kmer_inputs;
-#[cfg(feature = "test-utils")]
-use super::signal_mapping::{build_seq_to_sig_map, compute_ref_to_signal};
-use super::types::{BaseJustify, ChunkResult, PipelineConfig, ProcessedRead};
+use super::signal_mapping::compute_ref_to_signal;
+use super::types::{ChunkResult, PipelineConfig, build_anchor, build_config};
 
 /// One inference chunk returned to Python: (signal, seq_encoding, features?, read_id, base_idx).
 type InferenceChunkPy = (
@@ -42,8 +42,8 @@ type TestProcessReadResult = (
     Py<PyArray2<f32>>,
 );
 
-/// Process one read for inference. Uses shared signal processing,
-/// then extracts inference-encoded chunks.
+/// Process one read for inference: `process_read` -> `read_rows` -> one
+/// `cut_chunk` per requested focus position.
 #[allow(clippy::too_many_arguments)]
 fn process_one_read(
     raw_i16: &[i16],
@@ -58,169 +58,48 @@ fn process_one_read(
     cigar_ops: Option<&[(u32, u32)]>,
     ref_seq: Option<&str>,
 ) -> Vec<ChunkResult> {
-    let processed = match process_read_signal(
-        raw_i16, sequence, mv, stride, ns, trim, cfg, cigar_ops, ref_seq,
-    ) {
+    let inputs = chunk::ReadInputs {
+        raw: raw_i16,
+        moves: mv,
+        stride,
+        trim,
+        num_samples: ns,
+    };
+    let mut cigar_buf = Vec::new();
+    let anchor = build_anchor(cfg, sequence, cigar_ops, ref_seq, &mut cigar_buf);
+
+    let processed = match chunk::process_read(inputs, anchor, &cfg.process) {
         Some(p) => p,
         None => return vec![],
     };
+    let rows = chunk::read_rows(&processed, &cfg.spec);
+    let num_features = cfg.spec.feature_channels.len();
+    let dwell_width = cfg.spec.feature_width();
 
-    let ProcessedRead {
-        ref norm_signal,
-        ref seq_to_sig,
-        ref use_sequence,
-        ref features_data,
-        num_features,
-        ref sig_residual,
-        ..
-    } = processed;
-    let num_bases = seq_to_sig.len().saturating_sub(1);
-
-    // Extract inference chunks
-    let seq_bytes = use_sequence.as_bytes();
-    let mut results = Vec::new();
-
-    for &base_idx in positions {
-        // Same rule as training extraction and as `LeechRead.get_chunk`: only
-        // a focus base without signal boundaries is dropped. A k-mer window
-        // overhanging the sequence is 'N'-padded, which both encoders below
-        // already handle (all-zero column / -1 skipped). Skipping it instead
-        // silently withheld predictions for reads whose aligned region stops
-        // near the motif -- the training-side half of this was issue #185.
-        if base_idx < 0 || base_idx as usize >= num_bases {
-            continue;
-        }
-        let bi = base_idx as usize;
-        let kmer_start = base_idx - cfg.kmer_ctx;
-        let kmer_end = base_idx + cfg.kmer_ctx + 1;
-
-        let focus_sig = cfg
-            .base_justify
-            .focus_pos(seq_to_sig[bi], seq_to_sig[bi + 1]);
-        let sig_start_pos = focus_sig - cfg.signal_context_left;
-        let sig_end_pos = focus_sig + cfg.signal_context_right;
-        let actual_len = (sig_end_pos - sig_start_pos) as usize;
-
-        let mut sig_chunk = vec![0.0f32; cfg.signal_len];
-        if actual_len <= cfg.signal_len {
-            let src_lo = sig_start_pos.max(0) as usize;
-            let src_hi = sig_end_pos.min(norm_signal.len() as i64) as usize;
-            let dst_off = (sig_start_pos.max(0) - sig_start_pos) as usize;
-            if src_lo < src_hi {
-                let n = (src_hi - src_lo).min(cfg.signal_len - dst_off);
-                sig_chunk[dst_off..dst_off + n].copy_from_slice(&norm_signal[src_lo..src_lo + n]);
-            }
-        } else {
-            let crop_start = (actual_len - cfg.signal_len) / 2;
-            let abs_start = (sig_start_pos + crop_start as i64).max(0) as usize;
-            let abs_end = (abs_start + cfg.signal_len).min(norm_signal.len());
-            let n = abs_end - abs_start;
-            sig_chunk[..n].copy_from_slice(&norm_signal[abs_start..abs_end]);
-        }
-
-        // Multi-channel
-        let final_signal = if let Some(residual) = sig_residual {
-            let mut res_chunk = vec![0.0f32; cfg.signal_len];
-            if actual_len <= cfg.signal_len {
-                let src_lo = sig_start_pos.max(0) as usize;
-                let src_hi = sig_end_pos.min(residual.len() as i64) as usize;
-                let dst_off = (sig_start_pos.max(0) - sig_start_pos) as usize;
-                if src_lo < src_hi {
-                    let n = (src_hi - src_lo).min(cfg.signal_len - dst_off);
-                    res_chunk[dst_off..dst_off + n].copy_from_slice(&residual[src_lo..src_lo + n]);
-                }
-            } else {
-                let crop_start = (actual_len - cfg.signal_len) / 2;
-                let abs_start = (sig_start_pos + crop_start as i64).max(0) as usize;
-                let abs_end = (abs_start + cfg.signal_len).min(residual.len());
-                let n = abs_end - abs_start;
-                res_chunk[..n].copy_from_slice(&residual[abs_start..abs_end]);
-            }
-            let mut stacked = Vec::with_capacity(2 * cfg.signal_len);
-            stacked.extend_from_slice(&sig_chunk);
-            stacked.extend_from_slice(&res_chunk);
-            stacked
-        } else {
-            sig_chunk
-        };
-
-        // Sequence encoding
-        let (seq_flat, seq_rows, seq_cols) = if cfg.use_signal_kmer {
-            // Derived from the SIGNAL window, matching `LeechRead.get_chunk`,
-            // which is what the Python inference path feeds the same encoder.
-            // Deriving them from the k-mer window disagreed with it on every
-            // chunk (issue #186).
-            let (kmer_before, kmer_after) = cfg.skmer_ctx;
-            let (chunk_sig_map, ctx_bytes) = chunk_signal_kmer_inputs(
-                seq_to_sig,
-                seq_bytes,
-                sig_start_pos,
-                sig_end_pos,
-                norm_signal.len(),
-                cfg.signal_len,
-                cfg.skmer_ctx,
-            );
-            if chunk_sig_map.is_empty() {
-                continue;
-            }
-            let seq_ints = sequence_to_int(&ctx_bytes);
-            let enc_dim = 4 * (kmer_before + 1 + kmer_after);
-            let flat = encode_signal_kmer_inner(
-                &seq_ints,
-                &chunk_sig_map,
-                cfg.signal_len,
-                kmer_before,
-                kmer_after,
-            );
-            (flat, enc_dim, cfg.signal_len)
-        } else {
-            // 'N' past either end, so the window is always `kmer_win` wide and
-            // the encoder emits an all-zero column there.
-            let kmer_seq: Vec<u8> = (kmer_start..kmer_end)
-                .map(|i| match usize::try_from(i) {
-                    Ok(u) if u < seq_bytes.len() => seq_bytes[u],
-                    _ => b'N',
-                })
-                .collect();
-            let flat = encode_base_onehot(&kmer_seq);
-            (flat, 4, cfg.kmer_win)
-        };
-
-        // Features
-        let feat_arr: Option<Vec<f32>> = if let Some(all_feats) = features_data {
-            let fs = base_idx + cfg.feat_start;
-            let fe = base_idx + cfg.feat_end + 1;
-            let safe_start = fs.max(0) as usize;
-            let safe_end = fe.min(num_bases as i64) as usize;
-            let left_pad = (0i64 - fs).max(0) as usize;
-            let mut flat = vec![0.0f32; num_features * cfg.dwell_width];
-            for (f_idx, feat_row) in all_feats.iter().enumerate() {
-                if safe_start < safe_end && safe_end <= feat_row.len() {
-                    let n = (safe_end - safe_start).min(cfg.dwell_width - left_pad);
-                    for k in 0..n {
-                        flat[f_idx * cfg.dwell_width + left_pad + k] = feat_row[safe_start + k];
-                    }
-                }
-            }
-            Some(flat)
-        } else {
-            None
-        };
-
-        results.push(ChunkResult {
-            signal: final_signal,
-            seq_enc: seq_flat,
-            seq_rows,
-            seq_cols,
-            features: feat_arr,
-            num_features,
-            dwell_width: cfg.dwell_width,
-            read_id: rid.to_string(),
-            base_idx,
-        });
-    }
-
-    results
+    positions
+        .iter()
+        .filter_map(|&base_idx| {
+            // The only reason to drop a focus base is that it has no signal
+            // boundaries -- `cut_chunk` returns `None` for exactly that (and,
+            // under `SeqEncoding::SignalKmer`, when the window covers no base
+            // at all -- the same "continue" the pre-port code used for an
+            // empty `chunk_signal_kmer_inputs` result). A k-mer window that
+            // merely overhangs the sequence is `N`-padded internally, not
+            // dropped -- see CLAUDE.md on issue #185.
+            let c = chunk::cut_chunk(&processed, &rows, &cfg.spec, base_idx)?;
+            Some(ChunkResult {
+                signal: c.signal,
+                seq_enc: c.sequence,
+                seq_rows: c.sequence_rows,
+                seq_cols: c.sequence_cols,
+                features: (num_features > 0).then_some(c.features),
+                num_features,
+                dwell_width,
+                read_id: rid.to_string(),
+                base_idx,
+            })
+        })
+        .collect()
 }
 
 /// Run per-read processing in parallel (rayon, GIL released) then convert
@@ -309,56 +188,6 @@ fn _process_and_convert<'py>(
     }
 
     Ok(results)
-}
-
-/// Build a PipelineConfig from the common parameters shared by all entry points.
-#[allow(clippy::too_many_arguments)]
-fn build_config<'a>(
-    reverse_signal: bool,
-    anchor: &str,
-    seq_encoding: &str,
-    signal_kmer_context: Option<(usize, usize)>,
-    signal_context_left: i64,
-    signal_context_right: i64,
-    kmer_context: i64,
-    signal_len: usize,
-    compute_features: bool,
-    feature_start: Option<i64>,
-    feature_end: Option<i64>,
-    refine_signal_map: bool,
-    kmer_table: Option<&'a HashMap<String, f64>>,
-    kmer_len: usize,
-    kmer_center_idx: i32,
-    refine_half_bandwidth: i32,
-    refine_scale_iters: i32,
-    signal_in_channels: usize,
-    base_justify: &str,
-) -> PipelineConfig<'a> {
-    let kmer_ctx = kmer_context;
-    PipelineConfig {
-        reverse_signal,
-        use_reference: anchor == "reference",
-        use_signal_kmer: seq_encoding == "signal_kmer",
-        skmer_ctx: signal_kmer_context.unwrap_or((4, 4)),
-        signal_context_left,
-        signal_context_right,
-        kmer_ctx,
-        kmer_win: (2 * kmer_ctx + 1) as usize,
-        signal_len,
-        compute_features,
-        feat_start: feature_start.unwrap_or(-kmer_ctx),
-        feat_end: feature_end.unwrap_or(kmer_ctx),
-        dwell_width: (feature_end.unwrap_or(kmer_ctx) - feature_start.unwrap_or(-kmer_ctx) + 1)
-            as usize,
-        refine_signal_map,
-        kmer_table,
-        kmer_len,
-        kmer_center_idx,
-        refine_half_bandwidth,
-        refine_scale_iters,
-        signal_in_channels,
-        base_justify: BaseJustify::from_str(base_justify),
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -477,14 +306,14 @@ pub fn extract_inference_chunks<'py>(
         feature_start,
         feature_end,
         refine_signal_map,
-        kmer_table.map(|kt| &kt.table),
+        kmer_table,
         kmer_len,
         kmer_center_idx,
         refine_half_bandwidth,
         refine_scale_iters,
         signal_in_channels,
         base_justify,
-    );
+    )?;
 
     // --- Phase 1: POD5 I/O (indexed read lookup + bulk extract), GIL released ---
     // Pure Rust I/O over no Python objects, so the GIL is dropped for the whole
@@ -625,14 +454,14 @@ pub fn extract_chunks_from_preloaded<'py>(
         feature_start,
         feature_end,
         refine_signal_map,
-        kmer_table.map(|kt| &kt.table),
+        kmer_table,
         kmer_len,
         kmer_center_idx,
         refine_half_bandwidth,
         refine_scale_iters,
         signal_in_channels,
         base_justify,
-    );
+    )?;
 
     // Skip Phase 1 -- use preloaded signals directly
     _process_and_convert(
@@ -655,7 +484,12 @@ pub fn extract_chunks_from_preloaded<'py>(
 // Test helpers
 // ---------------------------------------------------------------------------
 
-/// Process a single read through the Rust pipeline (no POD5, for testing).
+/// Process a single read through the production pipeline (no POD5, for
+/// testing): `chunk::process_read` + `chunk::read_rows`, no table, no
+/// refinement, the same 9-channel feature set inference/training build when
+/// `compute_features` is on and no level table is configured. Routes through
+/// production rather than re-implementing it, so `tests/test_rust_python_parity.py`
+/// measures the real pipeline (rnabioco/leech#258, #261).
 #[cfg(feature = "test-utils")]
 #[pyfunction]
 #[pyo3(signature = (raw_signal, mv_array, stride, trim_offset, num_samples, reverse_signal = true))]
@@ -668,52 +502,54 @@ pub fn _test_process_read<'py>(
     num_samples: u64,
     reverse_signal: bool,
 ) -> PyResult<TestProcessReadResult> {
-    let trim_start = trim_offset.max(0) as usize;
-    let trim_end = (num_samples as usize).min(raw_signal.len());
-    if trim_start >= trim_end {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "Empty signal after trimming",
-        ));
-    }
-
-    let mut trimmed_f32: Vec<f32> = raw_signal[trim_start..trim_end]
-        .iter()
-        .map(|&x| x as f32)
-        .collect();
-    let mut sig_map = build_seq_to_sig_map(&mv_array, stride, trim_offset, num_samples);
-
-    if reverse_signal {
-        trimmed_f32.reverse();
-        let sig_len = trimmed_f32.len() as i64;
-        sig_map.reverse();
-        for val in sig_map.iter_mut() {
-            *val = sig_len - *val;
-        }
-    }
-
-    let norm_signal = normalize_median_mad(&trimmed_f32);
-    let num_bases = sig_map.len().saturating_sub(1);
-    if num_bases == 0 {
+    let inputs = chunk::ReadInputs {
+        raw: &raw_signal,
+        moves: &mv_array,
+        stride,
+        trim: trim_offset,
+        num_samples,
+    };
+    let process_cfg = chunk::ProcessConfig {
+        reverse_signal,
+        normalization: chunk::SignalNorm::MedianMad,
+        levels: None,
+        refine: None,
+    };
+    // No sequence content is needed: every channel below (dwell family, level
+    // span stats) is derived from `signal`/`seq_to_sig` alone.
+    let processed =
+        chunk::process_read(inputs, chunk::Anchor::Query { sequence: b"" }, &process_cfg)
+            .ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err("Empty signal after trimming")
+            })?;
+    if processed.n_bases() == 0 {
         return Err(pyo3::exceptions::PyValueError::new_err("No bases"));
     }
 
-    let dwells: Vec<f32> = (0..num_bases)
-        .map(|j| (sig_map[j + 1] - sig_map[j]) as f32)
-        .collect();
-    let (means, medians, stds, ranges) = compute_per_base_stats(&norm_signal, &sig_map);
-    let mut all_feats = compute_dwell_features(&dwells);
-    all_feats.push(means);
-    all_feats.push(medians);
-    all_feats.push(stds);
-    all_feats.push(ranges);
+    let spec = chunk::ChunkSpec {
+        feature_channels: vec![
+            chunk::FeatureChannel::Dwell,
+            chunk::FeatureChannel::DwellLog,
+            chunk::FeatureChannel::DwellMean,
+            chunk::FeatureChannel::DwellStd,
+            chunk::FeatureChannel::DwellRatio,
+            chunk::FeatureChannel::LevelMean,
+            chunk::FeatureChannel::LevelMedian,
+            chunk::FeatureChannel::LevelStd,
+            chunk::FeatureChannel::LevelRange,
+        ],
+        ..chunk::ChunkSpec::default()
+    };
+    let rows = chunk::read_rows(&processed, &spec);
+    let num_bases = processed.n_bases();
 
-    let sig_py = norm_signal.into_pyarray(py).unbind();
-    let map_py = sig_map.into_pyarray(py).unbind();
-    let dwell_py = dwells.into_pyarray(py).unbind();
+    let sig_py = processed.signal.into_pyarray(py).unbind();
+    let map_py = processed.seq_to_sig.into_pyarray(py).unbind();
+    let dwell_py = rows.feature_rows[0].clone().into_pyarray(py).unbind();
 
-    let n_feats = all_feats.len();
+    let n_feats = rows.feature_rows.len();
     let mut feat_flat = vec![0.0f32; n_feats * num_bases];
-    for (f_idx, row) in all_feats.iter().enumerate() {
+    for (f_idx, row) in rows.feature_rows.iter().enumerate() {
         feat_flat[f_idx * num_bases..(f_idx + 1) * num_bases].copy_from_slice(row);
     }
     let feat_arr = numpy::ndarray::Array2::from_shape_vec((n_feats, num_bases), feat_flat)
@@ -738,10 +574,6 @@ pub fn _test_ref_to_signal(
 mod tests {
     use super::*;
 
-    // Representative, otherwise-inert values for the parameters this test
-    // isn't exercising -- only kmer_context/feature_start/feature_end vary
-    // between cases below.
-    #[allow(clippy::too_many_arguments)]
     fn build_default_config(
         kmer_context: i64,
         feature_start: Option<i64>,
@@ -768,62 +600,196 @@ mod tests {
             1,
             "center",
         )
+        .expect("valid config")
     }
 
     #[test]
-    fn kmer_win_is_twice_the_context_plus_one() {
+    fn base_onehot_context_matches_kmer_context() {
         let cfg = build_default_config(5, None, None);
-        assert_eq!(cfg.kmer_win, 11);
-
+        assert_eq!(
+            cfg.spec.seq_encoding,
+            chunk::SeqEncoding::BaseOneHot { context: 5 }
+        );
         let cfg = build_default_config(0, None, None);
-        assert_eq!(cfg.kmer_win, 1);
+        assert_eq!(
+            cfg.spec.seq_encoding,
+            chunk::SeqEncoding::BaseOneHot { context: 0 }
+        );
     }
 
     #[test]
-    fn dwell_width_spans_the_default_kmer_window_when_unset() {
-        // feature_start/feature_end default to +/-kmer_context, so an unset
-        // feature window covers the whole k-mer window: dwell_width ==
-        // kmer_win.
+    fn training_spec_never_uses_signal_kmer_encoding_even_when_requested() {
+        // training.rs cuts with `cfg.training_spec`, never `cfg.spec`, so
+        // `cut_chunk` can never take the `SeqEncoding::SignalKmer` branch (and
+        // therefore can never drop a chunk over a failed internal
+        // `signal_kmer_inputs` call) on the training path -- regardless of
+        // what encoding the run actually requested. This is what makes the
+        // "the whole crash class from issue #185, reintroduced through
+        // training's shared spec" bug structurally impossible to reintroduce,
+        // rather than merely untriggered by the current test fixtures.
+        let cfg = build_config(
+            true,
+            "reference",
+            "signal_kmer",
+            None,
+            200,
+            200,
+            5,
+            400,
+            true,
+            None,
+            None,
+            true,
+            None,
+            9,
+            4,
+            5,
+            2,
+            1,
+            "center",
+        )
+        .expect("valid config");
+        assert_eq!(
+            cfg.spec.seq_encoding,
+            chunk::SeqEncoding::SignalKmer {
+                ctx: escapepod_signal::seq_encoding::KmerContext {
+                    before: 4,
+                    after: 4
+                }
+            }
+        );
+        assert_eq!(cfg.training_spec.seq_encoding, chunk::SeqEncoding::None);
+        // Every other field stays in sync between the two specs -- only
+        // `seq_encoding` diverges.
+        assert_eq!(cfg.spec.signal_context, cfg.training_spec.signal_context);
+        assert_eq!(
+            cfg.spec.feature_channels,
+            cfg.training_spec.feature_channels
+        );
+    }
+
+    #[test]
+    fn feature_window_defaults_to_the_kmer_context_when_unset() {
+        // feature_start/feature_end default to +/-kmer_context.
         let cfg = build_default_config(5, None, None);
-        assert_eq!(cfg.feat_start, -5);
-        assert_eq!(cfg.feat_end, 5);
-        assert_eq!(cfg.dwell_width, 11);
-        assert_eq!(cfg.dwell_width, cfg.kmer_win);
+        assert_eq!(cfg.spec.feature_offsets, (-5, 5));
+        assert_eq!(cfg.spec.feature_width(), 11);
     }
 
     #[test]
-    fn dwell_width_honors_an_explicit_feature_start_of_zero() {
+    fn feature_window_honors_an_explicit_feature_start_of_zero() {
         // feature_start = 0 is a legitimate, non-default window (features
-        // begin AT the focus base -- the right-only window used for tRNA 3'
-        // ends) and must not be mistaken for "unset". `chunking.py`'s `or
-        // -kmer_context` fallback got exactly this wrong for every
-        // `--feature-start 0` run (issue #189); `Option::unwrap_or` here does
-        // not have that failure mode because `Some(0)` is not `None`, but the
-        // derivation is worth pinning directly rather than trusting that no
-        // future edit reintroduces a truthiness-style fallback.
+        // begin AT the focus base -- the right-only window for tRNA 3' ends)
+        // and must not be mistaken for "unset". `Option::unwrap_or` does not
+        // have that failure mode because `Some(0)` is not `None`, but the
+        // derivation is worth pinning directly (issue #189).
         let cfg = build_default_config(5, Some(0), None);
-        assert_eq!(cfg.feat_start, 0);
-        assert_eq!(cfg.feat_end, 5);
-        assert_eq!(cfg.dwell_width, 6);
+        assert_eq!(cfg.spec.feature_offsets, (0, 5));
+        assert_eq!(cfg.spec.feature_width(), 6);
     }
 
     #[test]
-    fn dwell_width_honors_a_fully_explicit_feature_window() {
+    fn feature_window_honors_a_fully_explicit_feature_window() {
         let cfg = build_default_config(5, Some(-2), Some(3));
-        assert_eq!(cfg.feat_start, -2);
-        assert_eq!(cfg.feat_end, 3);
-        assert_eq!(cfg.dwell_width, 6);
+        assert_eq!(cfg.spec.feature_offsets, (-2, 3));
+        assert_eq!(cfg.spec.feature_width(), 6);
     }
 
     #[test]
-    fn dwell_width_honors_an_explicit_feature_end_with_start_defaulted() {
-        // feat_start/feat_end resolve independently via two separate
-        // `unwrap_or` calls -- exercise the mirror case of the test above
-        // (only feature_end explicit) so a regression that defaults only
-        // one side correctly cannot hide behind the other's coverage.
+    fn feature_window_honors_an_explicit_feature_end_with_start_defaulted() {
+        // feat_start/feat_end resolve independently -- exercise the mirror
+        // case of the test above (only feature_end explicit) so a regression
+        // that defaults only one side correctly cannot hide behind the
+        // other's coverage.
         let cfg = build_default_config(5, None, Some(2));
-        assert_eq!(cfg.feat_start, -5);
-        assert_eq!(cfg.feat_end, 2);
-        assert_eq!(cfg.dwell_width, 8);
+        assert_eq!(cfg.spec.feature_offsets, (-5, 2));
+        assert_eq!(cfg.spec.feature_width(), 8);
+    }
+
+    // These three assert `.is_err()` only, not the message text: `PyErr`'s
+    // `Display` materializes the underlying Python exception object, which
+    // needs a running interpreter (`Python::with_gil`) -- unavailable to a
+    // plain `#[test]` binary without pyo3's `auto-initialize` feature (not
+    // enabled here, since it would also affect the real extension build).
+    // `PyValueError::new_err` itself stays lazy and needs no interpreter, so
+    // `.is_err()` alone still proves the acceptance criterion: these raise
+    // rather than silently choosing a default geometry.
+
+    #[test]
+    fn an_unrecognised_anchor_is_a_value_error_not_a_silent_default() {
+        let result = build_config(
+            true,
+            "bogus",
+            "base_onehot",
+            None,
+            200,
+            200,
+            5,
+            400,
+            true,
+            None,
+            None,
+            true,
+            None,
+            9,
+            4,
+            5,
+            2,
+            1,
+            "center",
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn an_unrecognised_seq_encoding_is_a_value_error() {
+        let result = build_config(
+            true,
+            "reference",
+            "bogus",
+            None,
+            200,
+            200,
+            5,
+            400,
+            true,
+            None,
+            None,
+            true,
+            None,
+            9,
+            4,
+            5,
+            2,
+            1,
+            "center",
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn an_unrecognised_base_justify_is_a_value_error() {
+        let result = build_config(
+            true,
+            "reference",
+            "base_onehot",
+            None,
+            200,
+            200,
+            5,
+            400,
+            true,
+            None,
+            None,
+            true,
+            None,
+            9,
+            4,
+            5,
+            2,
+            1,
+            "bogus",
+        );
+        assert!(result.is_err());
     }
 }

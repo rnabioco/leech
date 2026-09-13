@@ -6,13 +6,18 @@
 //!
 //! Supports all production config options: reference anchoring, signal map
 //! refinement, signal_kmer encoding, and multi-channel signal (kmer residual).
+//!
+//! The per-read pipeline itself (`process_read`/`read_rows`/`cut_chunk`) is
+//! `escapepod_signal::chunk`, not this module -- `inference.rs` and
+//! `training.rs` are thin adapters over it, and `types.rs` is the one place
+//! their shared config is built (rnabioco/leech#258). `features_stats.rs`
+//! stays for a second, unrelated consumer (`crate::signal_stats`); everything
+//! else the old local pipeline held (per-read normalization/anchoring,
+//! per-base statistics, refinement, sequence encoding) moved upstream and has
+//! no replacement here.
 
-mod features;
 mod features_stats;
 mod inference;
-mod numeric;
-mod processing;
-mod refinement;
 mod signal_mapping;
 mod training;
 mod types;

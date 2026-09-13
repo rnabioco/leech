@@ -62,6 +62,16 @@ jobs:
       - name: Install Rust toolchain (rustfmt + clippy)
         run: rustup component add rustfmt clippy
 
+      - name: Set up Python
+        # cargo test (below) links against a real libpython -- see the
+        # extension-module feature doc in rust/Cargo.toml. pyo3-build-config
+        # discovers it via `python3` on PATH, which must satisfy
+        # abi3-py312's floor; matches the Python setup the other two jobs
+        # already use, so this job doesn't rely on ubuntu-latest's default.
+        uses: actions/setup-python@v7
+        with:
+          python-version-file: "pyproject.toml"
+
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
@@ -74,7 +84,12 @@ jobs:
         run: cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings
 
       - name: cargo test
-        run: cargo test --manifest-path rust/Cargo.toml
+        # --no-default-features drops the `extension-module` pyo3 feature so
+        # this standalone test binary links against libpython normally; the
+        # real wheel build (rust/build.sh, release.yml) keeps it via the
+        # default feature set. See rust/Cargo.toml's `extension-module`
+        # feature doc for why cargo test needs this.
+        run: cargo test --manifest-path rust/Cargo.toml --no-default-features --features test-utils
 
   test:
     name: Test - Python ${{ matrix.python-version }}

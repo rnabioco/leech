@@ -20,7 +20,7 @@ name = "leech_core"
 crate-type = ["cdylib"]
 
 [features]
-default = ["test-utils"]
+default = ["test-utils", "extension-module"]
 # Gates the Python-callable `_test_process_read` / `_test_ref_to_signal`
 # helpers (see inference_pipeline/inference.rs) that tests/test_rust_python_parity.py
 # and tests/test_data_prep.py call directly to compare the Rust pipeline
@@ -33,13 +33,27 @@ default = ["test-utils"]
 # then this feature exists so the symbols are visibly test-only and
 # opt-out-able in principle, not to actually ship a stripped build.
 test-utils = []
+# `extension-module` tells pyo3 this crate will be dlopen'd into an
+# already-running Python process, which resolves the CPython C-API symbols
+# dynamically at load time -- correct for the real wheel maturin builds
+# (which does not pass `--no-default-features`, so it keeps getting this),
+# but it also means pyo3 deliberately does NOT link against libpython. A
+# standalone `cargo test` binary is a real, self-contained executable, not a
+# dlopen'd extension, so it can't resolve `PyGILState_Ensure` /
+# `PyUnicode_Type` / etc. and fails to link -- not a code defect, a build
+# target mismatch. CI's `cargo test` step runs with `--no-default-features
+# --features test-utils` for exactly this reason (rnabioco/leech#258 is the
+# first PR whose test code exercised enough of pyo3's runtime API, through
+# `escapepod_signal::chunk`, to expose the gap #261 left open).
+extension-module = ["pyo3/extension-module"]
 
 [dependencies]
 # `abi3-py312` builds one stable-ABI wheel per platform that loads on CPython
 # 3.12 and every later 3.x, so a new CPython release does not require a new
 # leech release to get a wheel. Keep it in step with `requires-python` in the
-# root pyproject.toml.
-pyo3 = { version = "0.28", features = ["extension-module", "abi3-py312"] }
+# root pyproject.toml. `extension-module` comes from the feature above, not
+# hardcoded here, so `cargo test` can turn it off.
+pyo3 = { version = "0.28", features = ["abi3-py312"] }
 numpy = "0.28"
 # Not on crates.io; pulled straight from the public GitHub repo. Pin by tag so
 # the build is reproducible — bump the tag to take a new escapepod release.

@@ -1,20 +1,15 @@
-//! Move table and CIGAR-based signal mapping.
+//! CIGAR-op translation for reference anchoring.
+//!
+//! Move-table mapping, reference-signal mapping and the chunk-local
+//! signal_kmer inputs all moved to `escapepod_signal::chunk` and `::mapping`
+//! (rnabioco/leech#258) -- `process_one_read`/`process_one_read_training` call
+//! them directly. What's left here is BAM's CIGAR op numbering, which has
+//! nowhere upstream to live: it is pysam's encoding of the SAM spec, not a
+//! signal-processing rule.
 
-use escapepod_signal::mapping::{CigarKind, CigarOp, ref_to_signal, seq_to_signal_from_moves};
-
-/// Query->signal map from a basecaller move table.
-///
-/// Delegates to `escapepod_signal::mapping::seq_to_signal_from_moves`, which is
-/// the `mv`/`ns`/`ts` tag convention with nothing leech-specific in it. Result
-/// is in trimmed-signal coordinates, closed with `num_samples - trim_offset`.
-pub(super) fn build_seq_to_sig_map(
-    mv_array: &[u8],
-    stride: u32,
-    trim_offset: i64,
-    num_samples: u64,
-) -> Vec<i64> {
-    seq_to_signal_from_moves(mv_array, stride, trim_offset, num_samples)
-}
+#[cfg(feature = "test-utils")]
+use escapepod_signal::mapping::ref_to_signal;
+use escapepod_signal::mapping::{CigarKind, CigarOp};
 
 /// A BAM CIGAR op code (`pysam`'s `cigartuples` encoding) as a [`CigarKind`].
 ///
@@ -23,7 +18,7 @@ pub(super) fn build_seq_to_sig_map(
 /// still has to be written down. It is the SAM spec order, unchanged since the
 /// format was defined: `MIDNSHP=X`. An unrecognised code maps to `Pad`, which
 /// consumes neither query nor reference and so cannot shift a coordinate.
-fn cigar_kind(op: u32) -> CigarKind {
+pub(super) fn cigar_kind(op: u32) -> CigarKind {
     match op {
         0 => CigarKind::Match,
         1 => CigarKind::Insertion,
@@ -37,107 +32,29 @@ fn cigar_kind(op: u32) -> CigarKind {
     }
 }
 
-/// Reference->signal map, by the Remora knot convention.
-///
-/// Delegates to `escapepod_signal::mapping::ref_to_signal`. leech used to carry
-/// its own walk of the same convention -- trailing non-match ops stripped, 1:1
-/// integer lookup inside match blocks, interpolation across indel gaps -- which
-/// is short enough to retype and subtle enough to retype wrongly. The failure
-/// mode is the reason it belongs upstream: a map built slightly differently
-/// still refines, still produces per-base statistics and still scores, just
-/// over a different set of samples than the caller thinks. Nothing errors.
-pub(super) fn compute_ref_to_signal(query_to_sig: &[i64], cigar_ops: &[(u32, u32)]) -> Vec<i64> {
-    let cigar: Vec<CigarOp> = cigar_ops
+/// `cigar_ops` (pysam tuples) as typed [`CigarOp`]s, ready for
+/// `Anchor::Reference` or [`compute_ref_to_signal`].
+pub(super) fn typed_cigar(cigar_ops: &[(u32, u32)]) -> Vec<CigarOp> {
+    cigar_ops
         .iter()
         .map(|&(op, len)| CigarOp::new(cigar_kind(op), len))
-        .collect();
-    ref_to_signal(query_to_sig, &cigar)
+        .collect()
 }
 
-/// Chunk-local `seq_to_sig_map` and `N`-padded context sequence, the two
-/// inputs `signal_kmer` encoding needs.
-///
-/// Mirrors the tail of `LeechRead.get_chunk`, which is the definition every
-/// trained `signal_kmer` model has seen. Note what it keys off: the **signal**
-/// window, located in the map with two binary searches, *not* the k-mer
-/// window. Those select different numbers of bases — the signal window spans
-/// however many bases fall inside `signal_context`, the k-mer window spans
-/// exactly `2 * kmer_context + 1` — so deriving these from `kmer_start`/
-/// `kmer_end` disagrees with Python on every chunk, which was issue #186.
-///
-/// Returns `(chunk_seq_to_sig, sequence_with_kmer_context)`, of length
-/// `n + 1` and `n + kmer_before + kmer_after` for the `n` bases the window
-/// covers — the shapes `encode_signal_kmer_inner` expects. Both are empty
-/// when the read has no usable map.
-pub(super) fn chunk_signal_kmer_inputs(
-    seq_to_sig: &[i64],
-    seq_bytes: &[u8],
-    sig_start_pos: i64,
-    sig_end_pos: i64,
-    num_samples: usize,
-    chunk_len: usize,
-    skmer_ctx: (usize, usize),
-) -> (Vec<i64>, Vec<u8>) {
-    if seq_to_sig.len() < 2 {
-        return (vec![], vec![]);
-    }
-    let num_bases_map = seq_to_sig.len() - 1;
-
-    // Python clamps the window into the signal before locating bases, and it
-    // is the clamped window that the searches use.
-    let ss = sig_start_pos.max(0);
-    let se = sig_end_pos.min(num_samples as i64);
-
-    // searchsorted(map, ss, side="right") - 1: the base whose span contains ss.
-    let seq_start = seq_to_sig.partition_point(|&v| v <= ss) as i64 - 1;
-    // searchsorted(map, se, side="left"): the first boundary at or past se.
-    let seq_end = seq_to_sig.partition_point(|&v| v < se) as i64;
-
-    let seq_start = seq_start.max(0) as usize;
-    let seq_end = (seq_end.clamp(0, seq_bytes.len() as i64) as usize).min(num_bases_map);
-    if seq_start > seq_end {
-        return (vec![], vec![]);
-    }
-
-    // Offsets are against the UNCLAMPED window start, so a chunk that
-    // underflows the signal still reports positions relative to its own left
-    // edge. (Python reaches the same value via `sig_start - seq_to_sig_offset`.)
-    let mut map: Vec<i64> = seq_to_sig[seq_start..=seq_end]
-        .iter()
-        .map(|&v| v - sig_start_pos)
-        .collect();
-    // The first and last bases only partially overlap the window; Python snaps
-    // them to its edges rather than letting them poke outside.
-    let last = map.len() - 1;
-    map[0] = 0;
-    map[last] = chunk_len as i64;
-
-    // The windowing comes from escapepod-signal, which also owns the map this
-    // sits between and the encoding it feeds. Kept as BASES rather than ints
-    // because the corpus serializes `sequence_with_kmer_context` as a string;
-    // `sequence_ints_with_context` is the same window in the other alphabet,
-    // and `sequence_to_int` of this is exactly that (escapepod-rs#274).
-    //
-    // This is the step where `before` and `after` are NOT interchangeable:
-    // swapping them displaces every k-mer silently, and the encoder cannot
-    // detect it because it only sees the total width.
-    let (kmer_before, kmer_after) = skmer_ctx;
-    let ctx = escapepod_signal::seq_encoding::sequence_bases_with_context(
-        seq_bytes,
-        seq_start,
-        seq_end - seq_start,
-        escapepod_signal::seq_encoding::KmerContext {
-            before: kmer_before,
-            after: kmer_after,
-        },
-    );
-
-    (map, ctx)
+/// Reference->signal map, by the Remora knot convention. Test-only: production
+/// reaches the same upstream function through `Anchor::Reference` inside
+/// `chunk::process_read`; this wrapper exists so `_test_ref_to_signal` (and
+/// `tests/bench_cigar_parity.py`) can still probe it directly.
+#[cfg(feature = "test-utils")]
+pub(super) fn compute_ref_to_signal(query_to_sig: &[i64], cigar_ops: &[(u32, u32)]) -> Vec<i64> {
+    ref_to_signal(query_to_sig, &typed_cigar(cigar_ops))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use escapepod_signal::chunk::{ProcessedRead, signal_kmer_inputs};
+    use escapepod_signal::seq_encoding::KmerContext;
 
     #[test]
     fn cigar_kind_maps_the_sam_spec_ops() {
@@ -177,59 +94,105 @@ mod tests {
         }
     }
 
-    // Four bases (map has 5 boundaries, 0..=40 in steps of 10).
-    const MAP: [i64; 5] = [0, 10, 20, 30, 40];
+    // Four bases (map has 5 boundaries, 0..=40 in steps of 10). These three
+    // cases moved here, ported to call `escapepod_signal::chunk::
+    // signal_kmer_inputs` directly, when leech's own `chunk_signal_kmer_inputs`
+    // (which they used to pin) was deleted in favor of the now-`pub` upstream
+    // function (rnabioco/leech#258, rnabioco/escapepod-rs#380). The edge cases
+    // -- an underflowing window, a window past the end, a map shorter than the
+    // sequence -- are the ones a re-derivation gets wrong, so they stay
+    // covered even though the implementation moved.
+    fn read_with_map(map: &[i64], sequence: &[u8]) -> ProcessedRead {
+        ProcessedRead {
+            signal: vec![0.0; map.last().copied().unwrap_or(0).max(0) as usize],
+            seq_to_sig: map.to_vec(),
+            sequence: sequence.to_vec(),
+            levels: None,
+        }
+    }
 
     #[test]
-    fn chunk_signal_kmer_inputs_underflowing_window_clamps_to_zero_and_snaps_edges() {
-        // sig_start_pos is negative -- the window starts before the signal.
-        // `ss = sig_start_pos.max(0)` clamps the search, but the returned map
-        // stays offset against the UNCLAMPED start (Python reaches the same
-        // value via `sig_start - seq_to_sig_offset`), and the first/last
-        // covered bases snap to the chunk edges regardless.
-        let seq_bytes = b"ACGT";
-        let (map, ctx) = chunk_signal_kmer_inputs(&MAP, seq_bytes, -15, 25, 40, 40, (2, 2));
+    fn signal_kmer_inputs_underflowing_window_clamps_to_zero_and_snaps_edges() {
+        // sig_start is negative -- the window starts before the signal. The
+        // returned map stays offset against the UNCLAMPED start, and the
+        // first/last covered bases snap to the chunk edges regardless.
+        let read = read_with_map(&[0, 10, 20, 30, 40], b"ACGT");
+        let (map, ctx) = signal_kmer_inputs(
+            &read,
+            -15,
+            25,
+            40,
+            KmerContext {
+                before: 2,
+                after: 2,
+            },
+        )
+        .unwrap();
 
         assert_eq!(map, vec![0, 25, 35, 40], "map: {map:?}");
         assert!(!ctx.is_empty());
     }
 
     #[test]
-    fn chunk_signal_kmer_inputs_window_past_end_clamps_to_num_samples() {
-        // sig_end_pos exceeds num_samples -- the window runs off the end of
-        // the signal. `se = sig_end_pos.min(num_samples)` clamps the search.
-        let seq_bytes = b"ACGT";
-        let (map, ctx) = chunk_signal_kmer_inputs(&MAP, seq_bytes, 15, 55, 40, 40, (2, 2));
+    fn signal_kmer_inputs_window_past_end_clamps_to_num_samples() {
+        // sig_end exceeds the signal length -- the window runs off the end.
+        let read = read_with_map(&[0, 10, 20, 30, 40], b"ACGT");
+        let (map, ctx) = signal_kmer_inputs(
+            &read,
+            15,
+            55,
+            40,
+            KmerContext {
+                before: 2,
+                after: 2,
+            },
+        )
+        .unwrap();
 
         assert_eq!(map, vec![0, 5, 15, 40], "map: {map:?}");
         assert!(!ctx.is_empty());
     }
 
     #[test]
-    fn chunk_signal_kmer_inputs_map_shorter_than_sequence_bounds_by_the_map() {
+    fn signal_kmer_inputs_map_shorter_than_sequence_bounds_by_the_map() {
         // The map covers only 2 bases, but the sequence carries 6 -- an
         // alignment that stopped short of the full read (CLAUDE.md: "the map
-        // can be shorter than the reference slice"). `seq_end` must clamp to
-        // `num_bases_map`, not to `seq_bytes.len()`, or this indexes past
-        // what the map actually describes.
-        let short_map = [0i64, 10, 20];
-        let seq_bytes = b"ACGTAC";
-        let (map, ctx) = chunk_signal_kmer_inputs(&short_map, seq_bytes, 0, 20, 20, 20, (2, 2));
+        // can be shorter than the reference slice"). The end must clamp to
+        // the map's own base count, not to the sequence length.
+        let read = read_with_map(&[0, 10, 20], b"ACGTAC");
+        let (map, ctx) = signal_kmer_inputs(
+            &read,
+            0,
+            20,
+            20,
+            KmerContext {
+                before: 2,
+                after: 2,
+            },
+        )
+        .unwrap();
 
         assert_eq!(map, vec![0, 10, 20], "map: {map:?}");
         assert!(!ctx.is_empty());
     }
 
     #[test]
-    fn chunk_signal_kmer_inputs_map_too_short_to_have_any_base_returns_empty() {
+    fn signal_kmer_inputs_map_too_short_to_have_any_base_returns_none() {
         // seq_to_sig.len() < 2: no base has both boundaries, so there is
         // nothing to chunk.
-        let degenerate_map = [5i64];
-        let seq_bytes = b"ACGT";
-        let (map, ctx) =
-            chunk_signal_kmer_inputs(&degenerate_map, seq_bytes, 0, 20, 20, 20, (2, 2));
-
-        assert!(map.is_empty());
-        assert!(ctx.is_empty());
+        let read = read_with_map(&[5], b"ACGT");
+        assert!(
+            signal_kmer_inputs(
+                &read,
+                0,
+                20,
+                20,
+                KmerContext {
+                    before: 2,
+                    after: 2
+                }
+            )
+            .is_none()
+        );
     }
 }
