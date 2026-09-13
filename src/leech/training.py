@@ -996,16 +996,21 @@ class Trainer:
                         tally.add("cl_loss", cl_loss, num_splits)
 
                     labels_flat = labels.detach().flatten()
-                    if self.loss_type == "cross_entropy" and self._num_out > 2:
-                        # Multi-class: argmax predictions
+                    if self.loss_type == "cross_entropy":
+                        # argmax(logits) is exactly the softmax > 0.5 threshold
+                        # (softmax is monotonic per-row in the logits), for
+                        # both binary and multi-class CE -- so this reads the
+                        # predicted class straight off the logits and never
+                        # computes the fp16 softmax value autocast would
+                        # otherwise hand back for a probability nothing here
+                        # needs (#264).
                         preds = torch.argmax(logits, dim=-1).detach().flatten()
                     else:
-                        if self.loss_type == "cross_entropy":
-                            # Binary CE: probabilities via softmax, take class 1
-                            scores = torch.softmax(logits, dim=-1)[:, 1]
-                        else:
-                            scores = torch.sigmoid(logits)
-                        preds = scores.detach().flatten() > 0.5
+                        # sigmoid(logits) > 0.5 is exactly logits > 0; comparing
+                        # the raw logit sidesteps autocast's fp16 sigmoid
+                        # output entirely instead of quantizing a probability
+                        # this branch only ever thresholds (#264).
+                        preds = logits.detach().flatten() > 0
                     matches = preds.to(torch.float64) == labels_flat.to(torch.float64)
                     tally.add("correct", matches.sum())
                     seen += labels_flat.numel()
@@ -1126,6 +1131,16 @@ class Trainer:
                         loss = self.criterion(logits, ce_labels)
                     else:
                         loss = self.criterion(logits, labels)
+
+                # The metrics below need real probability resolution: under
+                # autocast the final Linear emits fp16, and unlike softmax
+                # (which autocast promotes to fp32 on its own), torch.sigmoid
+                # is not on that list -- computing it on the raw logits would
+                # quantize the AUROC ranking and val_auc, the checkpoint
+                # -selection criterion (#264). The loss above is deliberately
+                # computed on the pre-cast logits -- BCE/CE are already
+                # autocast's fp32-safe, so this cast must not move earlier.
+                logits = logits.float()
 
                 # CL regression validation loss
                 if (

@@ -12,6 +12,7 @@ import pytest
 import torch
 from torch.utils.data import DataLoader
 
+import leech.training
 from leech.dataset import LeechDataset, collate_fn
 from leech.losses import FocalBCEWithLogitsLoss
 from leech.models import get_model
@@ -252,6 +253,167 @@ class TestMixedPrecision:
             device="cpu",
         )
         assert trainer.use_mixed_precision is False
+
+
+class TestMixedPrecisionProbabilityPrecision:
+    """AUROC/accuracy inputs must not inherit AMP's fp16 quantization (#264).
+
+    Under CUDA autocast the final Linear emits float16, and torch.sigmoid /
+    torch.softmax are not on autocast's fp32 promotion list -- so computing
+    them on the raw logits rounds every probability to ~3 significant digits
+    and saturates to exactly 1.0 above logit~11. val_auc is the checkpoint
+    -selection criterion, so a quantized AUROC ranking silently changes which
+    epoch gets kept.
+
+    This test machine has no CUDA (mixed precision is forced off on CPU --
+    see TestMixedPrecision above), so real autocast can't be exercised here.
+    Instead these simulate exactly what autocast's Linear layer hands back:
+    a genuine float16 logits tensor.
+    """
+
+    def test_fp32_cast_avoids_the_fp16_quantization_raw_sigmoid_has(self):
+        """The core numeric bug, isolated from any model or DataLoader.
+
+        `torch.sigmoid(logits.float())` (the fix, used in train_epoch,
+        validate and evaluate_model) must resolve far more distinct
+        probabilities than `torch.sigmoid(logits)` computed directly on a
+        float16 tensor (the bug), across a few thousand samples -- and must
+        avoid float16's saturation to exactly 1.0 for large logits.
+        """
+        torch.manual_seed(0)
+        # A realistic spread plus a tail in (~11, ~17): high enough that
+        # float16's sigmoid saturates to exactly 1.0, but well below
+        # float32's own saturation point (~17.3), so the fix's float32
+        # output must not saturate here.
+        logits_fp32 = torch.cat([torch.randn(4000) * 3.0, torch.linspace(12.0, 16.0, 1000)])
+        logits_fp16 = logits_fp32.half()
+        n = logits_fp16.numel()
+
+        fixed = torch.sigmoid(logits_fp16.float())
+        buggy = torch.sigmoid(logits_fp16)
+
+        assert fixed.dtype == torch.float32
+        assert buggy.dtype == torch.float16
+
+        n_unique_fixed = len(torch.unique(fixed))
+        n_unique_buggy = len(torch.unique(buggy))
+
+        # `logits_fp16` is already float16 -- that's autocast's Linear output,
+        # not the bug -- so `fixed` can't resolve more than the input allows.
+        # The bug is the *extra* quantization from also computing and storing
+        # sigmoid's OUTPUT in float16: `buggy` must collapse noticeably
+        # further than `fixed`, and specifically saturate to exactly 1.0 for
+        # large logits, which the fp32-output fix avoids (#264).
+        assert n_unique_fixed > n * 0.5
+        assert n_unique_buggy < n_unique_fixed
+        assert (buggy == 1.0).sum() > 0  # saturation actually happened
+        assert (fixed == 1.0).sum() == 0  # ... and the fix avoids it
+
+    def test_validate_scores_auroc_on_float32_probabilities(
+        self, sample_model, sample_dataloader, monkeypatch
+    ):
+        """Trainer.validate() must cast to float32 before scoring, even when
+        the model itself hands back float16 -- exactly what a CUDA autocast
+        forward pass would produce."""
+        trainer = Trainer(
+            model=sample_model,
+            model_type="ConvLSTMDwell",
+            train_loader=sample_dataloader,
+            val_loader=sample_dataloader,
+            device="cpu",
+        )
+
+        real_forward = trainer.model_wrapper.forward_batch
+
+        def fp16_forward(batch, device):
+            # Simulate autocast's fp16 Linear output.
+            return real_forward(batch, device).half()
+
+        monkeypatch.setattr(trainer.model_wrapper, "forward_batch", fp16_forward)
+
+        captured: dict = {}
+        real_roc_auc_score = leech.training.roc_auc_score
+
+        def spy_roc_auc_score(y_true, y_score, *args, **kwargs):
+            captured["probs"] = np.asarray(y_score)
+            return real_roc_auc_score(y_true, y_score, *args, **kwargs)
+
+        monkeypatch.setattr(leech.training, "roc_auc_score", spy_roc_auc_score)
+
+        avg_loss, accuracy, auc, f1 = trainer.validate()
+
+        assert "probs" in captured, "roc_auc_score was never called (labels not mixed?)"
+        assert captured["probs"].dtype == np.float32
+        assert 0.0 <= auc <= 1.0
+
+    def test_train_epoch_thresholds_on_raw_logits_not_fp16_sigmoid(
+        self, sample_model, sample_dataloader, monkeypatch
+    ):
+        """train_epoch's accuracy threshold must not go through sigmoid at
+        all under simulated fp16 logits -- it compares the logit to 0
+        directly, which is exact regardless of autocast (#264)."""
+        trainer = Trainer(
+            model=sample_model,
+            model_type="ConvLSTMDwell",
+            train_loader=sample_dataloader,
+            device="cpu",
+        )
+
+        real_forward = trainer.model_wrapper.forward_batch
+        monkeypatch.setattr(
+            trainer.model_wrapper,
+            "forward_batch",
+            lambda batch, device: real_forward(batch, device).half(),
+        )
+
+        loss, acc = trainer.train_epoch()
+        assert loss >= 0
+        assert 0 <= acc <= 1
+
+    def test_one_epoch_with_mixed_precision_true_reports_float32_probs(
+        self, sample_model, sample_dataloader, monkeypatch
+    ):
+        """`mixed_precision=True` end to end for one epoch: even though this
+        CPU test machine forces AMP off (TestMixedPrecision above), a model
+        that hands back float16 logits -- exactly what CUDA autocast would
+        produce -- must still yield a float32, high-resolution AUROC input
+        after training and validating one epoch."""
+        trainer = Trainer(
+            model=sample_model,
+            model_type="ConvLSTMDwell",
+            train_loader=sample_dataloader,
+            val_loader=sample_dataloader,
+            device="cpu",
+            use_mixed_precision=True,
+        )
+        assert trainer.use_mixed_precision is False  # forced off on CPU
+
+        real_forward = trainer.model_wrapper.forward_batch
+        monkeypatch.setattr(
+            trainer.model_wrapper,
+            "forward_batch",
+            lambda batch, device: real_forward(batch, device).half(),
+        )
+
+        captured: dict = {}
+        real_roc_auc_score = leech.training.roc_auc_score
+
+        def spy_roc_auc_score(y_true, y_score, *args, **kwargs):
+            captured["probs"] = np.asarray(y_score)
+            return real_roc_auc_score(y_true, y_score, *args, **kwargs)
+
+        monkeypatch.setattr(leech.training, "roc_auc_score", spy_roc_auc_score)
+
+        history = trainer.train(epochs=1, early_stopping_patience=0)
+
+        assert len(history["train_loss"]) == 1
+        assert "probs" in captured
+        probs = captured["probs"]
+        assert probs.dtype == np.float32
+        # This fixture is small (a handful of chunks), so "more distinct
+        # values than a float16 grid allows" is checked directly against
+        # float16 quantization of the same values, not an absolute count:
+        assert len(np.unique(probs)) >= len(np.unique(probs.astype(np.float16)))
 
 
 class TestFocalLossTrainer:

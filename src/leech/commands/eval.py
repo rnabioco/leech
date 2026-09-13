@@ -21,6 +21,8 @@ def handle_test(
     batch_size: int = 512,
     num_workers: int = 0,
     emit_scores: Path | None = None,
+    mixed_precision: bool = False,
+    no_compile: bool = False,
 ) -> None:
     """
     Handle the test command logic.
@@ -33,6 +35,9 @@ def handle_test(
         batch_size: Batch size for evaluation
         num_workers: DataLoader workers (0 = auto: up to 8 on GPU, 0 on CPU)
         emit_scores: Optional .npz for per-chunk scores
+        mixed_precision: Autocast the forward pass on CUDA. Off by default so
+            this matches `predict`, which never autocasts (#264).
+        no_compile: Disable torch.compile (same gate `predict` uses).
     """
     from leech.evaluation import evaluate_model
 
@@ -48,6 +53,8 @@ def handle_test(
         batch_size=batch_size,
         num_workers=num_workers,
         emit_scores=emit_scores,
+        mixed_precision=mixed_precision,
+        no_compile=no_compile,
     )
 
     console.print("[bold green]Testing complete![/bold green]")

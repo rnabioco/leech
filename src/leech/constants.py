@@ -92,6 +92,12 @@ DEFAULT_NUM_FEATURES = 5  # Default number of feature channels (dwell + signal l
 DEFAULT_DEVICE = "cuda"
 DEFAULT_SEED = None  # Generate random seed by default to avoid "seed=42" cargo-culting
 
+# torch.compile gate shared by `predict` (inference/single.py) and
+# `eval test` (evaluation.py), one policy for both (#264): below this many
+# samples (reads for predict, test chunks for eval), compilation overhead
+# (~15-30s) outweighs the speedup, so both auto-skip. Never used on CPU.
+TORCH_COMPILE_MIN_SAMPLES = 5000
+
 
 def generate_random_seed() -> int:
     """
