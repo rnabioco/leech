@@ -319,10 +319,14 @@ window, not the k-mer window.** `get_chunk` locates the covered bases with two
 first and last bases to the window edges (`[0] = 0`, `[-1] = chunk_len`). The
 k-mer window spans a different number of bases, so building these from
 `kmer_start`/`kmer_end` disagrees on every chunk — that was issue #186, and it
-went unnoticed because nothing compared the fields. Rust does it in
-`signal_mapping::chunk_signal_kmer_inputs`, used by both `training.rs` and
-`inference.rs`. Only `--seq-encoding signal_kmer` reads them, which is why a
-full divergence was invisible.
+went unnoticed because nothing compared the fields. Rust gets both from
+`escapepod_signal::chunk::signal_kmer_inputs` (`pub` since escapepod-rs v0.26.0,
+rnabioco/leech#258): `inference.rs` reaches it through `cut_chunk`'s own
+`SeqEncoding::SignalKmer` arm, and `training.rs` calls it a second time
+directly (with the same `sig_start`/`sig_end` `cut_chunk` used, via
+`Chunk::focus_signal_pos`), since the training format always records these two
+fields regardless of `--seq-encoding`. Only `--seq-encoding signal_kmer` reads
+them at train time, which is why a full divergence was invisible.
 
 **The feature window resolves in exactly one place:
 `chunking.resolve_feature_window`.** `feature_start`/`feature_end` are signed
@@ -369,8 +373,11 @@ casts while Rust accumulates in float32 — real noise of ~1e-7, against
 divergences that have all moved values by 0.5% or more.
 
 **Refinement is on by default and both backends must drive escapepod
-identically.** `signal_refine.py` and `rust/src/inference_pipeline/refinement.rs`
-each pass their own settings to escapepod's `refine_signal_map`, and escapepod's
+identically.** `signal_refine.py` (Python) and `types::build_config` (Rust,
+which resolves leech's config into a `chunk::RefineParams` that
+`chunk::process_read` passes to escapepod's `refine_signal_map` internally --
+rnabioco/leech#258 moved the call site, not the settings, out of a local
+`refinement.rs`) each pass their own settings, and escapepod's
 Python binding defaults `dwell_target` to 4.0 while leech wants 0.0 (resolve it
 from the read's own median dwell). Passing that explicitly on both sides is not
 optional — leaving the default in place on the Python side made every dwell and
@@ -1094,7 +1101,7 @@ The codebase is feature-complete (v0.11.1):
 - ✓ Chunk-set parity between the prepare backends, one shared
   `find_focus_bases`, and a logged read yield on both
 - ✓ Identical `signal_kmer` encodings across backends (shared
-  `chunk_signal_kmer_inputs`)
+  `escapepod_signal::chunk::signal_kmer_inputs`)
 - ✓ Field-by-field backend parity enforced in CI (`tests/test_backend_parity.py`)
 - ✓ One extraction-sequence rule (`chunking.extraction_sequence`) shared by
   prepare and predict; `base_justify`, `dwell_offset` and
