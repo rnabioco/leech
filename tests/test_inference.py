@@ -1180,19 +1180,54 @@ class TestBundleExtractionPathParity:
         """``num_workers > 0`` (mp.Pool, always Python extraction) --
         previously untested here (all prior bundle tests ran serial only).
 
-        Not chained after another real CPU-inference call in the same
-        process: doing so hangs forking `mp.Pool` after libtorch's native CPU
-        thread pool has started, a pre-existing fork-safety hazard unrelated
-        to this issue's GpuBatchRunner/BundleScorer work (confirmed by:
-        GpuBatchRunner's own thread is cleanly joined by the time the second
-        call starts -- `threading.enumerate()` shows only MainThread -- and a
-        second real-inference call that does *not* fork, e.g. `backend="rust"`
-        after a serial Python call, does not hang). Out of scope for #268;
-        worth its own issue if `leech.run_bundle_inference` is ever called
-        with `num_workers>0` more than once per process.
+        Runs in a **fresh subprocess**, deliberately, not in-process --
+        same fork-after-native-threads hazard `test_parallel_prep.py`'s
+        ``TestPrepareTrainingDataParallel::test_python_backend_real_pool_matches_rust_chunk_set``
+        documents for the Rust/rayon case (#275, #307), except the thread
+        pool here is libtorch's: by the time this test class runs in the
+        full suite, many earlier tests have already run real CPU inference,
+        so forking `mp.Pool` in-process hangs (confirmed: it does not hang
+        run alone or early in a session, only after prior torch CPU use --
+        this actually hung PR #308's CI for ~55 minutes before being caught).
+        A brand new interpreter has never touched torch, so it forks safely.
         """
+        import subprocess
+        import sys
+        from pathlib import Path
+
         bundle_path = _create_pairwise_bundle(tmp_path, self.PAIR_NAMES)
-        parallel = self._predict(tmp_path, bundle_path, "parallel", backend="python", num_workers=2)
+        out = tmp_path / "parallel.bam"
+        script = f"""
+import pysam
+from pathlib import Path
+from leech.inference import run_bundle_inference
+
+run_bundle_inference(
+    bundle_path=Path({str(bundle_path)!r}),
+    pod5_path=Path({str(TRNA_POD5)!r}),
+    bam_path=Path({str(TRNA_BAM)!r}),
+    output_path=Path({str(out)!r}),
+    device="cpu",
+    batch_size=8,
+    reverse_signal=True,
+    reference_fasta=Path({str(TRNA_REF)!r}),
+    num_workers=2,
+    backend="python",
+)
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            cwd=Path(__file__).parent.parent,
+        )
+        assert result.returncode == 0, (
+            f"subprocess failed (rc={result.returncode}):\n"
+            f"stdout={result.stdout}\nstderr={result.stderr}"
+        )
+        with pysam.AlignmentFile(str(out), "rb") as bam:
+            parallel = {r.query_name: r.get_tag("aa") for r in bam if r.has_tag("aa")}
         assert parallel
 
     def test_rust_path_matches_serial_python_path(self, tmp_path):
