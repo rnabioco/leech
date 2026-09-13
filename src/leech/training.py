@@ -2358,10 +2358,21 @@ def train_model(
         torch.set_float32_matmul_precision("high")
         logger.info("cuDNN benchmark + TF32 matmul enabled")
 
-    # Compile model with torch.compile for graph-level optimizations (PyTorch 2+)
+    # Compile model with torch.compile for graph-level optimizations (PyTorch 2+).
+    # dynamic=False (#272 item 2): the default dynamic=None auto-detects a
+    # dynamic batch dimension the first time it sees two different shapes,
+    # and val_loader has no drop_last (a smaller last batch is correct there
+    # -- dropping validation rows would corrupt every metric), so epoch 1's
+    # validation pass marks the batch dim dynamic and the *training* forward
+    # from epoch 2 on runs the slower dynamic-shape graph, even though
+    # training's own batches are all one size (drop_last=True). dynamic=False
+    # keeps every shape it sees compiled statically -- val's tail batch just
+    # costs one extra compile for its own shape, once, rather than
+    # de-optimizing every training step after it. Verify with
+    # TORCH_LOGS=recompiles.
     if device != "cpu" and hasattr(torch, "compile"):
         try:
-            model = torch.compile(model)
+            model = torch.compile(model, dynamic=False)
             logger.info("torch.compile enabled")
         except Exception as e:
             logger.warning(f"torch.compile failed, falling back to eager mode: {e}")
