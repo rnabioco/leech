@@ -68,7 +68,7 @@ uv run ty check src/leech/
 The CLI is organized into workflow-based command groups:
 - `leech data` - Prepare and process training data
 - `leech model` - Train and optimize models
-- `leech eval` - Evaluate and analyze models
+- `leech eval` - Evaluate models
 - `leech predict` - Run inference on new data
 
 ```bash
@@ -103,15 +103,6 @@ uv run leech model optimize --train-data chunks/train.npz --val-data chunks/val.
 
 # Evaluate model
 uv run leech eval test --model models/model_best.pt --test-data chunks/test.json --output metrics.json
-
-# Compare models
-uv run leech eval compare -m models/model1/ -m models/model2/ -t chunks/test.npz -o comparison/
-
-# Analyze feature importance
-uv run leech eval importance -m models/model_best.pt -t chunks/test.npz -o importance/
-
-# Sequence ablation testing
-uv run leech eval ablation -m models/model_best.pt -t chunks/test.npz -o ablation/
 
 # Bundle pairwise models for deployment
 uv run leech model bundle --model-dir results/models/pairwise/ --output bundle.pt --version 1.0.0
@@ -871,8 +862,7 @@ src/leech/           # Main package source
 │   ├── optimize.py  # Grid search optimization handler
 │   ├── predict.py   # Inference/predict handler
 │   ├── benchmark.py # Training-step benchmark handler
-│   ├── release_model.py  # model release/list/fetch handlers
-│   └── analyze.py   # Analysis command handlers (importance, ablation)
+│   └── release_model.py  # model release/list/fetch handlers
 ├── confounds.py     # Confound mappings for adversarial training
 ├── io/              # Input/output operations
 │   ├── bam_reader.py    # BAM file reading
@@ -1031,7 +1021,7 @@ The codebase is feature-complete (v0.11.1):
 - ✓ Feature extraction with dwell offset tuning and signal map refinement
 - ✓ 29 model architectures: ConvLSTM (Base/Dwell × BN/GN/LN/Attn), TCN (Dwell/DwellGN/DwellLN/DwellResidual/DwellResidualGN/DwellResidualLN/DwellResidualMotor/DwellResidualDwellAttn/DwellSplitResidual/DwellSplitResidualLN), Transformer (Dwell/DwellResidual), ResNet, ConvOnly, SignalCNN
 - ✓ Config-driven model layer: bonito-style layer registry (`models/nn.py`) + TOML architecture declarations (`models/configs/`)
-- ✓ CLI organized into 4 command groups: `data` (prepare, merge), `model` (train, train-crf, optimize, bundle, bundle-info, calibrate, export), `eval` (test, compare, importance, ablation), `predict`
+- ✓ CLI organized into 4 command groups: `data` (prepare, merge), `model` (train, train-crf, optimize, bundle, bundle-info, calibrate, export), `eval` (test), `predict`
 - ✓ Training with focal loss, mixup augmentation, cosine annealing, gradient clipping, adversarial training, CL regression
 - ✓ Grid search with range syntax, parallel execution, dwell offset tuning
 - ✓ Model bundling for multi-model pairwise deployment
