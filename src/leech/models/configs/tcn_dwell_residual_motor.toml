@@ -38,13 +38,16 @@ build_order = [
 ]
 
 [params]
+wide_features = true
 motor_pool_start = 8
 motor_pool_end = 13
 motor_proj_dim = 64
 signal_len = "${DEFAULT_SIGNAL_LEN}"
+# dwell_margin: accepted for constructor-signature compatibility with
+# historical checkpoint configs; no node below reads it (leech#274).
+dwell_margin = "${DEFAULT_DWELL_MARGIN}"
 kmer_len = "${DEFAULT_KMER_LEN}"
 num_features = "${DEFAULT_NUM_FEATURES}"
-dwell_margin = "${DEFAULT_DWELL_MARGIN}"
 signal_in_channels = 2
 hidden_channels = 64
 num_layers = 6

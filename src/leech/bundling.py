@@ -349,10 +349,10 @@ def create_torchscript_bundle(
         Path to the saved bundle file
     """
     from leech.model_export import export_model, serialize_exported_model
-    from leech.models.inference_wrapper import ModelInferenceWrapper
+    from leech.models import requires_features as _requires_features
 
     pairs, _, ref_arch_config, architecture = _reference_arch_config(model_dirs)
-    requires_features = architecture in ModelInferenceWrapper.FEATURE_MODELS
+    requires_features = _requires_features(architecture)
 
     models_dict: dict[str, dict] = {}
     pair_configs: dict[str, dict] = {}
@@ -390,24 +390,6 @@ def create_torchscript_bundle(
     return output_path
 
 
-# Architectures known to be vmap-incompatible (contain nn.LSTM or nn.BatchNorm1d)
-_VMAP_INCOMPATIBLE_ARCHITECTURES = {
-    "ConvLSTMBase",
-    "ConvLSTMBaseBN",
-    "ConvLSTMBaseAttn",
-    "ConvLSTMBaseBNAttn",
-    "ConvLSTMDwell",
-    "ConvLSTMDwellBN",
-    "ConvLSTMDwellAttn",
-    "ConvLSTMDwellBNAttn",
-    "ConvLSTMDwellGNAttn",
-    "ConvLSTMDwellLNAttn",
-    "ConvLSTMRemora",
-    "ConvLSTMRemoraBase",
-    "ConvOnly",  # uses nn.BatchNorm1d
-}
-
-
 def create_vmap_bundle(
     model_dirs: dict[str, Path],
     output_path: Path,
@@ -435,12 +417,17 @@ def create_vmap_bundle(
     Raises:
         ValueError: If architecture is vmap-incompatible or configs don't match
     """
-    from leech.models.inference_wrapper import ModelInferenceWrapper
+    from leech.models import is_vmap_compatible
+    from leech.models import requires_features as _requires_features
 
     pairs, _, ref_arch_config, architecture = _reference_arch_config(model_dirs)
-    requires_features = architecture in ModelInferenceWrapper.FEATURE_MODELS
+    requires_features = _requires_features(architecture)
 
-    if architecture in _VMAP_INCOMPATIBLE_ARCHITECTURES:
+    # Structural, from the architecture alone (a fresh, randomly-initialised
+    # instance from ref_arch_config) — checked before any of model_dirs'
+    # checkpoints are loaded from disk, so an incompatible architecture fails
+    # fast rather than after the first (wasted) weight load.
+    if not is_vmap_compatible(_instantiate_model(ref_arch_config)):
         raise ValueError(
             f"Architecture '{architecture}' is not vmap-compatible "
             f"(contains nn.LSTM or nn.BatchNorm1d). "

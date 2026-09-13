@@ -183,7 +183,7 @@ uv sync --upgrade
    - Serialize chunks for training (`chunking/serialization.py`)
 4. **Model Training**: PyTorch models with three input branches (signal, sequence, dwell/level features)
    - Loss functions: BCE, focal loss, cross-entropy (`losses.py`)
-   - Augmentation: mixup (signal jitter + scale)
+   - Augmentation: time masking, signal shift, feature noise (`dataset.py`; there is no mixup in `src/leech`)
    - LR scheduling: reduce-on-plateau, cosine annealing with warmup
 5. **Model Bundling**: Package multiple pairwise models into a single versioned .pt file for deployment
 6. **Output**: Trained models (.pt files), model bundles, and predictions (BAM with modification probabilities)
@@ -1069,7 +1069,7 @@ The codebase is feature-complete (v0.11.1):
 - ✓ 29 model architectures: ConvLSTM (Base/Dwell × BN/GN/LN/Attn), TCN (Dwell/DwellGN/DwellLN/DwellResidual/DwellResidualGN/DwellResidualLN/DwellResidualMotor/DwellResidualDwellAttn/DwellSplitResidual/DwellSplitResidualLN), Transformer (Dwell/DwellResidual), ResNet, ConvOnly, SignalCNN
 - ✓ Config-driven model layer: bonito-style layer registry (`models/nn.py`) + TOML architecture declarations (`models/configs/`)
 - ✓ CLI organized into 4 command groups: `data` (prepare, merge), `model` (train, train-crf, optimize, bundle, bundle-info, calibrate, export), `eval` (test), `predict`
-- ✓ Training with focal loss, mixup augmentation, cosine annealing, gradient clipping, adversarial training, CL regression
+- ✓ Training with focal loss, cross-layer augmentation (time mask, shift, feature noise), cosine annealing, gradient clipping, adversarial training, CL regression
 - ✓ Grid search with range syntax, parallel execution, dwell offset tuning
 - ✓ Model bundling for multi-model pairwise deployment
 - ✓ Inference engine with leech and Remora model auto-detection

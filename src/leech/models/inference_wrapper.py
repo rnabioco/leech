@@ -12,6 +12,62 @@ import torch.nn as nn
 logger = logging.getLogger("leech.models.inference_wrapper")
 
 
+def _resolve_requires_features(model: nn.Module, model_type: str) -> bool:
+    """``leech.models.requires_features(model_type)``, with a fallback for a
+    ``model_type`` that isn't a real registry name.
+
+    This wrapper is also used directly with test doubles (e.g.
+    ``tests/test_distributed_training.py``'s stub models exercising DDP
+    wrapping), which have no registry entry to look up by construction. The
+    registry-name path stays strict elsewhere (bundling, grid search, model
+    export) because those operate on names read from real configs, where an
+    unresolvable name is a real bug worth raising loudly; here, the actual
+    ``model`` instance is already in hand, so falling back to inspecting its
+    own ``forward`` signature gives the correct answer instead of guessing.
+    """
+    # Local import: leech.models re-exports ModelInferenceWrapper (PEP 562),
+    # so a top-level import here would be circular.
+    from leech.models import requires_features as _requires_features
+
+    try:
+        return _requires_features(model_type)
+    except KeyError:
+        import inspect
+
+        param = inspect.signature(model.forward).parameters.get("features")
+        return param is not None and param.default is inspect.Parameter.empty
+
+
+def resolve_wide_features(model_wrapper: object, model_type: str) -> bool:
+    """``leech.models.wide_features(model_type)``, with the same test-double
+    fallback as :func:`_resolve_requires_features`.
+
+    Used at inference call sites that already hold the wrapper/model in
+    hand (unlike bundle/checkpoint metadata call sites, which read
+    ``model_type`` from a saved file with no live instance to fall back to,
+    and stay strict). ``wide_features`` has no structural signature to
+    derive from an arbitrary ``nn.Module`` the way ``requires_features``
+    does, so the fallback reads whichever of the two real representations
+    the wrapped model actually carries: a TOML/Graph instance's own
+    ``wide_features`` attribute (set from `[params]`), or a hand-written
+    class's ``WIDE_FEATURES`` class attribute — defaulting to ``False`` for
+    anything else (e.g. a test stub), matching ``BaseModel.WIDE_FEATURES``'s
+    own default.
+    """
+    if model_type:
+        from leech.models import wide_features as _wide_features
+
+        try:
+            return _wide_features(model_type)
+        except KeyError:
+            pass
+
+    model = getattr(model_wrapper, "model", model_wrapper)
+    if hasattr(model, "wide_features"):
+        return bool(model.wide_features)
+    return bool(getattr(type(model), "WIDE_FEATURES", False))
+
+
 class ModelInferenceWrapper:
     """
     Wrapper that provides unified forward pass interface for all model types.
@@ -31,59 +87,6 @@ class ModelInferenceWrapper:
         logits = wrapper.forward_batch(batch, device)
     """
 
-    # Models that require dwell/signal features as third input
-    FEATURE_MODELS = {
-        "ConvLSTMDwell",
-        "ConvLSTMDwellAttn",
-        "ConvLSTMDwellBN",
-        "ConvLSTMDwellBNAttn",
-        "ConvLSTMDwellGNAttn",
-        "ConvLSTMDwellLNAttn",
-        "ConvLSTMRemora",
-        "TransformerDwell",
-        "TransformerDwellResidual",
-        "ConvOnly",
-        "TCNDwell",
-        "TCNDwellGN",
-        "TCNDwellLN",
-        "TCNDwellResidual",
-        "TCNDwellResidualGN",
-        "TCNDwellResidualLN",
-        "TCNDwellResidualMotor",
-        "TCNDwellResidualLNMotor",
-        "TCNDwellResidualDwellAttn",
-        "TCNDwellResidualLNDwellAttn",
-        "TCNDwellSplitResidual",
-        "TCNDwellSplitResidualLN",
-        "ResNetDwell",
-    }
-
-    # Models that receive the full dwell margin (no dwell_offset slicing)
-    # Cross-attention lets each signal position attend to all dwell positions,
-    # learning the physical motor-sensor offset
-    WIDE_FEATURE_MODELS = {
-        "ConvLSTMDwellAttn",
-        "ConvLSTMDwellBNAttn",
-        "ConvLSTMDwellGNAttn",
-        "ConvLSTMDwellLNAttn",
-        "TransformerDwell",
-        "TransformerDwellResidual",
-        "TCNDwell",
-        "TCNDwellGN",
-        "TCNDwellLN",
-        "TCNDwellResidual",
-        "TCNDwellResidualGN",
-        "TCNDwellResidualLN",
-        "TCNDwellResidualMotor",
-        "TCNDwellResidualLNMotor",
-        "TCNDwellResidualDwellAttn",
-        "TCNDwellResidualLNDwellAttn",
-        "TCNDwellSplitResidual",
-        "TCNDwellSplitResidualLN",
-        "ResNetDwell",
-        "ConvOnly",
-    }
-
     def __init__(self, model: nn.Module, model_type: str):
         """
         Initialize wrapper.
@@ -102,7 +105,7 @@ class ModelInferenceWrapper:
         # does, which is why this only became necessary with the former.
         self.forward_module: nn.Module = model
         self.model_type = model_type
-        self.requires_features = model_type in self.FEATURE_MODELS
+        self.requires_features = _resolve_requires_features(model, model_type)
         self.captured_repr: torch.Tensor | None = None
         self._repr_hook = None
 

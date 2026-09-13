@@ -37,6 +37,7 @@ from leech.io.motif_search import get_motif_searcher
 from leech.io.pod5_reader import POD5Reader
 from leech.model_export import deserialize_exported_model, deserialize_traced_model
 from leech.model_loading import _instantiate_model
+from leech.models import wide_features as _wide_features
 from leech.models.inference_wrapper import ModelInferenceWrapper, TracedModelWrapper
 from leech.preparation.reader import build_leech_read
 
@@ -203,7 +204,18 @@ def run_bundle_inference(
     )
 
     # Determine feature_start/feature_end from config (must match training data)
-    wide_features = model_type in ModelInferenceWrapper.WIDE_FEATURE_MODELS
+    # model_type is read back from a saved bundle's own metadata, so it should
+    # always be a real registry name; an unrecognized one means the bundle is
+    # stale or corrupted and must fail loudly rather than silently guess its
+    # feature-window convention.
+    try:
+        wide_features = bool(model_type) and _wide_features(model_type)
+    except KeyError as e:
+        raise KeyError(
+            f"Bundle architecture '{model_type}' is not a recognized model "
+            f"(renamed, removed, or a corrupted bundle). Cannot determine "
+            f"its feature-window convention."
+        ) from e
     _kmer_context = kmer_len // 2
     _feature_start = config.get("feature_start")
     _feature_end = config.get("feature_end")

@@ -19,10 +19,13 @@ inputs = ["signal", "sequence", "features"]
 output = "logits"
 
 [params]
+wide_features = true
 signal_len = "${DEFAULT_SIGNAL_LEN}"
+# dwell_margin: accepted for constructor-signature compatibility with
+# historical checkpoint configs; no node below reads it (leech#274).
+dwell_margin = "${DEFAULT_DWELL_MARGIN}"
 kmer_len = "${DEFAULT_KMER_LEN}"
 num_features = "${DEFAULT_NUM_FEATURES}"
-dwell_margin = "${DEFAULT_DWELL_MARGIN}"
 conv_channels = "${DEFAULT_CONV_CHANNELS}"
 lstm_hidden = "${DEFAULT_LSTM_HIDDEN}"
 num_attn_heads = 4
@@ -60,8 +63,8 @@ in_channels = "${seq_in_channels}"
 conv_channels = "${conv_channels}"
 norm_type = "${norm_type}"
 
-# Full-width (kmer_len + 2*dwell_margin) dwell features: cross-attention lets
-# every LSTM position attend to any dwell offset, so this branch is NOT pooled.
+# Full-width dwell features: cross-attention lets every LSTM position attend
+# to any dwell offset, so this branch is NOT pooled.
 [[nodes]]
 name = "feature_branch"
 layer = "featurebranch"

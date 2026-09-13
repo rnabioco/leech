@@ -1273,6 +1273,35 @@ class TestVmapBundle:
         with pytest.raises(ValueError, match="not vmap-compatible"):
             create_vmap_bundle({"Ala_Gly": pair_dir}, bundle_path, "pairwise", "1.0.0")
 
+    def test_vmap_bundle_incompatible_architecture_fails_before_loading_a_checkpoint(
+        self, tmp_path
+    ):
+        """leech#274: the vmap-incompatibility check runs off the architecture
+        alone (a fresh instance from ref_arch_config), before model_dirs is
+        touched at all — so it rejects even a directory with no checkpoint on
+        disk. Regression guard for a version that moved the check to after
+        `_load_model_for_bundling`'s `torch.load`, paying one wasted disk read
+        per bundle attempt on a name it was always going to reject."""
+        pair_dir = tmp_path / "models" / "Ala_Gly"
+        pair_dir.mkdir(parents=True)
+        config = {
+            "model_name": "ConvLSTMDwell",
+            "signal_len": 400,
+            "kmer_len": 11,
+            "num_features": 5,
+            "conv_channels": [4, 16, 64],
+            "lstm_hidden": 32,
+            "dropout": 0.1,
+        }
+        with open(pair_dir / "config.json", "w") as f:
+            json.dump(config, f)
+        # Deliberately no model_best.pt: if the fix regresses to checking
+        # after the load, this raises FileNotFoundError instead.
+
+        bundle_path = tmp_path / "bad_vmap.pt"
+        with pytest.raises(ValueError, match="not vmap-compatible"):
+            create_vmap_bundle({"Ala_Gly": pair_dir}, bundle_path, "pairwise", "1.0.0")
+
     def test_load_model_from_vmap_bundle(self, tmp_path):
         """Round-trip: create vmap bundle, load single model, verify forward pass."""
         pairs = ["Ala_Gly", "Ala_Ser"]

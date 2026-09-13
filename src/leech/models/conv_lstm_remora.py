@@ -18,7 +18,7 @@ import torch
 import torch.nn as nn
 
 from leech.constants import DEFAULT_NUM_FEATURES
-from leech.models.components import BaseModel
+from leech.models.components import BaseModel, logits_to_positive_prob
 
 DEFAULT_REMORA_SIZE = 64
 DEFAULT_REMORA_DROPOUT = 0.3
@@ -199,10 +199,7 @@ class ConvLSTMRemoraBase(BaseModel):
         self.eval()
         with torch.no_grad():
             logits = self.forward(*args, **kwargs)
-            if self.num_out == 2:
-                probs = torch.softmax(logits, dim=-1)[:, 1:2]
-            else:
-                probs = torch.sigmoid(logits)
+            probs = logits_to_positive_prob(logits, self.num_out)
         return probs
 
 
@@ -303,8 +300,5 @@ class ConvLSTMRemora(BaseModel):
         self.eval()
         with torch.no_grad():
             logits = self.forward(*args, **kwargs)
-            if self.num_out == 2:
-                probs = torch.softmax(logits, dim=-1)[:, 1:2]
-            else:
-                probs = torch.sigmoid(logits)
+            probs = logits_to_positive_prob(logits, self.num_out)
         return probs
