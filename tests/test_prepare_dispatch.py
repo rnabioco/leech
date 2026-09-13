@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -22,10 +23,16 @@ from leech.preparation import parallel as par
 
 
 def _drive(monkeypatch, work, *, num_workers, n_batches, batch_size=2):
-    """Run ``_iter_rust_batches`` over ``n_batches`` stub batches."""
+    """Run ``_iter_rust_batches`` over ``n_batches`` stub batches.
+
+    ``work`` stands in for ``_prepare_batch_rust_with_failures`` and must
+    return its ``(chunks, n_failed_reads, n_submitted)`` shape -- see
+    :class:`leech.preparation.parallel.BatchOutcome` for what the driver does
+    with each field.
+    """
     batches = [[object()] * batch_size for _ in range(n_batches)]
     monkeypatch.setattr(par, "iter_read_info_batches", lambda *a, **k: iter(batches))
-    monkeypatch.setattr(par, "_prepare_batch_rust", work)
+    monkeypatch.setattr(par, "_prepare_batch_rust_with_failures", work)
 
     return list(
         par._iter_rust_batches(
@@ -57,7 +64,7 @@ class TestRustBatchDispatchIsConcurrent:
             release.wait(timeout=20.0)
             with lock:
                 live -= 1
-            return [{"read_id": "x"}]
+            return [{"read_id": "x"}], 0, 1
 
         def watcher():
             deadline = time.monotonic() + 20.0
@@ -80,15 +87,18 @@ class TestRustBatchDispatchIsConcurrent:
         """Results arrive in submission order, each tagged with its read count."""
 
         def work(read_batch, config, motif_searcher):
-            return [{"n": len(read_batch)}]
+            return [{"n": len(read_batch)}], 0, 1
 
         results = _drive(monkeypatch, work, num_workers=4, n_batches=5, batch_size=3)
 
-        assert [n_reads for n_reads, _ in results] == [3] * 5
-        assert [chunks[0]["n"] for _, chunks in results] == [3] * 5
+        assert [outcome.n_reads for outcome in results] == [3] * 5
+        assert [outcome.chunks[0]["n"] for outcome in results] == [3] * 5
 
-    def test_failed_batch_is_skipped_not_fatal(self, monkeypatch):
-        """A bad batch must not end the run, and its reads still count."""
+    def test_failed_batch_is_flagged_not_silently_absorbed(self, monkeypatch):
+        """Issue #265: a bad batch must not end the run by itself (the
+        dispatcher stays a generator; the caller decides what's fatal), but
+        it also must not come back looking like a clean, motif-less batch.
+        """
         calls = {"n": 0}
         lock = threading.Lock()
 
@@ -98,13 +108,52 @@ class TestRustBatchDispatchIsConcurrent:
                 n = calls["n"]
             if n == 2:
                 raise RuntimeError("boom")
-            return [{"ok": True}]
+            return [{"ok": True}], 0, 1
 
         results = _drive(monkeypatch, work, num_workers=2, n_batches=4)
 
         assert len(results) == 4
-        assert sum(len(chunks) for _, chunks in results) == 3
-        assert all(n_reads == 2 for n_reads, _ in results)
+        failed = [r for r in results if r.batch_failed]
+        ok = [r for r in results if not r.batch_failed]
+        assert len(failed) == 1, "exactly one of the four batches was made to fail"
+        assert len(ok) == 3
+        # The failed batch reports its reads as failed rather than "no
+        # motif" -- that is the whole point of the flag.
+        (bad,) = failed
+        assert bad.n_reads == 2
+        assert bad.n_failed_reads == bad.n_reads
+        assert bad.chunks == []
+        # The other batches are unaffected: still 1 chunk, no failures.
+        assert all(r.n_failed_reads == 0 for r in ok)
+        assert sum(len(r.chunks) for r in ok) == 3
+
+    def test_zero_yield_despite_submitted_reads_counts_as_failed(self, monkeypatch):
+        """A batch that fed real reads into Rust (a motif match found) and
+        got nothing back, with no exception, is the closest signal a Python
+        driver has to "Rust silently dropped every read" -- it must not read
+        as a clean no-motif batch either."""
+
+        def work(read_batch, config, motif_searcher):
+            return [], 0, 2  # 2 reads submitted, Rust returned nothing
+
+        (outcome,) = _drive(monkeypatch, work, num_workers=1, n_batches=1)
+
+        assert not outcome.batch_failed
+        assert outcome.chunks == []
+        assert outcome.n_failed_reads == 2
+
+    def test_genuinely_motifless_batch_is_not_counted_as_failed(self, monkeypatch):
+        """The other half of the same corner: nothing submitted (no read in
+        the batch had a motif match) is a legitimate, non-failure outcome."""
+
+        def work(read_batch, config, motif_searcher):
+            return [], 0, 0  # nothing submitted -- no motif anywhere in the batch
+
+        (outcome,) = _drive(monkeypatch, work, num_workers=1, n_batches=1)
+
+        assert not outcome.batch_failed
+        assert outcome.chunks == []
+        assert outcome.n_failed_reads == 0
 
     def test_in_flight_window_is_bounded(self, monkeypatch):
         """The driver must not pull the whole BAM into memory up front."""
@@ -118,7 +167,7 @@ class TestRustBatchDispatchIsConcurrent:
         def work(read_batch, config, motif_searcher):
             started.release()
             proceed.wait(timeout=20.0)
-            return []
+            return [], 0, 0
 
         def counting_batches(*a, **k):
             for _ in range(500):
@@ -126,7 +175,7 @@ class TestRustBatchDispatchIsConcurrent:
                 yield [object(), object()]
 
         monkeypatch.setattr(par, "iter_read_info_batches", counting_batches)
-        monkeypatch.setattr(par, "_prepare_batch_rust", work)
+        monkeypatch.setattr(par, "_prepare_batch_rust_with_failures", work)
 
         gen = par._iter_rust_batches(
             bam_path=None,
@@ -224,3 +273,55 @@ class TestBackendSelection:
         cfg = self._config(monkeypatch)
         with pytest.raises(ValueError, match="unknown backend"):
             par._select_prepare_backend(cfg, "rusty")
+
+
+class TestPrepareTrainingDataParallelFailureHandling:
+    """Issue #265: the run itself -- not just the low-level dispatcher --
+    must fail loudly when it was systematically broken, rather than finishing
+    with exit code 0 and a pile of warnings. These drive
+    ``prepare_training_data_parallel`` end to end, stubbing out only the
+    per-batch dispatch (``_iter_python_batches``), so what's under test is the
+    aggregation and raise logic, not either backend's pipeline.
+    """
+
+    @staticmethod
+    def _run(monkeypatch, outcomes):
+        monkeypatch.setattr(par, "_select_prepare_backend", lambda cfg, choice: False)
+        monkeypatch.setattr(par, "_iter_python_batches", lambda *a, **k: iter(outcomes))
+        return par.prepare_training_data_parallel(
+            bam_path=Path("fake.bam"), config=object(), num_workers=1, chunk_size=2
+        )
+
+    def test_any_failed_batch_raises(self, monkeypatch):
+        outcomes = [
+            par.BatchOutcome(n_reads=2, chunks=[{"read_id": "r0"}]),
+            par.BatchOutcome(n_reads=2, chunks=[], n_failed_reads=2, batch_failed=True),
+        ]
+        with pytest.raises(RuntimeError, match="failed outright"):
+            self._run(monkeypatch, outcomes)
+
+    def test_high_failed_read_fraction_raises(self, monkeypatch):
+        """9 of 10 reads failed -- well past the 50% default threshold."""
+        outcomes = [par.BatchOutcome(n_reads=10, chunks=[{"read_id": "r0"}], n_failed_reads=9)]
+        with pytest.raises(RuntimeError, match="threshold"):
+            self._run(monkeypatch, outcomes)
+
+    def test_low_failed_read_fraction_does_not_raise(self, monkeypatch):
+        """3 of 10 reads failed -- under the threshold, a healthy-ish run."""
+        chunks_out = [{"read_id": f"r{i}"} for i in range(4)]
+        outcomes = [par.BatchOutcome(n_reads=10, chunks=chunks_out, n_failed_reads=3)]
+        chunks, stats = self._run(monkeypatch, outcomes)
+        assert len(chunks) == 4
+        assert stats["failed_reads"] == 3
+        assert stats["failed_batches"] == 0
+        # `reads_without_motif` must not double-count the failed reads.
+        assert stats["reads_without_motif"] == 10 - 4 - 3
+
+    def test_zero_reads_does_not_raise(self, monkeypatch):
+        """An empty BAM (or a filter that matched nothing) is not a failure
+        this check is meant to catch -- it returns a clean empty result."""
+        chunks, stats = self._run(monkeypatch, [])
+        assert chunks == []
+        assert stats["total_chunks"] == 0
+        assert stats["failed_reads"] == 0
+        assert stats["failed_batches"] == 0

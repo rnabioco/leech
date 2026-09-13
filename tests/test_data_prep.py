@@ -1297,5 +1297,44 @@ class TestReadInfoReferenceSequence:
         assert all(info.reference_sequence for info in infos)
 
 
+class TestHandlePrepareZeroChunks:
+    """Issue #265: ``handle_prepare`` must fail the run (non-zero exit) when
+    zero chunks were extracted, instead of warning and returning a
+    ``{"n_chunks": 0, ...}`` result with exit code 0. The per-batch dispatch
+    (``prepare_training_data_parallel``) is stubbed out so this is a test of
+    ``handle_prepare``'s own zero-chunk handling, not the dispatcher's --
+    that one is covered in ``test_prepare_dispatch.py``.
+    """
+
+    @staticmethod
+    def _fake_zero_chunks(**kwargs):
+        return [], {
+            "total_reads": 5,
+            "reads_with_motif": 0,
+            "reads_without_motif": 5,
+            "total_chunks": 0,
+            "failed_reads": 0,
+            "failed_batches": 0,
+        }
+
+    def test_zero_chunks_raises_instead_of_returning(self, tmp_path, monkeypatch):
+        from leech.commands.prepare import handle_prepare
+
+        monkeypatch.setattr(
+            "leech.preparation.prepare_training_data_parallel", self._fake_zero_chunks
+        )
+
+        with pytest.raises(RuntimeError, match="0 chunks"):
+            handle_prepare(
+                pod5=tmp_path / "fake.pod5",
+                bam=tmp_path / "fake.bam",
+                output_dir=tmp_path / "out",
+                motif="CCAGGC",
+                motif_reference="bam",
+                refine_signal_map=False,
+                workers=2,
+            )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

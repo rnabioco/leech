@@ -41,6 +41,34 @@ class SignalConfig:
     kmer_table_path: Path | None = None
     compute_features: bool = True
 
+    def __post_init__(self) -> None:
+        # `refine_signal_map=False` with a `signal_refiner` attached is
+        # refused rather than unified across backends (issue #265). Python's
+        # `build_leech_read` computed the 3 k-mer residual feature rows off
+        # `signal_refiner` alone, ignoring `refine_signal_map`; the Rust
+        # dispatch only forwarded the kmer table -- and Rust's own
+        # `process_read_signal` only computes the expected levels the
+        # residuals need -- when `refine_signal_map` is also True. Unifying
+        # on the looser (Python) rule would need Rust's internal gate lifted
+        # too, not just the Python dispatch call site; refusing the
+        # combination is the contained fix and costs nothing, because no
+        # caller relies on it: every `SignalConfig` construction in this
+        # codebase (CLI `data prepare`, single-model and bundle inference)
+        # already sets `refine_signal_map=True` whenever it builds a
+        # `signal_refiner`. Only direct `PrepareConfig`/`SignalConfig`
+        # construction through the Python API could reach it.
+        if not self.refine_signal_map and self.signal_refiner is not None:
+            raise ValueError(
+                "SignalConfig: refine_signal_map=False with a signal_refiner "
+                "attached is not supported. The two prepare backends disagree "
+                "on what this means (Python computes k-mer residual features "
+                "off the refiner regardless of refine_signal_map; Rust "
+                "requires refine_signal_map=True to compute them at all), so "
+                "the combination silently produced different chunk widths "
+                "per backend (#265). Either drop the refiner "
+                "(signal_refiner=None) or set refine_signal_map=True."
+            )
+
 
 @dataclass
 class MotifConfig:

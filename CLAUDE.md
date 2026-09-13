@@ -225,7 +225,12 @@ uv run leech data prepare --pod5 data.pod5 --bam alignments.bam \
 | Python (fallback) | `_iter_python_batches` — `mp.Pool(num_workers)` | each process holds its own cached POD5 reader |
 
 `--workers` sets the number of batches in flight on **both**. Both iterators
-yield `(n_reads, chunks)`; the caller does progress and accounting once.
+yield a `BatchOutcome(n_reads, chunks, n_failed_reads, batch_failed)`; the
+caller (`prepare_training_data_parallel`) does progress and accounting once.
+`n_failed_reads` and `batch_failed` exist so a systematically broken run
+(a Rust panic on every batch, a bad config) raises instead of finishing with
+"0 chunks, exit 0" and a pile of warnings — see "Failing loud on a broken
+prepare run" below (issue #265).
 
 **Do not turn either dispatcher back into a serial `for` loop.** This is the
 single easiest mistake to make in this module and it has been made before
@@ -234,6 +239,33 @@ inside it is rayon-parallel, but nearly all the wall clock on a large POD5 is
 POD5 I/O, which is one sequential stream of page faults per call. Driving it
 serially leaves one read outstanding at a time and loses ~10-80x to the process
 pool. `tests/test_prepare_dispatch.py` fails if this regresses.
+
+**Failing loud on a broken prepare run (issue #265).** Before this, a failed
+Rust batch was swallowed to an empty result, a per-read exception was
+`warning; continue`, and zero chunks extracted was a warning and a normal
+return -- so a systematic failure (a Rust panic on every batch, a bad config,
+a dtype error hit on every read) looked identical to "0 chunks, exit 0" plus N
+warnings in an sbatch log. `prepare_training_data_parallel` now raises a
+`RuntimeError` if any batch failed outright (`BatchOutcome.batch_failed`), or
+if more than `MAX_FAILED_READ_FRACTION` (50%, a module constant in
+`parallel.py`) of individual reads failed; `handle_prepare` raises rather than
+warning-and-returning when zero chunks were extracted, on both the parallel
+and sequential paths.
+
+This is deliberately zero-tolerance, not "log and keep going": a batch that
+failed outright signals the *pipeline itself* misbehaved (a panic, a dtype
+mismatch), which means other batches that happened not to panic could still
+be silently wrong rather than merely absent -- the same reasoning that
+underlies every "raise rather than warn" rule elsewhere in this file. One
+consequence worth knowing: when `chunk_sink=spool.append` (the normal `data
+prepare` path), a `RuntimeError` here propagates out of `with ChunkSpool(...)
+as spool:` before `spool.write_npz()` runs, and `ChunkSpool.close()` discards
+every batch already spooled to disk -- so a single failed batch near the end
+of a multi-hour run currently costs the whole run, not just the bad batch.
+That tradeoff was chosen deliberately for #265 (don't trust a corpus one of
+whose batches came from a misbehaving pipeline); a retry-per-batch or
+save-partial-and-report policy would be a different, larger change and is not
+implemented.
 
 ### POD5 access from Rust
 

@@ -308,6 +308,54 @@ class TestBackendFieldParity:
         _assert_npz_parity(py, rs)
 
 
+class TestRefineFalseWithRefinerIsRefused:
+    """Issue #265: ``refine_signal_map=False`` with a ``signal_refiner``
+    attached is a config corner the two backends disagreed on -- Python's
+    ``build_leech_read`` computed the 3 k-mer residual feature rows off the
+    refiner alone (ignoring ``refine_signal_map``), while the Rust dispatch
+    only forwarded the kmer table, and Rust's own pipeline only computed the
+    expected levels those residuals need, when ``refine_signal_map`` was also
+    True. Today's ``_config()`` fixture above never reaches this branch: it
+    sets ``signal_refiner=None`` whenever ``refine=False``.
+
+    Rather than unify the two backends on this corner (which would mean
+    lifting Rust's internal gate, not just the Python dispatch call site),
+    ``SignalConfig.__post_init__`` refuses the combination outright. These
+    tests reach it directly, and confirm the raise is consistent regardless
+    of whether the ``SignalConfig`` is used standalone or inside a
+    ``PrepareConfig``.
+    """
+
+    @staticmethod
+    def _refiner():
+        from leech.signal_refine import SigMapRefiner
+
+        return SigMapRefiner.from_table(LEVELS_FILE, scale_iters=2)
+
+    def test_signal_config_raises(self):
+        with pytest.raises(ValueError, match="refine_signal_map=False"):
+            SignalConfig(refine_signal_map=False, signal_refiner=self._refiner())
+
+    def test_prepare_config_raises_the_same_way(self):
+        with pytest.raises(ValueError, match="refine_signal_map=False"):
+            PrepareConfig(
+                pod5_path=TRNA_POD5,
+                signal=SignalConfig(refine_signal_map=False, signal_refiner=self._refiner()),
+                motif=MotifConfig(motif="CCAGGC", motif_offset=2),
+                chunk=ChunkConfig(),
+            )
+
+    def test_refine_true_with_refiner_is_unaffected(self):
+        """The guard targets the specific corner, not refiners in general."""
+        cfg = SignalConfig(refine_signal_map=True, signal_refiner=self._refiner())
+        assert cfg.signal_refiner is not None
+
+    def test_refine_false_without_refiner_is_unaffected(self):
+        """The other half of the corner: no refiner attached is always fine."""
+        cfg = SignalConfig(refine_signal_map=False)
+        assert cfg.signal_refiner is None
+
+
 class TestParityHarnessItself:
     """The harness has to be able to fail, or it proves nothing."""
 
