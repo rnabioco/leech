@@ -61,6 +61,7 @@ def handle_predict(
     no_compile: bool = False,
     output_format: str = "bam",
     copy_tags: list[str] | None = None,
+    parameter_sources: dict[str, bool] | None = None,
 ) -> None:
     """
     Handle the predict command logic.
@@ -128,6 +129,7 @@ def handle_predict(
                 no_compile=no_compile,
                 output_format=output_format,
                 copy_tags=copy_tags,
+                parameter_sources=parameter_sources,
             )
         else:
             if output_format == "tsv":
@@ -158,6 +160,7 @@ def handle_predict(
                 num_workers=workers,
                 read_batch_size=read_batch_size,
                 backend=backend,
+                parameter_sources=parameter_sources,
             )
     else:
         if output_format == "tsv":
@@ -203,6 +206,7 @@ def handle_predict(
             read_batch_size=read_batch_size,
             backend=backend,
             no_compile=no_compile,
+            parameter_sources=parameter_sources,
         )
 
     console.print("[bold green]Inference complete![/bold green]")

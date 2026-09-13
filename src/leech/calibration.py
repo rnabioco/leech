@@ -23,6 +23,7 @@ import torch.nn as nn
 from torch.optim import LBFGS
 from torch.utils.data import DataLoader
 
+from leech.constants import DEFAULT_SEQ_ENCODING_FALLBACK
 from leech.dataset import LeechDataset, collate_fn, resolve_val_dataloader_workers
 from leech.models import get_model
 from leech.models.inference_wrapper import ModelInferenceWrapper
@@ -141,7 +142,7 @@ def calibrate_model(
     model_name = config["model_name"]
     signal_len = config["signal_len"]
     kmer_len = config["kmer_len"]
-    seq_encoding = config.get("seq_encoding", "base_onehot")
+    seq_encoding = config.get("seq_encoding", DEFAULT_SEQ_ENCODING_FALLBACK)
     signal_kmer_context = tuple(config.get("signal_kmer_context", (4, 4)))
 
     # Build model init kwargs
@@ -498,7 +499,7 @@ def calibrate_model_multiclass(
     signal_len = config["signal_len"]
     kmer_len = config["kmer_len"]
     num_out = config.get("num_out", 1)
-    seq_encoding = config.get("seq_encoding", "base_onehot")
+    seq_encoding = config.get("seq_encoding", DEFAULT_SEQ_ENCODING_FALLBACK)
     signal_kmer_context = tuple(config.get("signal_kmer_context", (4, 4)))
 
     # Build model init kwargs

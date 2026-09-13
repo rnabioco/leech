@@ -12,7 +12,6 @@ import torch
 from rich.progress import Progress
 
 from leech.configs import ChunkConfig, InferenceConfig, MotifConfig, SignalConfig
-from leech.constants import DEFAULT_REFINE_HALF_BANDWIDTH
 from leech.features import extract_move_table
 from leech.inference.aggregation import (
     aggregate_one_vs_all,
@@ -22,7 +21,7 @@ from leech.inference.aggregation import (
 )
 from leech.inference.helpers import (
     BatchAccumulator,
-    _check_config_consistency,
+    InferenceSpec,
     _encode_sequence_for_inference,
     _write_prediction_tags,
     build_rust_extraction_kwargs,
@@ -37,7 +36,6 @@ from leech.io.motif_search import get_motif_searcher
 from leech.io.pod5_reader import POD5Reader
 from leech.model_export import deserialize_exported_model, deserialize_traced_model
 from leech.model_loading import _instantiate_model
-from leech.models import wide_features as _wide_features
 from leech.models.inference_wrapper import ModelInferenceWrapper, TracedModelWrapper
 from leech.preparation.reader import build_leech_read
 
@@ -108,6 +106,7 @@ def run_bundle_inference(
     num_workers: int = 0,
     read_batch_size: int = 10_000,
     backend: str = "auto",
+    parameter_sources: dict[str, bool] | None = None,
 ) -> None:
     """
     Run all models from a bundle on each read, aggregate to a single AA prediction.
@@ -146,97 +145,44 @@ def run_bundle_inference(
     comparison_type = metadata["comparison_type"]
     is_torchscript = metadata.get("torchscript", False)
 
-    signal_len = config["signal_len"]
-    kmer_len = config["kmer_len"]
     model_type = config.get("model_name", metadata.get("architecture", ""))
-    dwell_offset = config.get("dwell_offset", 0)
-    seq_encoding = config.get("seq_encoding", "signal_kmer")
-    signal_kmer_context = tuple(config.get("signal_kmer_context", (4, 4)))
-
-    # Resolve motif/offset/justify from config, erroring on CLI conflict
-    motif = _check_config_consistency("motif", motif, config.get("motif"), None)
-    motif_offset = _check_config_consistency(
-        "motif-offset", motif_offset, config.get("motif_offset"), 0
+    spec = InferenceSpec.from_config(
+        config,
+        model_type=model_type,
+        motif=motif,
+        motif_offset=motif_offset,
+        base_justify=base_justify,
+        anchor=anchor,
+        reference_fasta=reference_fasta,
+        default_refine_scale_iters=2,
+        parameter_sources=parameter_sources,
+        strict_model_type=True,
     )
-    if motif is not None:
-        logger.info(f"Motif from bundle config: {motif} (offset={motif_offset})")
+    signal_len = spec.signal_len
+    kmer_len = spec.kmer_len
+    dwell_offset = spec.dwell_offset
+    seq_encoding = spec.seq_encoding
+    signal_kmer_context = spec.signal_kmer_context
+    motif = spec.motif
+    motif_offset = spec.motif_offset
+    base_justify = spec.base_justify
+    anchor = spec.anchor
+    reference_fasta = spec.reference_fasta
+    signal_context = spec.signal_context
+    kmer_context = spec.kmer_context
+    wide_features = spec.wide_features
+    _kmer_context = kmer_context
+    _feature_start = spec.feature_start
+    _feature_end = spec.feature_end
 
-    if motif is None:
-        raise ValueError(
-            "motif is None after auto-read from bundle config. "
-            "Either pass --motif on the CLI or ensure the bundle config contains a non-null 'motif' field. "
-            "Without a motif, inference predicts at every position, producing noise."
-        )
-
-    base_justify = _check_config_consistency(
-        "base-justify", base_justify, config.get("base_justify"), "center"
-    )
     logger.info(f"base_justify: {base_justify}")
-
-    anchor = _check_config_consistency("anchor", anchor, config.get("anchor"), "reference")
     logger.info(f"anchor: {anchor}")
-
-    if reference_fasta is None:
-        cfg_ref = config.get("reference_fasta")
-        if cfg_ref is not None:
-            cfg_path = Path(cfg_ref)
-            if cfg_path.exists():
-                reference_fasta = cfg_path
-                logger.info(f"reference_fasta from config: {reference_fasta}")
-            else:
-                logger.warning(
-                    f"reference_fasta from config ({cfg_ref}) not found; "
-                    f"pass --reference-fasta explicitly"
-                )
-
-    # Use asymmetric context if available, otherwise fall back to symmetric
-    left_ctx = config.get("left_context")
-    right_ctx = config.get("right_context")
-    if left_ctx is not None and right_ctx is not None:
-        signal_context = (left_ctx, right_ctx)
-    else:
-        signal_context = (signal_len // 2, signal_len // 2)
-    kmer_context = kmer_len // 2
-
+    if reference_fasta is not None:
+        logger.info(f"reference_fasta: {reference_fasta}")
     logger.info(
         f"Bundle: {metadata['architecture']}, {len(pairs)} models, v{metadata['bundle_version']}"
         f"{' (TorchScript)' if is_torchscript else ''}"
     )
-
-    # Determine feature_start/feature_end from config (must match training data)
-    # model_type is read back from a saved bundle's own metadata, so it should
-    # always be a real registry name; an unrecognized one means the bundle is
-    # stale or corrupted and must fail loudly rather than silently guess its
-    # feature-window convention.
-    try:
-        wide_features = bool(model_type) and _wide_features(model_type)
-    except KeyError as e:
-        raise KeyError(
-            f"Bundle architecture '{model_type}' is not a recognized model "
-            f"(renamed, removed, or a corrupted bundle). Cannot determine "
-            f"its feature-window convention."
-        ) from e
-    _kmer_context = kmer_len // 2
-    _feature_start = config.get("feature_start")
-    _feature_end = config.get("feature_end")
-    if _feature_start is None and "feature_left" in config:
-        _feature_start = -config["feature_left"]
-    if _feature_end is None and "feature_right" in config:
-        _feature_end = config["feature_right"]
-    if _feature_start is None and "dwell_margin_left" in config:
-        _feature_start = -(_kmer_context + config["dwell_margin_left"])
-    if _feature_end is None and "dwell_margin_right" in config:
-        _feature_end = _kmer_context + config["dwell_margin_right"]
-    if wide_features and _feature_start is None and _feature_end is None:
-        _model_margin = getattr(_instantiate_model(config), "dwell_margin", 0)
-        if _model_margin:
-            _feature_start = -(_kmer_context + _model_margin)
-            _feature_end = _kmer_context + _model_margin
-            logger.warning(
-                f"Bundle config missing feature_start/end, "
-                f"falling back to model default margin: {_model_margin}"
-            )
-
     logger.info(f"Signal context: {signal_context}, kmer_len: {kmer_len}")
     logger.info(f"seq_encoding: {seq_encoding}, base_justify: {base_justify}")
     _fs = _feature_start if _feature_start is not None else -_kmer_context
@@ -327,13 +273,13 @@ def run_bundle_inference(
     motif_searcher = get_motif_searcher(
         mode="fasta" if reference_sequences else "bam",
         reference_sequences=reference_sequences,
-        skip_indels=config.get("skip_motif_indels", False),
+        skip_indels=spec.skip_motif_indels,
         anchor=anchor,
         # Recorded by `data prepare` and carried through `model train`. Without
         # it, a corpus prepared with --no-require-query-mapping was scored at
         # predict time with the gate back on, i.e. on a different read
         # population than the model was trained on.
-        require_query_mapping=config.get("require_query_mapping", True),
+        require_query_mapping=spec.require_query_mapping,
     )
 
     # Open BAM for header only
@@ -348,13 +294,13 @@ def run_bundle_inference(
     else:
         first_wrapper = next(iter(wrappers.values()))
         needs_features = first_wrapper.requires_features
-    bundle_signal_in_channels = config.get("signal_in_channels", 1)
+    bundle_signal_in_channels = spec.signal_in_channels
     bundle_compute_features = needs_features or bundle_signal_in_channels > 1
 
     # Signal map refinement for bundle models (needed for kmer residual signal channel)
-    bundle_refine = False
+    bundle_refine = spec.refine_signal_map
     bundle_refiner = None
-    if config.get("refine_signal_map", True) or bundle_signal_in_channels > 1:
+    if bundle_refine:
         from leech.data import get_kmer_table
         from leech.inference.helpers import _warn_if_kmer_table_drifted
         from leech.signal_refine import SigMapRefiner
@@ -363,12 +309,11 @@ def run_bundle_inference(
         _warn_if_kmer_table_drifted(config.get("kmer_table_sha256"), kmer_table_path)
         bundle_refiner = SigMapRefiner.from_table(
             kmer_table_path,
-            half_bandwidth=config.get("refine_half_bandwidth", DEFAULT_REFINE_HALF_BANDWIDTH),
-            do_rough_rescale=config.get("refine_do_rough_rescale", True),
-            scale_iters=config.get("refine_scale_iters", 2),
-            center_idx=config.get("refine_kmer_center_idx", -1),
+            half_bandwidth=spec.refine_half_bandwidth,
+            do_rough_rescale=spec.refine_do_rough_rescale,
+            scale_iters=spec.refine_scale_iters,
+            center_idx=spec.refine_kmer_center_idx,
         )
-        bundle_refine = True
         logger.info(
             f"Signal map refinement enabled for bundle "
             f"(signal_in_channels={bundle_signal_in_channels})"
@@ -381,7 +326,7 @@ def run_bundle_inference(
     # verbatim at inference time.
     dwell_templates_arr: np.ndarray | None = None
     dwell_template_min_pos: int = 0
-    bundle_dwell_template_table = config.get("dwell_template_table") or None
+    bundle_dwell_template_table = spec.dwell_template_table
     if bundle_dwell_template_table:
         from leech.dataset import load_dwell_template_table
 
@@ -499,7 +444,7 @@ def run_bundle_inference(
         feature_end=_feature_end,
         signal_context=signal_context,
         kmer_context=kmer_context,
-        recover_softclip_signal=config.get("recover_softclip_signal", False),
+        recover_softclip_signal=spec.recover_softclip_signal,
     )
 
     logger.info(f"Streaming bundle inference with read_batch_size={read_batch_size}")
@@ -551,10 +496,8 @@ def run_bundle_inference(
             signal_kmer_context=signal_kmer_context,
             refine_signal_map=bundle_refine,
             signal_refiner=bundle_refiner,
-            refine_half_bandwidth=config.get(
-                "refine_half_bandwidth", DEFAULT_REFINE_HALF_BANDWIDTH
-            ),
-            refine_scale_iters=config.get("refine_scale_iters", 2),
+            refine_half_bandwidth=spec.refine_half_bandwidth,
+            refine_scale_iters=spec.refine_scale_iters,
             signal_in_channels=bundle_signal_in_channels,
             base_justify=base_justify,
         )
@@ -579,8 +522,8 @@ def run_bundle_inference(
                 motif=motif,
                 motif_offset=motif_offset,
                 reference_sequences=reference_sequences,
-                skip_motif_indels=config.get("skip_motif_indels", False),
-                require_query_mapping=config.get("require_query_mapping", True),
+                skip_motif_indels=spec.skip_motif_indels,
+                require_query_mapping=spec.require_query_mapping,
             ),
             chunk=ChunkConfig(
                 base_justify=base_justify,
@@ -588,7 +531,7 @@ def run_bundle_inference(
                 feature_end=_feature_end,
                 signal_context=signal_context,
                 kmer_context=kmer_context,
-                recover_softclip_signal=config.get("recover_softclip_signal", False),
+                recover_softclip_signal=spec.recover_softclip_signal,
             ),
             seq_encoding=seq_encoding,
             signal_kmer_context=signal_kmer_context,

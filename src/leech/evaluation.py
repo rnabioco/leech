@@ -20,8 +20,9 @@ from sklearn.metrics import (
 )
 from torch.utils.data import DataLoader
 
-from leech.constants import TORCH_COMPILE_MIN_SAMPLES
+from leech.constants import DEFAULT_SEQ_ENCODING_FALLBACK, TORCH_COMPILE_MIN_SAMPLES
 from leech.dataset import LeechDataset, collate_fn, resolve_dataloader_workers
+from leech.inference.helpers import is_multiclass as _is_multiclass_config
 from leech.metrics import compute_metrics, print_metrics, save_metrics
 from leech.model_loading import load_model_from_checkpoint
 from leech.models.inference_wrapper import ModelInferenceWrapper
@@ -125,7 +126,7 @@ def evaluate_model(
     num_out = config.get("num_out", 1)
     left_context = config.get("left_context")
     right_context = config.get("right_context")
-    seq_encoding = config.get("seq_encoding", "signal_kmer")
+    seq_encoding = config.get("seq_encoding", DEFAULT_SEQ_ENCODING_FALLBACK)
     dwell_offset = config.get("dwell_offset", 0)
     signal_kmer_context = tuple(config.get("signal_kmer_context", (4, 4)))
     signal_mode = config.get("signal_mode", "both")
@@ -208,7 +209,10 @@ def evaluate_model(
     # Run evaluation
     logger.info("\nRunning evaluation...")
 
-    is_multiclass = num_out > 2
+    # One definition, shared with predict: num_out > 1 (issue #269). This used
+    # to be `> 2` here, so a 2-output cross-entropy model was scored as binary
+    # by `eval test` while `predict` tagged and calibrated it as multiclass.
+    is_multiclass = _is_multiclass_config(config)
     # Same decision predict makes (never autocasts by default): opt in with
     # --mixed-precision rather than autocasting on CUDA unconditionally (#264).
     use_autocast = mixed_precision and device != "cpu"

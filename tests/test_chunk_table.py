@@ -270,3 +270,73 @@ class TestPickling:
             assert row["read_id"] == original["read_id"]
             assert row["label_int"] == original["label_int"]
             assert row["sequence"] == original["sequence"]
+
+
+class TestFeatureWindowFromMetadataTableForm:
+    """The column form of ``feature_window_from_metadata`` -- read from the
+    whole corpus, not chunk 0 (issue #269, generalizing #230's failure mode).
+    """
+
+    def test_resolves_a_consistent_window(self, corpus):
+        from leech.chunking import feature_window_from_metadata
+
+        path, _ = corpus  # every chunk in `corpus` has feature_start=-6, feature_end=6
+        table = ChunkTable.from_npz(path)
+        start, end = feature_window_from_metadata(table, kmer_context=5)
+        assert (start, end) == (-6, 6)
+
+    def test_falls_back_to_dwell_margin_left_column(self, tmp_path):
+        from leech.chunking import feature_window_from_metadata
+
+        chunks = make_chunks(4)
+        path = tmp_path / "legacy.npz"
+        np.savez(
+            path,
+            sequences=np.array([c["sequence"] for c in chunks], dtype=str),
+            labels=np.array([c["label"] for c in chunks], dtype=str),
+            labels_int=np.array([c["label_int"] for c in chunks], dtype=np.int64),
+            read_ids=np.array([c["read_id"] for c in chunks], dtype=str),
+            base_indices=np.array([c["base_idx"] for c in chunks], dtype=np.int64),
+            dwell_margin_lefts=np.full(len(chunks), 4, dtype=np.int64),
+        )
+        table = ChunkTable.from_npz(path)
+        start, end = feature_window_from_metadata(table, kmer_context=5)
+        assert start == -(5 + 4)
+        assert end is None  # no feature_end / dwell_margin_right column at all
+
+    def test_no_window_fields_at_all_returns_none(self, tmp_path):
+        from leech.chunking import feature_window_from_metadata
+
+        chunks = make_chunks(4)
+        path = tmp_path / "bare.npz"
+        np.savez(
+            path,
+            sequences=np.array([c["sequence"] for c in chunks], dtype=str),
+            labels=np.array([c["label"] for c in chunks], dtype=str),
+            labels_int=np.array([c["label_int"] for c in chunks], dtype=np.int64),
+            read_ids=np.array([c["read_id"] for c in chunks], dtype=str),
+            base_indices=np.array([c["base_idx"] for c in chunks], dtype=np.int64),
+        )
+        table = ChunkTable.from_npz(path)
+        assert feature_window_from_metadata(table, kmer_context=5) == (None, None)
+
+    def test_inconsistent_feature_start_raises(self, tmp_path):
+        """A corpus mixing two prepare runs with different --feature-start
+        values must not silently train on whichever value chunk 0 carried."""
+        from leech.chunking import feature_window_from_metadata
+
+        chunks = make_chunks(4)
+        path = tmp_path / "inconsistent.npz"
+        feature_starts = np.array([-6, -6, -5, -6], dtype=np.int64)
+        np.savez(
+            path,
+            sequences=np.array([c["sequence"] for c in chunks], dtype=str),
+            labels=np.array([c["label"] for c in chunks], dtype=str),
+            labels_int=np.array([c["label_int"] for c in chunks], dtype=np.int64),
+            read_ids=np.array([c["read_id"] for c in chunks], dtype=str),
+            base_indices=np.array([c["base_idx"] for c in chunks], dtype=np.int64),
+            feature_starts=feature_starts,
+        )
+        table = ChunkTable.from_npz(path)
+        with pytest.raises(ValueError, match="inconsistent"):
+            feature_window_from_metadata(table, kmer_context=5)

@@ -51,6 +51,112 @@ def resolve_feature_window(
     return start, end, end - start + 1
 
 
+def _assert_constant_column(column: np.ndarray, name: str) -> None:
+    """Refuse a corpus whose stored feature window is not the same on every row.
+
+    Reading column 0 (or any single row) and trusting it for the whole corpus
+    is issue #230's failure mode generalized to this field: a corpus written
+    by two prepare runs with different ``--feature-start``/``--feature-end``
+    would otherwise train silently on whichever value the first chunk happened
+    to carry.
+    """
+    if column.size and not np.all(column == column[0]):
+        raise ValueError(
+            f"Corpus has inconsistent {name!r} across chunks: {np.unique(column).tolist()}. "
+            f"A training run needs one feature window throughout; this corpus mixes prepare "
+            f"runs with different --feature-start/--feature-end and must be re-prepared "
+            f"consistently before it can be trained on."
+        )
+
+
+def _feature_window_from_table(table, kmer_context: int) -> tuple[int | None, int | None]:
+    """Column form of :func:`feature_window_from_metadata`.
+
+    ``feature_left``/``feature_right`` are never written as columns (only as
+    legacy per-chunk-dict fields on the row path), so the fallback chain here
+    is shorter than the mapping form's.
+    """
+    start_col = table.values("feature_start")
+    if start_col is not None:
+        _assert_constant_column(start_col, "feature_start")
+        start = int(start_col[0])
+    else:
+        margin_col = table.values("dwell_margin_left")
+        if margin_col is not None:
+            _assert_constant_column(margin_col, "dwell_margin_left")
+            start = -(kmer_context + int(margin_col[0]))
+        else:
+            start = None
+
+    end_col = table.values("feature_end")
+    if end_col is not None:
+        _assert_constant_column(end_col, "feature_end")
+        end = int(end_col[0])
+    else:
+        end = None
+
+    return start, end
+
+
+def _feature_window_from_mapping(source, kmer_context: int) -> tuple[int | None, int | None]:
+    """Mapping form of :func:`feature_window_from_metadata`.
+
+    ``source`` is a model config dict or a single chunk (a plain dict or a
+    :class:`~leech.chunking.table.ChunkRow`). Mirrors the fallback chain that
+    used to be pasted into ``single.py``, ``bundle.py``, ``training.py`` and
+    ``dataset.py`` separately: ``feature_start``/``feature_end`` (current),
+    then ``feature_left``/``feature_right`` (legacy), then
+    ``dwell_margin_left``/``dwell_margin_right`` (older legacy, ``right``
+    resolved from the stored feature array's width when one is present).
+    """
+    if source.get("feature_start") is not None:
+        start = int(source["feature_start"])
+    elif source.get("feature_left") is not None:
+        start = -int(source["feature_left"])
+    elif source.get("dwell_margin_left") is not None:
+        start = -(kmer_context + int(source["dwell_margin_left"]))
+    else:
+        start = None
+
+    if source.get("feature_end") is not None:
+        end = int(source["feature_end"])
+    elif source.get("feature_right") is not None:
+        end = int(source["feature_right"])
+    elif source.get("dwell_margin_right") is not None:
+        raw_features = source.get("features")
+        if raw_features is not None and getattr(raw_features, "ndim", 1) > 1 and start is not None:
+            end = raw_features.shape[1] - 1 + start
+        else:
+            end = None
+    else:
+        end = None
+
+    return start, end
+
+
+def feature_window_from_metadata(source, kmer_context: int) -> tuple[int | None, int | None]:
+    """Resolve the stored ``(feature_start, feature_end)`` from a config or corpus.
+
+    ``None`` for either element means nothing was stored for it -- callers
+    fall back to the k-mer window via :func:`resolve_feature_window`, exactly
+    as a fresh corpus with no feature-window fields at all always has.
+
+    ``source`` is either a :class:`~leech.chunking.table.ChunkTable` (the
+    window is read as a column and asserted constant across every chunk -- see
+    :func:`_assert_constant_column`) or a mapping -- a model's ``config.json``
+    dict or a single chunk (a plain dict or a
+    :class:`~leech.chunking.table.ChunkRow`). This is the one place the
+    fallback chain is written; ``training.py``, ``dataset.py`` and
+    ``InferenceSpec`` all resolve through it rather than carrying their own
+    copies (issue #269).
+    """
+    from leech.chunking.table import ChunkTable
+
+    if isinstance(source, ChunkTable):
+        return _feature_window_from_table(source, kmer_context)
+    return _feature_window_from_mapping(source, kmer_context)
+
+
 def merge_feature_channels(
     dwell_features: dict[str, np.ndarray],
     signal_features: dict[str, np.ndarray],

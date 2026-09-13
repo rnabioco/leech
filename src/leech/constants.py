@@ -96,6 +96,17 @@ def generate_random_seed() -> int:
 # Sequence encoding defaults
 DEFAULT_SIGNAL_KMER_CONTEXT = (4, 4)  # Kmer context for signal-level kmer encoding
 
+# What `seq_encoding` means for a checkpoint whose config lacks the key.
+# Every consumer of an old/bare config must agree on this fallback (issue
+# #269) -- `base_onehot`, because that is the model classes' OWN default
+# (see e.g. `models/configs/conv_lstm.toml`'s `seq_encoding = "base_onehot"`
+# [params] entry): a model built via `get_model(name, **kwargs)` with no
+# seq_encoding kwarg is a base_onehot model, full stop. `--seq-encoding
+# signal_kmer` is only the *CLI*'s default for `model train`, which always
+# records the effective encoding it used into config.json -- so a config
+# that lacks the key was never touched by that flag at all.
+DEFAULT_SEQ_ENCODING_FALLBACK = "base_onehot"
+
 # Signal map refinement defaults.
 #
 # The single source of truth for the refine-half-bandwidth default (5, not

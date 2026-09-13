@@ -19,7 +19,9 @@ import pytest
 
 from leech.inference.helpers import (
     InferenceConfigError,
+    InferenceSpec,
     build_rust_extraction_kwargs,
+    is_multiclass,
     prepare_inference_features,
 )
 
@@ -270,3 +272,126 @@ class TestExtractionSequence:
                 reference_sequence=read_info.reference_sequence,
                 cigar_tuples=read_info.cigar_tuples,
             )
+
+
+class TestIsMulticlass:
+    """One definition of "multiclass", not `> 1` in predict and `> 2` in
+    eval/calibrate -- issue #269."""
+
+    @pytest.mark.parametrize(("num_out", "expected"), [(1, False), (2, True), (3, True)])
+    def test_matches_num_out_greater_than_one(self, num_out, expected):
+        assert is_multiclass({"num_out": num_out}) is expected
+
+    def test_missing_num_out_defaults_to_binary(self):
+        assert is_multiclass({}) is False
+
+    def test_two_output_model_is_multiclass(self):
+        """The exact regression #269 names: a 2-output cross-entropy model
+        used to get multiclass BAM tags from predict (`> 1`) but binary Platt
+        calibration from `eval`/`calibrate` (`> 2`). One call, one answer."""
+        config = {"num_out": 2}
+        assert is_multiclass(config) is True
+
+
+class TestInferenceSpecFromConfig:
+    """`InferenceSpec.from_config` replaces the config-resolution block that
+    used to be pasted into ``run_inference`` and ``run_bundle_inference``
+    separately (issue #269)."""
+
+    def _config(self, **overrides) -> dict:
+        base = {
+            "signal_len": 400,
+            "kmer_len": 11,
+            "motif": "CCAGGC",
+            "motif_offset": 0,
+            "num_out": 1,
+        }
+        base.update(overrides)
+        return base
+
+    def test_resolves_geometry_from_config(self):
+        spec = InferenceSpec.from_config(self._config())
+        assert spec.signal_len == 400
+        assert spec.kmer_len == 11
+        assert spec.kmer_context == 5
+        assert spec.signal_context == (200, 200)
+
+    def test_config_without_seq_encoding_defaults_to_base_onehot(self):
+        """A config with no `seq_encoding` key at all predates the field, or
+        was built directly via `get_model(name, **kwargs)` with no override --
+        either way it is a base_onehot model, since that is the model
+        classes' own [params] default (e.g. `conv_lstm.toml`), not
+        `signal_kmer` (only the CLI's `model train` default, which always
+        records the encoding it actually used)."""
+        spec = InferenceSpec.from_config(self._config())
+        assert spec.seq_encoding == "base_onehot"
+
+    def test_explicit_seq_encoding_is_honored(self):
+        spec = InferenceSpec.from_config(self._config(seq_encoding="signal_kmer"))
+        assert spec.seq_encoding == "signal_kmer"
+
+    def test_legacy_dwell_margin_corpus_resolves_feature_window(self):
+        """Old configs recorded `dwell_margin_left`/`dwell_margin_right`
+        instead of `feature_start`/`feature_end`; the resolver must still
+        recover a usable window rather than falling back to the k-mer window."""
+        spec = InferenceSpec.from_config(self._config(dwell_margin_left=3, dwell_margin_right=3))
+        # kmer_context=5, so feature_start = -(5+3) = -8
+        assert spec.feature_start == -8
+
+    def test_two_output_model_is_flagged_multiclass_and_calibrated(self):
+        """The same regression as TestIsMulticlass, seen through the spec
+        every predict path now actually builds from."""
+        spec = InferenceSpec.from_config(self._config(num_out=2, calibration={"pairs": {}}))
+        assert spec.is_multiclass is True
+        assert spec.calibration == {"pairs": {}}
+
+    def test_binary_model_never_carries_calibration(self):
+        spec = InferenceSpec.from_config(self._config(num_out=1, calibration={"a": 1}))
+        assert spec.is_multiclass is False
+        assert spec.calibration is None
+
+    def test_missing_motif_raises(self):
+        with pytest.raises(InferenceConfigError, match="motif is None"):
+            InferenceSpec.from_config(self._config(motif=None))
+
+    def test_cli_motif_offset_disagreeing_with_config_raises(self):
+        with pytest.raises(InferenceConfigError, match="conflicts"):
+            InferenceSpec.from_config(self._config(motif_offset=2), motif_offset=5, motif="CCAGGC")
+
+    def test_explicit_cli_value_equal_to_default_is_still_checked(self):
+        """The bug `parameter_sources` exists to fix: an explicit
+        `--motif-offset 0` that disagrees with the config must raise even
+        though 0 is also click's own default, so the naive
+        `cli_value != cli_default` heuristic would wave it through."""
+        with pytest.raises(InferenceConfigError, match="conflicts"):
+            InferenceSpec.from_config(
+                self._config(motif_offset=3),
+                motif="CCAGGC",
+                motif_offset=0,
+                parameter_sources={"motif_offset": True},
+            )
+
+    def test_non_explicit_cli_value_equal_to_default_defers_to_config(self):
+        """Without a parameter source, the same call is indistinguishable
+        from "not passed" and the config wins -- the pre-existing, documented
+        heuristic for callers with no click context."""
+        spec = InferenceSpec.from_config(
+            self._config(motif_offset=3), motif="CCAGGC", motif_offset=0
+        )
+        assert spec.motif_offset == 3
+
+    def test_wide_features_model_falls_back_to_model_dwell_margin(self):
+        spec = InferenceSpec.from_config(
+            self._config(dwell_margin=4), model_type="TCNDwellResidualMotor"
+        )
+        assert spec.feature_start == -(5 + 4)
+        assert spec.feature_end == 5 + 4
+
+    def test_default_refine_scale_iters_differs_for_remora_vs_leech(self):
+        """single.py passed a hardcoded `2` to the Rust kwargs builder
+        regardless of is_remora even though its own refiner setup used `-1`
+        for Remora models; the spec is now the one place this is decided."""
+        leech_spec = InferenceSpec.from_config(self._config(), default_refine_scale_iters=2)
+        remora_spec = InferenceSpec.from_config(self._config(), default_refine_scale_iters=-1)
+        assert leech_spec.refine_scale_iters == 2
+        assert remora_spec.refine_scale_iters == -1

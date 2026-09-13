@@ -48,12 +48,19 @@ def handle_calibrate(
     import json
 
     from leech.calibration import calibrate_model, calibrate_model_multiclass
+    from leech.inference.helpers import is_multiclass as _is_multiclass_config
 
     def _is_multiclass(config_path: Path) -> bool:
-        """Check if model config indicates multiclass (num_out > 2)."""
+        """Check if model config indicates multiclass output.
+
+        One definition, shared with predict and `eval test`: num_out > 1
+        (issue #269). This used to be `> 2` here, so a 2-output cross-entropy
+        model got binary Platt calibration even though predict tags and
+        expects it to be calibrated as multiclass.
+        """
         with open(config_path) as f:
             cfg = json.load(f)
-        return cfg.get("num_out", 1) > 2
+        return _is_multiclass_config(cfg)
 
     def _calibrate_single(mdir: Path, output_path: Path | None = None) -> str:
         """Calibrate a single model dir, auto-detecting binary vs multiclass."""
