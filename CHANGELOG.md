@@ -108,6 +108,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (PR #253) — and no longer invokes torch.compile on CPU at all, where it
   previously compiled unconditionally, `mode=None` included. (#264)
 
+- **Rust batch extraction no longer re-marshals the k-mer refinement table or
+  move tables on every call.** `extract_training_chunks` /
+  `extract_inference_chunks` / `extract_chunks_from_preloaded` used to convert
+  the 262,144-entry 9-mer level table from a Python `dict` to a Rust
+  `HashMap<String, f64>` on *every batch call*, under the GIL and before
+  `py.detach` — measured at 51.8ms min / 71.7ms median per call (0.0ms without
+  the table), serializing the `ThreadPoolExecutor` workers `_iter_rust_batches`
+  exists to overlap. Move tables crossed as `list[int]` via `.tolist()`
+  despite `extract_move_table` already holding an int8 ndarray.
+
+  A new `KmerLevels` handle (`leech_core.KmerLevels`, built once per run via
+  `leech._rust_accel.make_kmer_levels`) now owns the table; every batch call
+  borrows it by reference instead of converting it again.
+  `preparation/parallel.py` and `inference/helpers.py` build the handle once,
+  at the start of a `data prepare` / `predict` run, and thread it through every
+  batch. Move tables now cross as zero-copy `uint8` numpy arrays
+  (`PyReadonlyArray1<u8>`) instead of Python lists.
+
+  Measured with a pre-built `KmerLevels` handle and zero reads (isolating the
+  argument-conversion cost, same methodology as the numbers above): **0.080ms
+  min / 0.091ms median per call**, down from 51.8ms / 71.7ms — roughly 650x
+  and 790x. Transport-only change: the table's contents, every chunk value,
+  and `tests/test_backend_parity.py` / `tests/test_parallel_prep.py` /
+  `tests/test_rust_python_parity.py` are unaffected. (#259)
+
 ## [0.11.1] - 2026-09-12
 
 ### Changed

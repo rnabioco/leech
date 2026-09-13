@@ -106,7 +106,7 @@ def run_rust_backend(
 ) -> tuple[list[dict], float]:
     """Run data preparation using the Rust-accelerated backend."""
     from leech.io import collect_read_infos, get_motif_searcher
-    from leech.preparation.parallel import _prepare_batch_rust
+    from leech.preparation.parallel import _prepare_batch_rust, _resolve_kmer_levels
 
     read_infos = collect_read_infos(bam_path, min_mapq=0)
     if max_reads is not None:
@@ -122,12 +122,18 @@ def run_rust_backend(
     else:
         motif_searcher = None
 
+    # Built ONCE for the whole benchmark run, not per batch -- see issue #259.
+    # `prepare_training_data_parallel` does the same before dispatching to
+    # `_iter_rust_batches`; mirror it here so this benchmark measures the fix
+    # rather than the cost it removed.
+    kmer_levels = _resolve_kmer_levels(config)
+
     batches = [read_infos[i : i + chunk_size] for i in range(0, len(read_infos), chunk_size)]
 
     all_chunks = []
     t0 = time.perf_counter()
     for batch in batches:
-        chunks = _prepare_batch_rust(batch, config, motif_searcher)
+        chunks = _prepare_batch_rust(batch, config, motif_searcher, kmer_levels)
         all_chunks.extend(chunks)
     elapsed = time.perf_counter() - t0
 

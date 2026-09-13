@@ -54,7 +54,7 @@ class TestRustBatchDispatchIsConcurrent:
         peak = 0
         release = threading.Event()
 
-        def work(read_batch, config, motif_searcher):
+        def work(read_batch, config, motif_searcher, kmer_levels=None):
             nonlocal live, peak
             with lock:
                 live += 1
@@ -86,7 +86,7 @@ class TestRustBatchDispatchIsConcurrent:
     def test_yields_in_bam_order_with_read_counts(self, monkeypatch):
         """Results arrive in submission order, each tagged with its read count."""
 
-        def work(read_batch, config, motif_searcher):
+        def work(read_batch, config, motif_searcher, kmer_levels=None):
             return [{"n": len(read_batch)}], 0, 1
 
         results = _drive(monkeypatch, work, num_workers=4, n_batches=5, batch_size=3)
@@ -102,7 +102,7 @@ class TestRustBatchDispatchIsConcurrent:
         calls = {"n": 0}
         lock = threading.Lock()
 
-        def work(read_batch, config, motif_searcher):
+        def work(read_batch, config, motif_searcher, kmer_levels=None):
             with lock:
                 calls["n"] += 1
                 n = calls["n"]
@@ -164,7 +164,7 @@ class TestRustBatchDispatchIsConcurrent:
         proceed = threading.Event()
         consumed = {"n": 0}
 
-        def work(read_batch, config, motif_searcher):
+        def work(read_batch, config, motif_searcher, kmer_levels=None):
             started.release()
             proceed.wait(timeout=20.0)
             return [], 0, 0

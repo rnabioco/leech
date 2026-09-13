@@ -43,6 +43,7 @@ from leech._rust_accel import (
     HAS_RUST,
     RUST_NORM_METHOD,
     _rs_extract_training_chunks,
+    make_kmer_levels,
     rust_supports_norm_method,
     rust_supports_softclip_recovery,
 )
@@ -285,10 +286,27 @@ def _find_motif_positions(
     )
 
 
+def _resolve_kmer_levels(config: PrepareConfig):
+    """Build the ``KmerLevels`` handle for ``config``, or ``None``.
+
+    One place for "does this config want signal refinement, and if so build
+    the handle" -- the gate (``refine_signal_map`` and a ``signal_refiner``)
+    and the :func:`~leech._rust_accel.make_kmer_levels` call used to be
+    duplicated across every caller that needed one. Reused by
+    ``prepare_training_data_parallel`` (build once, per run -- the hot path),
+    ``_prepare_batch_rust``'s own per-batch fallback for a direct caller that
+    didn't build one, and ``tests/bench_prepare_backends.py``.
+    """
+    if config.signal.refine_signal_map and config.signal.signal_refiner is not None:
+        return make_kmer_levels(config.signal.signal_refiner.kmer_to_level)
+    return None
+
+
 def _prepare_batch_rust(
     read_infos: list[ReadInfo],
     config: PrepareConfig,
     motif_searcher: MotifSearcher | None,
+    kmer_levels=None,
 ) -> list[dict[str, np.ndarray | str | int | None]]:
     """
     Process ONE batch of reads using the Rust pipeline.
@@ -313,7 +331,7 @@ def _prepare_batch_rust(
     chunks-only comparison against the Python backend.
     """
     chunks, _n_failed, _n_submitted = _prepare_batch_rust_with_failures(
-        read_infos, config, motif_searcher
+        read_infos, config, motif_searcher, kmer_levels
     )
     return chunks
 
@@ -322,8 +340,21 @@ def _prepare_batch_rust_with_failures(
     read_infos: list[ReadInfo],
     config: PrepareConfig,
     motif_searcher: MotifSearcher | None,
+    kmer_levels=None,
 ) -> tuple[list[dict[str, np.ndarray | str | int | None]], int, int]:
     """``_prepare_batch_rust``, plus failure/submission counts (issue #265).
+
+    Args:
+        kmer_levels: Pre-built ``leech_core.KmerLevels`` handle (see
+            :func:`leech._rust_accel.make_kmer_levels`), or ``None``. Callers
+            on the hot path (``_iter_rust_batches``) build this ONCE per run
+            and pass it in, so the 262,144-entry 9-mer table is converted from
+            a Python dict exactly once rather than on every batch (issue
+            #259). When ``None`` and refinement is configured, it is built
+            here instead -- correct but back to the per-batch cost, which is
+            fine for a direct/manual caller (e.g. a benchmark script) but not
+            for the concurrent batch dispatch this function is normally driven
+            from.
 
     Returns:
         ``(chunks, n_failed_reads, n_reads_submitted)``. ``n_reads_submitted``
@@ -337,7 +368,7 @@ def _prepare_batch_rust_with_failures(
     read_ids: list[str] = []
     sequences: list[str] = []
     mv_strides: list[int] = []
-    mv_arrays: list[list[int]] = []
+    mv_arrays: list[np.ndarray] = []
     num_samples_list: list[int] = []
     trim_offsets: list[int] = []
     motif_positions: list[list[int]] = []
@@ -371,7 +402,13 @@ def _prepare_batch_rust_with_failures(
         read_ids.append(ri.read_id)
         sequences.append(ri.sequence)
         mv_strides.append(mt.stride)
-        mv_arrays.append(mt.moves.tolist())
+        # `.view(np.uint8)` reinterprets the int8 buffer as uint8 with no
+        # copy (moves are always 0/1, so the bit pattern is identical) --
+        # replaces `.tolist()`, which paid ~10M PyLong round-trips per
+        # 1,000-read batch to build `Vec<Vec<u8>>` on the Rust side (issue
+        # #259). The Rust entry point now borrows this array's buffer
+        # directly (`PyReadonlyArray1<u8>`).
+        mv_arrays.append(mt.moves.view(np.uint8))
         num_samples_list.append(mt.num_samples)
         trim_offsets.append(mt.trim_offset)
         motif_positions.append(positions)
@@ -405,18 +442,26 @@ def _prepare_batch_rust_with_failures(
     # exist on SigMapRefiner, so the old getattr default silently pinned the
     # Rust path to -1 (escapepod's "use kmer_len / 2") no matter what was
     # configured. inference/helpers.py had this right.
-    kmer_table_dict: dict[str, float] | None = None
     kmer_len = 9
     kmer_center_idx = -1
     half_bandwidth = config.signal.refine_half_bandwidth
     scale_iters = config.signal.refine_scale_iters
     if config.signal.refine_signal_map and config.signal.signal_refiner is not None:
         refiner = config.signal.signal_refiner
-        kmer_table_dict = refiner.kmer_to_level
         kmer_len = refiner.kmer_len
         kmer_center_idx = refiner.center_idx
         half_bandwidth = refiner.half_bandwidth
         scale_iters = refiner.scale_iters
+        if kmer_levels is None:
+            # Caller didn't build the handle once up front (see the
+            # `kmer_levels` docstring above) -- fall back to building it here.
+            # Correct, just back to per-batch cost.
+            kmer_levels = _resolve_kmer_levels(config)
+    else:
+        # Refinement isn't configured for this run -- ignore any handle the
+        # caller passed (should never happen; caller derives it from the same
+        # `config`), matching the old `kmer_table_dict` semantics exactly.
+        kmer_levels = None
 
     # Call Rust: POD5 I/O + normalize + anchor + refine + features + chunk extraction
     rust_chunks = _rs_extract_training_chunks(
@@ -440,12 +485,14 @@ def _prepare_batch_rust_with_failures(
         cigar_tuples=cigar_tuples,
         reference_sequences=reference_sequences,
         refine_signal_map=config.signal.refine_signal_map,
-        kmer_table=kmer_table_dict,
+        kmer_table=kmer_levels,
         kmer_len=kmer_len,
         kmer_center_idx=kmer_center_idx,
         refine_half_bandwidth=half_bandwidth,
         refine_scale_iters=scale_iters,
-        signal_in_channels=2 if (config.signal.refine_signal_map and kmer_table_dict) else 1,
+        signal_in_channels=2
+        if (config.signal.refine_signal_map and kmer_levels is not None)
+        else 1,
         base_justify=config.chunk.base_justify,
     )
 
@@ -538,6 +585,7 @@ def _iter_rust_batches(
     chunk_size: int,
     min_mapq: int,
     num_workers: int,
+    kmer_levels=None,
 ) -> Iterator[BatchOutcome]:
     """Yield a :class:`BatchOutcome` per batch, ``num_workers`` in flight.
 
@@ -559,6 +607,10 @@ def _iter_rust_batches(
     A batch whose call raises outright (a Rust panic, a config error) is
     reported as ``batch_failed=True`` rather than silently swallowed to an
     empty result -- the caller decides whether that is fatal (issue #265).
+
+    ``kmer_levels``: pre-built ``leech_core.KmerLevels`` handle (or ``None``),
+    built ONCE by the caller and shared read-only across every concurrently
+    dispatched batch -- see :func:`_prepare_batch_rust`.
     """
     batches = iter_read_info_batches(bam_path, batch_size=chunk_size, min_mapq=min_mapq)
     max_in_flight = max(1, num_workers)
@@ -583,6 +635,7 @@ def _iter_rust_batches(
                             read_batch,
                             config,
                             motif_searcher,
+                            kmer_levels,
                         ),
                     )
                 )
@@ -819,6 +872,12 @@ def prepare_training_data_parallel(
         else:
             motif_searcher = None
 
+        # Build the k-mer refinement table's Rust handle ONCE for the whole
+        # run, rather than letting every concurrently dispatched batch convert
+        # the same 262,144-entry dict itself (issue #259). `None` when
+        # refinement isn't configured -- `_prepare_batch_rust` handles that.
+        kmer_levels = _resolve_kmer_levels(config)
+
         results = _iter_rust_batches(
             bam_path,
             config,
@@ -826,6 +885,7 @@ def prepare_training_data_parallel(
             chunk_size=chunk_size,
             min_mapq=min_mapq,
             num_workers=num_workers,
+            kmer_levels=kmer_levels,
         )
     else:
         # Python multiprocessing fallback: one worker process per batch, each

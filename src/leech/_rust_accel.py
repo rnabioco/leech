@@ -10,7 +10,22 @@ import re
 
 logger = logging.getLogger("leech._rust_accel")
 
+# `KmerLevels` is imported in the same all-or-nothing try/except as every
+# other Rust symbol below, deliberately. A `leech_core` build stale enough to
+# be missing it also predates the signature change that made
+# `extract_training_chunks` / `extract_inference_chunks` /
+# `extract_chunks_from_preloaded` require a `KmerLevels` handle instead of a
+# raw dict for `kmer_table` (issue #259) -- so it is not a build this module
+# could partially use anyway. Splitting `KmerLevels` into its own try/except
+# so the rest of Rust acceleration stayed enabled would be actively worse: with
+# `refine_signal_map=True` and no table, `make_kmer_levels()` below returns
+# `None`, and Rust silently skips refinement rather than raising, producing
+# *unrefined* chunks labeled as refined. Failing this import closed -- the
+# whole module falls back to the (slower, but correct) pure-Python path --
+# is what keeps that failure mode a performance regression instead of a
+# silent correctness one.
 try:
+    from leech_core import KmerLevels as _RsKmerLevels
     from leech_core import _test_process_read as _rs_test_process_read
     from leech_core import compute_signal_stats as _rs_compute_signal_stats
     from leech_core import encode_signal_kmer as _rs_encode_signal_kmer
@@ -27,6 +42,7 @@ try:
     logger.debug("Rust acceleration available (leech_core)")
 except ImportError:
     HAS_RUST = False
+    _RsKmerLevels = None
     _rs_test_process_read = None
     _rs_compute_signal_stats = None
     _rs_encode_signal_kmer = None
@@ -39,6 +55,28 @@ except ImportError:
     _rs_rough_rescale_quantile = None
     _rs_seq_banded_dp = None
     logger.debug("Rust acceleration not available, using pure Python fallbacks")
+
+
+def make_kmer_levels(kmer_to_level: dict[str, float] | None) -> "_RsKmerLevels | None":
+    """Build a Rust ``KmerLevels`` handle once, for reuse across every batch call.
+
+    ``KmerLevels`` owns the ``dict -> HashMap<String, f64>`` conversion that
+    used to run inside every ``extract_training_chunks`` /
+    ``extract_inference_chunks`` / ``extract_chunks_from_preloaded`` call, under
+    the GIL and before the Rust side released it -- 51.8ms min / 71.7ms median
+    for the 262,144-entry 9-mer table, serializing the ``ThreadPoolExecutor``
+    workers batch dispatch exists to overlap (issue #259). Call this ONCE per
+    prepare/predict run and pass the returned handle to every batch call in
+    place of the raw ``dict``; the object is safe to share across concurrent
+    calls (it is immutable after construction).
+
+    Returns ``None`` when Rust acceleration is unavailable or there is no table
+    to build (``kmer_to_level`` is ``None``/empty), in which case callers should
+    pass the raw dict to the pure-Python fallback path as before.
+    """
+    if not HAS_RUST or _RsKmerLevels is None or not kmer_to_level:
+        return None
+    return _RsKmerLevels(kmer_to_level)
 
 
 #: The only signal normalization the Rust pipeline implements.
@@ -171,10 +209,13 @@ def check_rust() -> None:
             "encode_signal_kmer",
             "extract_chunks_from_preloaded",
             "extract_inference_chunks",
+            "extract_levels",
             "extract_training_chunks",
             "preload_pod5_signals",
             "read_pod5_batch",
+            "rough_rescale_quantile",
             "seq_banded_dp",
+            "KmerLevels",
         ]
         for f in funcs:
             status = "ok" if getattr(leech_core, f, None) is not None else "missing"

@@ -21,7 +21,7 @@ pub(super) fn process_read_signal(
     stride: u32,
     ns: u64,
     trim: i64,
-    cfg: &PipelineConfig,
+    cfg: &PipelineConfig<'_>,
     cigar_ops: Option<&[(u32, u32)]>,
     ref_seq: Option<&str>,
 ) -> Option<ProcessedRead> {
@@ -78,7 +78,7 @@ pub(super) fn process_read_signal(
     // Signal refinement
     let mut expected_levels_f64: Option<Vec<f64>> = None;
     if cfg.refine_signal_map
-        && let Some(ref kt) = cfg.kmer_table
+        && let Some(kt) = cfg.kmer_table
     {
         // A negative `refine_scale_iters` means "no refinement", matching
         // `SigMapRefiner.refine`. Do not clamp it to 0 and call through:

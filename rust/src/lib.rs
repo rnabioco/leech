@@ -2,6 +2,7 @@ use pyo3::prelude::*;
 
 mod encoding;
 mod inference_pipeline;
+mod kmer_levels;
 mod pod5_cache;
 mod pod5_io;
 mod signal_refine;
@@ -23,6 +24,7 @@ fn leech_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(pod5_io::read_pod5_batch, m)?)?;
     m.add_function(wrap_pyfunction!(pod5_io::preload_pod5_signals, m)?)?;
     m.add_class::<pod5_io::PreloadedSignals>()?;
+    m.add_class::<kmer_levels::KmerLevels>()?;
     m.add_function(wrap_pyfunction!(
         inference_pipeline::extract_inference_chunks,
         m
