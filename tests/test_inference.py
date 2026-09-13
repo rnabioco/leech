@@ -1136,6 +1136,77 @@ class TestRunBundleInferenceTagsIntegration:
         assert all(r.get_tag("aa") == "unc" for r in tagged)
 
 
+@pytest.mark.skipif(not TRNA_FIXTURES_AVAILABLE, reason="tRNA fixtures not available")
+class TestBundleExtractionPathParity:
+    """``run_bundle_inference``'s three extraction paths (Rust, parallel,
+    serial) now share one accumulator, one ``GpuBatchRunner`` and one
+    ``BundleScorer`` (issue #268) -- so whichever path extracted the chunks,
+    the predictions must agree. Before this, only the serial path was
+    exercised by any test here."""
+
+    PAIR_NAMES = ["Ala_Gly", "Ala_Met", "Gly_Met"]
+
+    def _predict(self, tmp_path, bundle_path, name, *, backend, num_workers=0):
+        from leech.inference import run_bundle_inference
+
+        out = tmp_path / f"{name}.bam"
+        run_bundle_inference(
+            bundle_path=bundle_path,
+            pod5_path=TRNA_POD5,
+            bam_path=TRNA_BAM,
+            output_path=out,
+            device="cpu",
+            batch_size=8,
+            reverse_signal=True,
+            reference_fasta=TRNA_REF,
+            num_workers=num_workers,
+            backend=backend,
+        )
+        with pysam.AlignmentFile(str(out), "rb") as bam:
+            return {
+                r.query_name: (r.get_tag("aa"), r.get_tag("ac")) for r in bam if r.has_tag("aa")
+            }
+
+    def test_rust_path_writes_tags(self, tmp_path):
+        """``run_bundle_inference`` on the Rust monolithic extraction path,
+        the default for any run with leech_core installed and no explicit
+        --backend -- previously untested here."""
+        pytest.importorskip("leech_core")
+        bundle_path = _create_pairwise_bundle(tmp_path, self.PAIR_NAMES)
+        rust_predicted = self._predict(tmp_path, bundle_path, "rust", backend="rust")
+        assert rust_predicted
+
+    def test_parallel_path_alone_writes_tags(self, tmp_path):
+        """``num_workers > 0`` (mp.Pool, always Python extraction) --
+        previously untested here (all prior bundle tests ran serial only).
+
+        Not chained after another real CPU-inference call in the same
+        process: doing so hangs forking `mp.Pool` after libtorch's native CPU
+        thread pool has started, a pre-existing fork-safety hazard unrelated
+        to this issue's GpuBatchRunner/BundleScorer work (confirmed by:
+        GpuBatchRunner's own thread is cleanly joined by the time the second
+        call starts -- `threading.enumerate()` shows only MainThread -- and a
+        second real-inference call that does *not* fork, e.g. `backend="rust"`
+        after a serial Python call, does not hang). Out of scope for #268;
+        worth its own issue if `leech.run_bundle_inference` is ever called
+        with `num_workers>0` more than once per process.
+        """
+        bundle_path = _create_pairwise_bundle(tmp_path, self.PAIR_NAMES)
+        parallel = self._predict(tmp_path, bundle_path, "parallel", backend="python", num_workers=2)
+        assert parallel
+
+    def test_rust_path_matches_serial_python_path(self, tmp_path):
+        """The Rust and Python extraction paths must agree, same as
+        ``TestExtractionPathParity.test_rust_and_python_extraction_agree``
+        does for single-model predict."""
+        pytest.importorskip("leech_core")
+        bundle_path = _create_pairwise_bundle(tmp_path, self.PAIR_NAMES)
+        serial = self._predict(tmp_path, bundle_path, "py2", backend="python")
+        rust = self._predict(tmp_path, bundle_path, "rs2", backend="rust")
+        assert serial
+        assert rust == serial
+
+
 # ---------------------------------------------------------------------------
 # BatchAccumulator: the one batching state machine (was written three times —
 # multiprocessing workers and threaded Rust in single.py, and bundle.py)
@@ -1537,6 +1608,119 @@ class TestExtractionPathParity:
         sequential = json.loads((tmp_path / "w0.json").read_text())
         assert any("aa" in r for r in sequential)
         assert parallel == sequential
+
+
+@pytest.mark.skipif(not TRNA_FIXTURES_AVAILABLE, reason="tRNA fixtures not available")
+class TestChunksForReadSharedBySingleAndBundle:
+    """``chunks_for_read`` is the one function both ``run_inference``'s and
+    ``run_bundle_inference``'s Python serial extraction paths call to turn a
+    ``LeechRead`` + a focus position into model-ready arrays (issue #268).
+    Before this they carried two copies, and only the bundle copy applied
+    dwell templates while only the bundle copy also silently skipped
+    ``prepare_signal_channels``'s ``signal_len`` padding/cropping on ``signal``
+    itself (found while unifying, not by design).
+
+    single.py predicts at every motif position a read has; bundle.py predicts
+    only at the first. The two call sites can therefore only be compared on
+    their first position, which is what this test does, on a real fixture
+    read (not a synthetic chunk) so the whole build_leech_read -> motif
+    search -> chunks_for_read chain is exercised end to end.
+    """
+
+    def test_single_and_bundle_style_calls_agree_on_a_real_read(self):
+        import numpy as np
+
+        from leech.configs import ChunkConfig
+        from leech.features import extract_move_table
+        from leech.inference.helpers import InferenceSpec, chunks_for_read
+        from leech.io import get_reference_sequences
+        from leech.io.motif_search import get_motif_searcher
+        from leech.io.pod5_reader import POD5Reader
+        from leech.preparation.reader import build_leech_read
+
+        config = {
+            "model_name": "ConvLSTMDwell",
+            **_ARCH_CONFIG,
+            "motif": "CCAGGC",
+            "motif_offset": 2,
+        }
+        spec = InferenceSpec.from_config(config, model_type="ConvLSTMDwell")
+        assert spec.requires_features, "test assumes a feature-branch model"
+
+        reference_sequences = get_reference_sequences(TRNA_BAM, TRNA_REF)
+        motif_searcher = get_motif_searcher(
+            mode="fasta" if reference_sequences else "bam",
+            reference_sequences=reference_sequences,
+            skip_indels=spec.skip_motif_indels,
+            anchor=spec.anchor,
+            require_query_mapping=spec.require_query_mapping,
+        )
+        signal_config = SignalConfig(
+            reverse_signal=True,
+            anchor=spec.anchor,
+            refine_signal_map=spec.refine_signal_map,
+        )
+        chunk_config = ChunkConfig(
+            base_justify=spec.base_justify,
+            feature_start=spec.feature_start,
+            feature_end=spec.feature_end,
+            signal_context=spec.signal_context,
+            kmer_context=spec.kmer_context,
+        )
+
+        with (
+            pysam.AlignmentFile(str(TRNA_BAM), "rb") as bam,
+            POD5Reader(TRNA_POD5) as pod5_reader,
+        ):
+            aln = next(a for a in bam if a.query_name is not None and a.query_sequence is not None)
+            raw_signal, pod5_metadata = pod5_reader.get_signal(aln.query_name)
+            ref_seq = reference_sequences.get(aln.reference_name) if reference_sequences else None
+            leech_read = build_leech_read(
+                read_id=aln.query_name,
+                sequence=aln.query_sequence,
+                raw_signal=raw_signal,
+                move_table=extract_move_table(aln),
+                signal_config=signal_config,
+                metadata={},
+                reference_sequence=ref_seq,
+                cigar_tuples=aln.cigartuples,
+                cal_offset=pod5_metadata.get("calibration_offset"),
+                cal_scale=pod5_metadata.get("calibration_scale"),
+            )
+            positions = [
+                pos + spec.motif_offset
+                for pos in motif_searcher.find_motif_positions(
+                    leech_read.read_id, leech_read.sequence, aln, spec.motif
+                )
+            ]
+
+        assert positions, "fixture read must have at least one motif match"
+
+        common_kwargs = {
+            "chunk_config": chunk_config,
+            "signal_len": spec.signal_len,
+            "seq_encoding": spec.seq_encoding,
+            "signal_kmer_context": spec.signal_kmer_context,
+            "requires_features": spec.requires_features,
+            "kmer_len": spec.kmer_len,
+            "dwell_offset": spec.dwell_offset,
+            "wide_features": spec.wide_features,
+        }
+
+        # single.py's call shape: every motif position.
+        single_style = chunks_for_read(leech_read, positions, **common_kwargs)
+        # bundle.py's call shape: only the first (one chunk per read).
+        bundle_style = chunks_for_read(leech_read, positions[:1], **common_kwargs)
+
+        assert single_style[0][3] == positions[0]
+        assert bundle_style[0][3] == positions[0]
+        single_sig, single_seq, single_feat, _ = single_style[0]
+        bundle_sig, bundle_seq, bundle_feat, _ = bundle_style[0]
+        np.testing.assert_array_equal(single_sig, bundle_sig)
+        np.testing.assert_array_equal(single_seq, bundle_seq)
+        assert single_sig.shape == (spec.signal_len,)
+        np.testing.assert_array_equal(single_feat, bundle_feat)
+        assert single_feat.shape == (config["num_features"], spec.kmer_len)
 
 
 class TestSequentialThenParallelInProcess:

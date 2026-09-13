@@ -5,6 +5,7 @@ import json
 import logging
 import threading
 from collections.abc import Callable, Hashable, Mapping
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,7 +25,7 @@ from leech.constants import (
     DEFAULT_REFINE_HALF_BANDWIDTH,
     DEFAULT_SEQ_ENCODING_FALLBACK,
 )
-from leech.features import encode_signal_kmer, sequence_to_int
+from leech.features import encode_signal_kmer, encode_signal_kmer_batch, sequence_to_int
 from leech.model_loading import load_model_from_checkpoint
 from leech.models import requires_features as _requires_features
 from leech.models import wide_features as _wide_features
@@ -751,6 +752,133 @@ def _encode_sequence_for_inference(
         return encode_kmer(chunk["sequence"])
 
 
+def chunks_for_read(
+    leech_read,
+    positions: list[int],
+    *,
+    chunk_config,
+    signal_len: int,
+    seq_encoding: str,
+    signal_kmer_context: tuple[int, int],
+    requires_features: bool,
+    kmer_len: int,
+    dwell_offset: int,
+    wide_features: bool,
+    dwell_templates: np.ndarray | None = None,
+    template_min_pos: int = 0,
+) -> list[tuple[np.ndarray, np.ndarray, np.ndarray | None, int]]:
+    """Extract ready-to-batch ``(signal, sequence, features, base_idx)`` tuples
+    from an already-built :class:`~leech.chunking.LeechRead` at each of
+    ``positions``.
+
+    The one place the per-chunk array-building triplet runs --
+    :func:`prepare_signal_channels`, :func:`_encode_sequence_for_inference`,
+    :func:`prepare_inference_features` -- for the Python serial extraction
+    path. ``run_inference``'s sequential path and ``run_bundle_inference``'s
+    serial path each carried their own copy of this loop, and only the bundle
+    copy applied dwell templates; the bundle copy also built its signal array
+    by hand rather than through ``prepare_signal_channels``, so it never
+    padded/cropped ``signal`` to ``signal_len`` the way every other extraction
+    path does (issue #268 -- found while unifying, not by design).
+
+    Building the ``LeechRead`` itself, and finding ``positions`` on it, stays
+    with the caller: a ``pysam.AlignedSegment`` and a ``ReadInfo`` differ too
+    much above this point (motif search takes a real alignment object one
+    caller has and the other reconstructs a mock of) for a shared protocol to
+    buy anything; this is the part that was actually duplicated array-copy
+    logic rather than read-shape plumbing.
+
+    ``signal_kmer`` is batched once per read rather than once per chunk
+    (issue #260): every chunk's raw ``sequence_with_kmer_context``/
+    ``seq_to_sig_map`` is collected first and run through
+    :func:`~leech.features.encode_signal_kmer_batch` in one call, instead of
+    one pyo3 call per chunk via :func:`_encode_sequence_for_inference`. Both
+    ``run_inference`` and ``run_bundle_inference`` get this from being routed
+    through this one function -- before #268 unified them, only the
+    ``run_inference`` copy of this loop had been given the batched path.
+    """
+    results: list[tuple[np.ndarray, np.ndarray, np.ndarray | None, int]] = []
+
+    if seq_encoding != "signal_kmer":
+        for base_idx in positions:
+            chunk = leech_read.get_chunk(base_idx, config=chunk_config)
+            if chunk is None:
+                continue
+
+            sig = prepare_signal_channels(chunk, signal_len)
+
+            seq_enc = _encode_sequence_for_inference(
+                chunk, seq_encoding, signal_len, signal_kmer_context
+            )
+            if seq_enc is None:
+                continue
+            seq_arr = seq_enc.numpy() if isinstance(seq_enc, torch.Tensor) else seq_enc
+
+            feat = None
+            if requires_features:
+                features_array = chunk["features"]
+                assert isinstance(features_array, np.ndarray)
+                feat = prepare_inference_features(
+                    features_array.astype(np.float32),
+                    kmer_len=kmer_len,
+                    feature_start=chunk.get("feature_start"),
+                    dwell_offset=dwell_offset,
+                    wide_features=wide_features,
+                    dwell_templates=dwell_templates,
+                    template_min_pos=template_min_pos,
+                )
+
+            results.append((sig, seq_arr, feat, base_idx))
+        return results
+
+    # signal_kmer: collect every chunk's raw inputs first, batch-encode once.
+    pending: list[tuple[np.ndarray, np.ndarray | None, int, np.ndarray, np.ndarray]] = []
+    for base_idx in positions:
+        chunk = leech_read.get_chunk(base_idx, config=chunk_config)
+        if chunk is None:
+            continue
+
+        seq_ctx = chunk.get("sequence_with_kmer_context")
+        seq_to_sig = chunk.get("seq_to_sig_map")
+        if seq_ctx is None or seq_to_sig is None:
+            continue
+
+        sig = prepare_signal_channels(chunk, signal_len)
+
+        feat = None
+        if requires_features:
+            features_array = chunk["features"]
+            assert isinstance(features_array, np.ndarray)
+            feat = prepare_inference_features(
+                features_array.astype(np.float32),
+                kmer_len=kmer_len,
+                feature_start=chunk.get("feature_start"),
+                dwell_offset=dwell_offset,
+                wide_features=wide_features,
+                dwell_templates=dwell_templates,
+                template_min_pos=template_min_pos,
+            )
+
+        pending.append((sig, feat, base_idx, sequence_to_int(seq_ctx), seq_to_sig))
+
+    if pending:
+        n = len(pending)
+        max_si = max(p[3].shape[0] for p in pending)
+        max_s2 = max(p[4].shape[0] for p in pending)
+        padded_seq_ints = np.full((n, max_si), -1, dtype=np.int8)
+        padded_s2s = np.full((n, max_s2), signal_len, dtype=np.int32)
+        for i, (_, _, _, seq_ints, s2s) in enumerate(pending):
+            padded_seq_ints[i, : seq_ints.shape[0]] = seq_ints
+            padded_s2s[i, : s2s.shape[0]] = s2s
+        batch_enc = encode_signal_kmer_batch(
+            padded_seq_ints, padded_s2s, signal_len, signal_kmer_context
+        )
+        for i, (sig, feat, base_idx, _, _) in enumerate(pending):
+            results.append((sig, batch_enc[i], feat, base_idx))
+
+    return results
+
+
 def _write_mega_batch_predictions(
     aln_batch: list[pysam.AlignedSegment],
     pending: dict[str, list],
@@ -804,6 +932,61 @@ def _write_mega_batch_predictions(
                 n_preds += 1
             bam_out.write(aln)
     return n_preds
+
+
+class GpuBatchRunner:
+    """Double-buffered, single-worker async submission of one scoring function.
+
+    The pattern ``run_inference``'s and ``run_bundle_inference``'s serial
+    paths each hand-rolled: a dedicated single-thread executor runs
+    ``score_fn`` on one batch while the caller's extraction loop keeps filling
+    the next one. Submitting a new batch waits for the previous one to finish
+    first, so at most one is ever in flight — the ``max_workers=1`` GPU
+    executor invariant PR #253 established, preserved here rather than
+    reintroduced independently on the bundle path (issue #268).
+
+    ``score_fn(signals, sequences, features, meta)`` is the same shape
+    :class:`BatchAccumulator`'s flush callback expects, so a bound
+    :meth:`submit` is a drop-in ``flush_fn``::
+
+        runner = GpuBatchRunner(score_fn)
+        accumulator = BatchAccumulator(batch_size, runner.submit)
+        ...
+        accumulator.flush()
+        runner.drain()
+        runner.shutdown()
+    """
+
+    __slots__ = ("_executor", "_future", "score_fn")
+
+    def __init__(self, score_fn: Callable[[list, list, list, list], None]):
+        self.score_fn = score_fn
+        self._executor = ThreadPoolExecutor(max_workers=1)
+        self._future: Future | None = None
+
+    def submit(self, signals: list, sequences: list, features: list, meta: list) -> None:
+        """Wait for any in-flight batch, then submit this one (non-blocking)."""
+        if self._future is not None:
+            self._future.result()
+        self._future = self._executor.submit(self.score_fn, signals, sequences, features, meta)
+
+    def drain(self) -> None:
+        """Block until the most recently submitted batch has finished."""
+        if self._future is not None:
+            self._future.result()
+            self._future = None
+
+    def shutdown(self) -> None:
+        """Wait for the executor's thread to exit.
+
+        Always call after :meth:`drain` — every batch is done by then, so
+        this costs nothing, but a caller that goes on to fork (an ``mp.Pool``
+        on the parallel path) must not leave the thread alive across it: a
+        fork inherits a running thread's memory but not the thread itself, so
+        any lock it held never releases (see ``run_inference``'s own note on
+        this at its ``_extract_pool.shutdown(wait=True)`` call).
+        """
+        self._executor.shutdown(wait=True)
 
 
 class BatchAccumulator:

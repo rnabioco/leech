@@ -17,14 +17,15 @@ from leech.constants import TORCH_COMPILE_MIN_SAMPLES
 from leech.features import encode_signal_kmer_batch, extract_move_table, sequence_to_int
 from leech.inference.helpers import (
     BatchAccumulator,
+    GpuBatchRunner,
     InferenceSpec,
-    _encode_sequence_for_inference,
     _run_batch,
     _run_batch_multiclass,
     _write_mega_batch_predictions,
     build_rust_extraction_kwargs,
     cap_rayon_threads_for_slurm,
     check_rust_extraction_available,
+    chunks_for_read,
     collect_bam_metadata_for_rust,
     load_model_auto,
     prepare_inference_features,
@@ -698,42 +699,27 @@ def run_inference(
             else _run_batch
         )
 
-        _gpu_executor = ThreadPoolExecutor(max_workers=1)
-        _gpu_future: Future | None = None
+        def _score_batch(sigs, seqs, feats, meta) -> None:
+            """Score one batch into the *current* ``pending`` dict.
+
+            A plain closure, not ``functools.partial(..., pending=pending)``:
+            ``_finalize_mega_batch`` below rebinds the name ``pending`` to a
+            fresh dict every mega-batch (so the async BAM-write thread can
+            keep draining the old one without racing the next mega-batch's
+            writes). A partial captures the dict *object* bound at
+            construction and keeps writing into it forever; a closure looks
+            ``pending`` up again on every call, which is what a rebind needs.
+            """
+            _batch_fn(sigs, seqs, feats, meta, model_wrapper, requires_features, device, pending)
+
+        # Double-buffered, single-worker GPU submission (PR #253): the
+        # accumulator has already detached each batch's buffers when it
+        # flushes, so the GPU thread owns them and extraction keeps filling
+        # the next batch while this one scores.
+        gpu_runner = GpuBatchRunner(_score_batch)
+        accumulator = BatchAccumulator(batch_size, gpu_runner.submit)
         _bam_write_executor = ThreadPoolExecutor(max_workers=1)
         _bam_write_future: Future | None = None
-
-        def _submit_gpu_batch(sigs, seqs, feats, meta) -> None:
-            """Flush callback: hand one batch to the GPU thread (double-buffered).
-
-            The accumulator has already detached these buffers, so the GPU
-            thread owns them and extraction can keep filling the next batch.
-            """
-            nonlocal _gpu_future
-            # Wait for previous GPU batch before submitting next
-            if _gpu_future is not None:
-                _gpu_future.result()
-            # Submit GPU work -- runs while main thread continues extraction
-            _gpu_future = _gpu_executor.submit(
-                _batch_fn,
-                sigs,
-                seqs,
-                feats,
-                meta,
-                model_wrapper,
-                requires_features,
-                device,
-                pending,
-            )
-
-        accumulator = BatchAccumulator(batch_size, _submit_gpu_batch)
-
-        def _drain_gpu() -> None:
-            """Wait for any in-flight GPU batch to complete."""
-            nonlocal _gpu_future
-            if _gpu_future is not None:
-                _gpu_future.result()
-                _gpu_future = None
 
         seq_signal_config = SignalConfig(
             reverse_signal=reverse_signal,
@@ -838,68 +824,21 @@ def run_inference(
                 )
             ]
 
-            results: list[tuple[np.ndarray, np.ndarray, np.ndarray | None, tuple[str, int]]] = []
-            # signal_kmer encoding is batched once per read (issue #260)
-            # rather than once per chunk: `pending` holds every chunk's
-            # (signal, feat, key) plus its raw inputs, appended to `results`
-            # once the batch call below fills in the real sequence array.
-            pending: list[
-                tuple[np.ndarray, np.ndarray | None, tuple[str, int], np.ndarray, np.ndarray]
-            ] = []
-            for base_idx in positions:
-                chunk = leech_read.get_chunk(base_idx, config=seq_chunk_config)
-                if chunk is None:
-                    continue
-
-                # Signal (with optional kmer residual channel)
-                sig = prepare_signal_channels(chunk, signal_len)
-
-                feat = None
-                if requires_features:
-                    features_array = chunk["features"]
-                    assert isinstance(features_array, np.ndarray)
-                    feat = prepare_inference_features(
-                        features_array.astype(np.float32),
-                        kmer_len=kmer_len,
-                        feature_start=chunk.get("feature_start"),
-                        dwell_offset=dwell_offset,
-                        wide_features=wide_features,
-                    )
-
-                if seq_encoding == "signal_kmer":
-                    seq_ctx = chunk.get("sequence_with_kmer_context")
-                    seq_to_sig = chunk.get("seq_to_sig_map")
-                    if seq_ctx is None or seq_to_sig is None:
-                        continue
-                    pending.append(
-                        (sig, feat, (read_id, base_idx), sequence_to_int(seq_ctx), seq_to_sig)
-                    )
-                    continue
-
-                seq_enc = _encode_sequence_for_inference(
-                    chunk, seq_encoding, signal_len, signal_kmer_context
+            return [
+                (sig, seq_arr, feat, (read_id, base_idx))
+                for sig, seq_arr, feat, base_idx in chunks_for_read(
+                    leech_read,
+                    positions,
+                    chunk_config=seq_chunk_config,
+                    signal_len=signal_len,
+                    seq_encoding=seq_encoding,
+                    signal_kmer_context=signal_kmer_context,
+                    requires_features=requires_features,
+                    kmer_len=kmer_len,
+                    dwell_offset=dwell_offset,
+                    wide_features=wide_features,
                 )
-                if seq_enc is None:
-                    continue
-                seq_arr = seq_enc.numpy() if isinstance(seq_enc, torch.Tensor) else seq_enc
-                results.append((sig, seq_arr, feat, (read_id, base_idx)))
-
-            if pending:
-                n = len(pending)
-                max_si = max(p[3].shape[0] for p in pending)
-                max_s2 = max(p[4].shape[0] for p in pending)
-                padded_seq_ints = np.full((n, max_si), -1, dtype=np.int8)
-                padded_s2s = np.full((n, max_s2), signal_len, dtype=np.int32)
-                for i, (_, _, _, seq_ints, s2s) in enumerate(pending):
-                    padded_seq_ints[i, : seq_ints.shape[0]] = seq_ints
-                    padded_s2s[i, : s2s.shape[0]] = s2s
-                batch_enc = encode_signal_kmer_batch(
-                    padded_seq_ints, padded_s2s, signal_len, signal_kmer_context
-                )
-                for i, (sig, feat, key, _, _) in enumerate(pending):
-                    results.append((sig, batch_enc[i], feat, key))
-
-            return results
+            ]
 
         _extract_pool = ThreadPoolExecutor(max_workers=n_extract)
 
@@ -1019,7 +958,7 @@ def run_inference(
             nonlocal total_reads, total_predictions, mega_batch_idx
             nonlocal pending, _bam_write_future
             accumulator.flush()
-            _drain_gpu()
+            gpu_runner.drain()
             # Wait for any previous BAM write (serializes bam_out access)
             _wait_for_bam_write()
             # Swap pending -> snapshot; next mega-batch gets a fresh dict
@@ -1278,15 +1217,15 @@ def run_inference(
         )
 
         # wait=True, not False. Every one of these pools is already drained here
-        # (`_drain_gpu` and `_wait_for_bam_write` above), so waiting costs
-        # nothing -- but `wait=False` leaves worker threads alive past the
-        # return, and the parallel path below forks an `mp.Pool`. A fork
+        # (`gpu_runner.drain()` and `_wait_for_bam_write` above), so waiting
+        # costs nothing -- but `wait=False` leaves worker threads alive past
+        # the return, and the parallel path below forks an `mp.Pool`. A fork
         # inherits the memory of a process with running threads, including any
         # lock those threads hold, but not the threads themselves, so nothing
         # ever releases it: calling `run_inference` with `num_workers=0` and
         # then with `num_workers>0` in one process hung forever, with no error.
         _extract_pool.shutdown(wait=True)
-        _gpu_executor.shutdown(wait=True)
+        gpu_runner.shutdown()
         _wait_for_bam_write()  # Ensure final BAM write completes before close
         _bam_write_executor.shutdown(wait=True)
 
