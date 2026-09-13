@@ -418,53 +418,15 @@ def _grid_point_worker(args: dict) -> dict:
     ``--parallel N``. The streaming loader reads a row block at a time and this
     storage does 724 MB/s sequentially (ADR 0006), so the re-read is cheap
     where the resident copy was not.
+
+    Forwards ``args`` wholesale rather than re-listing each key: hand-copying
+    this call used to silently drop ``oversample_minority`` under
+    ``--parallel > 1`` (#270) while the sequential path (``run_grid_point(**args)``
+    in ``run_grid_search``) forwarded everything -- the same ``grid_args`` dict
+    reaches both dispatchers, so a key present there can no longer go missing
+    in just one of them.
     """
-    result = run_grid_point(
-        train_data_path=args["train_data_path"],
-        val_data_path=args["val_data_path"],
-        model_name=args["model_name"],
-        output_dir=args["output_dir"],
-        left_context=args["left_context"],
-        right_context=args["right_context"],
-        kmer_len=args["kmer_len"],
-        epochs=args["epochs"],
-        batch_size=args["batch_size"],
-        learning_rate=args["learning_rate"],
-        device=args["device"],
-        seed=args["seed"],
-        early_stopping_patience=args["early_stopping_patience"],
-        dwell_offset=args["dwell_offset"],
-        pos_weight=args["pos_weight"],
-        weight_decay=args["weight_decay"],
-        max_grad_norm=args["max_grad_norm"],
-        scheduler=args["scheduler"],
-        scheduler_patience=args["scheduler_patience"],
-        scheduler_factor=args["scheduler_factor"],
-        warmup_epochs=args["warmup_epochs"],
-        loss_type=args["loss_type"],
-        focal_gamma=args["focal_gamma"],
-        label_smoothing=args["label_smoothing"],
-        mixed_precision=args["mixed_precision"],
-        augment_jitter=args["augment_jitter"],
-        augment_scale_min=args["augment_scale_min"],
-        augment_scale_max=args["augment_scale_max"],
-        augment_time_mask_bases=args.get("augment_time_mask_bases", 0),
-        augment_time_mask_count=args.get("augment_time_mask_count", 1),
-        augment_shift_max_bases=args.get("augment_shift_max_bases", 0),
-        augment_feature_noise_scale=args.get("augment_feature_noise_scale", 0.0),
-        num_workers=args["num_workers"],
-        balance_groups=args.get("balance_groups", False),
-        motif=args.get("motif"),
-        motif_offset=args.get("motif_offset", 0),
-        base_justify=args.get("base_justify", "center"),
-        adversarial_lambda=args.get("adversarial_lambda", 0.0),
-        adversarial_anneal_epochs=args.get("adversarial_anneal_epochs", 0),
-        confound=args.get("confound"),
-        cl_regression=args.get("cl_regression", False),
-        cl_lambda=args.get("cl_lambda", 1.0),
-        signal_mode=args.get("signal_mode", "both"),
-        selection_metric=args.get("selection_metric", "val_acc"),
-    )
+    result = run_grid_point(**args)
     # Free CUDA memory between grid points to prevent accumulation
     if args.get("device", "cpu") != "cpu":
         import gc

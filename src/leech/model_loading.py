@@ -75,7 +75,17 @@ def load_model_from_checkpoint(
     return model, config
 
 
-# Training-specific parameters that should NOT be in bundle configs
+# Training-specific parameters that should NOT be in bundle configs. This
+# denylist is exhaustive against what config.json actually writes -- verified
+# by grepping every downstream `config.get(...)`/`config[...]` read in
+# inference/single.py and inference/bundle.py (#270): every key below is
+# absent from that read set, and every key present in it (motif, dwell_offset,
+# num_out, label_map, cl_regression, dwell_template_table, the refine_* and
+# feature_*/dwell_margin_* provenance fields, ...) is deliberately NOT here.
+# `_instantiate_model`'s own constructor-signature filter is what ultimately
+# protects model construction (it drops anything the class doesn't accept,
+# training params included) -- this set exists only to keep training-only
+# noise out of `_architecture_config`'s bundle-comparison and stored output.
 _TRAINING_PARAMS = {
     "epochs",
     "batch_size",
@@ -104,9 +114,24 @@ _TRAINING_PARAMS = {
     "warmup_epochs",
     "loss_type",
     "focal_gamma",
+    "label_smoothing",
     "augment_jitter",
     "augment_scale_min",
     "augment_scale_max",
+    "augment_scale_range",
+    "augment_time_mask_bases",
+    "augment_time_mask_count",
+    "augment_shift_max_bases",
+    "augment_feature_noise_scale",
+    "balance_groups",
+    "oversample_minority",
+    "adversarial_lambda",
+    "adversarial_anneal_epochs",
+    "confound",
+    "cl_lambda",
+    "checkpoint_metric",
+    "signal_mode",
+    "gpus",
     "resume_from",
 }
 

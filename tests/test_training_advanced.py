@@ -951,7 +951,13 @@ class TestUtilTrainingParams:
     """Test that util.py filters new training params correctly."""
 
     def test_new_params_in_training_params_set(self):
-        """Test that new params are in the training_params filter set."""
+        """Test that new params are in the real _TRAINING_PARAMS filter set.
+
+        Imports the actual symbol (#270) instead of re-declaring a copy here,
+        which had drifted out of sync with what config.json actually writes.
+        """
+        from leech.model_loading import _TRAINING_PARAMS, _architecture_config
+
         # Simulate what load_model_from_checkpoint does
         config = {
             "model_name": "ConvLSTMDwell",
@@ -976,53 +982,27 @@ class TestUtilTrainingParams:
             "resume_from": "/some/path",
             "device": "cpu",
             "seed": 42,
+            # Provenance fields read at predict time -- must survive filtering.
+            "motif": "CCAGGC",
+            "dwell_offset": 2,
+            "num_out": 1,
+            "cl_regression": False,
         }
 
-        # Import the training_params set from util.py logic
-        training_params = {
-            "epochs",
-            "batch_size",
-            "learning_rate",
-            "device",
-            "seed",
-            "val_split",
-            "patience",
-            "min_delta",
-            "save_dir",
-            "log_dir",
-            "num_workers",
-            "pin_memory",
-            "prefetch_factor",
-            "use_class_weights",
-            "pos_weight",
-            "scheduler",
-            "scheduler_patience",
-            "scheduler_factor",
-            "max_grad_norm",
-            "weight_decay",
-            "mixed_precision",
-            "warmup_epochs",
-            "loss_type",
-            "focal_gamma",
-            "augment_jitter",
-            "augment_scale_min",
-            "augment_scale_max",
-            "resume_from",
-        }
+        model_kwargs = _architecture_config(config)
 
-        # Filter like load_model_from_checkpoint does
-        model_kwargs = {
-            k: v
-            for k, v in config.items()
-            if k not in ["model_name", "signal_len", "kmer_len"] and k not in training_params
-        }
-
-        # Only model-related params should remain
+        # Only model-related and provenance params should remain
         assert "num_features" in model_kwargs
+        assert "motif" in model_kwargs
+        assert "dwell_offset" in model_kwargs
+        assert "num_out" in model_kwargs
+        assert "cl_regression" in model_kwargs
         assert "scheduler" not in model_kwargs
         assert "weight_decay" not in model_kwargs
         assert "loss_type" not in model_kwargs
         assert "augment_jitter" not in model_kwargs
+        for key in ("scheduler", "weight_decay", "loss_type", "augment_jitter"):
+            assert key in _TRAINING_PARAMS
         assert "resume_from" not in model_kwargs
 
 

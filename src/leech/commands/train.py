@@ -120,6 +120,13 @@ def handle_train(
     Returns:
         Training history dictionary
     """
+    from leech.configs import (
+        AugmentConfig,
+        AuxHeadConfig,
+        OptimConfig,
+        SchedulerConfig,
+        TrainConfig,
+    )
     from leech.training import train_model
 
     logger.info(f"Training {model_name} model")
@@ -184,43 +191,23 @@ def handle_train(
     for key in _explicit_keys:
         extra_kwargs.pop(key, None)
 
-    # Train model
-    history = train_model(
-        train_data_path=train_data,
-        val_data_path=val_data,
-        model_name=model_name,
-        output_dir=output_dir,
+    # One recipe object (#270) instead of re-listing every option a fourth
+    # time (cli.py, this function's signature, and train_model/Trainer are
+    # the other three). dwell_template_table and gpus/num_workers/device/seed
+    # aren't part of the recipe -- they're provenance/runtime knobs threaded
+    # through separately, same as train_data/output_dir.
+    cfg = TrainConfig(
         epochs=epochs,
         batch_size=batch_size,
-        learning_rate=learning_rate,
-        device=device,
-        seed=seed,
         early_stopping_patience=early_stopping,
         use_class_weights=use_class_weights,
         pos_weight=pos_weight,
-        weight_decay=weight_decay,
-        max_grad_norm=max_grad_norm,
-        quantile_grad_clip=quantile_grad_clip,
-        grad_accum_split=grad_accum_split,
-        save_optim_every=save_optim_every,
-        scheduler=scheduler,
-        scheduler_patience=scheduler_patience,
-        scheduler_factor=scheduler_factor,
-        warmup_epochs=warmup_epochs,
         loss_type=loss_type,
         focal_gamma=focal_gamma,
         label_smoothing=label_smoothing,
         mixed_precision=mixed_precision,
-        augment_jitter=augment_jitter,
-        augment_scale_min=augment_scale_min,
-        augment_scale_max=augment_scale_max,
-        augment_time_mask_bases=augment_time_mask_bases,
-        augment_time_mask_count=augment_time_mask_count,
-        augment_shift_max_bases=augment_shift_max_bases,
-        augment_feature_noise_scale=augment_feature_noise_scale,
-        resume_from=resume,
-        num_workers=num_workers,
-        gpus=gpus,
+        checkpoint_metric=checkpoint_metric,
+        signal_mode=signal_mode,
         motif=motif,
         motif_offset=motif_offset,
         base_justify=base_justify,
@@ -228,14 +215,51 @@ def handle_train(
         allow_encoding_fallback=allow_encoding_fallback,
         balance_groups=balance_groups,
         oversample_minority=oversample_minority,
-        adversarial_lambda=adversarial_lambda,
-        adversarial_anneal_epochs=adversarial_anneal_epochs,
         confound=confound,
-        cl_regression=cl_regression,
-        cl_lambda=cl_lambda,
-        signal_mode=signal_mode,
+        optim=OptimConfig(
+            learning_rate=learning_rate,
+            weight_decay=weight_decay,
+            max_grad_norm=max_grad_norm,
+            quantile_grad_clip=quantile_grad_clip,
+            grad_accum_split=grad_accum_split,
+            save_optim_every=save_optim_every,
+        ),
+        scheduler=SchedulerConfig(
+            scheduler_type=scheduler,
+            scheduler_patience=scheduler_patience,
+            scheduler_factor=scheduler_factor,
+            warmup_epochs=warmup_epochs,
+        ),
+        augment=AugmentConfig(
+            jitter=augment_jitter,
+            scale_min=augment_scale_min,
+            scale_max=augment_scale_max,
+            time_mask_bases=augment_time_mask_bases,
+            time_mask_count=augment_time_mask_count,
+            shift_max_bases=augment_shift_max_bases,
+            feature_noise_scale=augment_feature_noise_scale,
+        ),
+        aux_head=AuxHeadConfig(
+            adversarial_lambda=adversarial_lambda,
+            adversarial_anneal_epochs=adversarial_anneal_epochs,
+            cl_regression=cl_regression,
+            cl_lambda=cl_lambda,
+        ),
+    )
+
+    # Train model
+    history = train_model(
+        train_data_path=train_data,
+        val_data_path=val_data,
+        model_name=model_name,
+        output_dir=output_dir,
+        device=device,
+        seed=seed,
+        resume_from=resume,
+        num_workers=num_workers,
+        gpus=gpus,
+        cfg=cfg,
         dwell_template_table=dwell_template_table,
-        checkpoint_metric=checkpoint_metric,
         **extra_kwargs,
     )
 

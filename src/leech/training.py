@@ -29,6 +29,7 @@ from torch.utils.data import DataLoader, DistributedSampler, Sampler, WeightedRa
 import leech
 from leech.chunking.table import ChunkTable
 from leech.cli_config import make_console
+from leech.configs import AugmentConfig, AuxHeadConfig, OptimConfig, SchedulerConfig, TrainConfig
 from leech.constants import DEFAULT_REFINE_HALF_BANDWIDTH
 from leech.dataset import (
     LeechDataset,
@@ -440,7 +441,72 @@ class Trainer:
         cl_lambda: float = 1.0,
         checkpoint_metric: str = "auto",
         dist: DistContext | None = None,
+        cfg: TrainConfig | None = None,
     ):
+        # The recipe as one object (#270). Every caller above still passes
+        # loose kwargs (43 test call sites plus train_model's own kwarg path)
+        # and those keep working unchanged: when cfg is omitted, one is built
+        # from exactly the arguments above, then unpacked back into the same
+        # local names the rest of this method already used, so the body below
+        # this block is untouched. train_model's own call site passes its
+        # already-resolved cfg directly instead of re-listing ~20 of these.
+        if cfg is None:
+            cfg = TrainConfig(
+                epochs=epochs,
+                loss_type=loss_type,
+                focal_gamma=focal_gamma,
+                label_smoothing=label_smoothing,
+                mixed_precision=use_mixed_precision,
+                checkpoint_metric=checkpoint_metric,
+                num_out=num_out if num_out is not None else 1,
+                optim=OptimConfig(
+                    learning_rate=learning_rate,
+                    weight_decay=weight_decay,
+                    max_grad_norm=max_grad_norm,
+                    quantile_grad_clip=quantile_grad_clip,
+                    grad_accum_split=grad_accum_split,
+                    save_optim_every=save_optim_every,
+                ),
+                scheduler=SchedulerConfig(
+                    scheduler_type=scheduler_type,
+                    scheduler_patience=scheduler_patience,
+                    scheduler_factor=scheduler_factor,
+                    warmup_epochs=warmup_epochs,
+                ),
+                aux_head=AuxHeadConfig(
+                    adversarial_lambda=adversarial_lambda,
+                    adversarial_anneal_epochs=adversarial_anneal_epochs,
+                    cl_regression=cl_regression,
+                    cl_lambda=cl_lambda,
+                ),
+            )
+        learning_rate = cfg.optim.learning_rate
+        weight_decay = cfg.optim.weight_decay
+        max_grad_norm = cfg.optim.max_grad_norm
+        quantile_grad_clip = cfg.optim.quantile_grad_clip
+        grad_accum_split = cfg.optim.grad_accum_split
+        save_optim_every = cfg.optim.save_optim_every
+        scheduler_type = cfg.scheduler.scheduler_type
+        scheduler_patience = cfg.scheduler.scheduler_patience
+        scheduler_factor = cfg.scheduler.scheduler_factor
+        warmup_epochs = cfg.scheduler.warmup_epochs
+        loss_type = cfg.loss_type
+        focal_gamma = cfg.focal_gamma
+        label_smoothing = cfg.label_smoothing
+        use_mixed_precision = cfg.mixed_precision
+        epochs = cfg.epochs
+        adversarial_lambda = cfg.aux_head.adversarial_lambda
+        adversarial_anneal_epochs = cfg.aux_head.adversarial_anneal_epochs
+        cl_regression = cfg.aux_head.cl_regression
+        cl_lambda = cfg.aux_head.cl_lambda
+        checkpoint_metric = cfg.checkpoint_metric
+        # num_out is not unpacked from cfg: the caller-supplied value (which
+        # may be the sentinel-resolved None) is what the loss-type branch
+        # below already keys off, and cfg.num_out always has a concrete int
+        # (defaulted to 1), so unpacking it would turn "not yet known" into
+        # "1" for every caller that passes num_out=None.
+        self.cfg = cfg
+
         # Which rank this is. SINGLE has world_size 1, so every guard below is
         # off and the path is exactly what it was before DDP existed.
         self.dist = dist if dist is not None else SINGLE
@@ -1653,6 +1719,7 @@ def train_model(
     checkpoint_metric: str = "auto",
     gpus: int = 1,
     _dist: DistContext | None = None,
+    cfg: TrainConfig | None = None,
     **model_kwargs: Any,
 ) -> dict[str, Any]:
     """
@@ -1711,10 +1778,119 @@ def train_model(
     """
     # Captured before any other local binds, because under --gpus these exact
     # arguments are replayed in every spawned rank: the capture has to be the
-    # call itself, not a reconstruction of it.
+    # call itself, not a reconstruction of it. cfg (None or a TrainConfig) is
+    # captured as-is here and re-resolved identically in every rank below.
     _call_kwargs = dict(locals())
     _call_kwargs.pop("_dist", None)
     _call_kwargs.update(_call_kwargs.pop("model_kwargs", {}))
+
+    # The recipe as one object (#270), same hybrid as Trainer.__init__: every
+    # existing caller (43 test call sites, gridsearch.run_grid_point) passes
+    # loose kwargs and keeps working unchanged -- a cfg is built from exactly
+    # those kwargs and unpacked back into the same local names the rest of
+    # this function already uses, so nothing below this block changes.
+    # handle_train passes cfg directly and skips rebuilding it.
+    if cfg is None:
+        cfg = TrainConfig(
+            epochs=epochs,
+            batch_size=batch_size,
+            early_stopping_patience=early_stopping_patience,
+            use_class_weights=use_class_weights,
+            pos_weight=pos_weight,
+            loss_type=loss_type,
+            focal_gamma=focal_gamma,
+            label_smoothing=label_smoothing,
+            mixed_precision=mixed_precision,
+            checkpoint_metric=checkpoint_metric,
+            num_out=num_out,
+            signal_mode=signal_mode,
+            motif=motif,
+            motif_offset=motif_offset,
+            base_justify=base_justify,
+            seq_encoding=seq_encoding,
+            signal_kmer_context=signal_kmer_context,
+            allow_encoding_fallback=allow_encoding_fallback,
+            left_context=left_context,
+            right_context=right_context,
+            balance_groups=balance_groups,
+            oversample_minority=oversample_minority,
+            label_map=label_map,
+            confound=confound,
+            optim=OptimConfig(
+                learning_rate=learning_rate,
+                weight_decay=weight_decay,
+                max_grad_norm=max_grad_norm,
+                quantile_grad_clip=quantile_grad_clip,
+                grad_accum_split=grad_accum_split,
+                save_optim_every=save_optim_every,
+            ),
+            scheduler=SchedulerConfig(
+                scheduler_type=scheduler,
+                scheduler_patience=scheduler_patience,
+                scheduler_factor=scheduler_factor,
+                warmup_epochs=warmup_epochs,
+            ),
+            augment=AugmentConfig(
+                jitter=augment_jitter,
+                scale_min=augment_scale_min,
+                scale_max=augment_scale_max,
+                time_mask_bases=augment_time_mask_bases,
+                time_mask_count=augment_time_mask_count,
+                shift_max_bases=augment_shift_max_bases,
+                feature_noise_scale=augment_feature_noise_scale,
+            ),
+            aux_head=AuxHeadConfig(
+                adversarial_lambda=adversarial_lambda,
+                adversarial_anneal_epochs=adversarial_anneal_epochs,
+                cl_regression=cl_regression,
+                cl_lambda=cl_lambda,
+            ),
+        )
+    epochs = cfg.epochs
+    batch_size = cfg.batch_size
+    early_stopping_patience = cfg.early_stopping_patience
+    use_class_weights = cfg.use_class_weights
+    pos_weight = cfg.pos_weight
+    loss_type = cfg.loss_type
+    focal_gamma = cfg.focal_gamma
+    label_smoothing = cfg.label_smoothing
+    mixed_precision = cfg.mixed_precision
+    checkpoint_metric = cfg.checkpoint_metric
+    num_out = cfg.num_out
+    signal_mode = cfg.signal_mode
+    motif = cfg.motif
+    motif_offset = cfg.motif_offset
+    base_justify = cfg.base_justify
+    seq_encoding = cfg.seq_encoding
+    signal_kmer_context = cfg.signal_kmer_context
+    allow_encoding_fallback = cfg.allow_encoding_fallback
+    left_context = cfg.left_context
+    right_context = cfg.right_context
+    balance_groups = cfg.balance_groups
+    oversample_minority = cfg.oversample_minority
+    label_map = cfg.label_map
+    confound = cfg.confound
+    learning_rate = cfg.optim.learning_rate
+    weight_decay = cfg.optim.weight_decay
+    max_grad_norm = cfg.optim.max_grad_norm
+    quantile_grad_clip = cfg.optim.quantile_grad_clip
+    grad_accum_split = cfg.optim.grad_accum_split
+    save_optim_every = cfg.optim.save_optim_every
+    scheduler = cfg.scheduler.scheduler_type
+    scheduler_patience = cfg.scheduler.scheduler_patience
+    scheduler_factor = cfg.scheduler.scheduler_factor
+    warmup_epochs = cfg.scheduler.warmup_epochs
+    augment_jitter = cfg.augment.jitter
+    augment_scale_min = cfg.augment.scale_min
+    augment_scale_max = cfg.augment.scale_max
+    augment_time_mask_bases = cfg.augment.time_mask_bases
+    augment_time_mask_count = cfg.augment.time_mask_count
+    augment_shift_max_bases = cfg.augment.shift_max_bases
+    augment_feature_noise_scale = cfg.augment.feature_noise_scale
+    adversarial_lambda = cfg.aux_head.adversarial_lambda
+    adversarial_anneal_epochs = cfg.aux_head.adversarial_anneal_epochs
+    cl_regression = cfg.aux_head.cl_regression
+    cl_lambda = cfg.aux_head.cl_lambda
 
     from leech.constants import generate_random_seed
 
@@ -2306,39 +2482,23 @@ def train_model(
         with open(output_dir / "config.json", "w") as f:
             json.dump(config, f, indent=2)
 
-    # Create trainer
+    # Create trainer. cfg carries the recipe (learning_rate, scheduler,
+    # augmentation, aux-head lambdas, ...); the rest are runtime objects cfg
+    # doesn't describe, plus num_out, which may have been auto-detected from
+    # the data above and so can differ from cfg.num_out.
     trainer = Trainer(
         model=model,
         model_type=model_name,
         train_loader=train_loader,
         val_loader=val_loader,
         device=device,
-        learning_rate=learning_rate,
         output_dir=output_dir,
         pos_weight=pos_weight_tensor,
-        weight_decay=weight_decay,
-        max_grad_norm=max_grad_norm,
-        quantile_grad_clip=quantile_grad_clip,
-        grad_accum_split=grad_accum_split,
-        save_optim_every=save_optim_every,
-        scheduler_type=scheduler,
-        scheduler_patience=scheduler_patience,
-        scheduler_factor=scheduler_factor,
-        warmup_epochs=warmup_epochs,
-        loss_type=loss_type,
-        focal_gamma=focal_gamma,
-        label_smoothing=label_smoothing,
-        use_mixed_precision=mixed_precision,
         resume_checkpoint=resume_from,
         num_out=num_out,
-        epochs=epochs,
-        adversarial_lambda=adversarial_lambda,
         adversarial_num_classes=adversarial_num_classes,
-        adversarial_anneal_epochs=adversarial_anneal_epochs,
-        cl_regression=cl_regression,
-        cl_lambda=cl_lambda,
-        checkpoint_metric=checkpoint_metric,
         dist=dist_ctx,
+        cfg=cfg,
     )
 
     # Train
