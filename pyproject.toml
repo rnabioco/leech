@@ -86,6 +86,7 @@ dev = [
   "ty>=0.0.64",
   "nbqa>=1.7.0",  # Quality assurance for Jupyter notebooks
   "vulture>=2.15",  # Dead code detection
+  "towncrier>=24.8.0",  # Assembles changelog.d/ fragments into CHANGELOG.md
 ]
 pipeline = [
   "snakefmt>=0.10.3",
@@ -206,3 +207,47 @@ min_confidence = 80
 paths = ["src/", "vulture_whitelist.py"]
 ignore_names = ["test_*", "setUp", "tearDown"]
 ignore_decorators = ["@app.route", "@click.command", "@pytest.fixture"]
+
+# One fragment per PR in changelog.d/ instead of hand-editing CHANGELOG.md's
+# [Unreleased] section -- see changelog.d/README.md. `towncrier build
+# --version X.Y.Z` (part of /release) assembles them into a new dated section
+# and deletes the fragments it consumed.
+[tool.towncrier]
+directory = "changelog.d"
+filename = "CHANGELOG.md"
+name = "leech"
+package = "leech"
+package_dir = "src"
+title_format = "## [{version}] - {project_date}"
+issue_format = "(#{issue})"
+underlines = ["", "", ""]
+
+[[tool.towncrier.type]]
+directory = "added"
+name = "Added"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "changed"
+name = "Changed"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "deprecated"
+name = "Deprecated"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "removed"
+name = "Removed"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "fixed"
+name = "Fixed"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "security"
+name = "Security"
+showcontent = true
