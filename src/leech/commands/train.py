@@ -120,6 +120,13 @@ def handle_train(
     Returns:
         Training history dictionary
     """
+    from leech.configs import (
+        AugmentConfig,
+        AuxHeadConfig,
+        OptimConfig,
+        SchedulerConfig,
+        TrainConfig,
+    )
     from leech.training import train_model
 
     logger.info(f"Training {model_name} model")
@@ -180,9 +187,99 @@ def handle_train(
         "signal_mode",
         "dwell_template_table",
         "checkpoint_metric",
+        "signal_kmer_context",
+        "left_context",
+        "right_context",
+        "label_map",
     }
+    # These four reach this function only via **model_kwargs / --model-config
+    # (grid search's best_params.json, for instance, supplies left_context/
+    # right_context this way) -- pop them out before the rest of
+    # _explicit_keys strips the set, and thread them into `cfg` explicitly.
+    # Leaving them in extra_kwargs while cfg carries its own (default) value
+    # for the same name doesn't raise, because train_model's cfg-priority
+    # unpack overwrites its own parameter with cfg's default unconditionally
+    # -- so the explicit value from --model-config would be silently
+    # reverted to the TrainConfig default instead of erroring or applying.
+    _train_config_defaults = TrainConfig()
+    signal_kmer_context = extra_kwargs.pop(
+        "signal_kmer_context", _train_config_defaults.signal_kmer_context
+    )
+    left_context = extra_kwargs.pop("left_context", _train_config_defaults.left_context)
+    right_context = extra_kwargs.pop("right_context", _train_config_defaults.right_context)
+    label_map = extra_kwargs.pop("label_map", _train_config_defaults.label_map)
     for key in _explicit_keys:
         extra_kwargs.pop(key, None)
+
+    # Pre-existing gap, not introduced by #270: "num_out" is in
+    # _explicit_keys above (so a `--num-out` value reaching this function via
+    # **model_kwargs gets popped from extra_kwargs here) but this function
+    # has no `num_out` parameter of its own to forward it through instead --
+    # so `--num-out` on the CLI is silently dropped, and train_model always
+    # falls back to auto-detecting it from the training data's label column.
+    # Left as-is: fixing it is a choice about what `--num-out` should mean
+    # (an explicit override vs. only ever auto-detected) and is out of scope
+    # for this refactor, which preserves existing behavior exactly.
+
+    # One recipe object (#270) instead of re-listing every option a fourth
+    # time (cli.py, this function's signature, and train_model/Trainer are
+    # the other three). dwell_template_table and gpus/num_workers/device/seed
+    # aren't part of the recipe -- they're provenance/runtime knobs threaded
+    # through separately, same as train_data/output_dir.
+    cfg = TrainConfig(
+        epochs=epochs,
+        batch_size=batch_size,
+        early_stopping_patience=early_stopping,
+        use_class_weights=use_class_weights,
+        pos_weight=pos_weight,
+        loss_type=loss_type,
+        focal_gamma=focal_gamma,
+        label_smoothing=label_smoothing,
+        mixed_precision=mixed_precision,
+        checkpoint_metric=checkpoint_metric,
+        signal_mode=signal_mode,
+        motif=motif,
+        motif_offset=motif_offset,
+        base_justify=base_justify,
+        seq_encoding=seq_encoding,
+        signal_kmer_context=signal_kmer_context,
+        allow_encoding_fallback=allow_encoding_fallback,
+        left_context=left_context,
+        right_context=right_context,
+        balance_groups=balance_groups,
+        oversample_minority=oversample_minority,
+        label_map=label_map,
+        confound=confound,
+        optim=OptimConfig(
+            learning_rate=learning_rate,
+            weight_decay=weight_decay,
+            max_grad_norm=max_grad_norm,
+            quantile_grad_clip=quantile_grad_clip,
+            grad_accum_split=grad_accum_split,
+            save_optim_every=save_optim_every,
+        ),
+        scheduler=SchedulerConfig(
+            scheduler_type=scheduler,
+            scheduler_patience=scheduler_patience,
+            scheduler_factor=scheduler_factor,
+            warmup_epochs=warmup_epochs,
+        ),
+        augment=AugmentConfig(
+            jitter=augment_jitter,
+            scale_min=augment_scale_min,
+            scale_max=augment_scale_max,
+            time_mask_bases=augment_time_mask_bases,
+            time_mask_count=augment_time_mask_count,
+            shift_max_bases=augment_shift_max_bases,
+            feature_noise_scale=augment_feature_noise_scale,
+        ),
+        aux_head=AuxHeadConfig(
+            adversarial_lambda=adversarial_lambda,
+            adversarial_anneal_epochs=adversarial_anneal_epochs,
+            cl_regression=cl_regression,
+            cl_lambda=cl_lambda,
+        ),
+    )
 
     # Train model
     history = train_model(
@@ -190,52 +287,13 @@ def handle_train(
         val_data_path=val_data,
         model_name=model_name,
         output_dir=output_dir,
-        epochs=epochs,
-        batch_size=batch_size,
-        learning_rate=learning_rate,
         device=device,
         seed=seed,
-        early_stopping_patience=early_stopping,
-        use_class_weights=use_class_weights,
-        pos_weight=pos_weight,
-        weight_decay=weight_decay,
-        max_grad_norm=max_grad_norm,
-        quantile_grad_clip=quantile_grad_clip,
-        grad_accum_split=grad_accum_split,
-        save_optim_every=save_optim_every,
-        scheduler=scheduler,
-        scheduler_patience=scheduler_patience,
-        scheduler_factor=scheduler_factor,
-        warmup_epochs=warmup_epochs,
-        loss_type=loss_type,
-        focal_gamma=focal_gamma,
-        label_smoothing=label_smoothing,
-        mixed_precision=mixed_precision,
-        augment_jitter=augment_jitter,
-        augment_scale_min=augment_scale_min,
-        augment_scale_max=augment_scale_max,
-        augment_time_mask_bases=augment_time_mask_bases,
-        augment_time_mask_count=augment_time_mask_count,
-        augment_shift_max_bases=augment_shift_max_bases,
-        augment_feature_noise_scale=augment_feature_noise_scale,
         resume_from=resume,
         num_workers=num_workers,
         gpus=gpus,
-        motif=motif,
-        motif_offset=motif_offset,
-        base_justify=base_justify,
-        seq_encoding=seq_encoding,
-        allow_encoding_fallback=allow_encoding_fallback,
-        balance_groups=balance_groups,
-        oversample_minority=oversample_minority,
-        adversarial_lambda=adversarial_lambda,
-        adversarial_anneal_epochs=adversarial_anneal_epochs,
-        confound=confound,
-        cl_regression=cl_regression,
-        cl_lambda=cl_lambda,
-        signal_mode=signal_mode,
+        cfg=cfg,
         dwell_template_table=dwell_template_table,
-        checkpoint_metric=checkpoint_metric,
         **extra_kwargs,
     )
 

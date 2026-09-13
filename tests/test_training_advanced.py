@@ -951,7 +951,19 @@ class TestUtilTrainingParams:
     """Test that util.py filters new training params correctly."""
 
     def test_new_params_in_training_params_set(self):
-        """Test that new params are in the training_params filter set."""
+        """Test that new params are in the real _TRAINING_PARAMS filter set.
+
+        Imports the actual symbol (#270) instead of re-declaring a copy here,
+        which had drifted out of sync with what config.json actually writes.
+
+        The config dict below includes both the original training-only keys
+        AND the ~15 #270 added (label_smoothing, checkpoint_metric, gpus,
+        and the augmentation/adversarial/CL-regression knobs) -- a config
+        dict that only exercised the pre-#270 keys would pass even if those
+        15 additions were reverted, since nothing would ask about them.
+        """
+        from leech.model_loading import _architecture_config
+
         # Simulate what load_model_from_checkpoint does
         config = {
             "model_name": "ConvLSTMDwell",
@@ -976,54 +988,65 @@ class TestUtilTrainingParams:
             "resume_from": "/some/path",
             "device": "cpu",
             "seed": 42,
+            # The keys #270 added to _TRAINING_PARAMS -- this is the actual
+            # regression this test exists to catch.
+            "label_smoothing": 0.1,
+            "augment_scale_range": {"signal": [0.9, 1.1]},
+            "augment_time_mask_bases": 5,
+            "augment_time_mask_count": 2,
+            "augment_shift_max_bases": 1.0,
+            "augment_feature_noise_scale": 0.01,
+            "balance_groups": True,
+            "oversample_minority": True,
+            "adversarial_lambda": 0.5,
+            "adversarial_anneal_epochs": 3,
+            "confound": "flowcell",
+            "cl_lambda": 2.0,
+            "checkpoint_metric": "val_f1",
+            "signal_mode": "signal_only",
+            "gpus": 4,
+            # Provenance fields read at predict time -- must survive filtering.
+            "motif": "CCAGGC",
+            "dwell_offset": 2,
+            "num_out": 1,
+            "cl_regression": False,
         }
 
-        # Import the training_params set from util.py logic
-        training_params = {
-            "epochs",
-            "batch_size",
-            "learning_rate",
-            "device",
-            "seed",
-            "val_split",
-            "patience",
-            "min_delta",
-            "save_dir",
-            "log_dir",
-            "num_workers",
-            "pin_memory",
-            "prefetch_factor",
-            "use_class_weights",
-            "pos_weight",
-            "scheduler",
-            "scheduler_patience",
-            "scheduler_factor",
-            "max_grad_norm",
-            "weight_decay",
-            "mixed_precision",
-            "warmup_epochs",
-            "loss_type",
-            "focal_gamma",
-            "augment_jitter",
-            "augment_scale_min",
-            "augment_scale_max",
-            "resume_from",
-        }
+        model_kwargs = _architecture_config(config)
 
-        # Filter like load_model_from_checkpoint does
-        model_kwargs = {
-            k: v
-            for k, v in config.items()
-            if k not in ["model_name", "signal_len", "kmer_len"] and k not in training_params
-        }
-
-        # Only model-related params should remain
+        # Only model-related and provenance params should remain
         assert "num_features" in model_kwargs
+        assert "motif" in model_kwargs
+        assert "dwell_offset" in model_kwargs
+        assert "num_out" in model_kwargs
+        assert "cl_regression" in model_kwargs
         assert "scheduler" not in model_kwargs
         assert "weight_decay" not in model_kwargs
         assert "loss_type" not in model_kwargs
         assert "augment_jitter" not in model_kwargs
         assert "resume_from" not in model_kwargs
+
+        # The #270 additions: excluded from the bundle's architecture config,
+        # not merely present in the _TRAINING_PARAMS set (which would be
+        # implied by, not independent of, the checks above).
+        for key in (
+            "label_smoothing",
+            "augment_scale_range",
+            "augment_time_mask_bases",
+            "augment_time_mask_count",
+            "augment_shift_max_bases",
+            "augment_feature_noise_scale",
+            "balance_groups",
+            "oversample_minority",
+            "adversarial_lambda",
+            "adversarial_anneal_epochs",
+            "confound",
+            "cl_lambda",
+            "checkpoint_metric",
+            "signal_mode",
+            "gpus",
+        ):
+            assert key not in model_kwargs, f"{key!r} leaked into the bundle architecture config"
 
 
 # ---------------------------------------------------------------------------

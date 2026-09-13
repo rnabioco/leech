@@ -200,6 +200,107 @@ class PrepareConfig:
 
 
 @dataclass
+class OptimConfig:
+    """Optimizer and gradient-handling knobs."""
+
+    learning_rate: float = 0.001
+    weight_decay: float = 0.0
+    max_grad_norm: float = 0.0
+    quantile_grad_clip: bool = False
+    grad_accum_split: int = 1
+    save_optim_every: int = 1
+
+
+@dataclass
+class SchedulerConfig:
+    """LR schedule knobs."""
+
+    scheduler_type: str = "none"
+    scheduler_patience: int = 5
+    scheduler_factor: float = 0.5
+    warmup_epochs: int = 0
+
+
+@dataclass
+class AugmentConfig:
+    """Signal/feature augmentation knobs applied to the training dataset."""
+
+    jitter: float = 0.0
+    scale_min: float = 1.0
+    scale_max: float = 1.0
+    time_mask_bases: int = 0
+    time_mask_count: int = 1
+    shift_max_bases: float = 0.0
+    feature_noise_scale: float = 0.0
+
+
+@dataclass
+class AuxHeadConfig:
+    """Auxiliary head knobs: adversarial (confound) and CL regression."""
+
+    adversarial_lambda: float = 0.0
+    adversarial_anneal_epochs: int = 0
+    cl_regression: bool = False
+    cl_lambda: float = 1.0
+
+
+@dataclass
+class TrainConfig:
+    """The training recipe: everything that describes *what* a run trains,
+
+    as opposed to *where* (paths, device, worker count) or *how many ranks*
+    (``--gpus``). One object threaded through ``train_model``/``Trainer``
+    instead of the ~50-parameter lists that used to be hand-copied across
+    ``train_model``, ``Trainer.__init__``, ``handle_train``,
+    ``GridSearchConfig``, ``run_grid_point`` and ``_grid_point_worker`` (#270).
+
+    ``train_model`` and ``Trainer`` both accept ``cfg=None`` and build one
+    from their individual keyword arguments in that case, so every existing
+    caller (tests included) that passes loose kwargs keeps working
+    unchanged; ``cfg`` is the path new callers (``handle_train``, the grid
+    search worker) use directly.
+    """
+
+    epochs: int = 50
+    batch_size: int = 128
+    early_stopping_patience: int = 10
+    use_class_weights: bool = True
+    pos_weight: float | None = None
+    loss_type: str = "bce"
+    focal_gamma: float = 2.0
+    label_smoothing: float = 0.0
+    mixed_precision: bool = False
+    checkpoint_metric: str = "auto"
+    num_out: int = 1
+    signal_mode: str = "both"
+
+    # Provenance / extraction geometry recorded in config.json, not used to
+    # extract anything here -- see chunking.resolve_feature_window and
+    # extraction_sequence for where these are authoritative.
+    motif: str | None = None
+    motif_offset: int = 0
+    base_justify: str = "center"
+    seq_encoding: str = "signal_kmer"
+    signal_kmer_context: tuple[int, int] = (4, 4)
+    allow_encoding_fallback: bool = True
+    left_context: int | None = None
+    right_context: int | None = None
+
+    # Sampling strategy (mutually exclusive; enforced in train_model)
+    balance_groups: bool = False
+    oversample_minority: bool = False
+    label_map: dict[str, int] | None = None
+
+    # Confound / adversarial provenance token (parsed in train_model)
+    confound: str | None = None
+
+    optim: OptimConfig = field(default_factory=OptimConfig)
+    scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
+    augment: AugmentConfig = field(default_factory=AugmentConfig)
+    aux_head: AuxHeadConfig = field(default_factory=AuxHeadConfig)
+
+
+@dataclass
 class InferenceConfig:
     """Full config for inference workers. Shares signal/motif/chunk with prep."""
 

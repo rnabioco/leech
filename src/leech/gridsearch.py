@@ -6,12 +6,13 @@ to find optimal model performance, as described in the leech training strategy.
 """
 
 import csv
+import dataclasses
 import itertools
 import json
 import logging
 import multiprocessing
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -19,6 +20,7 @@ from rich.table import Table
 
 from leech.chunking import load_chunks
 from leech.cli_config import make_console
+from leech.configs import TrainConfig
 from leech.models import requires_features
 from leech.training import train_model
 
@@ -145,6 +147,12 @@ class GridSearchConfig:
     """
     Configuration for chunk context grid search.
 
+    The training recipe (epochs, learning_rate, motif, augmentation, aux
+    heads, ...) lives in ``cfg: TrainConfig`` (#270) instead of being
+    redeclared here as ~30 individual fields -- this class only adds what a
+    grid search needs beyond one training recipe: which geometry to sweep and
+    how to run the sweep.
+
     Attributes:
         train_data_path: Path to training chunks or BAM/POD5 for preparation
         val_data_path: Path to validation chunks or BAM/POD5
@@ -152,15 +160,19 @@ class GridSearchConfig:
         output_dir: Base output directory for all grid results
         left_contexts: List of left context sizes to test
         right_contexts: List of right context sizes to test
+        cfg: Training recipe shared by every grid point, except where
+            run_grid_point derives a point-specific override (left_context,
+            right_context, the resolved selection_metric/pos_weight) via
+            dataclasses.replace
         kmer_context: K-mer context for sequence encoding
-        epochs: Number of training epochs per grid point
-        batch_size: Batch size for training
-        learning_rate: Learning rate
         device: Device for training
         seed: Random seed
-        early_stopping_patience: Stop training if validation loss doesn't improve for N epochs
-        motif: Optional motif for chunk extraction
-        motif_offset: Offset within motif
+        dwell_offsets: Dwell offset values to sweep (None = [0])
+        n_parallel: Number of grid points to run concurrently
+        num_workers: DataLoader workers per grid point
+        selection_metric: Grid-point ranking criterion ("auto" mirrors the
+            training checkpoint criterion: val_f1 for multiclass, val_auc for
+            binary)
     """
 
     train_data_path: Path
@@ -169,47 +181,13 @@ class GridSearchConfig:
     output_dir: Path
     left_contexts: list[int]
     right_contexts: list[int]
-    motif: str
+    cfg: TrainConfig = field(default_factory=TrainConfig)
     kmer_context: int = 5
-    epochs: int = 50
-    batch_size: int = 128
-    learning_rate: float = 0.001
     device: str = "cuda"
     seed: int | None = None  # None = generate random seed
-    early_stopping_patience: int = 10
-    motif_offset: int = 0
-    base_justify: str = "center"
     dwell_offsets: list[int] | None = None
     n_parallel: int = 1
-    weight_decay: float = 0.0
-    max_grad_norm: float = 0.0
-    scheduler: str = "none"
-    scheduler_patience: int = 5
-    scheduler_factor: float = 0.5
-    warmup_epochs: int = 0
-    loss_type: str = "bce"
-    focal_gamma: float = 2.0
-    label_smoothing: float = 0.0
-    mixed_precision: bool = False
-    augment_jitter: float = 0.0
-    augment_scale_min: float = 1.0
-    augment_scale_max: float = 1.0
-    augment_time_mask_bases: int = 0
-    augment_time_mask_count: int = 1
-    augment_shift_max_bases: float = 0.0
-    augment_feature_noise_scale: float = 0.0
     num_workers: int = 0
-    balance_groups: bool = False
-    oversample_minority: bool = False
-    adversarial_lambda: float = 0.0
-    adversarial_anneal_epochs: int = 0
-    confound: str | None = None
-    cl_regression: bool = False
-    cl_lambda: float = 1.0
-    signal_mode: str = "both"
-    # Grid-point selection metric. "auto" mirrors the training checkpoint
-    # criterion (val_f1 for multiclass, val_auc for binary). Override to one of
-    # "val_acc", "val_f1", "val_auc" to force a specific metric.
     selection_metric: str = "auto"
 
 
@@ -237,43 +215,12 @@ def run_grid_point(
     left_context: int,
     right_context: int,
     kmer_len: int,
-    epochs: int,
-    batch_size: int,
-    learning_rate: float,
     device: str,
     seed: int,
-    early_stopping_patience: int = 10,
+    cfg: TrainConfig,
     dwell_offset: int = 0,
     pos_weight: float | None = None,
-    weight_decay: float = 0.0,
-    max_grad_norm: float = 0.0,
-    scheduler: str = "none",
-    scheduler_patience: int = 5,
-    scheduler_factor: float = 0.5,
-    warmup_epochs: int = 0,
-    loss_type: str = "bce",
-    focal_gamma: float = 2.0,
-    label_smoothing: float = 0.0,
-    mixed_precision: bool = False,
-    augment_jitter: float = 0.0,
-    augment_scale_min: float = 1.0,
-    augment_scale_max: float = 1.0,
-    augment_time_mask_bases: int = 0,
-    augment_time_mask_count: int = 1,
-    augment_shift_max_bases: float = 0.0,
-    augment_feature_noise_scale: float = 0.0,
     num_workers: int = 0,
-    balance_groups: bool = False,
-    oversample_minority: bool = False,
-    motif: str = "",
-    motif_offset: int = 0,
-    base_justify: str = "center",
-    adversarial_lambda: float = 0.0,
-    adversarial_anneal_epochs: int = 0,
-    confound: str | None = None,
-    cl_regression: bool = False,
-    cl_lambda: float = 1.0,
-    signal_mode: str = "both",
     selection_metric: str = "auto",
 ) -> dict:
     """
@@ -287,17 +234,15 @@ def run_grid_point(
         left_context: Left signal context
         right_context: Right signal context
         kmer_len: K-mer length
-        epochs: Number of epochs
-        batch_size: Batch size
-        learning_rate: Learning rate
         device: Device
         seed: Random seed
-        early_stopping_patience: Stop training if validation loss doesn't improve for N epochs
+        cfg: Training recipe shared across the grid (#270); this point's
+            left_context/right_context and the resolved selection_metric/
+            pos_weight are applied to it via dataclasses.replace below, so
+            train_model receives one complete, point-specific cfg rather
+            than ~30 individually forwarded fields.
         dwell_offset: Dwell feature offset (bases toward 3' end)
         pos_weight: Pre-computed positive class weight (avoids redundant computation)
-        motif: Motif string stored in config.json for inference
-        motif_offset: Offset within motif
-        base_justify: Signal chunk centering ("start", "center", or "end")
 
     Returns:
         Dictionary with grid point results
@@ -314,6 +259,18 @@ def run_grid_point(
 
     start_time = time.time()
 
+    # checkpoint_metric/pos_weight are resolved once in run_grid_search from
+    # data/config that doesn't vary per point; left_context/right_context are
+    # this point's actual swept values. All four fold into one point-specific
+    # cfg rather than reaching train_model as loose kwargs.
+    point_cfg = dataclasses.replace(
+        cfg,
+        left_context=left_context,
+        right_context=right_context,
+        checkpoint_metric=selection_metric,
+        pos_weight=pos_weight,
+    )
+
     try:
         history = train_model(
             train_data_path=train_data_path,
@@ -322,46 +279,11 @@ def run_grid_point(
             output_dir=output_dir,
             signal_len=signal_len,
             kmer_len=kmer_len,
-            epochs=epochs,
-            batch_size=batch_size,
-            learning_rate=learning_rate,
             device=device,
             seed=seed,
-            early_stopping_patience=early_stopping_patience,
             dwell_offset=dwell_offset,
-            pos_weight=pos_weight,
-            weight_decay=weight_decay,
-            max_grad_norm=max_grad_norm,
-            scheduler=scheduler,
-            scheduler_patience=scheduler_patience,
-            scheduler_factor=scheduler_factor,
-            warmup_epochs=warmup_epochs,
-            loss_type=loss_type,
-            focal_gamma=focal_gamma,
-            label_smoothing=label_smoothing,
-            mixed_precision=mixed_precision,
-            augment_jitter=augment_jitter,
-            augment_scale_min=augment_scale_min,
-            augment_scale_max=augment_scale_max,
-            augment_time_mask_bases=augment_time_mask_bases,
-            augment_time_mask_count=augment_time_mask_count,
-            augment_shift_max_bases=augment_shift_max_bases,
-            augment_feature_noise_scale=augment_feature_noise_scale,
             num_workers=num_workers,
-            left_context=left_context,
-            right_context=right_context,
-            balance_groups=balance_groups,
-            oversample_minority=oversample_minority,
-            motif=motif,
-            motif_offset=motif_offset,
-            base_justify=base_justify,
-            adversarial_lambda=adversarial_lambda,
-            adversarial_anneal_epochs=adversarial_anneal_epochs,
-            confound=confound,
-            cl_regression=cl_regression,
-            cl_lambda=cl_lambda,
-            signal_mode=signal_mode,
-            checkpoint_metric=selection_metric,
+            cfg=point_cfg,
         )
 
         train_time = time.time() - start_time
@@ -374,7 +296,7 @@ def run_grid_point(
         best_val_auc = max(history["val_auc"]) if history["val_auc"] else 0.0
         best_val_f1 = max(history["val_f1"]) if history["val_f1"] else 0.0
         epoch_series = history.get(selection_metric) or history.get("val_acc")
-        best_epoch = int(np.argmax(epoch_series) + 1) if epoch_series else epochs
+        best_epoch = int(np.argmax(epoch_series) + 1) if epoch_series else cfg.epochs
 
         result = {
             "left_context": left_context,
@@ -418,53 +340,15 @@ def _grid_point_worker(args: dict) -> dict:
     ``--parallel N``. The streaming loader reads a row block at a time and this
     storage does 724 MB/s sequentially (ADR 0006), so the re-read is cheap
     where the resident copy was not.
+
+    Forwards ``args`` wholesale rather than re-listing each key: hand-copying
+    this call used to silently drop ``oversample_minority`` under
+    ``--parallel > 1`` (#270) while the sequential path (``run_grid_point(**args)``
+    in ``run_grid_search``) forwarded everything -- the same ``grid_args`` dict
+    reaches both dispatchers, so a key present there can no longer go missing
+    in just one of them.
     """
-    result = run_grid_point(
-        train_data_path=args["train_data_path"],
-        val_data_path=args["val_data_path"],
-        model_name=args["model_name"],
-        output_dir=args["output_dir"],
-        left_context=args["left_context"],
-        right_context=args["right_context"],
-        kmer_len=args["kmer_len"],
-        epochs=args["epochs"],
-        batch_size=args["batch_size"],
-        learning_rate=args["learning_rate"],
-        device=args["device"],
-        seed=args["seed"],
-        early_stopping_patience=args["early_stopping_patience"],
-        dwell_offset=args["dwell_offset"],
-        pos_weight=args["pos_weight"],
-        weight_decay=args["weight_decay"],
-        max_grad_norm=args["max_grad_norm"],
-        scheduler=args["scheduler"],
-        scheduler_patience=args["scheduler_patience"],
-        scheduler_factor=args["scheduler_factor"],
-        warmup_epochs=args["warmup_epochs"],
-        loss_type=args["loss_type"],
-        focal_gamma=args["focal_gamma"],
-        label_smoothing=args["label_smoothing"],
-        mixed_precision=args["mixed_precision"],
-        augment_jitter=args["augment_jitter"],
-        augment_scale_min=args["augment_scale_min"],
-        augment_scale_max=args["augment_scale_max"],
-        augment_time_mask_bases=args.get("augment_time_mask_bases", 0),
-        augment_time_mask_count=args.get("augment_time_mask_count", 1),
-        augment_shift_max_bases=args.get("augment_shift_max_bases", 0),
-        augment_feature_noise_scale=args.get("augment_feature_noise_scale", 0.0),
-        num_workers=args["num_workers"],
-        balance_groups=args.get("balance_groups", False),
-        motif=args.get("motif"),
-        motif_offset=args.get("motif_offset", 0),
-        base_justify=args.get("base_justify", "center"),
-        adversarial_lambda=args.get("adversarial_lambda", 0.0),
-        adversarial_anneal_epochs=args.get("adversarial_anneal_epochs", 0),
-        confound=args.get("confound"),
-        cl_regression=args.get("cl_regression", False),
-        cl_lambda=args.get("cl_lambda", 1.0),
-        signal_mode=args.get("signal_mode", "both"),
-        selection_metric=args.get("selection_metric", "val_acc"),
-    )
+    result = run_grid_point(**args)
     # Free CUDA memory between grid points to prevent accumulation
     if args.get("device", "cpu") != "cpu":
         import gc
@@ -537,9 +421,9 @@ def run_grid_search(config: GridSearchConfig) -> Path:
         "right_contexts": config.right_contexts,
         "dwell_offsets": dwell_offsets,
         "kmer_context": config.kmer_context,
-        "epochs": config.epochs,
-        "batch_size": config.batch_size,
-        "learning_rate": config.learning_rate,
+        "epochs": config.cfg.epochs,
+        "batch_size": config.cfg.batch_size,
+        "learning_rate": config.cfg.optim.learning_rate,
         "device": config.device,
         "seed": seed,
     }
@@ -594,43 +478,12 @@ def run_grid_search(config: GridSearchConfig) -> Path:
                 "left_context": left,
                 "right_context": right,
                 "kmer_len": 2 * config.kmer_context + 1,
-                "epochs": config.epochs,
-                "batch_size": config.batch_size,
-                "learning_rate": config.learning_rate,
                 "device": config.device,
                 "seed": config.seed,
-                "early_stopping_patience": config.early_stopping_patience,
+                "cfg": config.cfg,
                 "dwell_offset": dwoff,
                 "pos_weight": pos_weight,
-                "weight_decay": config.weight_decay,
-                "max_grad_norm": config.max_grad_norm,
-                "scheduler": config.scheduler,
-                "scheduler_patience": config.scheduler_patience,
-                "scheduler_factor": config.scheduler_factor,
-                "warmup_epochs": config.warmup_epochs,
-                "loss_type": config.loss_type,
-                "focal_gamma": config.focal_gamma,
-                "label_smoothing": config.label_smoothing,
-                "mixed_precision": config.mixed_precision,
-                "augment_jitter": config.augment_jitter,
-                "augment_scale_min": config.augment_scale_min,
-                "augment_scale_max": config.augment_scale_max,
-                "augment_time_mask_bases": config.augment_time_mask_bases,
-                "augment_time_mask_count": config.augment_time_mask_count,
-                "augment_shift_max_bases": config.augment_shift_max_bases,
-                "augment_feature_noise_scale": config.augment_feature_noise_scale,
                 "num_workers": config.num_workers,
-                "balance_groups": config.balance_groups,
-                "oversample_minority": config.oversample_minority,
-                "motif": config.motif,
-                "motif_offset": config.motif_offset,
-                "base_justify": config.base_justify,
-                "adversarial_lambda": config.adversarial_lambda,
-                "adversarial_anneal_epochs": config.adversarial_anneal_epochs,
-                "confound": config.confound,
-                "cl_regression": config.cl_regression,
-                "cl_lambda": config.cl_lambda,
-                "signal_mode": config.signal_mode,
                 "selection_metric": resolved_metric,
             }
         )

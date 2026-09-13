@@ -8,6 +8,7 @@ import pytest
 
 import leech.gridsearch
 from leech.chunking import load_chunks, save_chunks
+from leech.configs import TrainConfig
 from leech.gridsearch import (
     GridSearchConfig,
     parse_context_grid,
@@ -162,7 +163,13 @@ def _fake_history():
     }
 
 
-def _config(train, val, output_dir, **kwargs):
+def _config(train, val, output_dir, cfg=None, **kwargs):
+    """Build a GridSearchConfig for tests.
+
+    ``cfg`` overrides the default training recipe (TrainConfig); other
+    keyword arguments apply to GridSearchConfig's own sweep/runtime fields
+    (n_parallel, device, ...) -- the two are separate dataclasses since #270.
+    """
     return GridSearchConfig(
         train_data_path=train,
         val_data_path=val,
@@ -170,14 +177,11 @@ def _config(train, val, output_dir, **kwargs):
         output_dir=output_dir,
         left_contexts=[200],
         right_contexts=[200],
+        cfg=cfg if cfg is not None else TrainConfig(epochs=1, batch_size=8, motif="CCAGGC"),
         kmer_context=5,
-        epochs=1,
-        batch_size=8,
-        learning_rate=0.001,
         device="cpu",
         seed=42,
         num_workers=0,
-        motif="CCAGGC",
         **kwargs,
     )
 
@@ -270,7 +274,7 @@ class TestGridSearchStreamsTheCorpus:
         seen = []
 
         def spy(**kwargs):
-            seen.append(kwargs.get("pos_weight"))
+            seen.append(kwargs["cfg"].pos_weight)
             return _fake_history()
 
         monkeypatch.setattr(leech.gridsearch, "train_model", spy)
@@ -280,3 +284,124 @@ class TestGridSearchStreamsTheCorpus:
         expected = float((labels == 0).sum()) / float((labels == 1).sum())
 
         assert seen == [pytest.approx(expected)]
+
+    def test_grid_point_worker_and_sequential_path_pass_exactly_run_grid_points_keys(
+        self, grid_corpus, tmp_path, monkeypatch
+    ):
+        """Both dispatch paths must pass run_grid_point exactly its parameters.
+
+        `_grid_point_worker` used to hand-list ~35 of run_grid_point's
+        parameters and simply missed `oversample_minority` (#270):
+        `--parallel > 1` always trained with it off while `--parallel 1`
+        (`run_grid_point(**args)` directly) honored it. A prior version of
+        this test only checked that `_grid_point_worker`'s source contained
+        the literal substring `"run_grid_point(**args)"` -- a source-text
+        match that would stay green even if `grid_args` drifted out of sync
+        with a signature change, since nothing it asserts is actually about
+        keys. Issue #270's own acceptance criteria calls for comparing
+        `inspect.signature(run_grid_point)` against the keys actually
+        passed, so this does that directly: it records the kwargs
+        run_grid_point is called with (in-process, so fork-based
+        `--parallel` dispatch isn't exercised here -- both dispatchers draw
+        from the identical `grid_args` list built once in run_grid_search,
+        so proving that list's shape here covers both).
+        """
+        import leech.gridsearch as gs
+        from leech.gridsearch import _grid_point_worker
+
+        train, val = grid_corpus
+        expected_params = set(inspect.signature(gs.run_grid_point).parameters.keys())
+
+        monkeypatch.setattr(gs, "train_model", lambda **kwargs: _fake_history())
+
+        seen_keys: list[set] = []
+        original_run_grid_point = gs.run_grid_point
+
+        def recording_run_grid_point(**kwargs):
+            seen_keys.append(set(kwargs.keys()))
+            return original_run_grid_point(**kwargs)
+
+        monkeypatch.setattr(gs, "run_grid_point", recording_run_grid_point)
+
+        run_grid_search(_config(train, val, tmp_path / "seq", n_parallel=1))
+
+        assert seen_keys, "run_grid_point was never called"
+        for keys in seen_keys:
+            assert keys == expected_params, (
+                f"grid_args keys {keys} != run_grid_point's parameters {expected_params}"
+            )
+
+        # _grid_point_worker's own forwarding, called directly (no fork, so
+        # the same in-process recorder observes it) with a hand-built args
+        # dict -- this is what --parallel > 1 actually dispatches, and must
+        # forward the identical key set, not a re-listed subset.
+        seen_keys.clear()
+        worker_args = {
+            "train_data_path": train,
+            "val_data_path": val,
+            "model_name": "ConvLSTMDwell",
+            "output_dir": tmp_path / "worker",
+            "left_context": 200,
+            "right_context": 200,
+            "kmer_len": 11,
+            "device": "cpu",
+            "seed": 42,
+            "cfg": TrainConfig(epochs=1, batch_size=8, motif="CCAGGC"),
+            "dwell_offset": 0,
+            "pos_weight": None,
+            "num_workers": 0,
+            "selection_metric": "auto",
+        }
+        assert set(worker_args.keys()) == expected_params, (
+            "this test's own args dict has drifted from run_grid_point's signature"
+        )
+        _grid_point_worker(worker_args)
+        assert seen_keys == [expected_params]
+
+    def test_oversample_minority_reaches_train_model_under_parallel(
+        self, grid_corpus, tmp_path, monkeypatch
+    ):
+        """--parallel > 1 must train the same recipe as --parallel 1 (#270).
+
+        n_parallel > 1 runs each grid point in a forked worker process, so a
+        plain in-memory spy would silently lose its writes across the fork
+        (copy-on-write memory, not shared) -- this records what it saw to a
+        file instead, which is real, shared-filesystem I/O either way.
+        """
+        train, val = grid_corpus
+        recipe = TrainConfig(epochs=1, batch_size=8, motif="CCAGGC", oversample_minority=True)
+
+        def make_spy(record_path):
+            def spy(**kwargs):
+                with open(record_path, "a") as f:
+                    f.write(f"{kwargs['cfg'].oversample_minority}\n")
+                return _fake_history()
+
+            return spy
+
+        sequential_record = tmp_path / "sequential_seen.txt"
+        monkeypatch.setattr(leech.gridsearch, "train_model", make_spy(sequential_record))
+        run_grid_search(
+            _config(
+                train,
+                val,
+                tmp_path / "sequential",
+                cfg=recipe,
+                n_parallel=1,
+            )
+        )
+
+        parallel_record = tmp_path / "parallel_seen.txt"
+        monkeypatch.setattr(leech.gridsearch, "train_model", make_spy(parallel_record))
+        run_grid_search(
+            _config(
+                train,
+                val,
+                tmp_path / "parallel",
+                cfg=recipe,
+                n_parallel=2,
+            )
+        )
+
+        assert sequential_record.read_text().strip() == "True"
+        assert parallel_record.read_text().strip() == "True"
