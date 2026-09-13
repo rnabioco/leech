@@ -571,7 +571,7 @@ class TestSignalKmerFieldParity:
             read_ids=[ri.read_id for ri in kept],
             sequences=[_extraction_sequence(ri, config) for ri in kept],
             mv_strides=[mt.stride for mt in mts],
-            mv_arrays=[mt.moves.tolist() for mt in mts],
+            mv_arrays=[mt.moves.view(np.uint8) for mt in mts],
             num_samples_list=[mt.num_samples for mt in mts],
             trim_offsets=[mt.trim_offset for mt in mts],
             motif_positions=[_find_motif_positions(ri, motif_searcher, config) for ri in kept],

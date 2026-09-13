@@ -2,9 +2,11 @@
 
 use std::collections::HashMap;
 
-use numpy::IntoPyArray;
+use numpy::{IntoPyArray, PyReadonlyArray1};
 use pyo3::prelude::*;
 use rayon::prelude::*;
+
+use crate::kmer_levels::KmerLevels;
 
 use super::processing::process_read_signal;
 use super::signal_mapping::chunk_signal_kmer_inputs;
@@ -15,7 +17,7 @@ fn extract_training_chunks_from_read(
     processed: &ProcessedRead,
     rid: &str,
     positions: &[i64],
-    cfg: &PipelineConfig,
+    cfg: &PipelineConfig<'_>,
 ) -> Vec<TrainingChunkResult> {
     let ProcessedRead {
         ref norm_signal,
@@ -186,7 +188,7 @@ fn process_one_read_training(
     ns: u64,
     trim: i64,
     positions: &[i64],
-    cfg: &PipelineConfig,
+    cfg: &PipelineConfig<'_>,
     cigar_ops: Option<&[(u32, u32)]>,
     ref_seq: Option<&str>,
 ) -> Vec<TrainingChunkResult> {
@@ -206,12 +208,12 @@ fn _process_and_convert_training<'py>(
     signal_map: &HashMap<String, Vec<i16>>,
     read_ids: &[String],
     sequences: &[String],
-    mv_arrays: &[Vec<u8>],
+    mv_arrays: &[&[u8]],
     mv_strides: &[u32],
     num_samples_list: &[u64],
     trim_offsets: &[i64],
     motif_positions: &[Vec<i64>],
-    cfg: &PipelineConfig,
+    cfg: &PipelineConfig<'_>,
     cigar_tuples: &Option<Vec<Vec<(u32, u32)>>>,
     reference_sequences: &Option<Vec<Option<String>>>,
 ) -> PyResult<Vec<Py<PyAny>>> {
@@ -240,7 +242,7 @@ fn _process_and_convert_training<'py>(
                     raw_i16,
                     rid,
                     &sequences[i],
-                    &mv_arrays[i],
+                    mv_arrays[i],
                     mv_strides[i],
                     num_samples_list[i],
                     trim_offsets[i],
@@ -352,7 +354,7 @@ pub fn extract_training_chunks<'py>(
     read_ids: Vec<String>,
     sequences: Vec<String>,
     mv_strides: Vec<u32>,
-    mv_arrays: Vec<Vec<u8>>,
+    mv_arrays: Vec<PyReadonlyArray1<'py, u8>>,
     num_samples_list: Vec<u64>,
     trim_offsets: Vec<i64>,
     signal_context_left: i64,
@@ -370,7 +372,7 @@ pub fn extract_training_chunks<'py>(
     seq_encoding: &str,
     signal_kmer_context: Option<(usize, usize)>,
     refine_signal_map: bool,
-    kmer_table: Option<HashMap<String, f64>>,
+    kmer_table: Option<&KmerLevels>,
     kmer_len: usize,
     kmer_center_idx: i32,
     refine_half_bandwidth: i32,
@@ -391,6 +393,25 @@ pub fn extract_training_chunks<'py>(
         ));
     }
 
+    // Zero-copy borrow of each read's move table -- replaces the old
+    // `mt.moves.tolist()` -> `Vec<Vec<u8>>` conversion (~10M PyLong
+    // round-trips per 1,000-read batch, issue #259). `mv_arrays` outlives
+    // `mv_slices` (it is not moved or dropped before this function returns),
+    // so the borrow is valid for the rest of the call, including inside
+    // `py.detach` below.
+    let mv_slices: Vec<&[u8]> = mv_arrays
+        .iter()
+        .enumerate()
+        .map(|(i, a)| {
+            a.as_slice().map_err(|e| {
+                pyo3::exceptions::PyValueError::new_err(format!(
+                    "mv_arrays[{i}] (read_id={:?}) is not contiguous: {e}",
+                    read_ids.get(i)
+                ))
+            })
+        })
+        .collect::<PyResult<Vec<_>>>()?;
+
     let kmer_ctx = kmer_context;
 
     let cfg = PipelineConfig {
@@ -409,7 +430,7 @@ pub fn extract_training_chunks<'py>(
         dwell_width: (feature_end.unwrap_or(kmer_ctx) - feature_start.unwrap_or(-kmer_ctx) + 1)
             as usize,
         refine_signal_map,
-        kmer_table,
+        kmer_table: kmer_table.map(|kt| &kt.table),
         kmer_len,
         kmer_center_idx,
         refine_half_bandwidth,
@@ -432,7 +453,7 @@ pub fn extract_training_chunks<'py>(
         &signal_map,
         &read_ids,
         &sequences,
-        &mv_arrays,
+        &mv_slices,
         &mv_strides,
         &num_samples_list,
         &trim_offsets,

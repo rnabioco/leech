@@ -13,6 +13,7 @@ import torch
 
 from leech._rust_accel import (
     RUST_NORM_METHOD,
+    make_kmer_levels,
     rust_supports_norm_method,
     rust_supports_softclip_recovery,
 )
@@ -904,12 +905,19 @@ def build_rust_extraction_kwargs(
     ``--base-justify end`` -- which moves the focus sample within the base and
     so shifts every signal window. ``data prepare`` passed it; only predict
     dropped it.
+
+    This function runs once per predict run (the returned dict is reused
+    across every mega-batch via ``**_rs_kwargs``), which is exactly where the
+    k-mer table's ``dict -> KmerLevels`` conversion belongs: building it here
+    means every batch call after this one borrows the same handle instead of
+    re-marshalling the 262,144-entry table itself (issue #259).
     """
-    kmer_table_dict = None
+    kmer_table_handle = None
     kmer_table_len = 9
     kmer_table_center = -1
     if refine_signal_map and signal_refiner is not None:
-        kmer_table_dict = getattr(signal_refiner, "kmer_to_level", None)
+        kmer_to_level = getattr(signal_refiner, "kmer_to_level", None)
+        kmer_table_handle = make_kmer_levels(kmer_to_level)
         kmer_table_len = getattr(signal_refiner, "kmer_len", 9)
         kmer_table_center = getattr(signal_refiner, "center_idx", -1)
 
@@ -926,7 +934,7 @@ def build_rust_extraction_kwargs(
         "seq_encoding": seq_encoding,
         "signal_kmer_context": (signal_kmer_context if seq_encoding == "signal_kmer" else None),
         "refine_signal_map": refine_signal_map,
-        "kmer_table": kmer_table_dict,
+        "kmer_table": kmer_table_handle,
         "kmer_len": kmer_table_len,
         "kmer_center_idx": kmer_table_center,
         "refine_half_bandwidth": refine_half_bandwidth,
@@ -949,7 +957,7 @@ def collect_bam_metadata_for_rust(
     list[str],
     list[str],
     list[int],
-    list[list[int]],
+    list[np.ndarray],
     list[int],
     list[int],
     list[list[int]],
@@ -982,7 +990,7 @@ def collect_bam_metadata_for_rust(
     rs_rids: list[str] = []
     rs_seqs: list[str] = []
     rs_strides: list[int] = []
-    rs_mvs: list[list[int]] = []
+    rs_mvs: list[np.ndarray] = []
     rs_ns: list[int] = []
     rs_trims: list[int] = []
     rs_motifs: list[list[int]] = []
@@ -1037,7 +1045,10 @@ def collect_bam_metadata_for_rust(
             rs_rids.append(aln.query_name)
             rs_seqs.append(aln.query_sequence)
             rs_strides.append(mt.stride)
-            rs_mvs.append(mt.moves.tolist())
+            # Zero-copy uint8 view (moves are 0/1, same bit pattern as int8) --
+            # the Rust entry point borrows this array's buffer directly
+            # instead of re-marshalling `.tolist()` per read (issue #259).
+            rs_mvs.append(mt.moves.view(np.uint8))
             rs_ns.append(mt.num_samples)
             rs_trims.append(mt.trim_offset)
             rs_motifs.append(positions)

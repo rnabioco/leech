@@ -3,11 +3,12 @@
 use std::collections::HashMap;
 
 use numpy::IntoPyArray;
-use numpy::{PyArray1, PyArray2};
+use numpy::{PyArray1, PyArray2, PyReadonlyArray1};
 use pyo3::prelude::*;
 use rayon::prelude::*;
 
 use crate::encoding::encode_signal_kmer_inner;
+use crate::kmer_levels::KmerLevels;
 use crate::pod5_io::PreloadedSignals;
 
 use super::features::{compute_dwell_features, encode_base_onehot, sequence_to_int};
@@ -48,7 +49,7 @@ fn process_one_read(
     ns: u64,
     trim: i64,
     positions: &[i64],
-    cfg: &PipelineConfig,
+    cfg: &PipelineConfig<'_>,
     cigar_ops: Option<&[(u32, u32)]>,
     ref_seq: Option<&str>,
 ) -> Vec<ChunkResult> {
@@ -226,12 +227,12 @@ fn _process_and_convert<'py>(
     signal_map: &HashMap<String, Vec<i16>>,
     read_ids: &[String],
     sequences: &[String],
-    mv_arrays: &[Vec<u8>],
+    mv_arrays: &[&[u8]],
     mv_strides: &[u32],
     num_samples_list: &[u64],
     trim_offsets: &[i64],
     motif_positions: &[Vec<i64>],
-    cfg: &PipelineConfig,
+    cfg: &PipelineConfig<'_>,
     cigar_tuples: &Option<Vec<Vec<(u32, u32)>>>,
     reference_sequences: &Option<Vec<Option<String>>>,
 ) -> PyResult<Vec<InferenceChunkPy>> {
@@ -262,7 +263,7 @@ fn _process_and_convert<'py>(
                         raw_i16,
                         rid,
                         &sequences[i],
-                        &mv_arrays[i],
+                        mv_arrays[i],
                         mv_strides[i],
                         num_samples_list[i],
                         trim_offsets[i],
@@ -307,7 +308,7 @@ fn _process_and_convert<'py>(
 
 /// Build a PipelineConfig from the common parameters shared by all entry points.
 #[allow(clippy::too_many_arguments)]
-fn build_config(
+fn build_config<'a>(
     reverse_signal: bool,
     anchor: &str,
     seq_encoding: &str,
@@ -320,14 +321,14 @@ fn build_config(
     feature_start: Option<i64>,
     feature_end: Option<i64>,
     refine_signal_map: bool,
-    kmer_table: Option<HashMap<String, f64>>,
+    kmer_table: Option<&'a HashMap<String, f64>>,
     kmer_len: usize,
     kmer_center_idx: i32,
     refine_half_bandwidth: i32,
     refine_scale_iters: i32,
     signal_in_channels: usize,
     base_justify: &str,
-) -> PipelineConfig {
+) -> PipelineConfig<'a> {
     let kmer_ctx = kmer_context;
     PipelineConfig {
         reverse_signal,
@@ -404,7 +405,7 @@ pub fn extract_inference_chunks<'py>(
     read_ids: Vec<String>,
     sequences: Vec<String>,
     mv_strides: Vec<u32>,
-    mv_arrays: Vec<Vec<u8>>,
+    mv_arrays: Vec<PyReadonlyArray1<'py, u8>>,
     num_samples_list: Vec<u64>,
     trim_offsets: Vec<i64>,
     signal_context_left: i64,
@@ -422,7 +423,7 @@ pub fn extract_inference_chunks<'py>(
     seq_encoding: &str,
     signal_kmer_context: Option<(usize, usize)>,
     refine_signal_map: bool,
-    kmer_table: Option<HashMap<String, f64>>,
+    kmer_table: Option<&KmerLevels>,
     kmer_len: usize,
     kmer_center_idx: i32,
     refine_half_bandwidth: i32,
@@ -443,6 +444,21 @@ pub fn extract_inference_chunks<'py>(
         ));
     }
 
+    // Zero-copy borrow of each read's move table -- see the matching comment
+    // in `training::extract_training_chunks` (issue #259).
+    let mv_slices: Vec<&[u8]> = mv_arrays
+        .iter()
+        .enumerate()
+        .map(|(i, a)| {
+            a.as_slice().map_err(|e| {
+                pyo3::exceptions::PyValueError::new_err(format!(
+                    "mv_arrays[{i}] (read_id={:?}) is not contiguous: {e}",
+                    read_ids.get(i)
+                ))
+            })
+        })
+        .collect::<PyResult<Vec<_>>>()?;
+
     let cfg = build_config(
         reverse_signal,
         anchor,
@@ -456,7 +472,7 @@ pub fn extract_inference_chunks<'py>(
         feature_start,
         feature_end,
         refine_signal_map,
-        kmer_table,
+        kmer_table.map(|kt| &kt.table),
         kmer_len,
         kmer_center_idx,
         refine_half_bandwidth,
@@ -478,7 +494,7 @@ pub fn extract_inference_chunks<'py>(
         &signal_map,
         &read_ids,
         &sequences,
-        &mv_arrays,
+        &mv_slices,
         &mv_strides,
         &num_samples_list,
         &trim_offsets,
@@ -537,7 +553,7 @@ pub fn extract_chunks_from_preloaded<'py>(
     read_ids: Vec<String>,
     sequences: Vec<String>,
     mv_strides: Vec<u32>,
-    mv_arrays: Vec<Vec<u8>>,
+    mv_arrays: Vec<PyReadonlyArray1<'py, u8>>,
     num_samples_list: Vec<u64>,
     trim_offsets: Vec<i64>,
     signal_context_left: i64,
@@ -555,7 +571,7 @@ pub fn extract_chunks_from_preloaded<'py>(
     seq_encoding: &str,
     signal_kmer_context: Option<(usize, usize)>,
     refine_signal_map: bool,
-    kmer_table: Option<HashMap<String, f64>>,
+    kmer_table: Option<&KmerLevels>,
     kmer_len: usize,
     kmer_center_idx: i32,
     refine_half_bandwidth: i32,
@@ -576,6 +592,21 @@ pub fn extract_chunks_from_preloaded<'py>(
         ));
     }
 
+    // Zero-copy borrow of each read's move table -- see the matching comment
+    // in `training::extract_training_chunks` (issue #259).
+    let mv_slices: Vec<&[u8]> = mv_arrays
+        .iter()
+        .enumerate()
+        .map(|(i, a)| {
+            a.as_slice().map_err(|e| {
+                pyo3::exceptions::PyValueError::new_err(format!(
+                    "mv_arrays[{i}] (read_id={:?}) is not contiguous: {e}",
+                    read_ids.get(i)
+                ))
+            })
+        })
+        .collect::<PyResult<Vec<_>>>()?;
+
     let cfg = build_config(
         reverse_signal,
         anchor,
@@ -589,7 +620,7 @@ pub fn extract_chunks_from_preloaded<'py>(
         feature_start,
         feature_end,
         refine_signal_map,
-        kmer_table,
+        kmer_table.map(|kt| &kt.table),
         kmer_len,
         kmer_center_idx,
         refine_half_bandwidth,
@@ -604,7 +635,7 @@ pub fn extract_chunks_from_preloaded<'py>(
         &preloaded.signals,
         &read_ids,
         &sequences,
-        &mv_arrays,
+        &mv_slices,
         &mv_strides,
         &num_samples_list,
         &trim_offsets,

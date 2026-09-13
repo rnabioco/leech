@@ -54,7 +54,7 @@ class TestRustBatchDispatchIsConcurrent:
         peak = 0
         release = threading.Event()
 
-        def work(read_batch, config, motif_searcher):
+        def work(read_batch, config, motif_searcher, kmer_levels=None):
             nonlocal live, peak
             with lock:
                 live += 1
@@ -86,7 +86,7 @@ class TestRustBatchDispatchIsConcurrent:
     def test_yields_in_bam_order_with_read_counts(self, monkeypatch):
         """Results arrive in submission order, each tagged with its read count."""
 
-        def work(read_batch, config, motif_searcher):
+        def work(read_batch, config, motif_searcher, kmer_levels=None):
             return [{"n": len(read_batch)}], 0, 1
 
         results = _drive(monkeypatch, work, num_workers=4, n_batches=5, batch_size=3)
@@ -102,7 +102,7 @@ class TestRustBatchDispatchIsConcurrent:
         calls = {"n": 0}
         lock = threading.Lock()
 
-        def work(read_batch, config, motif_searcher):
+        def work(read_batch, config, motif_searcher, kmer_levels=None):
             with lock:
                 calls["n"] += 1
                 n = calls["n"]
@@ -133,7 +133,7 @@ class TestRustBatchDispatchIsConcurrent:
         driver has to "Rust silently dropped every read" -- it must not read
         as a clean no-motif batch either."""
 
-        def work(read_batch, config, motif_searcher):
+        def work(read_batch, config, motif_searcher, kmer_levels=None):
             return [], 0, 2  # 2 reads submitted, Rust returned nothing
 
         (outcome,) = _drive(monkeypatch, work, num_workers=1, n_batches=1)
@@ -146,7 +146,7 @@ class TestRustBatchDispatchIsConcurrent:
         """The other half of the same corner: nothing submitted (no read in
         the batch had a motif match) is a legitimate, non-failure outcome."""
 
-        def work(read_batch, config, motif_searcher):
+        def work(read_batch, config, motif_searcher, kmer_levels=None):
             return [], 0, 0  # nothing submitted -- no motif anywhere in the batch
 
         (outcome,) = _drive(monkeypatch, work, num_workers=1, n_batches=1)
@@ -164,7 +164,7 @@ class TestRustBatchDispatchIsConcurrent:
         proceed = threading.Event()
         consumed = {"n": 0}
 
-        def work(read_batch, config, motif_searcher):
+        def work(read_batch, config, motif_searcher, kmer_levels=None):
             started.release()
             proceed.wait(timeout=20.0)
             return [], 0, 0

@@ -48,7 +48,7 @@ pub(super) struct TrainingChunkResult {
 }
 
 /// Shared config for all reads in a batch (avoids per-read cloning).
-pub(super) struct PipelineConfig {
+pub(super) struct PipelineConfig<'a> {
     pub(super) reverse_signal: bool,
     pub(super) use_reference: bool,
     pub(super) use_signal_kmer: bool,
@@ -63,7 +63,10 @@ pub(super) struct PipelineConfig {
     pub(super) feat_end: i64,
     pub(super) dwell_width: usize,
     pub(super) refine_signal_map: bool,
-    pub(super) kmer_table: Option<HashMap<String, f64>>,
+    /// Borrowed from the caller's `KmerLevels` handle (built once per run in
+    /// Python, see `crate::kmer_levels`) rather than a per-call `HashMap`
+    /// clone -- issue #259.
+    pub(super) kmer_table: Option<&'a HashMap<String, f64>>,
     pub(super) kmer_len: usize,
     pub(super) kmer_center_idx: i32,
     pub(super) refine_half_bandwidth: i32,

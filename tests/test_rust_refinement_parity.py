@@ -46,6 +46,7 @@ from leech._rust_accel import (  # noqa: E402
     _rs_extract_levels,
     _rs_rough_rescale_quantile,
     _rs_seq_banded_dp,
+    make_kmer_levels,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -548,7 +549,7 @@ class TestMonolithicPipelineParity:
                 [r["read_id"]],
                 [r["sequence"]],
                 [r["stride"]],
-                [r["moves"].tolist()],
+                [r["moves"].view(np.uint8)],
                 [r["num_samples"]],
                 [r["trim_offset"]],
                 200,  # signal_context_left
@@ -609,7 +610,7 @@ class TestMonolithicPipelineParity:
                 [r["read_id"]],
                 [r["sequence"]],
                 [r["stride"]],
-                [r["moves"].tolist()],
+                [r["moves"].view(np.uint8)],
                 [r["num_samples"]],
                 [r["trim_offset"]],
                 200,
@@ -620,7 +621,7 @@ class TestMonolithicPipelineParity:
                 True,
                 True,  # signal_len, compute_features, reverse_signal
                 refine_signal_map=True,
-                kmer_table=kmer_to_level,
+                kmer_table=make_kmer_levels(kmer_to_level),
                 kmer_len=kmer_len,
                 kmer_center_idx=kmer_len // 2,
                 refine_half_bandwidth=5,
@@ -633,7 +634,7 @@ class TestMonolithicPipelineParity:
                 [r["read_id"]],
                 [r["sequence"]],
                 [r["stride"]],
-                [r["moves"].tolist()],
+                [r["moves"].view(np.uint8)],
                 [r["num_samples"]],
                 [r["trim_offset"]],
                 200,
@@ -772,7 +773,7 @@ class TestMonolithicRefinementPipeline:
         rids = [r["read_id"] for r in reads]
         seqs = [r["sequence"] for r in reads]
         strides = [r["stride"] for r in reads]
-        movs = [r["moves"].tolist() for r in reads]
+        movs = [r["moves"].view(np.uint8) for r in reads]
         nss = [r["num_samples"] for r in reads]
         tss = [r["trim_offset"] for r in reads]
         motif_positions = [[len(r["sequence"]) // 2] for r in reads]
@@ -792,7 +793,7 @@ class TestMonolithicRefinementPipeline:
             True,  # compute_features
             reverse_signal=True,
             refine_signal_map=refine,
-            kmer_table=(kmer_to_level if refine else None),
+            kmer_table=(make_kmer_levels(kmer_to_level) if refine else None),
             kmer_len=kmer_len,
             refine_half_bandwidth=5,
             refine_scale_iters=2,
