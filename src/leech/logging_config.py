@@ -63,21 +63,3 @@ def setup_logging(
     logger.propagate = False
 
     return logger
-
-
-def get_logger(name: str) -> logging.Logger:
-    """
-    Get a logger for a specific module.
-
-    Args:
-        name: Module name (typically __name__)
-
-    Returns:
-        Logger instance for the module
-
-    Examples:
-        >>> from leech.logging_config import get_logger
-        >>> logger = get_logger(__name__)
-        >>> logger.info("Processing read")
-    """
-    return logging.getLogger(f"leech.{name}")

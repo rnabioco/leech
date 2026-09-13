@@ -22,6 +22,7 @@ MAX_WIDTH  # noqa: vulture
 
 # PyTorch DataLoader / training internals
 benchmark  # noqa: vulture
+worker_id  # noqa: vulture -- worker_init_fn callback signature, unused by design
 
 # scikit-learn-compatible API
 predict_proba  # noqa: vulture
@@ -32,11 +33,6 @@ check_rust  # noqa: vulture
 # Context manager protocol
 __enter__  # noqa: vulture
 __exit__  # noqa: vulture
-
-# Public library API kept for consumers
-get_sequence  # noqa: vulture
-reference_names  # noqa: vulture
-get_logger  # noqa: vulture
 
 # Rust helpers imported only by the test suite (vulture scans src/ only)
 _rs_test_process_read  # noqa: vulture

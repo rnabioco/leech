@@ -81,7 +81,8 @@ def run_python_backend(
     bam_path: Path, config: PrepareConfig, chunk_size: int, max_reads: int | None
 ) -> tuple[list[dict], float]:
     """Run data preparation using the Python multiprocessing backend."""
-    from leech.io import collect_read_infos
+    from legacy_bam_helpers import collect_read_infos
+
     from leech.preparation.parallel import _process_read_chunk_worker
 
     read_infos = collect_read_infos(bam_path, min_mapq=0)
@@ -105,7 +106,9 @@ def run_rust_backend(
     bam_path: Path, config: PrepareConfig, chunk_size: int, max_reads: int | None
 ) -> tuple[list[dict], float]:
     """Run data preparation using the Rust-accelerated backend."""
-    from leech.io import collect_read_infos, get_motif_searcher
+    from legacy_bam_helpers import collect_read_infos
+
+    from leech.io import get_motif_searcher
     from leech.preparation.parallel import _prepare_batch_rust, _resolve_kmer_levels
 
     read_infos = collect_read_infos(bam_path, min_mapq=0)

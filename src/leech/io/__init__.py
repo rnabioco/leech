@@ -6,10 +6,8 @@ support for batched access and filtering.
 """
 
 from leech.io.bam_reader import (
-    BAMReader,
     MockAlignment,
     ReadInfo,
-    collect_read_infos,
     iter_bam_alignments,
     iter_bam_batches,
     iter_read_info_batches,
@@ -26,10 +24,8 @@ from leech.io.pod5_reader import (
     POD5Reader,
     _extract_pod5_metadata,
     read_pod5_signal,
-    read_pod5_signals_batch,
 )
 from leech.io.reference import (
-    ReferenceManager,
     extract_reference_from_bam,
     get_reference_sequences,
     load_reference_fasta,
@@ -38,20 +34,16 @@ from leech.io.tsv_writer import TsvPredictionWriter
 
 __all__ = [
     # BAM reading
-    "BAMReader",
     "MockAlignment",
     "ReadInfo",
     "iter_bam_alignments",
     "iter_bam_batches",
-    "collect_read_infos",
     "iter_read_info_batches",
     # POD5 reading
     "POD5Reader",
     "_extract_pod5_metadata",
     "read_pod5_signal",
-    "read_pod5_signals_batch",
     # Reference sequences
-    "ReferenceManager",
     "extract_reference_from_bam",
     "load_reference_fasta",
     "get_reference_sequences",

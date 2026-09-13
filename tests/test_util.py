@@ -19,16 +19,44 @@ from leech.bundling import (
 )
 from leech.metrics import compute_metrics, print_metrics, save_metrics, sweep_thresholds
 from leech.model_export import (
+    _build_example_inputs,
     deserialize_exported_model,
     deserialize_traced_model,
     export_model,
     export_single_model,
     serialize_exported_model,
-    serialize_traced_model,
-    trace_model,
 )
 from leech.model_loading import load_model_from_checkpoint
 from leech.models import get_model
+
+
+def trace_model(model, config):
+    """Trace a leech model into a TorchScript ScriptModule.
+
+    Moved here from ``leech.model_export`` in #277: :func:`export_model`
+    (``torch.export``) is the supported path, and this legacy TorchScript
+    tracer had no callers outside this file.
+    """
+    model.eval()
+    example_inputs = _build_example_inputs(model, config)
+
+    with torch.no_grad():
+        traced = torch.jit.trace(model, example_inputs)
+
+    return traced
+
+
+def serialize_traced_model(traced) -> bytes:
+    """Serialize a traced TorchScript model to bytes.
+
+    Moved here from ``leech.model_export`` in #277 alongside ``trace_model``;
+    see :func:`serialize_exported_model` for the supported path.
+    """
+    import io
+
+    buf = io.BytesIO()
+    torch.jit.save(traced, buf)
+    return buf.getvalue()
 
 
 class TestComputeMetrics:

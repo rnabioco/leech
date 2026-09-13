@@ -115,15 +115,6 @@ def _batch_from_dataset(
     return results
 
 
-def get_cached_reader(pod5_path: Path | str) -> tuple[DatasetReader, list]:
-    """Return ``(dataset, run_infos)`` for a POD5 source, cached by path.
-
-    Handles single files and directories alike. Repeated calls for the same
-    path return the same :class:`DatasetReader` instance.
-    """
-    return _get_cached_entry(pod5_path)
-
-
 def read_pod5_signals_batch_cached(
     pod5_path: Path | str, read_ids: list[str]
 ) -> dict[str, tuple[np.ndarray, dict]]:
@@ -165,33 +156,6 @@ def read_pod5_signal(pod5_path: Path, read_id: str) -> tuple[np.ndarray, dict]:
     return signal, _extract_pod5_metadata(read_data, run_infos)
 
 
-def read_pod5_signals_batch(
-    pod5_path: Path, read_ids: list[str]
-) -> dict[str, tuple[np.ndarray, dict]]:
-    """
-    Read multiple signals from a POD5 source in a single batch.
-
-    Accepts a single ``.pod5`` file or a directory of ``.pod5`` files.
-    More efficient than reading one-by-one for large batches — signals are
-    decoded per owning file with parallel VBZ decompression via rayon.
-
-    Args:
-        pod5_path: Path to a ``.pod5`` file or a directory of ``.pod5`` files.
-        read_ids: List of read identifiers
-
-    Returns:
-        Dictionary mapping read_id to (signal, metadata) tuples.
-        Missing reads are not included in the output.
-
-    Examples:
-        >>> read_ids = ["read_001", "read_002", "read_003"]
-        >>> signals = read_pod5_signals_batch(Path("reads.pod5"), read_ids)
-        >>> for read_id, (signal, meta) in signals.items():
-        ...     print(f"{read_id}: {len(signal)} samples")
-    """
-    return _batch_from_dataset(_get_cached_dataset(pod5_path), read_ids, warn_missing=True)
-
-
 class POD5Reader:
     """
     Context manager for efficient POD5 reading.
@@ -214,19 +178,16 @@ class POD5Reader:
         ...     signal, meta = reader.get_signal("read_001")
     """
 
-    def __init__(self, pod5_path: Path, batch_size: int = 100, backend: str = "auto"):
+    def __init__(self, pod5_path: Path, batch_size: int = 100):
         """
         Initialize POD5 reader.
 
         Args:
             pod5_path: Path to a ``.pod5`` file or a directory of ``.pod5`` files.
             batch_size: Number of reads to fetch in each batch (for batch mode)
-            backend: Retained for backward compatibility; POD5 access now always
-                goes through :class:`escapepod.DatasetReader`.
         """
         self.pod5_path = pod5_path
         self.batch_size = batch_size
-        self.backend = backend
         self._ds: DatasetReader | None = None
         self._run_infos: list = []
         self._cache: dict[str, tuple[np.ndarray, dict]] = {}

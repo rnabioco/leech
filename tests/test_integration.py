@@ -18,7 +18,7 @@ class TestReadInfoCollection:
     """Test collecting read info from real BAM."""
 
     def test_collect_read_infos(self):
-        from leech.io import collect_read_infos
+        from legacy_bam_helpers import collect_read_infos
 
         infos = collect_read_infos(BAM_FILE, min_mapq=0)
         assert len(infos) == 14
@@ -28,7 +28,7 @@ class TestReadInfoCollection:
             assert info.stride > 0
 
     def test_read_info_to_move_table(self):
-        from leech.io import collect_read_infos
+        from legacy_bam_helpers import collect_read_infos
 
         infos = collect_read_infos(BAM_FILE)
         mt = infos[0].to_move_table()
@@ -42,8 +42,8 @@ class TestBuildLeechRead:
 
     def test_build_from_real_data(self):
         from escapepod import Reader
+        from legacy_bam_helpers import collect_read_infos
 
-        from leech.io import collect_read_infos
         from leech.preparation.reader import build_leech_read
 
         infos = collect_read_infos(BAM_FILE)
@@ -82,8 +82,8 @@ class TestSignalRefineIntegration:
     @pytest.mark.slow
     def test_refine_real_data(self):
         from escapepod import Reader
+        from legacy_bam_helpers import collect_read_infos
 
-        from leech.io import collect_read_infos
         from leech.preparation.reader import build_leech_read
         from leech.signal_refine import SigMapRefiner
 

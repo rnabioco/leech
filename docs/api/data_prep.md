@@ -127,19 +127,14 @@ of the corpus.
 The write-direction counterpart to the row-block reader above. `data prepare`
 used to build the whole corpus as a list of chunk dicts and hand it to
 `save_chunks`, so peak memory held the dicts, their arrays and the stacked copy
-at once. `ChunkNpzWriter` takes batches as they are extracted and spools each
-member to disk, assembling the `.npz` at the end — peak drops from ~2.5x the
-corpus to ~0.25x.
+at once. `ChunkSpool` takes batches as they are extracted and spools each
+member to disk, assembling the `.npz` at the end (via `write_npz`) — peak drops
+from ~2.5x the corpus to ~0.25x.
 
 The output is byte-compatible with `save_chunks`: same members, dtypes, shapes
 and semantics, readable by `load_chunks`, `ChunkTable.from_npz` and
 `iter_npz_row_blocks` alike. Note that the corpus is written twice (spill, then
 `.npz`), so the output directory needs room for it twice over.
-
-::: leech.chunking.serialization.ChunkNpzWriter
-    options:
-      show_root_heading: true
-      show_source: false
 
 ::: leech.chunking.serialization.ChunkSpool
     options:

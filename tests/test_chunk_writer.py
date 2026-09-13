@@ -7,17 +7,23 @@ from the same chunks — every member, dtype, shape and value, including the CSR
 fallbacks for ragged chunks. These tests are what keeps the two writers from
 drifting apart, and they check that every existing reader still reads the
 result.
+
+``ChunkNpzWriter`` (below) used to live in ``leech.chunking.serialization``,
+but both prepare paths (`preparation/orchestrator.py`,
+`commands/prepare.py`) use ``ChunkSpool`` directly and nothing in production
+ever called it; it moved here in #277 since this is its only remaining
+caller.
 """
 
 import gc
 import tracemalloc
 import zipfile
+from pathlib import Path
 
 import numpy as np
 import pytest
 
 from leech.chunking import (
-    ChunkNpzWriter,
     ChunkSpool,
     ChunkTable,
     iter_npz_row_blocks,
@@ -26,6 +32,67 @@ from leech.chunking import (
     save_chunks,
 )
 from leech.chunking import serialization as ser
+
+
+class ChunkNpzWriter:
+    """Write one .npz from chunk batches, without ever holding the corpus.
+
+    The streaming counterpart of :func:`save_chunks`, for callers that produce
+    chunks a batch at a time. Output is byte-compatible; see
+    :class:`ChunkSpool` for the mechanics and the disk-space trade-off.
+
+    Args:
+        output_path: Output file path (.npz appended if absent).
+        compressed: If True (default), compress members with zlib.
+        spill_dir: Where the temp files go. Defaults to the output directory.
+        batch_rows: Chunks buffered before a spill write.
+
+    Examples:
+        >>> with ChunkNpzWriter(Path("out/all.npz")) as writer:  # doctest: +SKIP
+        ...     for batch in batches:
+        ...         writer.append(batch)
+    """
+
+    def __init__(
+        self,
+        output_path: Path,
+        *,
+        compressed: bool = True,
+        spill_dir: Path | None = None,
+        batch_rows: int = 4096,
+    ):
+        self.output_path = Path(output_path)
+        self.output_path.parent.mkdir(parents=True, exist_ok=True)
+        self._spool = ChunkSpool(
+            spill_dir if spill_dir is not None else self.output_path.parent,
+            compressed=compressed,
+            batch_rows=batch_rows,
+        )
+
+    def append(self, chunks: list[dict]) -> None:
+        """Add a batch of chunks. The caller may drop them immediately after."""
+        self._spool.append(chunks)
+
+    @property
+    def n_chunks(self) -> int:
+        return self._spool.n_chunks
+
+    def close(self) -> None:
+        """Write the .npz and drop the spill files."""
+        try:
+            self._spool.write_npz(self.output_path)
+        finally:
+            self._spool.close()
+
+    def __enter__(self) -> "ChunkNpzWriter":
+        return self
+
+    def __exit__(self, exc_type, *_exc) -> None:
+        if exc_type is None:
+            self.close()
+        else:
+            self._spool.close()
+
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers

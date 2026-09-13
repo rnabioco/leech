@@ -20,6 +20,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unaffected. Re-implementing feature importance or sequence ablation is a
   new feature with its own spec, not this fix. (#262)
 
+Dead-code sweep (#277): every name below was grep-verified to have zero
+readers in `src/`, `tests/`, `pipeline/` and `docs/` before removal, or was
+moved into `tests/` because only the test suite called it.
+
+- **Dependencies**: `nvitop` (required dependency, referenced nowhere) and
+  `pymupdf` (`dev` dependency group, referenced nowhere). The `dev` extra's
+  duplicate `ruff`/`ty` entries are deduped to one each. The `pod5` no-op
+  extra alias is dropped from the `ci.yml`/`release.yml` install lines (the
+  extra itself, `pod5 = []`, stays for one more minor per its own comment).
+- **Constants** (`constants.py`): `DWELL_FEATURES`, `SIGNAL_FEATURES`,
+  `KMER_RESIDUAL_FEATURES`, `NORMALIZATION_METHODS`, `DEFAULT_NORMALIZATION`,
+  `DEFAULT_REFINE_ROUGH_RESCALE`, `LOSS_TYPES` — all unread. Also
+  `logging_config.get_logger`, which had no callers (every module uses
+  `logging.getLogger("leech.x")` directly).
+- **Python API with no callers**: `io.bam_reader.BAMReader`,
+  `io.reference.ReferenceManager`, `chunking.serialization.get_chunk_statistics`,
+  and the `_rs_read_pod5_batch` Rust binding in `_rust_accel.py` (imported,
+  never called).
+- **Test-only API moved out of `src/`**: `io.pod5_reader.get_cached_reader`
+  and `read_pod5_signals_batch` (production uses
+  `read_pod5_signals_batch_cached`), the `POD5Reader(backend=...)` kwarg (a
+  no-op backward-compat shim — the value was stored and never read),
+  `preparation.encoding.seq_to_int` / `int_to_seq` / `one_hot_encode_sequence`,
+  `io.bam_reader.collect_read_infos` (prepare's two-pass design uses
+  `collect_read_infos_from_bam`/`iter_read_info_batches` instead),
+  `chunking.serialization.ChunkNpzWriter` (both prepare paths use
+  `ChunkSpool` directly; `save_chunks` remains as the byte-compat oracle),
+  and `model_export.trace_model` / `serialize_traced_model` (the legacy
+  TorchScript tracer — `export_model`/`torch.export` is the supported path).
+  Each now lives as a local helper next to its only remaining caller in
+  `tests/`.
+
 ### Fixed
 
 - **BatchNorm models under `--gpus N` now sync statistics across ranks.**
@@ -145,6 +177,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--no-compile` and reuses `predict`'s torch.compile size threshold
   (PR #253) — and no longer invokes torch.compile on CPU at all, where it
   previously compiled unconditionally, `mode=None` included. (#264)
+- `constants.DEFAULT_REFINE_HALF_BANDWIDTH` was `300`; the real default (`5`)
+  was hardcoded as a literal fallback in seven places across
+  `inference/single.py`, `inference/bundle.py`, `inference/helpers.py` and
+  `training.py`, while `configs.SignalConfig` already had the correct
+  default. The constant is now `5` and is the single place all eight sites
+  read it from. `DEFAULT_LOSS_TYPE`'s comment now lists `cross_entropy`
+  alongside `bce`/`focal`, matching `losses.py`. (#277)
+- `leech model export`'s summary always printed "TorchScript export
+  complete!", including for `--format onnx` and the default `torch.export`
+  path. It now names the format actually written. (#277)
+- Rust: `TrainingChunkResult.kmer_len` was computed and stored but never read
+  by the PyO3 conversion loop that builds the returned chunk dicts; removed
+  along with the `#[allow(dead_code)]` that was hiding it. (#277)
 
 - **Rust batch extraction no longer re-marshals the k-mer refinement table or
   move tables on every call.** `extract_training_chunks` /

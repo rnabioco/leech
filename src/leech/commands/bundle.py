@@ -266,6 +266,7 @@ def handle_export(model_dir: Path, output: Path, fmt: str = "torch") -> Path:
     table.add_row("File size", f"{size_mb:.1f} MB")
 
     console.print(table)
-    console.print("[bold green]TorchScript export complete![/bold green]")
+    format_label = "ONNX" if fmt == "onnx" else "torch.export"
+    console.print(f"[bold green]{format_label} export complete![/bold green]")
 
     return output_path

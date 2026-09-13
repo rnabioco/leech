@@ -120,40 +120,6 @@ def deserialize_exported_model(data: bytes, device: str = "cpu") -> nn.Module:
     return ep.module().to(device)
 
 
-def trace_model(model: nn.Module, config: dict) -> torch.jit.ScriptModule:
-    """Trace a leech model into a TorchScript ScriptModule.
-
-    .. deprecated::
-        Use :func:`export_model` instead (torch.export API).
-        Retained for loading legacy TorchScript bundles/exports.
-
-    Args:
-        model: PyTorch model (must be in eval mode or will be set to eval)
-        config: Model config dict with signal_len, kmer_len, etc.
-
-    Returns:
-        Traced ScriptModule
-    """
-    model.eval()
-    example_inputs = _build_example_inputs(model, config)
-
-    with torch.no_grad():
-        traced = torch.jit.trace(model, example_inputs)
-
-    return traced
-
-
-def serialize_traced_model(traced: torch.jit.ScriptModule) -> bytes:
-    """Serialize a traced TorchScript model to bytes.
-
-    .. deprecated::
-        Use :func:`serialize_exported_model` instead.
-    """
-    buf = io.BytesIO()
-    torch.jit.save(traced, buf)
-    return buf.getvalue()
-
-
 def deserialize_traced_model(data: bytes, device: str = "cpu") -> torch.jit.ScriptModule:
     """Deserialize a traced TorchScript model from bytes.
 

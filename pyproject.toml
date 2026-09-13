@@ -27,7 +27,6 @@ dependencies = [
   # leech.io.pod5_reader and leech.features, so it cannot be optional.
   "escapepod>=0.25.0",
   "numpy>=2.0.0",
-  "nvitop>=1.6.1",
   "polars>=1.43.2",
   "pysam>=0.22.0",
   # Release specs (release/spec.py) and `--confound-config x.yaml` + YAML
@@ -85,8 +84,6 @@ dev = [
   "leech[onnx]",
   "ruff>=0.16.1",  # Modern linter/formatter (replaces black + flake8)
   "ty>=0.0.64",
-  "ruff>=0.16.1",  # Modern linter/formatter (replaces black + flake8)
-  "ty>=0.0.64",
   "nbqa>=1.7.0",  # Quality assurance for Jupyter notebooks
   "vulture>=2.15",  # Dead code detection
 ]
@@ -106,7 +103,6 @@ notebook = [
 [dependency-groups]
 dev = [
     "maturin>=1.12.6",
-    "pymupdf>=1.27.1",
 ]
 docs = [
   "matplotlib>=3.10.7",

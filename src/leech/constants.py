@@ -27,30 +27,6 @@ DEFAULT_DROPOUT = 0.1  # Dropout probability
 DEFAULT_LSTM_LAYERS = 2  # Number of LSTM layers
 DEFAULT_FC_HIDDEN = 64  # Hidden size for fully connected layers
 
-# Feature names - dwell time features
-DWELL_FEATURES = [
-    "dwell",  # Raw dwell time (number of signal samples per base)
-    "dwell_log",  # Log-transformed dwell time
-    "dwell_mean",  # Mean dwell time (sliding window)
-    "dwell_std",  # Std dev of dwell time (sliding window)
-    "dwell_ratio",  # Ratio to mean dwell time
-]
-
-# Feature names - signal level features
-SIGNAL_FEATURES = [
-    "level_mean",  # Mean signal level per base
-    "level_median",  # Median signal level per base
-    "level_std",  # Std dev of signal level per base
-    "level_range",  # Range (max - min) of signal level per base
-]
-
-# Feature names - kmer residual features (requires kmer level table)
-KMER_RESIDUAL_FEATURES = [
-    "kmer_expected",  # Expected signal level per base from kmer table lookup
-    "kmer_residual",  # level_mean - kmer_expected (signed deviation)
-    "kmer_residual_abs",  # |kmer_residual| (unsigned magnitude)
-]
-
 # Training defaults
 DEFAULT_BATCH_SIZE = 128
 DEFAULT_LEARNING_RATE = 0.001
@@ -69,7 +45,7 @@ DEFAULT_SCHEDULER = "none"  # "none", "reduce_on_plateau", or "cosine"
 DEFAULT_SCHEDULER_PATIENCE = 5
 DEFAULT_SCHEDULER_FACTOR = 0.5
 DEFAULT_WARMUP_EPOCHS = 0
-DEFAULT_LOSS_TYPE = "bce"  # "bce" or "focal"
+DEFAULT_LOSS_TYPE = "bce"  # "bce", "focal", or "cross_entropy"
 DEFAULT_FOCAL_GAMMA = 2.0
 DEFAULT_LABEL_SMOOTHING = 0.0  # 0 = disabled; e.g., 0.05 softens 0/1 targets
 DEFAULT_MIXED_PRECISION = False
@@ -120,16 +96,15 @@ def generate_random_seed() -> int:
 # Sequence encoding defaults
 DEFAULT_SIGNAL_KMER_CONTEXT = (4, 4)  # Kmer context for signal-level kmer encoding
 
-# Normalization methods
-NORMALIZATION_METHODS = ["median_mad", "zscore", "quantile", "pa_scaling"]
-DEFAULT_NORMALIZATION = "median_mad"
-
-# Signal map refinement defaults
-DEFAULT_REFINE_HALF_BANDWIDTH = 300
-DEFAULT_REFINE_ROUGH_RESCALE = True
-
-# Loss types
-LOSS_TYPES = ["bce", "focal", "cross_entropy"]
+# Signal map refinement defaults.
+#
+# The single source of truth for the refine-half-bandwidth default (5, not
+# 300 -- a prior version of this constant was simply wrong and unread
+# everywhere). `configs.SignalConfig.refine_half_bandwidth` and every
+# `config.get("refine_half_bandwidth", ...)` fallback in the inference and
+# training paths reference this constant so there is exactly one place that
+# says "5".
+DEFAULT_REFINE_HALF_BANDWIDTH = 5
 
 # Remora model defaults
 DEFAULT_REMORA_SIZE = 64

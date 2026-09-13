@@ -6,7 +6,7 @@ training data from POD5 and BAM files, including parallel processing,
 read iteration, and sequence encoding utilities.
 """
 
-from leech.preparation.encoding import encode_kmer, int_to_seq, one_hot_encode_sequence, seq_to_int
+from leech.preparation.encoding import encode_kmer
 from leech.preparation.orchestrator import (
     prepare_training_data,
     prepare_training_data_with_split,
@@ -25,7 +25,4 @@ __all__ = [
     "read_pod5_signal",
     # Encoding
     "encode_kmer",
-    "seq_to_int",
-    "int_to_seq",
-    "one_hot_encode_sequence",
 ]
