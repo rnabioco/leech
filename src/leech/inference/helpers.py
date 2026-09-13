@@ -21,6 +21,7 @@ from leech.chunking import extraction_sequence
 from leech.constants import BELOW_THRESHOLD_LABEL, DEFAULT_REFINE_HALF_BANDWIDTH
 from leech.features import encode_signal_kmer, sequence_to_int
 from leech.model_loading import load_model_from_checkpoint
+from leech.models import requires_features as _requires_features
 from leech.models.inference_wrapper import ModelInferenceWrapper, TracedModelWrapper
 from leech.models.remora_compat import RemoraModelWrapper
 from leech.preparation import encode_kmer
@@ -358,7 +359,7 @@ def load_model_auto(
             if extra.get("leech_meta.txt", ""):
                 config = json.loads(extra["leech_meta.txt"])
                 model_name = config.get("model_name", "")
-                requires_features = model_name in ModelInferenceWrapper.FEATURE_MODELS
+                requires_features = bool(model_name) and _requires_features(model_name)
                 loaded_model = ep.module().to(device)
                 wrapper = TracedModelWrapper(loaded_model, requires_features=requires_features)
                 logger.info(
@@ -380,7 +381,21 @@ def load_model_auto(
         if traced is not None and extra.get("leech_meta.txt", ""):
             config = json.loads(extra["leech_meta.txt"])
             model_name = config.get("model_name", "")
-            requires_features = model_name in ModelInferenceWrapper.FEATURE_MODELS
+            # model_name is read back from the TorchScript file's own sidecar,
+            # so it should always be a real registry name; unlike the
+            # torch.export attempt above (inside a broad except that falls
+            # through to try this format instead), there is no further format
+            # to fall back to here, so a bad name must fail loudly rather than
+            # silently guess the model's feature-window shape.
+            try:
+                requires_features = bool(model_name) and _requires_features(model_name)
+            except KeyError as e:
+                raise KeyError(
+                    f"TorchScript model '{model_name}' ({path}) is not a "
+                    f"recognized model architecture (renamed, removed, or a "
+                    f"corrupted sidecar). Cannot determine whether it takes a "
+                    f"features input."
+                ) from e
             wrapper = TracedModelWrapper(traced, requires_features=requires_features)
             logger.info(
                 f"Leech TorchScript model: {model_name}, "

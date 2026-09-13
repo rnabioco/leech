@@ -155,6 +155,42 @@ def resolve_params(doc: dict, fixed: dict, overrides: dict) -> dict:
     return env
 
 
+def resolved_node_specs(doc: dict, fixed: dict, overrides: dict | None = None) -> list[dict]:
+    """The ``[[nodes]]`` specs that survive ``when`` filtering for a variant.
+
+    Torch-free. Shared by :func:`_build_graph_class` (which builds real
+    layers from these specs) and :func:`graph_requires_features` (which only
+    needs to know which inputs the surviving nodes consume).
+    """
+    env = resolve_params(doc, fixed, overrides or {})
+    return [
+        spec
+        for spec in doc.get("nodes", [])
+        if spec.get("when") is None or resolve(spec["when"], env)
+    ]
+
+
+def graph_requires_features(doc: dict, fixed: dict) -> bool:
+    """Whether this variant's resolved graph has a node that consumes ``features``.
+
+    Structural, not a name lookup: a TOML architecture's top-level ``inputs``
+    always lists ``features`` (see the module docstring on ``Graph``), so the
+    real answer is whether any node surviving the variant's ``when``
+    conditions (e.g. ``has_features``) actually takes it as an input. A
+    node's ``inputs`` may itself be an unresolved ``"${...}"`` expression
+    (e.g. a conditional merge list) rather than a literal array, so each is
+    resolved against the same ``env`` before checking membership — checking
+    the raw field would silently do a substring test against the expression
+    text instead (which is how this returned a false positive for
+    ``has_features`` string containing "features").
+    """
+    env = resolve_params(doc, fixed, {})
+    return any(
+        "features" in resolve(spec.get("inputs", []), env)
+        for spec in resolved_node_specs(doc, fixed)
+    )
+
+
 def _signature(doc: dict, fixed: dict) -> inspect.Signature:
     """Build an ``inspect.Signature`` from the config's user-facing params."""
     env = resolve_params(doc, fixed, {})
@@ -177,11 +213,7 @@ def _build_graph_class(name: str, doc: dict, fixed: dict, docstring: str) -> typ
 
     def __init__(self, **kwargs: Any) -> None:  # noqa: N807
         env = resolve_params(doc, fixed, kwargs)
-        specs = [
-            spec
-            for spec in doc.get("nodes", [])
-            if spec.get("when") is None or resolve(spec["when"], env)
-        ]
+        specs = resolved_node_specs(doc, fixed, kwargs)
         by_name = {spec["name"]: spec for spec in specs}
 
         # Layers are *constructed* in build_order (default: declaration order),

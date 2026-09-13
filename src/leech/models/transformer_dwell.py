@@ -20,7 +20,6 @@ import torch.nn as nn
 
 from leech.constants import (
     DEFAULT_DROPOUT,
-    DEFAULT_DWELL_MARGIN,
     DEFAULT_KMER_LEN,
     DEFAULT_NUM_FEATURES,
     DEFAULT_SIGNAL_KERNEL,
@@ -77,10 +76,11 @@ class TransformerDwell(BaseModel):
     attend to dwell features at any offset.
 
     Args:
-        signal_len: Length of input signal
+        signal_len: Length of input signal. Fixes the positional encoding's
+            max length below, and is stored as ``self.signal_len`` for
+            introspection (nothing in this class reads the attribute back).
         kmer_len: Length of k-mer sequence (e.g., 2*context+1)
         num_features: Number of feature channels (dwell + signal levels)
-        dwell_margin: Extra bases on each side of dwell window (default: 15)
         d_model: Dimension of transformer model (default: 256)
         nhead: Number of attention heads (default: 8)
         num_layers: Number of transformer encoder layers (default: 4)
@@ -88,12 +88,13 @@ class TransformerDwell(BaseModel):
         dropout: Dropout probability (default: 0.1)
     """
 
+    WIDE_FEATURES = True
+
     def __init__(
         self,
         signal_len: int = DEFAULT_SIGNAL_LEN,
         kmer_len: int = DEFAULT_KMER_LEN,
         num_features: int = DEFAULT_NUM_FEATURES,
-        dwell_margin: int = DEFAULT_DWELL_MARGIN,
         d_model: int = 256,
         nhead: int = 8,
         num_layers: int = 4,
@@ -109,7 +110,6 @@ class TransformerDwell(BaseModel):
         self.signal_len = signal_len
         self.kmer_len = kmer_len
         self.num_features = num_features
-        self.dwell_margin = dwell_margin
         self.d_model = d_model
         self.seq_encoding = seq_encoding
 

@@ -23,7 +23,10 @@ def _build_example_inputs(
     """Build example input tensors for model export/tracing.
 
     Args:
-        model: The model (used to read dwell_margin for wide-feature models)
+        model: The live model being exported. Used to resolve whether it
+            needs a features input / the full dwell margin when its
+            ``model_name`` isn't (or is no longer) a registry name — the
+            same instance-signature fallback ``ModelInferenceWrapper`` uses.
         config: Model config dict with signal_len, kmer_len, etc.
         batch_size: Batch size for example inputs (use 2 for torch.export with
             dynamic batch dims to avoid specialization to batch=1)
@@ -31,7 +34,11 @@ def _build_example_inputs(
     Returns:
         Tuple of example input tensors
     """
-    from leech.models.inference_wrapper import ModelInferenceWrapper
+    from leech.constants import DEFAULT_DWELL_MARGIN
+    from leech.models.inference_wrapper import (
+        _resolve_requires_features,
+        resolve_wide_features,
+    )
 
     signal_len = config["signal_len"]
     kmer_len = config["kmer_len"]
@@ -53,21 +60,23 @@ def _build_example_inputs(
     sequence = torch.randn(batch_size, seq_channels, seq_len)
 
     model_name = config.get("model_name", "")
-    requires_features = model_name in ModelInferenceWrapper.FEATURE_MODELS
+    needs_features = _resolve_requires_features(model, model_name)
 
-    if requires_features:
+    if needs_features:
         num_features = config.get("num_features", 5)
-        wide_features = model_name in ModelInferenceWrapper.WIDE_FEATURE_MODELS
-        if wide_features:
+        if resolve_wide_features(model, model_name):
             # Compute feature width from config (feature_end - feature_start + 1)
             _fs = config.get("feature_start")
             _fe = config.get("feature_end")
             if _fs is not None and _fe is not None:
                 feat_len = _fe - _fs + 1
             else:
-                # Fallback for old configs: use model's dwell_margin
-                dwell_margin = getattr(model, "dwell_margin", 0)
-                feat_len = kmer_len + 2 * dwell_margin
+                # Fallback for old configs predating feature_start/feature_end
+                # (#189): every model was always constructed with the default
+                # margin (dwell_margin was never CLI-overridable), so this is
+                # the value the removed `model.dwell_margin` attribute would
+                # have held (see leech#274).
+                feat_len = kmer_len + 2 * DEFAULT_DWELL_MARGIN
         else:
             feat_len = kmer_len
         features = torch.randn(batch_size, num_features, feat_len)

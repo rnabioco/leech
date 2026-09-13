@@ -437,9 +437,11 @@ class TestModelComparisons:
     )
     def test_all_models_forward(self, model_name, requires_features):
         """Test that all models can do forward pass."""
-        from leech.models.inference_wrapper import ModelInferenceWrapper
+        from leech.models import wide_features
 
-        # Base config for all models
+        # dwell_margin is not a constructor parameter (leech#274: no layer
+        # read it) — it only sizes the *test's* input tensor for the "wide"
+        # models below, which accept any feature width at forward time.
         dwell_margin = 5
         config = {
             "signal_len": 100,
@@ -455,7 +457,6 @@ class TestModelComparisons:
             config.update(
                 {
                     "num_features": 5,
-                    "dwell_margin": dwell_margin,
                     "conv_channels": [4, 16, 32],
                     "lstm_hidden": 16,
                 }
@@ -464,21 +465,19 @@ class TestModelComparisons:
             config.update(
                 {
                     "num_features": 5,
-                    "dwell_margin": dwell_margin,
                     "d_model": 32,
                     "nhead": 4,
                     "num_layers": 1,
                 }
             )
         elif model_name == "ConvOnly":
-            config.update({"num_features": 5, "dwell_margin": dwell_margin, "base_channels": 4})
+            config.update({"num_features": 5, "base_channels": 4})
         elif model_name == "ResNetDwell":
-            config.update({"num_features": 5, "dwell_margin": dwell_margin, "base_channels": 4})
+            config.update({"num_features": 5, "base_channels": 4})
         elif model_name in ("TCNDwell", "TCNDwellGN", "TCNDwellLN"):
             config.update(
                 {
                     "num_features": 5,
-                    "dwell_margin": dwell_margin,
                     "hidden_channels": 16,
                     "num_layers": 2,
                     "kernel_size": 3,
@@ -492,7 +491,7 @@ class TestModelComparisons:
         signal = torch.randn(batch_size, config["signal_len"])
         sequence = torch.randn(batch_size, 4, config["kmer_len"])
         if requires_features:
-            wide = model_name in ModelInferenceWrapper.WIDE_FEATURE_MODELS
+            wide = wide_features(model_name)
             feat_len = config["kmer_len"] + 2 * dwell_margin if wide else config["kmer_len"]
             features = torch.randn(batch_size, config["num_features"], feat_len)
         else:
@@ -1041,8 +1040,12 @@ class TestRegistryCompleteness:
         assert type(model).__name__ == model_name
 
     def test_previously_orphaned_models_are_registered(self):
-        """These appeared in FEATURE_MODELS but not in the registry (issue fixed)."""
-        from leech.models.inference_wrapper import ModelInferenceWrapper
+        """These once appeared in the (now-deleted) hardcoded FEATURE_MODELS
+        set but not in the registry (issue fixed). requires_features/
+        wide_features are now derived per name from the registry itself
+        (leech#274), so there is no longer a separate name set that could
+        drift from it — every registered name resolves without error."""
+        from leech.models import requires_features, wide_features
 
         orphans = {
             "TCNDwellResidualMotor",
@@ -1051,9 +1054,9 @@ class TestRegistryCompleteness:
             "TCNDwellResidualLNDwellAttn",
         }
         assert orphans <= set(MODEL_REGISTRY.keys())
-        # and the inference path's model sets stay consistent with the registry
-        assert ModelInferenceWrapper.FEATURE_MODELS <= set(MODEL_REGISTRY.keys())
-        assert ModelInferenceWrapper.WIDE_FEATURE_MODELS <= set(MODEL_REGISTRY.keys())
+        for name in MODEL_REGISTRY:
+            requires_features(name)
+            wide_features(name)
 
     def test_package_attribute_access(self):
         """`from leech.models import <Name>` works for config-declared names."""
@@ -1073,6 +1076,96 @@ class TestRegistryCompleteness:
             "assert 'torch' not in sys.modules, 'config discovery imported torch'"
         )
         subprocess.run([sys.executable, "-c", code], check=True)
+
+
+class TestModelInferenceWrapperFallback:
+    """leech#274: requires_features/wide_features resolve by registry name,
+    but ModelInferenceWrapper must still work for a model_type that was never
+    registered — e.g. a test double exercising DDP wrapping
+    (tests/test_distributed_training.py's _StubModel). See
+    _resolve_requires_features / resolve_wide_features in inference_wrapper.py.
+    """
+
+    def test_registered_toml_model_matches_registry_lookup(self):
+        from leech.models import requires_features, wide_features
+        from leech.models.inference_wrapper import ModelInferenceWrapper
+
+        model = get_model(
+            "TCNDwellResidualLN",
+            signal_len=100,
+            kmer_len=11,
+            num_features=5,
+            hidden_channels=16,
+            num_layers=2,
+            kernel_size=3,
+        )
+        wrapper = ModelInferenceWrapper(model, "TCNDwellResidualLN")
+        assert wrapper.requires_features == requires_features("TCNDwellResidualLN")
+        assert requires_features("TCNDwellResidualLN") is True
+        assert wide_features("TCNDwellResidualLN") is True
+
+    def test_registered_hand_written_model_matches_registry_lookup(self):
+        from leech.models import requires_features
+        from leech.models.inference_wrapper import ModelInferenceWrapper
+
+        model = get_model("ConvLSTMRemoraBase", signal_len=100, kmer_len=11)
+        wrapper = ModelInferenceWrapper(model, "ConvLSTMRemoraBase")
+        assert wrapper.requires_features == requires_features("ConvLSTMRemoraBase") is False
+
+    def test_unregistered_model_type_falls_back_to_the_instance_signature(self):
+        """A model_type with no registry entry must not raise — it must fall
+        back to inspecting the wrapped instance's own forward signature."""
+        import torch.nn as nn
+
+        from leech.models.inference_wrapper import ModelInferenceWrapper, resolve_wide_features
+
+        class _NoFeaturesStub(nn.Module):
+            WIDE_FEATURES = False
+
+            def __init__(self):
+                super().__init__()
+                self.body = nn.Linear(4, 1)
+
+            def forward(self, signal, sequence):
+                return self.body(signal)
+
+        class _WithFeaturesStub(nn.Module):
+            WIDE_FEATURES = True
+
+            def __init__(self):
+                super().__init__()
+                self.body = nn.Linear(4, 1)
+
+            def forward(self, signal, sequence, features):
+                return self.body(signal)
+
+        narrow = ModelInferenceWrapper(_NoFeaturesStub(), "NotARegisteredName")
+        assert narrow.requires_features is False
+        assert resolve_wide_features(narrow, "NotARegisteredName") is False
+
+        wide = ModelInferenceWrapper(_WithFeaturesStub(), "AlsoNotRegistered")
+        assert wide.requires_features is True
+        assert resolve_wide_features(wide, "AlsoNotRegistered") is True
+
+    def test_unregistered_model_type_with_optional_features_param_is_not_required(self):
+        """A `features: Tensor | None = None` param (SignalCNN's convention)
+        means the model can be called without it — same rule structurally
+        derived leech.models.requires_features applies to a real registry
+        name, here applied via the instance-signature fallback."""
+        import torch.nn as nn
+
+        from leech.models.inference_wrapper import ModelInferenceWrapper
+
+        class _OptionalFeaturesStub(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.body = nn.Linear(4, 1)
+
+            def forward(self, signal, sequence=None, features=None):
+                return self.body(signal)
+
+        wrapper = ModelInferenceWrapper(_OptionalFeaturesStub(), "StubWithOptionalFeatures")
+        assert wrapper.requires_features is False
 
 
 if __name__ == "__main__":

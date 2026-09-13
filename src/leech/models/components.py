@@ -507,6 +507,21 @@ class TCN(nn.Module):
         return out
 
 
+def logits_to_positive_prob(logits: torch.Tensor, num_out: int = 1) -> torch.Tensor:
+    """Positive-class probability from raw logits, for either output convention.
+
+    ``num_out == 2`` is a two-class ``CrossEntropyLoss`` head (Remora's
+    convention): softmax and take the positive column. Anything else is
+    leech's single-logit BCE convention: sigmoid. One definition shared by
+    every ``predict_proba`` and by :class:`RemoraModelWrapper`, which needs
+    the same conversion to translate a wrapped Remora model's native 2-class
+    output into leech's single-logit convention.
+    """
+    if num_out == 2:
+        return torch.softmax(logits, dim=-1)[:, 1:2]
+    return torch.sigmoid(logits)
+
+
 class BaseModel(nn.Module):
     """
     Base class for all leech models with shared predict_proba() method.
@@ -515,12 +530,20 @@ class BaseModel(nn.Module):
     predict_proba() implementation and ensure consistent interfaces.
     """
 
+    # Whether this architecture receives the full dwell margin (no
+    # dwell_offset slicing) rather than the dwell-offset-sliced window.
+    # Overridden per class; for TOML/Graph architectures the equivalent lives
+    # in the config's ``[params].wide_features`` instead (see
+    # ``leech.models.wide_features``).
+    WIDE_FEATURES: bool = False
+
     def predict_proba(self, *args, **kwargs) -> torch.Tensor:
         """
         Predict probability of positive class (charged tRNA).
 
         This method wraps the forward() pass with evaluation mode and
-        sigmoid activation to produce probabilities in [0, 1].
+        sigmoid/softmax activation (see ``logits_to_positive_prob``) to
+        produce probabilities in [0, 1].
 
         Args:
             *args: Arguments passed to forward()
@@ -532,5 +555,5 @@ class BaseModel(nn.Module):
         self.eval()
         with torch.no_grad():
             logits = self.forward(*args, **kwargs)
-            probs = torch.sigmoid(logits)
+            probs = logits_to_positive_prob(logits, getattr(self, "num_out", 1))
         return probs

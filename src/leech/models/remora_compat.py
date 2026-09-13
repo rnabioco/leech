@@ -10,6 +10,8 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 
+from leech.models.components import logits_to_positive_prob
+
 
 class RemoraModelWrapper:
     """
@@ -49,8 +51,7 @@ class RemoraModelWrapper:
         output = self.model(signal, enc_kmer)  # (B, 2) two-class logits
 
         # Convert to leech convention: single logit (B, 1)
-        # P(class 1) via softmax, then convert to logit
-        probs = torch.softmax(output, dim=1)[:, 1:2]
+        probs = logits_to_positive_prob(output, num_out=2)
         logits = torch.logit(probs.clamp(1e-7, 1 - 1e-7))
         return logits
 

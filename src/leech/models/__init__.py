@@ -79,6 +79,45 @@ _EXTRA_EXPORTS: dict[str, tuple[str, str]] = {
     "RemoraModelWrapper": ("leech.models.remora_compat", "RemoraModelWrapper"),
 }
 
+# ── Registry tiers ───────────────────────────────────────────────────────────
+# production: the shipped/benchmarked comparison set (TCNDwellResidual is the
+#   non-normalized ablation baseline TCNDwellResidualLN is measured against).
+# reference: Remora paper reproductions, kept for comparison, never deployed.
+# deprecated: ConvOnly is the one name with *positive* evidence against it,
+#   not just absence of evidence for it: zero references anywhere in
+#   escapepod-models (checked 2026-09-13, same as every other experimental
+#   name below), *and* a known, reproducible defect — its AdaptiveMaxPool1d
+#   with a non-dividing output size hits the same rank-8 GatherND ONNX export
+#   failure #233 fixed for AdaptiveAvgPool1d (see CLAUDE.md's ONNX export
+#   section) — so it cannot reach the one artifact format this project ships
+#   models as. Fixing the pool would mean swapping to a mean pool, a real
+#   arithmetic change to a possibly-checkpointed architecture that is out of
+#   scope here (leech#274 is a registry/predicate cleanup, not a model
+#   change); deprecating it instead needs no such change.
+# experimental: everything else — active architecture-sweep variants with no
+#   evidence (checked against escapepod-models, 2026-09-13) of being either
+#   shipped or abandoned. Nothing else is tiered "deprecated" this pass: a
+#   grep of escapepod-models' config.jsons and scripts found no other name
+#   that looks renamed, superseded or defective — only names that simply
+#   haven't been chosen for a production run yet, which is not the same
+#   claim. Revisit with sharper evidence before removing anything.
+_PRODUCTION_MODELS = frozenset(
+    {"TCNDwellResidual", "TCNDwellResidualLN", "ConvLSTMDwell", "ConvLSTMBase"}
+)
+_REFERENCE_MODELS = frozenset({"ConvLSTMRemora", "ConvLSTMRemoraBase"})
+_DEPRECATED_MODELS = frozenset({"ConvOnly"})
+
+
+def model_tier(model_name: str) -> str:
+    """One of "production", "reference", "deprecated", "experimental"."""
+    if model_name in _PRODUCTION_MODELS:
+        return "production"
+    if model_name in _REFERENCE_MODELS:
+        return "reference"
+    if model_name in _DEPRECATED_MODELS:
+        return "deprecated"
+    return "experimental"
+
 
 def _config_names() -> dict[str, tuple[str, str | None]]:
     """Names declared by TOML configs (torch-free: parses TOML only)."""
@@ -167,4 +206,78 @@ def get_model(model_name: str, **kwargs: Any) -> nn.Module:
         available = ", ".join(sorted(MODEL_REGISTRY.keys()))
         raise ValueError(f"Unknown model '{model_name}'. Available: {available}")
 
+    if model_tier(model_name) == "deprecated":
+        import warnings
+
+        warnings.warn(
+            f"Model '{model_name}' is deprecated and scheduled for removal. "
+            f"See leech#274 / leech#293 for the registry tier list.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
     return MODEL_REGISTRY[model_name](**kwargs)
+
+
+def requires_features(model_name: str) -> bool:
+    """Whether ``model_name`` takes a third (features) forward argument.
+
+    Derived structurally rather than from a hand-maintained name list:
+    for a TOML/Graph architecture, from whether any node surviving that
+    variant's ``when`` conditions actually consumes ``features``; for a
+    hand-written class, from its ``forward`` signature. Both are torch-free
+    to compute for TOML models; a hand-written class import (and therefore
+    torch) is unavoidable for the other branch.
+    """
+    config_names = _config_names()
+    if model_name in config_names:
+        from leech.models.config_loader import _variant_doc, graph_requires_features
+
+        path, variant = config_names[model_name]
+        doc, fixed, _ = _variant_doc(path, variant)
+        return graph_requires_features(doc, fixed)
+
+    cls = _resolve(model_name)
+    import inspect
+
+    param = inspect.signature(cls.forward).parameters.get("features")
+    # A required (no-default) `features` parameter means the forward body
+    # actually needs it. A few classes (SignalCNN) declare an optional
+    # `features: Tensor | None = None` purely so every model can be called
+    # with the same three-argument convention while genuinely ignoring it;
+    # `is None or has a default` must read as "does not require features",
+    # or every such class would silently start receiving a features batch
+    # it never asked for.
+    return param is not None and param.default is inspect.Parameter.empty
+
+
+def wide_features(model_name: str) -> bool:
+    """Whether ``model_name`` receives the full dwell margin (no dwell_offset
+    slicing), rather than a name lookup: a ``wide_features`` flag declared in
+    the TOML config's ``[params]`` for config-driven architectures, or the
+    ``WIDE_FEATURES`` class attribute (default ``False``) for hand-written
+    ones.
+    """
+    config_names = _config_names()
+    if model_name in config_names:
+        from leech.models.config_loader import _variant_doc, resolve_params
+
+        path, variant = config_names[model_name]
+        doc, fixed, _ = _variant_doc(path, variant)
+        env = resolve_params(doc, fixed, {})
+        return bool(env.get("wide_features", False))
+
+    cls = _resolve(model_name)
+    return bool(getattr(cls, "WIDE_FEATURES", False))
+
+
+def is_vmap_compatible(model: Any) -> bool:
+    """Whether ``model`` can be stacked with ``torch.func.stack_module_state``
+    and run under ``torch.vmap`` — structural, not a name lookup: no
+    ``nn.LSTM`` (no per-step recurrent state to vmap over) and no
+    ``nn.BatchNorm1d`` (its running stats are shared mutable state, which vmap
+    cannot give a per-model view of; GroupNorm/LayerNorm have no such state).
+    """
+    import torch.nn as _nn
+
+    return not any(isinstance(m, (_nn.LSTM, _nn.BatchNorm1d)) for m in model.modules())

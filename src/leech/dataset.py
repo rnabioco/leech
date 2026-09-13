@@ -56,7 +56,7 @@ from leech.chunking import (
 )
 from leech.constants import AUTO_DATALOADER_WORKERS
 from leech.features import encode_signal_kmer, sequence_to_int
-from leech.models.inference_wrapper import ModelInferenceWrapper
+from leech.models import requires_features, wide_features
 
 if TYPE_CHECKING:
     from leech.confounds import ConfoundEncoder
@@ -112,13 +112,6 @@ def _byte_matrix(column: np.ndarray | None) -> np.ndarray | None:
     # dtype instance picks the overload that is.
     flat = np.ascontiguousarray(column).view(np.dtype(np.uint8))
     return flat.reshape(len(column), width)
-
-
-# Models that require dwell/signal features as third input
-FEATURE_MODELS = ModelInferenceWrapper.FEATURE_MODELS
-
-# Models that receive the full dwell margin (no dwell_offset slicing)
-WIDE_FEATURE_MODELS = ModelInferenceWrapper.WIDE_FEATURE_MODELS
 
 
 # =============================================================================
@@ -605,7 +598,12 @@ class LeechDataset(Dataset):
         if dwell_template_table is not None:
             self._load_dwell_templates(Path(dwell_template_table))
 
-        self._needs_features = model_type in FEATURE_MODELS
+        self._needs_features = requires_features(model_type)
+        # Cached like _needs_features above: for a TOML/Graph architecture,
+        # wide_features() re-resolves the config's `[params]` (dict build +
+        # eval of every "${...}" expression) on every call, and the
+        # row-wise fallback path calls it once per chunk.
+        self._wide_features = wide_features(model_type)
 
         # Use pre-loaded chunks or load from file. Loading from a path streams
         # the per-chunk arrays out of the npz a row block at a time instead of
@@ -1073,11 +1071,7 @@ class LeechDataset(Dataset):
             if len(shape) != 2 or shape[0] * shape[1] == 0:
                 return False
             dwell_width = stream.dwell_width
-            if (
-                dwell_width is not None
-                and dwell_width > self.kmer_len
-                and self.model_type not in WIDE_FEATURE_MODELS
-            ):
+            if dwell_width is not None and dwell_width > self.kmer_len and not self._wide_features:
                 starts = self._feature_slice_starts(dwell_width)
                 if np.any(starts < 0) or np.any(starts + self.kmer_len > shape[1]):
                     return False  # let the row path raise the documented ValueError
@@ -1330,7 +1324,7 @@ class LeechDataset(Dataset):
             starts is not None
             and dwell_width is not None
             and dwell_width > self.kmer_len
-            and self.model_type not in WIDE_FEATURE_MODELS
+            and not self._wide_features
         ):
             first = int(starts[0])
             if bool(np.all(starts == first)):
@@ -1506,7 +1500,7 @@ class LeechDataset(Dataset):
 
         kmer_context = self.kmer_len // 2
 
-        if self.model_type in WIDE_FEATURE_MODELS:
+        if self._wide_features:
             pass  # full-width features
         elif dwell_width > self.kmer_len:
             # Determine feature_start (signed offset from focus).

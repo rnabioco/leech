@@ -163,6 +163,57 @@ def model_dir(tmp_path, model_config):
     return directory
 
 
+@pytest.mark.parametrize(
+    "model_name,extra_kwargs",
+    [
+        ("ConvLSTMDwell", {"conv_channels": [4, 16, 64], "lstm_hidden": 32, "num_features": 5}),
+        ("ConvLSTMBase", {"conv_channels": [4, 16, 64], "lstm_hidden": 32}),
+        (
+            "TCNDwellResidual",
+            {
+                "hidden_channels": 32,
+                "num_layers": 3,
+                "kernel_size": 3,
+                "num_features": 5,
+                "signal_in_channels": 2,
+            },
+        ),
+        (
+            "TCNDwellResidualLN",
+            {
+                "hidden_channels": 32,
+                "num_layers": 3,
+                "kernel_size": 3,
+                "num_features": 5,
+                "signal_in_channels": 2,
+            },
+        ),
+    ],
+)
+def test_every_production_model_exports(tmp_path, model_name, extra_kwargs):
+    """leech#274: production tier is exactly {ConvLSTMDwell, ConvLSTMBase,
+    TCNDwellResidual, TCNDwellResidualLN} — every one must actually reach a
+    loadable ONNX graph, not just torch.export ("it exports" is weaker than
+    "a runtime can load it"; see CLAUDE.md's ONNX export section)."""
+    from leech.models import model_tier
+
+    assert model_tier(model_name) == "production"
+
+    kwargs = {"signal_len": 100, "kmer_len": 11, **extra_kwargs}
+    directory = tmp_path / model_name
+    directory.mkdir()
+    config = {"model_name": model_name, **kwargs}
+    (directory / "config.json").write_text(json.dumps(config))
+    model = get_model(model_name, **kwargs)
+    torch.save({"model_state_dict": model.state_dict()}, directory / "model_best.pt")
+
+    out = directory / "model.onnx"
+    export_single_model_onnx(directory, out)
+    meta = json.loads(out.with_suffix(".json").read_text())
+    diff = meta["verification"]["onnxruntime_vs_torch_max_abs_diff"]
+    assert diff < 1e-4, f"{model_name}: max abs diff {diff:.3e}"
+
+
 def test_classifier_export_agrees_with_torch(tmp_path, model_dir):
     """The measurement #217 opened on: production arms land at 4.77e-07 and
     1.19e-06 against a float32 eps of 1.19e-07."""

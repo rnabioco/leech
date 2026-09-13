@@ -19,7 +19,6 @@ import torch.nn as nn
 from leech.constants import (
     DEFAULT_CONV_CHANNELS,
     DEFAULT_DROPOUT,
-    DEFAULT_DWELL_MARGIN,
     DEFAULT_KMER_LEN,
     DEFAULT_NUM_FEATURES,
     DEFAULT_SIGNAL_KMER_CONTEXT,
@@ -171,21 +170,25 @@ class ResNetDwell(BaseModel):
     to dwell features at any offset.
 
     Args:
-        signal_len: Length of input signal
+        signal_len: Length of input signal. Always passed by
+            ``model_loading._instantiate_model`` regardless of architecture;
+            stored as ``self.signal_len`` for introspection, but this
+            architecture's own layers derive their shapes from the actual
+            input tensor rather than reading it back.
         kmer_len: Length of k-mer sequence (e.g., 2*context+1)
         num_features: Number of feature channels (dwell + signal levels)
-        dwell_margin: Extra bases on each side of dwell window (default: 15)
         base_channels: Base number of channels (default: 64)
         num_attn_heads: Number of attention heads for cross-attention (default: 4)
         dropout: Dropout probability (default: 0.1)
     """
+
+    WIDE_FEATURES = True
 
     def __init__(
         self,
         signal_len: int = DEFAULT_SIGNAL_LEN,
         kmer_len: int = DEFAULT_KMER_LEN,
         num_features: int = DEFAULT_NUM_FEATURES,
-        dwell_margin: int = DEFAULT_DWELL_MARGIN,
         base_channels: int = 64,
         num_attn_heads: int = 4,
         dropout: float = DEFAULT_DROPOUT,
@@ -199,7 +202,6 @@ class ResNetDwell(BaseModel):
         self.signal_len = signal_len
         self.kmer_len = kmer_len
         self.num_features = num_features
-        self.dwell_margin = dwell_margin
         self.seq_encoding = seq_encoding
 
         conv_channels = DEFAULT_CONV_CHANNELS

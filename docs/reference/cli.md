@@ -196,15 +196,18 @@ leech model train --train-data FILES --val-data FILES --model MODEL --output-dir
 | `--model MODEL` | Architecture name (see below) |
 | `--output-dir DIR` | Directory for model checkpoints |
 
-**Available architectures (24 total):**
+**Available architectures (26 total; production and experimental tiers — see
+`leech.models.model_tier`). `ConvLSTMRemora`/`ConvLSTMRemoraBase` exist for
+comparison against the Remora paper's architecture, and `ConvOnly` cannot
+reach ONNX export (`--format onnx`); neither is listed here — see
+`leech model train --help` for the full registry including those.**
 
 | Family | Models |
 |--------|--------|
-| ConvLSTM | `ConvLSTMDwell` (recommended), `ConvLSTMBase`, +BN, +Attn, +BNAttn, +GNAttn, +LNAttn variants |
-| Remora-compat | `ConvLSTMRemora`, `ConvLSTMRemoraBase` |
+| ConvLSTM | `ConvLSTMDwell` **(production)**, `ConvLSTMBase` **(production, ablation arm)**, +BN, +Attn, +BNAttn, +GNAttn, +LNAttn variants |
 | Transformer | `TransformerDwell`, `TransformerDwellResidual` (2-channel signal) |
-| TCN | `TCNDwell`, `TCNDwellGN`, `TCNDwellLN`, `TCNDwellResidual`, `TCNDwellResidualGN`, `TCNDwellResidualLN`, `TCNDwellSplitResidual`, `TCNDwellSplitResidualLN` |
-| Other | `ResNetDwell`, `ConvOnly` |
+| TCN | `TCNDwell`, `TCNDwellGN`, `TCNDwellLN`, `TCNDwellResidual` **(production)**, `TCNDwellResidualGN`, `TCNDwellResidualLN` **(production)**, `TCNDwellResidualMotor`, `TCNDwellResidualLNMotor` (+ motor-region pooling), `TCNDwellResidualDwellAttn`, `TCNDwellResidualLNDwellAttn` (+ dwell-only cross-attention), `TCNDwellSplitResidual`, `TCNDwellSplitResidualLN` |
+| Other | `ResNetDwell`, `SignalCNN` (signal-only ablation, ignores sequence/features) |
 
 **Core training options:**
 

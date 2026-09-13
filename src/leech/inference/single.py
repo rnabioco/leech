@@ -35,6 +35,7 @@ from leech.io.bam_reader import count_bam_reads, iter_bam_batches
 from leech.io.motif_search import get_motif_searcher
 from leech.io.pod5_reader import POD5Reader
 from leech.models.inference_wrapper import ModelInferenceWrapper
+from leech.models.inference_wrapper import resolve_wide_features as _resolve_wide_features
 from leech.models.remora_compat import RemoraModelWrapper
 from leech.preparation.reader import build_leech_read
 
@@ -385,7 +386,7 @@ def run_inference(
 
     # Determine feature_start/feature_end from config (must match training data)
     _model_type = getattr(model_wrapper, "model_type", "")
-    wide_features = _model_type in ModelInferenceWrapper.WIDE_FEATURE_MODELS
+    wide_features = _resolve_wide_features(model_wrapper, _model_type)
     _kmer_context = kmer_len // 2
 
     # Read new params, falling back to old dwell_margin_* for backward compat

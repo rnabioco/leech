@@ -19,7 +19,7 @@ from rich.table import Table
 
 from leech.chunking import load_chunks
 from leech.cli_config import make_console
-from leech.models.inference_wrapper import ModelInferenceWrapper
+from leech.models import requires_features
 from leech.training import train_model
 
 logger = logging.getLogger("leech.gridsearch")
@@ -502,7 +502,7 @@ def run_grid_search(config: GridSearchConfig) -> Path:
     dwell_offsets = config.dwell_offsets if config.dwell_offsets is not None else [0]
 
     # Skip dwell_offset grid for models without a feature branch
-    if config.model_name not in ModelInferenceWrapper.FEATURE_MODELS:
+    if not requires_features(config.model_name):
         if dwell_offsets != [0]:
             logger.info(
                 f"Model {config.model_name} has no feature branch; collapsing dwell_offsets to [0]"
