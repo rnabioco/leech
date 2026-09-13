@@ -56,7 +56,6 @@ def handle_prepare(
     require_query_mapping: bool = True,
     label: str | None = None,
     min_mapq: int = 0,
-    feature_set: str = "signal+dwell+levels",
     train_split: float = 0.7,
     val_split: float = 0.15,
     seed: int | None = DEFAULT_SEED,
@@ -98,12 +97,13 @@ def handle_prepare(
             (anchor='reference' only); the chunk position is unchanged.
         label: Label identifier for this sample
         min_mapq: Minimum mapping quality
-        feature_set: Feature set to extract
         train_split: Fraction of data for training
         val_split: Fraction of data for validation
         seed: Random seed for reproducibility
         no_split: Extract chunks without splitting
-        workers: Number of parallel workers
+        workers: Number of batches in flight during extraction (every value,
+            including 1, goes through the same parallel dispatcher -- see
+            ``prepare_training_data_parallel``)
         chunk_size: Number of reads to process per worker batch
 
     Returns:
@@ -113,8 +113,7 @@ def handle_prepare(
     from leech.configs import ChunkConfig, LabelConfig, MotifConfig, PrepareConfig, SignalConfig
     from leech.constants import DEFAULT_SIGNAL_CONTEXT
     from leech.io import get_reference_sequences
-    from leech.preparation import prepare_training_data_parallel, prepare_training_data_with_split
-    from leech.preparation.orchestrator import split_rows_by_read
+    from leech.preparation import prepare_training_data_parallel, write_splits
     from leech.seeding import setup_random_seed
 
     logger.info(f"Preparing data from {pod5} and {bam}")
@@ -149,14 +148,18 @@ def handle_prepare(
                 "is discarded either way (#168), so this only affects the DP's "
                 "level matching, which cannot currently be switched off."
             )
-    if workers > 1:
-        logger.info(f"Parallel mode: {workers} workers, {chunk_size} reads per batch")
-        if recover_softclip_signal:
-            logger.info(
-                "--recover-softclip-signal is not implemented in the Rust extraction "
-                "path, so preparation will use the Python multiprocessing workers. "
-                "Chunks are correct either way; this only costs throughput."
-            )
+    # `workers` sets the number of batches in flight on the parallel
+    # dispatcher, at every value including 1 (issue #275) -- clamp a
+    # nonpositive value rather than handing mp.Pool/ThreadPoolExecutor a
+    # `processes`/`max_workers` of 0, which raises.
+    workers = max(1, workers)
+    logger.info(f"{workers} batch(es) in flight, {chunk_size} reads per batch")
+    if recover_softclip_signal:
+        logger.info(
+            "--recover-softclip-signal is not implemented in the Rust extraction "
+            "path, so preparation will use the Python multiprocessing workers. "
+            "Chunks are correct either way; this only costs throughput."
+        )
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -246,154 +249,81 @@ def handle_prepare(
         f"{_fw} bases wide (kmer_context={config.chunk.kmer_context})"
     )
 
-    # The sequential path is Python-only, so --backend rust there is a demand
-    # that cannot be met. Say so rather than quietly running the other backend:
-    # a forced run that took the wrong path measures nothing.
-    if backend == "rust" and workers <= 1:
-        raise ValueError(
-            "--backend rust requires --workers > 1 (the sequential path is Python-only)"
+    # Extract chunks. Every worker count, including 1, goes through the same
+    # parallel dispatcher (issue #275) -- `prepare_training_data_parallel`
+    # already supports `num_workers=1` on both backends, so `--backend rust`
+    # is no longer restricted to `--workers > 1`. Batches go straight into a
+    # spool, which holds the corpus on disk rather than as a list of chunk
+    # dicts — the corpus plus its stacked copy is what made `prepare` peak at
+    # several times the size of the file it writes (#211).
+    logger.info("Extracting chunks...")
+    logger.info(
+        f"Chunks are spooled to temporary files in {output_dir} while they are "
+        f"extracted; that directory needs room for the corpus twice over"
+    )
+    with ChunkSpool(output_dir, compressed=compress) as spool:
+        _chunks, stats = prepare_training_data_parallel(
+            bam_path=bam,
+            config=config,
+            num_workers=workers,
+            chunk_size=chunk_size,
+            min_mapq=min_mapq,
+            chunk_sink=spool.append,
+            backend_choice=backend,
         )
+        n_chunks = stats["total_chunks"]
 
-    # Extract chunks (parallel or sequential)
-    if workers > 1:
-        # Parallel processing. Batches go straight into a spool, which holds
-        # the corpus on disk rather than as a list of chunk dicts — the corpus
-        # plus its stacked copy is what made `prepare` peak at several times
-        # the size of the file it writes (#211).
-        logger.info("Extracting chunks in parallel...")
-        logger.info(
-            f"Chunks are spooled to temporary files in {output_dir} while they are "
-            f"extracted; that directory needs room for the corpus twice over"
-        )
-        with ChunkSpool(output_dir, compressed=compress) as spool:
-            _chunks, stats = prepare_training_data_parallel(
-                bam_path=bam,
-                config=config,
-                num_workers=workers,
-                chunk_size=chunk_size,
-                min_mapq=min_mapq,
-                chunk_sink=spool.append,
-                backend_choice=backend,
+        if n_chunks == 0:
+            reads_processed = stats.get("total_reads", 0)
+            console.print(
+                f"[bold red]Error: 0 chunks extracted from {reads_processed} "
+                f"reads.[/bold red]\n"
+                f"[yellow]Stats: {stats}[/yellow]"
             )
-            n_chunks = stats["total_chunks"]
-
-            if n_chunks == 0:
-                reads_processed = stats.get("total_reads", 0)
-                console.print(
-                    f"[bold red]Error: 0 chunks extracted from {reads_processed} "
-                    f"reads.[/bold red]\n"
-                    f"[yellow]Stats: {stats}[/yellow]"
-                )
-                # Issue #265: this used to warn and return a zero-chunk result
-                # with exit code 0, indistinguishable in an sbatch log from a
-                # systematic failure (bad config, every read rejected) that
-                # just happens to also produce 0 chunks. Raise instead --
-                # `prepare_training_data_parallel` already raises on its own
-                # for an outright-failed batch or too high a failed-read
-                # fraction, so reaching here with 0 chunks and no exception
-                # means every read was processed cleanly and legitimately had
-                # no motif match (indels at the motif site, insufficient
-                # context, or MAPQ filtering via --min-mapq={min_mapq}).
-                raise RuntimeError(
-                    f"0 chunks extracted from {reads_processed} reads. Common "
-                    f"causes: indels at motif site, insufficient context, or "
-                    f"MAPQ filtering (--min-mapq={min_mapq}). Stats: {stats}"
-                )
-
-            # Setup seed and handle splitting/saving
-            setup_random_seed(seed, output_dir)
-
-            if no_split:
-                all_file = output_dir / "all.npz"
-                spool.write_npz(all_file)
-                logger.info(f"Saved all chunks to {all_file}")
-                result = {
-                    "n_chunks": n_chunks,
-                    "n_train": 0,
-                    "n_val": 0,
-                    "n_test": 0,
-                }
-            else:
-                train_rows, val_rows, test_rows = split_rows_by_read(
-                    spool.read_ids(), train_split, val_split, seed
-                )
-
-                for split, rows in (
-                    ("train", train_rows),
-                    ("val", val_rows),
-                    ("test", test_rows),
-                ):
-                    if len(rows) == 0:
-                        continue
-                    split_file = output_dir / f"{split}.npz"
-                    spool.write_npz(split_file, rows=rows)
-                    logger.info(f"Saved {len(rows)} {split} chunks to {split_file}")
-
-                result = {
-                    "n_chunks": n_chunks,
-                    "n_train": len(train_rows),
-                    "n_val": len(val_rows),
-                    "n_test": len(test_rows),
-                }
-    else:
-        # Sequential processing with refactored function
-        from rich.progress import Progress, TaskID
-
-        progress_container: dict[str, Progress | TaskID | None] = {"progress": None, "task": None}
-
-        def update_progress(n_chunks):
-            prog = progress_container["progress"]
-            task = progress_container["task"]
-            if prog is not None and task is not None and isinstance(prog, Progress):
-                prog.update(
-                    task,
-                    advance=1,
-                    description=f"[cyan]Extracted {n_chunks} chunks...",
-                )
-
-        with Progress(console=console) as progress:
-            progress_container["progress"] = progress
-            progress_container["task"] = progress.add_task("[cyan]Extracting chunks...", total=None)
-
-            # Ensure seed is int for the function call
-            from leech.constants import generate_random_seed
-
-            actual_seed: int
-            if seed is not None:
-                actual_seed = seed
-            elif DEFAULT_SEED is not None:
-                actual_seed = DEFAULT_SEED
-            else:
-                actual_seed = generate_random_seed()
-
-            result = prepare_training_data_with_split(
-                bam_path=bam,
-                config=config,
-                output_dir=output_dir,
-                reference_fasta=reference_fasta,
-                min_mapq=min_mapq,
-                feature_set=feature_set,
-                train_split=train_split,
-                val_split=val_split,
-                seed=actual_seed,
-                no_split=no_split,
-                progress_callback=update_progress,
+            # Issue #265: this used to warn and return a zero-chunk result
+            # with exit code 0, indistinguishable in an sbatch log from a
+            # systematic failure (bad config, every read rejected) that
+            # just happens to also produce 0 chunks. Raise instead --
+            # `prepare_training_data_parallel` already raises on its own
+            # for an outright-failed batch or too high a failed-read
+            # fraction, so reaching here with 0 chunks and no exception
+            # means every read was processed cleanly and legitimately had
+            # no motif match (indels at the motif site, insufficient
+            # context, or MAPQ filtering via --min-mapq={min_mapq}).
+            raise RuntimeError(
+                f"0 chunks extracted from {reads_processed} reads. Common "
+                f"causes: indels at motif site, insufficient context, or "
+                f"MAPQ filtering (--min-mapq={min_mapq}). Stats: {stats}"
             )
 
-            task_id = progress_container["task"]
-            if task_id is not None:
-                progress.update(task_id, completed=True)
+        resolved_seed = setup_random_seed(seed, output_dir)
+
+        if no_split:
+            all_file = output_dir / "all.npz"
+            spool.write_npz(all_file)
+            logger.info(f"Saved all chunks to {all_file}")
+            result = {
+                "n_chunks": n_chunks,
+                "n_train": 0,
+                "n_val": 0,
+                "n_test": 0,
+            }
+        else:
+            written = write_splits(spool, output_dir, train_split, val_split, resolved_seed)
+            result = {
+                "n_chunks": n_chunks,
+                "n_train": len(written.get("train", ())),
+                "n_val": len(written.get("val", ())),
+                "n_test": len(written.get("test", ())),
+            }
 
     # Zero chunks fails the run rather than warning and returning (issue
-    # #265). The parallel branch above already raises earlier with richer
-    # stats attached, and the sequential path's own
-    # `prepare_training_data_with_split` (orchestrator.py) already raises
-    # `ValueError("No chunks to save")` before returning -- so this check is
-    # not reachable through either path as they stand today. It is kept as a
-    # general safety net rather than removed: `handle_prepare` should never
-    # silently exit 0 on a run that produced nothing, and a future code path
-    # that forgets its own zero-chunk guard would otherwise reach
-    # `_display_prepare_results` below and divide by zero on the split
+    # #265). The branch above already raises earlier with richer stats
+    # attached, so this check is not reachable as the code stands today. It
+    # is kept as a general safety net rather than removed: `handle_prepare`
+    # should never silently exit 0 on a run that produced nothing, and a
+    # future code path that forgets its own zero-chunk guard would otherwise
+    # reach `_display_prepare_results` below and divide by zero on the split
     # percentages.
     if result.get("n_chunks", 0) == 0:
         raise RuntimeError(

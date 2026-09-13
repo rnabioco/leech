@@ -156,6 +156,16 @@ def npz_members(path):
         return {name: data[name] for name in data.files}
 
 
+def _npz_row_keys(path):
+    """``{(read_id, base_idx)}`` for every row in an .npz -- split *membership*,
+    order-independent. See ``test_prepare_split_matches_the_chunk_level_split``.
+    """
+    with np.load(path, allow_pickle=True) as data:
+        read_ids = data["read_ids"]
+        base_indices = data["base_indices"]
+    return set(zip(read_ids.tolist(), base_indices.tolist(), strict=True))
+
+
 def assert_npz_identical(expected_path, actual_path):
     """Same members, in the same order, with the same dtypes/shapes/values."""
     with zipfile.ZipFile(expected_path) as a, zipfile.ZipFile(actual_path) as b:
@@ -353,11 +363,19 @@ class TestRowSelection:
         assert_npz_identical(reference, selected)
 
     def test_prepare_split_matches_the_chunk_level_split(self, tmp_path):
-        """The spooled prepare split must write what the list-based one wrote.
+        """The spooled prepare split assigns the same rows to the same split.
 
         ``data prepare`` used to split a list of chunk dicts and hand each
-        split to ``save_chunks``; it now splits row indices and writes them out
-        of the spool. Same rule, same rows, same order, same files.
+        split to ``save_chunks``; it now splits row indices and writes them
+        out of the spool. Same rule, same rows per split -- compared as
+        **sets**, not exact order: ``split_rows_by_read`` (now
+        ``_assign_splits`` + ``_split_codes`` + ``np.nonzero``, issue #275)
+        preserves each split's original corpus row order, while the old
+        ``split_chunks_by_read`` grouped rows by read first-appearance order
+        instead. Row order within a split was never a contract anything
+        downstream reads (training shuffles via the DataLoader's own
+        sampler); read-level membership -- which split each read's chunks
+        land in -- is what must not change, and is what this compares.
         """
         from leech.preparation.orchestrator import split_rows_by_read
         from leech.splitting import split_chunks_by_read
@@ -384,7 +402,9 @@ class TestRowSelection:
         assert sum(len(part) for part in rows) == len(chunks)
         for name, split in zip(("train", "val", "test"), reference, strict=True):
             if split:
-                assert_npz_identical(tmp_path / f"ref-{name}.npz", tmp_path / f"new-{name}.npz")
+                assert _npz_row_keys(tmp_path / f"ref-{name}.npz") == _npz_row_keys(
+                    tmp_path / f"new-{name}.npz"
+                ), f"{name}: split membership differs"
 
     def test_falls_back_when_the_spill_cannot_be_mapped(self, tmp_path, monkeypatch):
         """A filesystem that refuses mmap must not fail the write."""

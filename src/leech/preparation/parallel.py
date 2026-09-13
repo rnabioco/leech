@@ -123,6 +123,13 @@ def _process_read_chunk_worker_with_failures(
 ) -> tuple[list[dict[str, np.ndarray | str | int | None]], int]:
     """``_process_read_chunk_worker``, plus a count of reads that raised.
 
+    Builds its own motif searcher from ``config`` on every call -- correct,
+    but back to per-call cost. This is the direct-call entry point tests and
+    benchmarks use outside a pool; the ``mp.Pool`` worker path
+    (:func:`_process_pooled_batch`) shares the same core loop
+    (:func:`_process_read_infos`) but reuses a searcher built once per worker
+    process by :func:`_init_worker` instead (issue #275).
+
     Args:
         args: Tuple of (read_infos, config)
 
@@ -134,7 +141,6 @@ def _process_read_chunk_worker_with_failures(
     """
     read_infos, config = args
 
-    # Get motif searcher
     if config.motif.motif is not None:
         motif_searcher = get_motif_searcher(
             mode=config.motif.motif_reference,
@@ -146,6 +152,25 @@ def _process_read_chunk_worker_with_failures(
     else:
         motif_searcher = None
 
+    return _process_read_infos(read_infos, config, motif_searcher)
+
+
+def _process_read_infos(
+    read_infos: list[ReadInfo],
+    config: PrepareConfig,
+    motif_searcher: MotifSearcher | None,
+) -> tuple[list[dict[str, np.ndarray | str | int | None]], int]:
+    """Core per-batch extraction loop, given an already-resolved motif searcher.
+
+    Shared by :func:`_process_read_chunk_worker_with_failures` (builds its own
+    searcher) and :func:`_process_pooled_batch` (reuses one built once per
+    worker process). Splitting this out is what lets the pool path stop
+    rebuilding the searcher on every batch (issue #275).
+
+    Returns:
+        ``(chunks, n_failed_reads)`` -- see
+        :func:`_process_read_chunk_worker_with_failures`.
+    """
     all_chunks: list[dict[str, np.ndarray | str | int | None]] = []
     n_failed = 0
 
@@ -228,18 +253,82 @@ def _process_read_chunk_worker_with_failures(
     return all_chunks, n_failed
 
 
-def _process_read_chunk_worker_seq(
-    args: tuple[int, list[ReadInfo], PrepareConfig],
-) -> tuple[int, list[dict[str, np.ndarray | str | int | None]], int]:
-    """``_process_read_chunk_worker_with_failures`` tagged with its batch
-    sequence number.
+# ---------------------------------------------------------------------------
+# mp.Pool worker state
+#
+# Set once per worker process by `_init_worker`, not once per batch. Before
+# this, `_worker_arg_stream` yielded `(seq, read_batch, config)` for every
+# task, and `config` -- the reference_sequences dict (up to 100k entries) and,
+# with refinement on, the 262,144-entry 9-mer table -- was pickled onto the
+# task queue and unpickled in the worker once per BATCH (chunk_size=100 by
+# default), not once per worker. `get_motif_searcher` was rebuilt from it on
+# every batch too. Both moved into `_init_worker`, which every pool worker
+# runs exactly once at process start (issue #275).
+# ---------------------------------------------------------------------------
+_worker_config: PrepareConfig | None = None
+_worker_motif_searcher: MotifSearcher | None = None
+_worker_init_error: BaseException | None = None
 
-    ``imap_unordered`` returns results out of order, so the caller needs the tag
-    to attribute a result back to the batch it came from. Module-level (not a
-    closure or lambda) because it has to be picklable for ``mp.Pool``.
+
+def _init_worker(config: PrepareConfig) -> None:
+    """``mp.Pool`` initializer: resolve ``config`` and the motif searcher once.
+
+    Runs once per worker process, before that worker pulls its first task.
+
+    Deliberately never lets an exception escape this function. An exception
+    raised from an ``mp.Pool`` initializer does not propagate to the parent:
+    CPython kills that worker and silently spawns a replacement, which runs
+    the same initializer, raises the same way, and is killed again --
+    forever. Meanwhile ``pool.imap_unordered()`` in the parent blocks on a
+    result that will never arrive, with no exception and no output. A bad
+    motif/reference config (the realistic failure here -- `get_motif_searcher`
+    raising on a malformed pattern) used to surface as an immediate
+    `ValueError` from the direct per-batch call; after moving searcher
+    construction into the initializer it would otherwise hang the whole
+    `data prepare --backend python` run instead. Any failure here is stored
+    and re-raised from :func:`_process_pooled_batch`, an ordinary task whose
+    exceptions *do* propagate through ``imap_unordered`` correctly.
     """
-    seq, read_infos, config = args
-    chunks, n_failed = _process_read_chunk_worker_with_failures((read_infos, config))
+    global _worker_config, _worker_motif_searcher, _worker_init_error
+    _worker_config = config
+    try:
+        if config.motif.motif is not None:
+            _worker_motif_searcher = get_motif_searcher(
+                mode=config.motif.motif_reference,
+                reference_sequences=config.motif.reference_sequences,
+                skip_indels=config.motif.skip_motif_indels,
+                require_query_mapping=config.motif.require_query_mapping,
+                anchor=config.signal.anchor,
+            )
+        else:
+            _worker_motif_searcher = None
+    except BaseException as e:  # noqa: BLE001 - see docstring; must not raise here
+        _worker_init_error = e
+        _worker_motif_searcher = None
+
+
+def _process_pooled_batch(
+    args: tuple[int, list[ReadInfo]],
+) -> tuple[int, list[dict[str, np.ndarray | str | int | None]], int]:
+    """``mp.Pool`` task entry point: read config/searcher from worker globals.
+
+    Tasks carry ``(seq, read_batch)`` only -- everything else was resolved
+    once by :func:`_init_worker` when this worker process started. ``seq`` is
+    needed because ``imap_unordered`` returns results out of order, and the
+    caller uses it to attribute a result back to the batch it came from.
+    Module-level (not a closure or lambda) because it has to be picklable for
+    ``mp.Pool``.
+
+    Raises whatever :func:`_init_worker` caught, if anything -- a normal task
+    exception propagates through ``imap_unordered`` to the caller correctly,
+    unlike an exception from the initializer itself (see its docstring).
+    """
+    if _worker_init_error is not None:
+        raise RuntimeError(
+            f"mp.Pool worker failed to initialize: {_worker_init_error}"
+        ) from _worker_init_error
+    seq, read_infos = args
+    chunks, n_failed = _process_read_infos(read_infos, _worker_config, _worker_motif_searcher)
     return seq, chunks, n_failed
 
 
@@ -676,6 +765,10 @@ def _iter_python_batches(
     ``leech.io.pod5_reader``), so the pool is also ``num_workers`` concurrent
     readers. Results arrive as they complete, not in BAM order.
 
+    ``config`` and the motif searcher are resolved once per worker process by
+    ``_init_worker`` rather than once per batch -- tasks carry ``(seq,
+    read_batch)`` only (issue #275). See the ``_worker_config`` block above.
+
     Unlike the Rust path, a whole-batch failure here (e.g. the process-local
     POD5 fetch raising for a bad path, issue #166) is not caught: ``mp.Pool``
     re-raises a worker exception in the parent when the result is fetched,
@@ -690,11 +783,11 @@ def _iter_python_batches(
             iter_read_info_batches(bam_path, batch_size=chunk_size, min_mapq=min_mapq)
         ):
             batch_sizes[seq] = len(read_batch)
-            yield (seq, read_batch, config)
+            yield (seq, read_batch)
 
-    with mp.Pool(processes=num_workers) as pool:
+    with mp.Pool(processes=num_workers, initializer=_init_worker, initargs=(config,)) as pool:
         for seq, chunk_results, n_failed in pool.imap_unordered(
-            _process_read_chunk_worker_seq, _worker_arg_stream()
+            _process_pooled_batch, _worker_arg_stream()
         ):
             yield BatchOutcome(batch_sizes.pop(seq, 0), chunk_results, n_failed_reads=n_failed)
 

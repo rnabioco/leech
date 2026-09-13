@@ -33,7 +33,6 @@ uv run leech data prepare \
   --pod5 reads.pod5 \
   --bam alignments.bam \
   --output-dir chunks/ \
-  --feature-set signal+dwell+levels \
   --motif CCAGGC \
   --motif-offset 2 \
   --label 1
@@ -44,7 +43,6 @@ uv run leech data prepare \
 - `--pod5`: Path to POD5 file with raw signal
 - `--bam`: Path to BAM file with alignments and move tables
 - `--output-dir`: Directory to save training chunks
-- `--feature-set`: Features to extract (one of `signal`, `signal+dwell`, `signal+levels`, `signal+dwell+levels`)
 - `--motif`: Sequence motif to center on (e.g., "CCAGGC" for tRNA 3' end)
 - `--motif-offset`: Position within motif to focus on (0-indexed)
 - `--label`: Label identifier for this sample (e.g., `Ala`, `charged`); a string, not necessarily 0/1

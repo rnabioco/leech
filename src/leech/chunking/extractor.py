@@ -89,6 +89,9 @@ class LeechRead:
         feature_channels: The two dicts merged into the ordered ``(name,
             array)`` feature rows every chunk is cut from. Resolved once here;
             mutating either dict afterwards will not be picked up.
+        feature_matrix: ``feature_channels``' arrays stacked into one ``(F,
+            num_bases)`` matrix, also resolved once here -- what
+            ``get_chunk`` actually slices/pads (issue #275).
         labels: Optional labels for training (e.g., 0=uncharged, 1=charged)
         metadata: Additional metadata (alignment info, etc.)
         full_signal: When ref-anchored mode crops ``signal`` to the aligned
@@ -124,6 +127,18 @@ class LeechRead:
         self.dwell_features = dwell_features
         self.signal_features = signal_features
         self.feature_channels = merge_feature_channels(dwell_features, signal_features)
+        # One (F, num_bases) matrix, stacked once per read, so `get_chunk`
+        # slices/pads all F rows in a single 2D op instead of looping over
+        # ~12 channels and stacking at the end of every chunk (issue #275).
+        # Every channel is float32 (see compute_dwell_features /
+        # compute_signal_features / compute_kmer_residual_features), so this
+        # stack changes no dtype and, since every row uses the same slice
+        # indices, no value either.
+        self.feature_matrix: np.ndarray = (
+            np.stack([arr for _, arr in self.feature_channels], axis=0)
+            if self.feature_channels
+            else np.zeros((0, 0), dtype=np.float32)
+        )
         self.labels = labels
         self.metadata = metadata if metadata is not None else {}
         self.signal_residual = signal_residual
@@ -320,19 +335,25 @@ class LeechRead:
 
         # Compile additional features (also with wider window, safe boundary).
         # Channel order was fixed once in __init__ -- see merge_feature_channels.
-        features = []
-        for _feat_name, feat_array in self.feature_channels:
+        # Sliced from the (F, num_bases) matrix __init__ stacked once, as one
+        # 2D op across all F rows -- every row uses the same safe_start/
+        # safe_end/dwell_width, so this was always doing identical work per
+        # channel; looping and stacking after the fact just paid for it once
+        # per channel per chunk instead of once per chunk (issue #275).
+        n_features = self.feature_matrix.shape[0]
+        if n_features == 0:
+            feature_chunk = np.array([])
+        else:
             if safe_start < safe_end:
-                raw_feat = feat_array[safe_start:safe_end]
+                raw_feat = self.feature_matrix[:, safe_start:safe_end]
             else:
-                raw_feat = np.array([], dtype=feat_array.dtype)
-            if len(raw_feat) < dwell_width:
-                padded = np.zeros(dwell_width, dtype=feat_array.dtype)
+                raw_feat = np.zeros((n_features, 0), dtype=self.feature_matrix.dtype)
+            if raw_feat.shape[1] < dwell_width:
+                feature_chunk = np.zeros((n_features, dwell_width), dtype=self.feature_matrix.dtype)
                 feat_offset = safe_start - dwell_start
-                padded[feat_offset : feat_offset + len(raw_feat)] = raw_feat
-                features.append(padded)
+                feature_chunk[:, feat_offset : feat_offset + raw_feat.shape[1]] = raw_feat
             else:
-                features.append(raw_feat)
+                feature_chunk = raw_feat
 
         # Build chunk-relative seq_to_sig_map for signal_kmer encoding.
         seq_start = int(np.searchsorted(self.seq_to_sig_map, sig_start, side="right") - 1)
@@ -365,7 +386,7 @@ class LeechRead:
             "signal": signal_chunk,
             "sequence": kmer_seq,
             "dwell": dwell_chunk,
-            "features": np.stack(features, axis=0) if features else np.array([]),
+            "features": feature_chunk,
             "feature_start": eff_start,
             "feature_end": eff_end,
             "base_idx": base_idx,

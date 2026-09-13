@@ -1039,6 +1039,8 @@ class SigMapRefiner:
         signal: np.ndarray,
         sequence: str,
         seq_to_sig_map: np.ndarray,
+        *,
+        expected_levels: np.ndarray | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         """
         Refine signal normalization and mapping using expected kmer levels.
@@ -1051,6 +1053,13 @@ class SigMapRefiner:
             signal: Normalized signal array
             sequence: Base sequence
             seq_to_sig_map: Initial base-to-signal mapping (from move table)
+            expected_levels: Precomputed ``extract_levels(sequence,
+                self.kmer_to_level, self.kmer_len, self.center_idx)``, for a
+                caller that already has it (``build_leech_read`` computes it
+                once per read and reuses it here and in
+                ``compute_kmer_residual_features``/``compute_signal_residual``
+                rather than three identical per-read calls -- issue #275).
+                ``None`` (the default) computes it here, unchanged from before.
 
         Returns:
             Tuple of ``(signal, refined_seq_to_sig_map)``. The signal is
@@ -1071,7 +1080,10 @@ class SigMapRefiner:
         """
         from escapepod import refine_signal_map as _epod_refine_signal_map
 
-        expected = extract_levels(sequence, self.kmer_to_level, self.kmer_len, self.center_idx)
+        if expected_levels is None:
+            expected = extract_levels(sequence, self.kmer_to_level, self.kmer_len, self.center_idx)
+        else:
+            expected = expected_levels
         if expected.size == 0 or len(seq_to_sig_map) != expected.size + 1:
             return signal, seq_to_sig_map
 
