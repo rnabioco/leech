@@ -248,6 +248,7 @@ class InferenceSpec:
         default_refine_scale_iters: int = 2,
         parameter_sources: Mapping[str, bool] | None = None,
         strict_model_type: bool = False,
+        model_dwell_margin: Callable[[], int] | None = None,
     ) -> "InferenceSpec":
         """Resolve one :class:`InferenceSpec` from a model/bundle config dict.
 
@@ -288,6 +289,14 @@ class InferenceSpec:
                 convention. Single-model callers leave this ``False``: a
                 Remora model has no registry name at all (``model_type`` is
                 the empty-string default), which is expected, not an error.
+            model_dwell_margin: Optional zero-arg callable returning a wide-
+                feature model's real ``dwell_margin`` attribute (e.g.
+                ``lambda: getattr(model_wrapper.model, "dwell_margin", 0)``),
+                for the rare fallback below. ``dwell_margin`` is a model
+                constructor default, never written into ``config.json``, so
+                reading it needs the model itself -- lazy because building
+                one (bundle.py's caller has to ``_instantiate_model(config)``)
+                is wasted work on every call that never reaches this branch.
         """
         sources = parameter_sources or {}
 
@@ -359,7 +368,7 @@ class InferenceSpec:
             wide_features = False
         feature_start, feature_end = feature_window_from_metadata(config, kmer_context)
         if wide_features and feature_start is None and feature_end is None:
-            model_margin = config.get("dwell_margin", 0)
+            model_margin = model_dwell_margin() if model_dwell_margin is not None else 0
             if model_margin:
                 feature_start = -(kmer_context + model_margin)
                 feature_end = kmer_context + model_margin

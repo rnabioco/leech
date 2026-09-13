@@ -125,9 +125,16 @@ def _feature_window_from_mapping(source, kmer_context: int) -> tuple[int | None,
     elif source.get("dwell_margin_right") is not None:
         raw_features = source.get("features")
         if raw_features is not None and getattr(raw_features, "ndim", 1) > 1 and start is not None:
+            # A chunk dict: derive from the stored feature array's actual width.
             end = raw_features.shape[1] - 1 + start
         else:
-            end = None
+            # A config dict never carries "features" -- this is the only branch
+            # that fires for it, and single.py/bundle.py's original inline code
+            # computed exactly this (kmer_context + dwell_margin_right) with no
+            # array to check. Do not collapse this to None: that silently
+            # narrows the window to +-kmer_context instead of using the margin
+            # the config actually recorded.
+            end = kmer_context + int(source["dwell_margin_right"])
     else:
         end = None
 

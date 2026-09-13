@@ -321,6 +321,11 @@ def run_inference(
         reference_fasta=reference_fasta,
         default_refine_scale_iters=-1 if is_remora else 2,
         parameter_sources=parameter_sources,
+        model_dwell_margin=lambda: (
+            getattr(model_wrapper.model, "dwell_margin", 0)
+            if hasattr(model_wrapper, "model")
+            else 0
+        ),
     )
     signal_len = spec.signal_len
     kmer_len = spec.kmer_len
@@ -333,7 +338,6 @@ def run_inference(
     wide_features = spec.wide_features
     _feature_start = spec.feature_start
     _feature_end = spec.feature_end
-    _kmer_context = kmer_context
     num_out = spec.num_out
     is_multiclass = spec.is_multiclass
     motif = spec.motif
@@ -372,8 +376,8 @@ def run_inference(
     logger.info(f"Signal context: {signal_context}")
     logger.info(f"Sequence encoding: {seq_encoding}, base_justify: {base_justify}")
     if _feature_start is not None or _feature_end is not None:
-        _fs = _feature_start if _feature_start is not None else -_kmer_context
-        _fe = _feature_end if _feature_end is not None else _kmer_context
+        _fs = _feature_start if _feature_start is not None else -kmer_context
+        _fe = _feature_end if _feature_end is not None else kmer_context
         logger.info(f"Feature window: [{_fs}, {_fe}] relative to focus (width={_fe - _fs + 1})")
     logger.info(f"Motif: {motif} (offset={motif_offset})")
     logger.info(f"anchor: {anchor}")

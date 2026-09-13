@@ -1844,6 +1844,11 @@ def predict(
             stacklevel=2,
         )
         anchor = "reference"
+        # The deprecated flag is itself an explicit request for anchor, same
+        # as --anchor reference would be -- without this, a model config
+        # recording anchor="basecall" silently wins over it instead of
+        # raising the conflict InferenceSpec.from_config exists to catch.
+        parameter_sources["anchor"] = True
 
     # Parse --copy-tags into a list
     parsed_copy_tags = [t.strip() for t in copy_tags.split(",") if t.strip()] if copy_tags else None

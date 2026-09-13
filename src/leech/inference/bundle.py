@@ -247,6 +247,7 @@ def run_bundle_inference(
         default_refine_scale_iters=2,
         parameter_sources=parameter_sources,
         strict_model_type=True,
+        model_dwell_margin=lambda: getattr(_instantiate_model(config), "dwell_margin", 0),
     )
     signal_len = spec.signal_len
     kmer_len = spec.kmer_len
@@ -261,10 +262,10 @@ def run_bundle_inference(
     signal_context = spec.signal_context
     kmer_context = spec.kmer_context
     wide_features = spec.wide_features
-    _kmer_context = kmer_context
     _feature_start = spec.feature_start
     _feature_end = spec.feature_end
 
+    logger.info(f"Motif from bundle config: {motif} (offset={motif_offset})")
     logger.info(f"base_justify: {base_justify}")
     logger.info(f"anchor: {anchor}")
     if reference_fasta is not None:
@@ -275,8 +276,8 @@ def run_bundle_inference(
     )
     logger.info(f"Signal context: {signal_context}, kmer_len: {kmer_len}")
     logger.info(f"seq_encoding: {seq_encoding}, base_justify: {base_justify}")
-    _fs = _feature_start if _feature_start is not None else -_kmer_context
-    _fe = _feature_end if _feature_end is not None else _kmer_context
+    _fs = _feature_start if _feature_start is not None else -kmer_context
+    _fe = _feature_end if _feature_end is not None else kmer_context
     logger.info(f"dwell_offset: {dwell_offset}, feature window: [{_fs}, {_fe}]")
     if _feature_start is not None or _feature_end is not None:
         logger.info(f"Feature window: [{_fs}, {_fe}] relative to focus (width={_fe - _fs + 1})")
@@ -831,7 +832,7 @@ def run_bundle_inference(
                                     feat,
                                     feat_start=_feature_start
                                     if _feature_start is not None
-                                    else -_kmer_context,
+                                    else -kmer_context,
                                     dwell_templates=dwell_templates_arr,
                                     template_min_pos=dwell_template_min_pos,
                                 )

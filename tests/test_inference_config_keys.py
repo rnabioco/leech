@@ -333,10 +333,20 @@ class TestInferenceSpecFromConfig:
     def test_legacy_dwell_margin_corpus_resolves_feature_window(self):
         """Old configs recorded `dwell_margin_left`/`dwell_margin_right`
         instead of `feature_start`/`feature_end`; the resolver must still
-        recover a usable window rather than falling back to the k-mer window."""
+        recover a usable window rather than falling back to the k-mer window.
+
+        A config dict never carries a "features" array, so `feature_end`
+        must come from the direct `kmer_context + dwell_margin_right`
+        arithmetic single.py/bundle.py's original inline code used, not from
+        the array-shape-based branch training.py's per-chunk resolution
+        needs -- collapsing to `None` here (issue #268 code review) silently
+        narrowed the window to +-kmer_context for every real checkpoint that
+        predates `feature_start`/`feature_end`.
+        """
         spec = InferenceSpec.from_config(self._config(dwell_margin_left=3, dwell_margin_right=3))
-        # kmer_context=5, so feature_start = -(5+3) = -8
+        # kmer_context=5, so feature_start = -(5+3) = -8, feature_end = 5+3 = 8
         assert spec.feature_start == -8
+        assert spec.feature_end == 8
 
     def test_two_output_model_is_flagged_multiclass_and_calibrated(self):
         """The same regression as TestIsMulticlass, seen through the spec
@@ -381,11 +391,39 @@ class TestInferenceSpecFromConfig:
         assert spec.motif_offset == 3
 
     def test_wide_features_model_falls_back_to_model_dwell_margin(self):
+        """`dwell_margin` is a model constructor default never written into
+        config.json (issue #268 code review) -- the real fallback needs the
+        instantiated model, supplied lazily via `model_dwell_margin`."""
         spec = InferenceSpec.from_config(
-            self._config(dwell_margin=4), model_type="TCNDwellResidualMotor"
+            self._config(),
+            model_type="TCNDwellResidualMotor",
+            model_dwell_margin=lambda: 4,
         )
         assert spec.feature_start == -(5 + 4)
         assert spec.feature_end == 5 + 4
+
+    def test_dwell_margin_in_config_alone_is_not_read(self):
+        """`dwell_margin` in the config dict itself must not be trusted --
+        real checkpoints never write it there, only the model class does."""
+        spec = InferenceSpec.from_config(
+            self._config(dwell_margin=4), model_type="TCNDwellResidualMotor"
+        )
+        # No model_dwell_margin callable supplied -> falls back to 0 -> no
+        # override fires -> stays unresolved (callers fall back to
+        # +-kmer_context at the point of use, e.g. prepare_inference_features).
+        assert spec.feature_start is None
+        assert spec.feature_end is None
+
+    def test_model_dwell_margin_is_not_called_when_not_needed(self):
+        """Building a model just to read one attribute is wasted work on
+        every call that never reaches this fallback -- must stay lazy."""
+        calls = []
+        InferenceSpec.from_config(
+            self._config(feature_start=-3, feature_end=3),
+            model_type="TCNDwellResidualMotor",
+            model_dwell_margin=lambda: calls.append(1) or 4,
+        )
+        assert calls == []
 
     def test_default_refine_scale_iters_differs_for_remora_vs_leech(self):
         """single.py passed a hardcoded `2` to the Rust kwargs builder
