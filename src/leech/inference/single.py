@@ -14,7 +14,7 @@ from rich.progress import Progress
 
 from leech.configs import ChunkConfig, InferenceConfig, MotifConfig, SignalConfig
 from leech.constants import DEFAULT_REFINE_HALF_BANDWIDTH, TORCH_COMPILE_MIN_SAMPLES
-from leech.features import encode_signal_kmer, extract_move_table, sequence_to_int
+from leech.features import encode_signal_kmer_batch, extract_move_table, sequence_to_int
 from leech.inference.helpers import (
     BatchAccumulator,
     _check_config_consistency,
@@ -60,6 +60,11 @@ def _inference_worker(
 
     results: list[tuple[str, int, np.ndarray, np.ndarray, np.ndarray | None]] = []
     _shape_validated = False
+    # signal_kmer encoding is batched once for the whole worker call rather
+    # than once per chunk (issue #260): each pending entry is
+    # (index into `results`, seq_ints, seq_to_sig_map), filled in after every
+    # read has been processed.
+    _pending_signal_kmer: list[tuple[int, np.ndarray, np.ndarray]] = []
 
     # Batch-read all POD5 signals via the process-local reader cache.
     read_info_by_id = {ri.read_id: ri for ri in read_infos}
@@ -132,18 +137,18 @@ def _inference_worker(
                 # Signal (with optional kmer residual channel)
                 sig = prepare_signal_channels(chunk, config.signal_len)
 
-                # Sequence encoding
+                # Sequence encoding. signal_kmer's own encoding is deferred to
+                # a single batched Rust call after the read loop (below);
+                # `enc_seq` is a placeholder here and backfilled in place.
+                pending_seq_ints: np.ndarray | None = None
+                pending_seq_to_sig: np.ndarray | None = None
                 if config.seq_encoding == "signal_kmer":
                     seq_ctx = chunk.get("sequence_with_kmer_context")
                     seq_to_sig = chunk.get("seq_to_sig_map")
                     if seq_ctx is not None and seq_to_sig is not None:
-                        seq_ints = sequence_to_int(seq_ctx)
-                        enc_seq = encode_signal_kmer(
-                            seq_ints,
-                            seq_to_sig,
-                            config.signal_len,
-                            tuple(config.signal_kmer_context),
-                        )
+                        pending_seq_ints = sequence_to_int(seq_ctx)
+                        pending_seq_to_sig = seq_to_sig
+                        enc_seq = None
                     else:
                         from leech.preparation.encoding import encode_kmer as _enc
 
@@ -176,10 +181,30 @@ def _inference_worker(
                     _shape_validated = True
 
                 results.append((read_info.read_id, base_idx, sig, enc_seq, feat))
+                if pending_seq_ints is not None:
+                    _pending_signal_kmer.append(
+                        (len(results) - 1, pending_seq_ints, pending_seq_to_sig)
+                    )
 
         except Exception as e:
             logger.warning(f"Worker: skipping read {read_info.read_id}: {e}")
             continue
+
+    if _pending_signal_kmer:
+        n = len(_pending_signal_kmer)
+        max_si = max(seq_ints.shape[0] for _, seq_ints, _ in _pending_signal_kmer)
+        max_s2 = max(s2s.shape[0] for _, _, s2s in _pending_signal_kmer)
+        padded_seq_ints = np.full((n, max_si), -1, dtype=np.int8)
+        padded_s2s = np.full((n, max_s2), config.signal_len, dtype=np.int32)
+        for i, (_, seq_ints, s2s) in enumerate(_pending_signal_kmer):
+            padded_seq_ints[i, : seq_ints.shape[0]] = seq_ints
+            padded_s2s[i, : s2s.shape[0]] = s2s
+        batch_enc = encode_signal_kmer_batch(
+            padded_seq_ints, padded_s2s, config.signal_len, tuple(config.signal_kmer_context)
+        )
+        for i, (result_idx, _, _) in enumerate(_pending_signal_kmer):
+            rid, bidx, sig, _, feat = results[result_idx]
+            results[result_idx] = (rid, bidx, sig, batch_enc[i], feat)
 
     return results
 
@@ -918,6 +943,13 @@ def run_inference(
             ]
 
             results: list[tuple[np.ndarray, np.ndarray, np.ndarray | None, tuple[str, int]]] = []
+            # signal_kmer encoding is batched once per read (issue #260)
+            # rather than once per chunk: `pending` holds every chunk's
+            # (signal, feat, key) plus its raw inputs, appended to `results`
+            # once the batch call below fills in the real sequence array.
+            pending: list[
+                tuple[np.ndarray, np.ndarray | None, tuple[str, int], np.ndarray, np.ndarray]
+            ] = []
             for base_idx in positions:
                 chunk = leech_read.get_chunk(base_idx, config=seq_chunk_config)
                 if chunk is None:
@@ -925,15 +957,6 @@ def run_inference(
 
                 # Signal (with optional kmer residual channel)
                 sig = prepare_signal_channels(chunk, signal_len)
-
-                # Sequence
-                seq_enc = _encode_sequence_for_inference(
-                    chunk, seq_encoding, signal_len, signal_kmer_context
-                )
-                if seq_enc is None:
-                    continue
-
-                seq_arr = seq_enc.numpy() if isinstance(seq_enc, torch.Tensor) else seq_enc
 
                 feat = None
                 if requires_features:
@@ -947,7 +970,39 @@ def run_inference(
                         wide_features=wide_features,
                     )
 
+                if seq_encoding == "signal_kmer":
+                    seq_ctx = chunk.get("sequence_with_kmer_context")
+                    seq_to_sig = chunk.get("seq_to_sig_map")
+                    if seq_ctx is None or seq_to_sig is None:
+                        continue
+                    pending.append(
+                        (sig, feat, (read_id, base_idx), sequence_to_int(seq_ctx), seq_to_sig)
+                    )
+                    continue
+
+                seq_enc = _encode_sequence_for_inference(
+                    chunk, seq_encoding, signal_len, signal_kmer_context
+                )
+                if seq_enc is None:
+                    continue
+                seq_arr = seq_enc.numpy() if isinstance(seq_enc, torch.Tensor) else seq_enc
                 results.append((sig, seq_arr, feat, (read_id, base_idx)))
+
+            if pending:
+                n = len(pending)
+                max_si = max(p[3].shape[0] for p in pending)
+                max_s2 = max(p[4].shape[0] for p in pending)
+                padded_seq_ints = np.full((n, max_si), -1, dtype=np.int8)
+                padded_s2s = np.full((n, max_s2), signal_len, dtype=np.int32)
+                for i, (_, _, _, seq_ints, s2s) in enumerate(pending):
+                    padded_seq_ints[i, : seq_ints.shape[0]] = seq_ints
+                    padded_s2s[i, : s2s.shape[0]] = s2s
+                batch_enc = encode_signal_kmer_batch(
+                    padded_seq_ints, padded_s2s, signal_len, signal_kmer_context
+                )
+                for i, (sig, feat, key, _, _) in enumerate(pending):
+                    results.append((sig, batch_enc[i], feat, key))
+
             return results
 
         _extract_pool = ThreadPoolExecutor(max_workers=n_extract)

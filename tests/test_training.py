@@ -405,6 +405,75 @@ class TestTrainModel:
 
         assert len(history["train_loss"]) >= 1
 
+    def test_num_features_correct_when_dataset_degrades_to_list_storage(self, tmp_path):
+        """num_features must read the true width even off LeechDataset's list fallback.
+
+        `_TensorFill` degrades to a per-chunk list (`dataset.py`'s own
+        documented behaviour) when a chunk's feature shape disagrees with the
+        first one -- here, a ragged `feat_width` (11 vs 9) with a constant
+        `num_features` (5) triggers exactly that, while leaving 5 as the one
+        correct answer. #272 item 4 must not silently fall back to 1 in this
+        state (issue: it reads `_needs_features and _features_tensor is not
+        None`, which is false here even though the corpus has real features).
+        """
+        rng = np.random.default_rng(3)
+        n = 24
+        train_chunks = []
+        for i in range(n):
+            feat_width = 9 if i == n - 1 else 11  # one chunk ragged -> degrade
+            train_chunks.append(
+                {
+                    "signal": rng.standard_normal(400).astype(np.float32),
+                    "dwell": rng.integers(2, 12, 11).astype(np.float32),
+                    "features": rng.standard_normal((5, feat_width)).astype(np.float32),
+                    "sequence": "ACGTACGTACG",
+                    "label": f"c{i % 2}",
+                    "label_int": i % 2,
+                    "read_id": f"read_{i:05d}",
+                    "base_idx": 10 + (i % 5),
+                    "source_group": "grp0",
+                    "feature_start": -5,
+                    "feature_end": 5,
+                }
+            )
+
+        output_dir = tmp_path / "training"
+        # A genuinely ragged feat_width can never complete a real forward
+        # pass (Concat needs a uniform width across the whole run) -- that
+        # is a separate, pre-existing limitation of the list-fallback path
+        # at the *model* level, not what this test is checking. num_features
+        # is derived (and config.json written) before the training loop
+        # starts, so let the loop's later shape-mismatch RuntimeError
+        # through and check config.json regardless.
+        try:
+            train_model(
+                # train_chunks bypasses loading from this path, but
+                # train_model still reads .parent off it for the
+                # prepare_config.json sidecar check, so it must be a Path
+                # even though nothing is read from it.
+                train_data_path=tmp_path / "unused.npz",
+                val_data_path=None,
+                train_chunks=train_chunks,
+                model_name="ConvLSTMDwell",
+                output_dir=output_dir,
+                signal_len=400,
+                kmer_len=11,
+                epochs=1,
+                batch_size=1,
+                device="cpu",
+                motif="CCAGGC",
+                seed=42,
+            )
+        except RuntimeError as e:
+            assert "Sizes of tensors must match" in str(e), f"unexpected failure: {e}"
+
+        with open(output_dir / "config.json") as f:
+            config = json.load(f)
+        assert config["num_features"] == 5, (
+            f"num_features={config['num_features']!r}, expected 5 -- degraded list "
+            f"storage must not silently fall back to 1"
+        )
+
 
 class TestClassWeighting:
     """Test class weighting functionality."""
@@ -868,6 +937,40 @@ class TestEpochMetricAccumulation:
             f"train_epoch made {counts[1] - counts[0]} extra device reads for six "
             f"extra batches; epoch metrics must be read once, not per batch"
         )
+
+    def test_batch_tensors_move_non_blocking(self, grouped_chunks_file, model_config, monkeypatch):
+        """Every batch tensor H2D copy must be async (issue #272 item 1).
+
+        Both loaders set ``pin_memory=True``, so a blocking ``.to(device)``
+        pays a stream sync it does not need to. Distinguishes a device
+        transfer from a dtype-only cast (e.g. ``.to(torch.float64)``) by
+        whether the first positional argument is a device-like value; a
+        dtype cast on an already-placed tensor is unaffected by this rule.
+        """
+        # Built before the patch: one-time model/head placement at construction
+        # (self.model.to(device)) is not a per-batch transfer and is exempt.
+        trainer = _trainer_over(grouped_chunks_file, model_config, n_batches=2)
+
+        offenders = []
+        original_to = torch.Tensor.to
+        sources = {Path(leech.training.__file__).name, "inference_wrapper.py"}
+
+        def spy(tensor, *args, **kwargs):
+            caller = sys._getframe(1).f_code.co_filename
+            is_device_like = (args and isinstance(args[0], (str, torch.device))) or (
+                "device" in kwargs
+            )
+            if Path(caller).name in sources and is_device_like:
+                if not kwargs.get("non_blocking"):
+                    offenders.append((Path(caller).name, sys._getframe(1).f_lineno))
+            return original_to(tensor, *args, **kwargs)
+
+        monkeypatch.setattr(torch.Tensor, "to", spy)
+
+        trainer.train_epoch()
+        trainer.validate()
+
+        assert not offenders, f"blocking device .to() calls found at: {sorted(set(offenders))}"
 
     def test_validate_reads_at_most_two_tensors_per_batch(
         self, grouped_chunks_file, model_config, monkeypatch

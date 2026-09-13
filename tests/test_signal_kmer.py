@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 import torch
 
-from leech.features import encode_signal_kmer, sequence_to_int
+from leech.features import encode_signal_kmer, encode_signal_kmer_batch, sequence_to_int
 from leech.models import MODEL_REGISTRY, get_model
 
 # ---------------------------------------------------------------------------
@@ -140,6 +140,105 @@ class TestEncodeSignalKmer:
         seq_to_sig_map = np.array([0])
         enc = encode_signal_kmer(seq_ints, seq_to_sig_map, signal_len=10, kmer_context=(0, 0))
         assert np.all(enc == 0.0)
+
+
+# ---------------------------------------------------------------------------
+# encode_signal_kmer_batch (#260): one Rust call for a whole batch, bit-
+# identical to the single-row function called once per row.
+# ---------------------------------------------------------------------------
+
+
+def _random_signal_kmer_rows(rng, rows, signal_len, kmer_context):
+    """Ragged per-row (seq_ints, seq_to_sig_map) pairs plus a padded batch.
+
+    Mirrors exactly what ``LeechDataset`` stores: each row's own real length,
+    and a rectangular ``(rows, max_len)`` array padded with the sentinels the
+    encoder treats as "nothing here" (``seq_ints`` < 0, ``seq_to_sig_map`` ==
+    ``signal_len``). Occasionally injects an unknown base (-1) to exercise the
+    skip path, and lets one row be the widest so every other row's padding is
+    genuinely exercised.
+    """
+    kmer_before, kmer_after = kmer_context
+    per_row_seq_ints = []
+    per_row_s2s = []
+    for _ in range(rows):
+        n_bases = int(rng.integers(2, 9))
+        kmer_len = n_bases + kmer_before + kmer_after
+        seq_ints = rng.integers(0, 4, size=kmer_len).astype(np.int8)
+        if rng.random() < 0.3:
+            seq_ints[int(rng.integers(0, kmer_len))] = -1
+        interior = (
+            np.sort(rng.choice(np.arange(1, signal_len), size=n_bases - 1, replace=False))
+            if n_bases > 1
+            else np.array([], dtype=np.int64)
+        )
+        s2s = np.concatenate([[0], interior, [signal_len]]).astype(np.int64)
+        per_row_seq_ints.append(seq_ints)
+        per_row_s2s.append(s2s)
+
+    max_si = max(a.shape[0] for a in per_row_seq_ints)
+    max_s2 = max(a.shape[0] for a in per_row_s2s)
+    padded_seq_ints = np.full((rows, max_si), -1, dtype=np.int8)
+    padded_s2s = np.full((rows, max_s2), signal_len, dtype=np.int32)
+    for i in range(rows):
+        padded_seq_ints[i, : per_row_seq_ints[i].shape[0]] = per_row_seq_ints[i]
+        padded_s2s[i, : per_row_s2s[i].shape[0]] = per_row_s2s[i]
+
+    return per_row_seq_ints, per_row_s2s, padded_seq_ints, padded_s2s
+
+
+class TestEncodeSignalKmerBatch:
+    """Batch encoding must match calling the single-row function per row."""
+
+    @pytest.mark.parametrize("seed", [0, 1, 2])
+    def test_bit_identical_to_single_row(self, seed):
+        rng = np.random.default_rng(seed)
+        signal_len = 50
+        kmer_context = (4, 4)
+        rows = 11
+        per_row_seq_ints, per_row_s2s, padded_seq_ints, padded_s2s = _random_signal_kmer_rows(
+            rng, rows, signal_len, kmer_context
+        )
+
+        batch_out = encode_signal_kmer_batch(padded_seq_ints, padded_s2s, signal_len, kmer_context)
+
+        assert batch_out.shape == (rows, 4 * sum(kmer_context) + 4, signal_len)
+        assert batch_out.dtype == np.float32
+        for i in range(rows):
+            single = encode_signal_kmer(
+                per_row_seq_ints[i], per_row_s2s[i], signal_len, kmer_context
+            )
+            np.testing.assert_array_equal(
+                batch_out[i], single, err_msg=f"row {i} diverged from the single-row encoding"
+            )
+
+    def test_padding_does_not_leak_into_other_rows(self):
+        """A short row's own padding must not contribute encoded positions."""
+        rng = np.random.default_rng(42)
+        signal_len = 30
+        kmer_context = (2, 2)
+        # One deliberately short row alongside longer ones, so its padding is
+        # the majority of its stored width.
+        _, per_row_s2s, padded_seq_ints, padded_s2s = _random_signal_kmer_rows(
+            rng, 5, signal_len, kmer_context
+        )
+        batch_out = encode_signal_kmer_batch(padded_seq_ints, padded_s2s, signal_len, kmer_context)
+        # Every row's coverage should stop at its own real seq_to_sig_map span.
+        for i, s2s in enumerate(per_row_s2s):
+            real_end = int(s2s[-1])
+            if real_end < signal_len:
+                assert np.all(batch_out[i, :, real_end:] == 0.0)
+
+    def test_single_row_batch(self):
+        rng = np.random.default_rng(7)
+        signal_len = 20
+        kmer_context = (1, 1)
+        per_row_seq_ints, per_row_s2s, padded_seq_ints, padded_s2s = _random_signal_kmer_rows(
+            rng, 1, signal_len, kmer_context
+        )
+        batch_out = encode_signal_kmer_batch(padded_seq_ints, padded_s2s, signal_len, kmer_context)
+        single = encode_signal_kmer(per_row_seq_ints[0], per_row_s2s[0], signal_len, kmer_context)
+        np.testing.assert_array_equal(batch_out[0], single)
 
 
 # ---------------------------------------------------------------------------
@@ -341,6 +440,34 @@ class TestDatasetSignalKmer:
 
         item = dataset[0]
         assert item["sequence"].shape == (4, 11)
+
+    def test_getitems_matches_getitem(self, chunks_with_signal_kmer):
+        """__getitems__'s batched Rust call must match __getitem__ row by row.
+
+        __getitem__ still calls the single-row encoder; __getitems__ now calls
+        encode_signal_kmer_batch (#260). This is the wiring test — the raw
+        function's bit-identity is covered by TestEncodeSignalKmerBatch.
+        """
+        from leech.dataset import LeechDataset
+
+        if not chunks_with_signal_kmer:
+            pytest.skip("No chunks with signal_kmer context available")
+
+        dataset = LeechDataset(
+            chunks=chunks_with_signal_kmer,
+            signal_len=400,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding="signal_kmer",
+            signal_kmer_context=(4, 4),
+        )
+        indices = list(range(len(dataset)))
+        batched = dataset.__getitems__(indices)
+        assert dataset._batched_fetch, "test needs the batched-fetch path to be live"
+
+        for i in indices:
+            single = dataset[i]
+            torch.testing.assert_close(batched["sequence"][i], single["sequence"])
 
     def test_collate_signal_kmer(self, chunks_with_signal_kmer):
         """Collating signal_kmer batches should stack correctly."""

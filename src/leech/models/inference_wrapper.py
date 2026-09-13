@@ -68,6 +68,23 @@ def resolve_wide_features(model_wrapper: object, model_type: str) -> bool:
     return bool(getattr(type(model), "WIDE_FEATURES", False))
 
 
+def _batch_to_device(
+    batch: dict, device: str, requires_features: bool
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+    """``(signal, sequence, features_or_none)``, moved to ``device``.
+
+    Shared by :meth:`ModelInferenceWrapper.forward_batch` and
+    :meth:`TracedModelWrapper.forward_batch`, which otherwise duplicated this
+    verbatim. ``non_blocking=True`` overlaps the H2D copy with the CUDA queue
+    instead of syncing the stream at the start of every step -- pinned memory
+    (both loaders set ``pin_memory=True``) is what makes this safe/async.
+    """
+    signal = batch["signal"].to(device, non_blocking=True)
+    sequence = batch["sequence"].to(device, non_blocking=True)
+    features = batch["features"].to(device, non_blocking=True) if requires_features else None
+    return signal, sequence, features
+
+
 class ModelInferenceWrapper:
     """
     Wrapper that provides unified forward pass interface for all model types.
@@ -168,12 +185,9 @@ class ModelInferenceWrapper:
         Returns:
             Model logits
         """
-        signal = batch["signal"].to(device)
-        sequence = batch["sequence"].to(device)
-
+        signal, sequence, features = _batch_to_device(batch, device, self.requires_features)
         output: torch.Tensor
-        if self.requires_features:
-            features = batch["features"].to(device)
+        if features is not None:
             output = self.forward_module(signal, sequence, features)
         else:
             output = self.forward_module(signal, sequence)
@@ -238,12 +252,9 @@ class TracedModelWrapper:
 
     def forward_batch(self, batch: dict, device: str) -> torch.Tensor:
         """Forward pass from batch dictionary."""
-        signal = batch["signal"].to(device)
-        sequence = batch["sequence"].to(device)
-
+        signal, sequence, features = _batch_to_device(batch, device, self.requires_features)
         output: torch.Tensor
-        if self.requires_features:
-            features = batch["features"].to(device)
+        if features is not None:
             output = self.model(signal, sequence, features)
         else:
             output = self.model(signal, sequence)

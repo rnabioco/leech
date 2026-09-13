@@ -895,7 +895,7 @@ class Trainer:
         assert self.adversarial_head is not None
         assert self.adversarial_criterion is not None
         repr_vec = self.model_wrapper.captured_repr
-        confound_labels = batch["confound_label"].to(self.device)
+        confound_labels = batch["confound_label"].to(self.device, non_blocking=True)
         if repr_vec is None:
             return (
                 torch.tensor(0.0, device=self.device),
@@ -916,7 +916,7 @@ class Trainer:
         """
         assert self.cl_regression_head is not None
         repr_vec = self.model_wrapper.captured_repr
-        cl_targets = batch["cl_target"].to(self.device)
+        cl_targets = batch["cl_target"].to(self.device, non_blocking=True)
         if repr_vec is None:
             return torch.tensor(0.0, device=self.device)
         mask = cl_targets >= 0
@@ -943,7 +943,7 @@ class Trainer:
         when those heads are active, and ``adv`` is
         ``(adv_loss, adv_preds, adv_labels)`` or None.
         """
-        labels = batch["label"].to(self.device)
+        labels = batch["label"].to(self.device, non_blocking=True)
 
         # Apply label smoothing to binary targets (BCE/focal only;
         # CrossEntropyLoss handles its own smoothing via constructor arg).
@@ -1195,7 +1195,7 @@ class Trainer:
         with torch.inference_mode():
             for batch in self.val_loader:
                 # Move labels to device
-                labels = batch["label"].to(self.device)
+                labels = batch["label"].to(self.device, non_blocking=True)
 
                 # Adapt labels for CrossEntropyLoss
                 if self.loss_type == "cross_entropy":
@@ -1234,7 +1234,7 @@ class Trainer:
                     and "cl_target" in batch
                     and self.model_wrapper.captured_repr is not None
                 ):
-                    cl_targets = batch["cl_target"].to(self.device)
+                    cl_targets = batch["cl_target"].to(self.device, non_blocking=True)
                     cl_mask = cl_targets >= 0
                     if cl_mask.any():
                         cl_preds = self.cl_regression_head(
@@ -2294,11 +2294,26 @@ def train_model(
             **val_loader_kwargs,
         )
 
-    # Determine num_features and signal_channels from first batch
-    first_batch = next(iter(train_loader))
-    num_features = first_batch.get("features", torch.zeros(1, 1, kmer_len)).shape[1]
-    signal_shape = first_batch["signal"].shape
-    signal_in_channels = signal_shape[1] if len(signal_shape) == 3 else 1
+    # num_features and signal_channels come straight from the dataset's own
+    # state -- it already computed both while pre-tensorizing (#272 item 4).
+    # Drawing a batch to learn a shape spawns persistent DataLoader workers
+    # and, under a weighted sampler, one draw from the multinomial (a
+    # 6.7M-way draw on the production corpus) purely to inspect .shape.
+    if train_dataset._needs_features:
+        if train_dataset._features_tensor is not None:
+            num_features = train_dataset._features_tensor.shape[1]
+        elif train_dataset._features:
+            # Degraded to per-chunk list storage (_TensorFill falls back here
+            # when a chunk's feature shape disagrees with the first one) --
+            # the tensor branch above is empty in this state even though the
+            # corpus genuinely has features, so this is not the "no features"
+            # case. Each item is (num_features, feat_width).
+            num_features = train_dataset._features[0].shape[0]
+        else:
+            num_features = 1
+    else:
+        num_features = 1
+    signal_in_channels = train_dataset.signal_channels
 
     # Auto-detect num_out from training data when not explicitly set
     if num_out <= 1:
@@ -2353,10 +2368,21 @@ def train_model(
         torch.set_float32_matmul_precision("high")
         logger.info("cuDNN benchmark + TF32 matmul enabled")
 
-    # Compile model with torch.compile for graph-level optimizations (PyTorch 2+)
+    # Compile model with torch.compile for graph-level optimizations (PyTorch 2+).
+    # dynamic=False (#272 item 2): the default dynamic=None auto-detects a
+    # dynamic batch dimension the first time it sees two different shapes,
+    # and val_loader has no drop_last (a smaller last batch is correct there
+    # -- dropping validation rows would corrupt every metric), so epoch 1's
+    # validation pass marks the batch dim dynamic and the *training* forward
+    # from epoch 2 on runs the slower dynamic-shape graph, even though
+    # training's own batches are all one size (drop_last=True). dynamic=False
+    # keeps every shape it sees compiled statically -- val's tail batch just
+    # costs one extra compile for its own shape, once, rather than
+    # de-optimizing every training step after it. Verify with
+    # TORCH_LOGS=recompiles.
     if device != "cpu" and hasattr(torch, "compile"):
         try:
-            model = torch.compile(model)
+            model = torch.compile(model, dynamic=False)
             logger.info("torch.compile enabled")
         except Exception as e:
             logger.warning(f"torch.compile failed, falling back to eager mode: {e}")

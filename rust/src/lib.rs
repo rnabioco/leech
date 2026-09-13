@@ -20,6 +20,7 @@ fn leech_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(signal_refine::extract_levels, m)?)?;
     m.add_function(wrap_pyfunction!(signal_refine::rough_rescale_quantile, m)?)?;
     m.add_function(wrap_pyfunction!(encoding::encode_signal_kmer, m)?)?;
+    m.add_function(wrap_pyfunction!(encoding::encode_signal_kmer_batch, m)?)?;
     m.add_function(wrap_pyfunction!(signal_stats::compute_signal_stats, m)?)?;
     m.add_function(wrap_pyfunction!(pod5_io::read_pod5_batch, m)?)?;
     m.add_function(wrap_pyfunction!(pod5_io::preload_pod5_signals, m)?)?;

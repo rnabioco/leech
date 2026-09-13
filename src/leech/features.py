@@ -60,11 +60,17 @@ from numpy.lib.stride_tricks import sliding_window_view
 
 # Try to import Rust-accelerated implementations
 try:
-    from leech._rust_accel import HAS_RUST, _rs_compute_signal_stats, _rs_encode_signal_kmer
+    from leech._rust_accel import (
+        HAS_RUST,
+        _rs_compute_signal_stats,
+        _rs_encode_signal_kmer,
+        _rs_encode_signal_kmer_batch,
+    )
 except ImportError:
     HAS_RUST = False
     _rs_compute_signal_stats = None
     _rs_encode_signal_kmer = None
+    _rs_encode_signal_kmer_batch = None
 
 
 @dataclass
@@ -550,6 +556,59 @@ def encode_signal_kmer(
                 enc[offset + base, max(0, sig_start) : min(signal_len, sig_end)] = 1.0
 
     return enc
+
+
+def encode_signal_kmer_batch(
+    sequence_ints: np.ndarray,
+    seq_to_sig_map: np.ndarray,
+    signal_len: int,
+    kmer_context: tuple[int, int] = (4, 4),
+) -> np.ndarray:
+    """
+    Batched :func:`encode_signal_kmer`: one call for a whole DataLoader batch.
+
+    Every row is bit-identical to calling :func:`encode_signal_kmer` on it
+    alone (rnabioco/leech#260) — this exists to replace a Python loop that
+    called the single-row Rust binding once per chunk, which was the
+    structural reason the training loader measured input-bound.
+
+    Args:
+        sequence_ints: ``(rows, W1)`` int-encoded bases with context, one row
+            per chunk, independently padded (pad value < 0, ignored).
+        seq_to_sig_map: ``(rows, W2)`` base-to-signal mapping, one row per
+            chunk, independently padded (pad value ``signal_len``, ignored —
+            a real row's own last element is always ``signal_len`` by
+            construction, so the real/padded boundary needs no extra
+            bookkeeping).
+        signal_len: Length of the signal array.
+        kmer_context: (kmer_before, kmer_after) context bases for kmer encoding.
+
+    Returns:
+        Encoding array of shape (rows, 4 * kmer_len, signal_len), dtype float32.
+    """
+    kmer_before, kmer_after = kmer_context
+
+    if HAS_RUST:
+        assert _rs_encode_signal_kmer_batch is not None
+        return np.asarray(
+            _rs_encode_signal_kmer_batch(
+                sequence_ints.astype(np.int8, copy=False),
+                seq_to_sig_map.astype(np.int32, copy=False),
+                signal_len,
+                kmer_before,
+                kmer_after,
+            )
+        )
+
+    # Pure-Python fallback: no vectorized batch form is maintained separately
+    # from the per-row reference above — that would be a second copy of the
+    # rule this module already defers to Rust/escapepod for.
+    return np.stack(
+        [
+            encode_signal_kmer(sequence_ints[i], seq_to_sig_map[i], signal_len, kmer_context)
+            for i in range(sequence_ints.shape[0])
+        ]
+    )
 
 
 def compute_dwell_features(dwells: np.ndarray, window: int = 5) -> dict[str, np.ndarray]:
