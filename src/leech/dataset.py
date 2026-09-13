@@ -967,7 +967,7 @@ class LeechDataset(Dataset):
 
             if self._effective_seq_encoding == "signal_kmer":
                 seq_ctx = chunk["sequence_with_kmer_context"]
-                seq_ints = sequence_to_int(seq_ctx).astype(np.int8)
+                seq_ints = sequence_to_int(seq_ctx).astype(np.int8, copy=False)
                 self._seq_ints.append(seq_ints)
 
                 if self._s2s_csr is None:
