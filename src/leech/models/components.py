@@ -65,10 +65,35 @@ def segment_mean_matrix(
     widths differ by at most one. Right-multiplying by this matrix *is*
     ``adaptive_avg_pool1d`` — see :class:`AdaptiveAvgPool1d` for why leech
     spells it that way.
+
+    Always builds a fresh tensor (never the :func:`_cached_segment_mean_tensor`
+    :class:`AdaptiveAvgPool1d.forward` uses in eager mode) — this is the path
+    tracing/export takes, where a cached tensor is a poisoned FakeTensor
+    waiting to leak into a later real call.
     """
     return torch.tensor(
         _segment_mean_weights(int(length), int(output_size)), dtype=dtype, device=device
     )
+
+
+@functools.lru_cache(maxsize=128)
+def _cached_segment_mean_tensor(
+    length: int, output_size: int, dtype: torch.dtype, device: torch.device
+) -> torch.Tensor:
+    """The torch.Tensor :func:`segment_mean_matrix` builds, cached this time.
+
+    Every eager forward through :class:`AdaptiveAvgPool1d` at a given
+    ``(length, output_size, dtype, device)`` used to pay a fresh
+    ``torch.tensor(...)`` construction — an H2D copy on every pool, every
+    step, of a 4 KB constant that never changes for a fixed model and input
+    length. Safe to cache *here*, unlike the plain tensor form: this function
+    is only ever called from :meth:`AdaptiveAvgPool1d.forward` when
+    ``torch.compiler.is_compiling()`` is false, so nothing that reaches this
+    cache is a FakeTensor built under tracing (see :func:`segment_mean_matrix`
+    for the path tracing/export takes instead, which never touches this
+    cache).
+    """
+    return torch.tensor(_segment_mean_weights(length, output_size), dtype=dtype, device=device)
 
 
 class AdaptiveAvgPool1d(nn.AdaptiveAvgPool1d):
@@ -133,7 +158,14 @@ class AdaptiveAvgPool1d(nn.AdaptiveAvgPool1d):
             #                             Measured, not assumed; see
             #                             `leech.onnx_export`'s docstring.
             return nn.functional.adaptive_avg_pool1d(x, self._output_size())
-        w = segment_mean_matrix(length, self._output_size(), dtype=torch.float32, device=x.device)
+        output_size = self._output_size()
+        if torch.compiler.is_compiling():
+            # Tracing (torch.compile or torch.export): never read or write
+            # the eager cache below, which would leak a FakeTensor built
+            # under this trace into a later real forward call.
+            w = segment_mean_matrix(length, output_size, dtype=torch.float32, device=x.device)
+        else:
+            w = _cached_segment_mean_tensor(length, output_size, torch.float32, x.device)
         with torch.amp.autocast(x.device.type, enabled=False):
             out = torch.matmul(x.float(), w)
         return out.to(x.dtype)
