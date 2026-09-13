@@ -88,6 +88,97 @@ class TestSaveScores:
         assert out.exists()
 
 
+class TestFp32ProbabilitiesUnderSimulatedAMP:
+    """`evaluate_model` must not inherit AMP's fp16 probability quantization
+    (#264): under autocast the final Linear emits float16, and
+    torch.sigmoid/torch.softmax are not on autocast's fp32 promotion list --
+    computing them on the raw logits rounds the saved probability to ~3
+    significant digits and saturates to exactly 1.0 above logit~11.
+
+    This test machine has no CUDA, so real autocast can't be exercised.
+    Instead the model's forward pass is patched to hand back a genuine
+    float16 tensor, exactly what CUDA autocast's Linear layer would produce.
+    """
+
+    def _train_checkpoint(self, temp_chunks_file, tmp_path):
+        from leech.training import train_model
+
+        model_dir = tmp_path / "model"
+        train_model(
+            train_data_path=temp_chunks_file,
+            val_data_path=None,
+            model_name="ConvLSTMDwell",
+            output_dir=model_dir,
+            epochs=1,
+            batch_size=2,
+            device="cpu",
+            motif="CCAGGC",
+            seed=42,
+        )
+        return model_dir
+
+    def test_emitted_scores_are_float32_even_with_fp16_model_output(
+        self, temp_chunks_file, tmp_path, monkeypatch
+    ):
+        """The scores written to disk via --emit-scores are float32, with a
+        resolution no worse than the underlying (already-fp16) logits --
+        never further quantized by an un-cast sigmoid/softmax."""
+        from leech.evaluation import evaluate_model
+        from leech.models.inference_wrapper import ModelInferenceWrapper
+
+        model_dir = self._train_checkpoint(temp_chunks_file, tmp_path)
+
+        # Simulate exactly what CUDA autocast's final Linear hands back.
+        original_forward = ModelInferenceWrapper.forward_batch
+        monkeypatch.setattr(
+            ModelInferenceWrapper,
+            "forward_batch",
+            lambda self, batch, device: original_forward(self, batch, device).half(),
+        )
+
+        scores_path = tmp_path / "scores.npz"
+        evaluate_model(
+            model_path=model_dir,
+            test_data_path=temp_chunks_file,
+            output_path=tmp_path / "metrics.json",
+            device="cpu",
+            batch_size=2,
+            emit_scores=scores_path,
+        )
+
+        with np.load(scores_path) as data:
+            probs = data["probs"]
+
+        assert probs.dtype == np.float32
+        # Casting to float32 before sigmoid can't create resolution the
+        # (already fp16) logit didn't have -- but it must not lose any
+        # either, which a raw fp16 sigmoid would (#264).
+        assert len(np.unique(probs)) >= len(np.unique(probs.astype(np.float16)))
+
+    def test_never_compiles_on_cpu(self, temp_chunks_file, tmp_path, monkeypatch):
+        """torch.compile must never run on CPU, with or without --no-compile
+        -- it previously ran unconditionally, mode=None included (#264)."""
+        from leech.evaluation import evaluate_model
+
+        model_dir = self._train_checkpoint(temp_chunks_file, tmp_path)
+
+        calls: list = []
+        monkeypatch.setattr(
+            "leech.evaluation.torch.compile",
+            lambda model, *a, **kw: calls.append(1) or model,
+        )
+
+        evaluate_model(
+            model_path=model_dir,
+            test_data_path=temp_chunks_file,
+            output_path=tmp_path / "metrics.json",
+            device="cpu",
+            batch_size=2,
+        )
+
+        assert calls == []
+
+
 class TestDataLoaderWorkers:
     """Eval must feed the GPU from more than one process (issue #205).
 

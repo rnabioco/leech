@@ -1596,7 +1596,31 @@ def eval():
         "question needs."
     ),
 )
-def test(model, test_data, output, device, batch_size, num_workers, emit_scores):
+@click.option(
+    "--mixed-precision/--no-mixed-precision",
+    default=False,
+    help=(
+        "Autocast the forward pass on CUDA. Off by default, matching "
+        "predict (which never autocasts) -- opt in explicitly (#264)."
+    ),
+)
+@click.option(
+    "--no-compile",
+    is_flag=True,
+    default=False,
+    help="Disable torch.compile (same auto-skip-below-threshold gate as predict).",
+)
+def test(
+    model,
+    test_data,
+    output,
+    device,
+    batch_size,
+    num_workers,
+    emit_scores,
+    mixed_precision,
+    no_compile,
+):
     """Test a trained model on a holdout test set."""
     from leech.commands.eval import handle_test
 
@@ -1608,6 +1632,8 @@ def test(model, test_data, output, device, batch_size, num_workers, emit_scores)
         batch_size=batch_size,
         num_workers=num_workers,
         emit_scores=emit_scores,
+        mixed_precision=mixed_precision,
+        no_compile=no_compile,
     )
 
 

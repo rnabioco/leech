@@ -13,6 +13,7 @@ import torch
 from rich.progress import Progress
 
 from leech.configs import ChunkConfig, InferenceConfig, MotifConfig, SignalConfig
+from leech.constants import TORCH_COMPILE_MIN_SAMPLES
 from leech.features import encode_signal_kmer, extract_move_table, sequence_to_int
 from leech.inference.helpers import (
     BatchAccumulator,
@@ -576,18 +577,19 @@ def run_inference(
     mega_batch_idx = 0
 
     # torch.compile the model for faster inference (CUDA graph + kernel fusion).
-    # Auto-skip for small runs (<5000 reads) where compilation overhead (~15-30s)
-    # outweighs the speedup. Also skip when repr capture hooks are active or
-    # when --no-compile is set.
-    _COMPILE_THRESHOLD = 5000
+    # Auto-skip for small runs (< TORCH_COMPILE_MIN_SAMPLES reads) where
+    # compilation overhead (~15-30s) outweighs the speedup. Also skip when
+    # repr capture hooks are active or when --no-compile is set. `eval test`
+    # (evaluation.py) reuses this same threshold and flag (#264).
     _has_repr_hook = (
         isinstance(model_wrapper, ModelInferenceWrapper) and model_wrapper._repr_hook is not None
     )
     if no_compile:
         logger.info("torch.compile disabled (--no-compile)")
-    elif n_total_reads < _COMPILE_THRESHOLD:
+    elif n_total_reads < TORCH_COMPILE_MIN_SAMPLES:
         logger.info(
-            f"torch.compile auto-skipped ({n_total_reads} reads < {_COMPILE_THRESHOLD} threshold)"
+            f"torch.compile auto-skipped ({n_total_reads} reads < "
+            f"{TORCH_COMPILE_MIN_SAMPLES} threshold)"
         )
     elif (
         isinstance(model_wrapper, ModelInferenceWrapper)
@@ -596,7 +598,15 @@ def run_inference(
         and not _has_repr_hook
     ):
         try:
-            model_wrapper.model = torch.compile(model_wrapper.model, mode="reduce-overhead")  # ty: ignore[invalid-assignment]
+            # forward_batch() dispatches through forward_module, not model --
+            # ModelInferenceWrapper keeps them separate so DDP can wrap one
+            # without the other (training.py's _wrap_ddp sets forward_module
+            # the same way). Compiling model alone left the compiled graph
+            # unreferenced: every real forward pass stayed eager despite the
+            # "torch.compile enabled" log line below (#264).
+            compiled_model = torch.compile(model_wrapper.model, mode="reduce-overhead")  # ty: ignore[invalid-assignment]
+            model_wrapper.model = compiled_model
+            model_wrapper.forward_module = compiled_model
             logger.info("torch.compile enabled (mode=reduce-overhead)")
         except Exception as e:
             logger.warning(f"torch.compile failed, using eager mode: {e}")

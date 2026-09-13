@@ -68,6 +68,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Fork-after-torch-init is a known OpenMP hang hazard, and the CPU-only
   `data prepare` path no longer pays for a torch import at all. (#265)
 
+- **AUROC and prediction probabilities were computed in float16 under
+  `--mixed-precision`.** Under autocast the final `Linear` emits float16, and
+  `torch.sigmoid` is not on autocast's fp32 promotion list (unlike `softmax`,
+  which autocast already promotes on its own) -- sigmoid rounds to exactly
+  1.0 above logit≈11 and keeps only ~3 significant digits near 0.5.
+  `Trainer.train_epoch`/`validate` (`training.py`) and `evaluate_model`
+  (`evaluation.py`) now cast logits to float32 before computing
+  probabilities, or rank on the raw logits directly where the metric permits
+  it (AUROC and a 0.5-probability threshold are both invariant to a
+  monotonic transform); any array written to disk via `--emit-scores` is
+  float32. **`val_auc` is the checkpoint-selection criterion, so this can
+  change which epoch's checkpoint gets kept for any training run that passes
+  `--mixed-precision`** — leech's own `train.smk` does not, but
+  escapepod-models' production charging recipe does. (#264)
+
+- **`predict`'s `torch.compile` never actually took effect.**
+  `ModelInferenceWrapper` keeps `.model` and `.forward_module` as separate
+  attributes so DDP can wrap one without the other, and `forward_batch()` —
+  every real caller's forward path — dispatches through `.forward_module`.
+  `run_inference`'s compile step reassigned only `.model`, so the compiled
+  graph was built and immediately orphaned: every predict-path forward pass
+  stayed eager despite the "torch.compile enabled" log line. Fixed by
+  updating `.forward_module` too, the same way `training.py`'s DDP wrapping
+  already does. (#264)
+
+### Changed
+
+- **`eval test` and `predict` now share one precision policy.** `eval test`
+  no longer autocasts unconditionally on CUDA; it takes the same
+  `--mixed-precision/--no-mixed-precision` flag as `model train`, off by
+  default to match `predict` (which never autocasts). **This flips the
+  default for any existing pipeline invoking `eval test --device cuda`
+  without the new flag** — previously always autocast on GPU, now eager
+  fp32 — so `evaluate_model`'s returned/saved metrics now record a
+  `mixed_precision` field to make the regime that produced a given
+  `metrics.json` auditable after the fact. `eval test` also gains
+  `--no-compile` and reuses `predict`'s torch.compile size threshold
+  (PR #253) — and no longer invokes torch.compile on CPU at all, where it
+  previously compiled unconditionally, `mode=None` included. (#264)
+
 ## [0.11.1] - 2026-09-12
 
 ### Changed

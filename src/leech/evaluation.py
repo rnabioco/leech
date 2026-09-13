@@ -20,6 +20,7 @@ from sklearn.metrics import (
 )
 from torch.utils.data import DataLoader
 
+from leech.constants import TORCH_COMPILE_MIN_SAMPLES
 from leech.dataset import LeechDataset, collate_fn, resolve_dataloader_workers
 from leech.metrics import compute_metrics, print_metrics, save_metrics
 from leech.model_loading import load_model_from_checkpoint
@@ -79,6 +80,8 @@ def evaluate_model(
     device: str = "cuda",
     num_workers: int = 0,
     emit_scores: Path | None = None,
+    mixed_precision: bool = False,
+    no_compile: bool = False,
 ) -> dict:
     """
     Evaluate a trained model on test data.
@@ -99,6 +102,10 @@ def evaluate_model(
             breakdowns, paired model comparisons, calibration, and any
             operating point other than the one that was reported. They are
             computed either way, so this only decides whether they survive.
+        mixed_precision: Run the forward pass under autocast on CUDA. Off by
+            default so `eval test` matches `predict`, which never autocasts
+            (#264) -- opt in explicitly, same as `model train --mixed-precision`.
+        no_compile: Disable torch.compile even above the size threshold below.
 
     Returns:
         Dictionary with evaluation metrics
@@ -127,16 +134,6 @@ def evaluate_model(
     if device != "cpu":
         torch.backends.cudnn.benchmark = True
         torch.set_float32_matmul_precision("high")
-
-    if hasattr(torch, "compile"):
-        try:
-            compile_mode = "reduce-overhead" if device != "cpu" else None
-            model = torch.compile(model, mode=compile_mode)
-        except Exception as e:
-            logger.debug(f"torch.compile failed, using eager mode: {e}")
-
-    # Wrap model for unified forward pass
-    model_wrapper = ModelInferenceWrapper(model, model_type)
 
     logger.info(f"Model: {model_type}")
     logger.info(f"Signal length: {signal_len}")
@@ -168,6 +165,31 @@ def evaluate_model(
         dwell_template_table=dwell_template_table,
     )
 
+    # torch.compile the model (CUDA graph + kernel fusion). Same policy as
+    # `predict` (PR #253, threshold shared via TORCH_COMPILE_MIN_SAMPLES):
+    # below the threshold, compilation overhead (~15-30s) outweighs the
+    # speedup, so small runs auto-skip. Never on CPU -- a CPU graph buys
+    # nothing here and previously compiled unconditionally, mode=None
+    # included (#264).
+    if no_compile:
+        logger.info("torch.compile disabled (--no-compile)")
+    elif device == "cpu":
+        logger.info("torch.compile skipped (CPU)")
+    elif len(test_dataset) < TORCH_COMPILE_MIN_SAMPLES:
+        logger.info(
+            f"torch.compile auto-skipped ({len(test_dataset)} chunks < "
+            f"{TORCH_COMPILE_MIN_SAMPLES} threshold)"
+        )
+    elif hasattr(torch, "compile"):
+        try:
+            model = torch.compile(model, mode="reduce-overhead")
+            logger.info("torch.compile enabled (mode=reduce-overhead)")
+        except Exception as e:
+            logger.debug(f"torch.compile failed, using eager mode: {e}")
+
+    # Wrap model for unified forward pass
+    model_wrapper = ModelInferenceWrapper(model, model_type)
+
     # Collate, the host-to-device copy and the forward pass run serially in
     # whichever process owns the loader, so a worker-less loader on a GPU means
     # one core feeding an accelerator that then waits (issue #205).
@@ -187,11 +209,13 @@ def evaluate_model(
     logger.info("\nRunning evaluation...")
 
     is_multiclass = num_out > 2
-    use_autocast = device != "cpu"
+    # Same decision predict makes (never autocasts by default): opt in with
+    # --mixed-precision rather than autocasting on CUDA unconditionally (#264).
+    use_autocast = mixed_precision and device != "cpu"
 
     if is_multiclass:
-        all_labels_int: list[int] = []
-        all_preds_int: list[int] = []
+        all_labels_list: list[np.ndarray] = []
+        all_preds_list: list[np.ndarray] = []
         all_logits_list: list[np.ndarray] = []
 
         model.eval()
@@ -199,18 +223,30 @@ def evaluate_model(
             with Progress() as progress:
                 task = progress.add_task("[cyan]Evaluating...", total=len(test_loader))
                 for batch in test_loader:
-                    labels = batch["label"].to(device)
                     with torch.amp.autocast("cuda", enabled=use_autocast):
                         logits = model_wrapper.forward_batch(batch, device)
+                    # Cast once, upstream of every downstream use (top-k, ECE,
+                    # calibration, saved scores). autocast already promotes
+                    # softmax/log_softmax to fp32 on its own, but argmax and
+                    # the archived logits below don't go through softmax --
+                    # this is the one place that protects all of them
+                    # uniformly, matching validate()'s pre-cast in training.py.
+                    logits = logits.float()
 
                     preds = torch.argmax(logits, dim=-1).cpu().numpy()
-                    all_preds_int.extend(preds.flatten().tolist())
-                    all_labels_int.extend(labels.cpu().numpy().flatten().tolist())
+                    all_preds_list.append(preds.reshape(-1))
+                    # Labels never need the device round trip -- nothing here
+                    # computes with them on GPU (#264).
+                    all_labels_list.append(batch["label"].numpy().reshape(-1))
                     all_logits_list.append(logits.cpu().numpy())
                     progress.update(task, advance=1)
 
-        all_labels_arr = np.array(all_labels_int)
-        all_preds_arr = np.array(all_preds_int)
+        all_labels_arr = (
+            np.concatenate(all_labels_list) if all_labels_list else np.zeros(0, dtype=np.int64)
+        )
+        all_preds_arr = (
+            np.concatenate(all_preds_list) if all_preds_list else np.zeros(0, dtype=np.int64)
+        )
 
         accuracy = accuracy_score(all_labels_arr, all_preds_arr)
         macro_f1 = sk_f1_score(all_labels_arr, all_preds_arr, average="macro", zero_division=0.0)
@@ -267,6 +303,10 @@ def evaluate_model(
         metrics["test_data_path"] = str(test_data_path)
         metrics["num_samples"] = len(all_labels_arr)
         metrics["model_type"] = model_type
+        # Which precision regime produced these numbers -- now opt-in and
+        # off by default (#264), so this is what makes a metrics.json from
+        # before that default flip distinguishable from one after it.
+        metrics["mixed_precision"] = use_autocast
 
         # Print summary
         logger.info(f"Accuracy: {accuracy:.4f}")
@@ -287,9 +327,8 @@ def evaluate_model(
         return metrics
 
     # Binary evaluation path
-    all_labels: list[float] = []
-    all_probs: list[float] = []
-    all_preds: list[int] = []
+    all_labels_list: list[np.ndarray] = []
+    all_probs_list: list[np.ndarray] = []
 
     model.eval()
     with torch.inference_mode():
@@ -297,30 +336,37 @@ def evaluate_model(
             task = progress.add_task("[cyan]Evaluating...", total=len(test_loader))
 
             for batch in test_loader:
-                # Move labels to device
-                labels = batch["label"].to(device)
-
                 # Forward pass (wrapper handles moving tensors and calling model correctly)
                 with torch.amp.autocast("cuda", enabled=use_autocast):
                     logits = model_wrapper.forward_batch(batch, device)
+                # Under autocast the final Linear emits fp16, and unlike
+                # softmax (which autocast promotes to fp32 on its own),
+                # sigmoid is not on that list -- computing it on the raw
+                # logits would round the saved probability and quantize the
+                # AUROC ranking (#264). Cast once, before either branch below.
+                logits = logits.float()
 
                 # Get predictions
                 if num_out > 1:
                     probs = torch.softmax(logits, dim=-1)[:, 1].cpu().numpy()
                 else:
                     probs = torch.sigmoid(logits).cpu().numpy()
-                preds = (probs > 0.5).astype(int)
 
-                all_labels.extend(labels.cpu().numpy().flatten())
-                all_probs.extend(probs.flatten())
-                all_preds.extend(preds.flatten())
+                # Labels never need the device round trip -- nothing here
+                # computes with them on GPU (#264).
+                all_labels_list.append(batch["label"].numpy().reshape(-1))
+                all_probs_list.append(probs.reshape(-1))
 
                 progress.update(task, advance=1)
 
     # Compute metrics
-    all_labels_arr = np.array(all_labels)
-    all_probs_arr = np.array(all_probs)
-    all_preds_arr = np.array(all_preds)
+    all_labels_arr = (
+        np.concatenate(all_labels_list) if all_labels_list else np.zeros(0, dtype=np.float32)
+    )
+    all_probs_arr = (
+        np.concatenate(all_probs_list) if all_probs_list else np.zeros(0, dtype=np.float32)
+    )
+    all_preds_arr = (all_probs_arr > 0.5).astype(int)
 
     metrics = compute_metrics(all_labels_arr, all_preds_arr, all_probs_arr)
 
@@ -329,6 +375,10 @@ def evaluate_model(
     metrics["test_data_path"] = str(test_data_path)
     metrics["num_samples"] = len(all_labels_arr)
     metrics["model_type"] = model_type
+    # Which precision regime produced these numbers -- now opt-in and off by
+    # default (#264), so this is what makes a metrics.json from before that
+    # default flip distinguishable from one after it.
+    metrics["mixed_precision"] = use_autocast
 
     if emit_scores is not None:
         _save_scores(emit_scores, test_data_path, all_labels_arr, all_probs_arr)
