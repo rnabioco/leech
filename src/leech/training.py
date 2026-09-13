@@ -698,6 +698,12 @@ class Trainer:
         path exists in this codebase only to exercise DDP's sharding and
         gradient-sync mechanics in tests; it never trains a real model, so
         there is no batch-norm statistic to fix there.
+
+        Known cost, not a bug: SyncBatchNorm's cross-rank reduction happens in
+        its own forward pass, so it fires on every gradient-accumulation
+        micro-step, not just the final one -- ``_accumulating``'s
+        ``no_sync()`` only suppresses DDP's backward-hook allreduce and has no
+        say over a norm layer's own collective.
         """
         if not self.dist.enabled:
             return module

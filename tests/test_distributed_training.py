@@ -327,6 +327,11 @@ def test_batchnorm_converts_to_syncbatchnorm_only_on_cuda(monkeypatch):
     uses exists only to exercise DDP's sharding and gradient-sync mechanics;
     it trains no real model, so there is no batch-norm statistic to fix there,
     and converting anyway would crash every gloo-backed BN test in this suite.
+
+    No GPU runner is available in CI, so the CUDA arm below goes through a
+    stub DDP rather than a real process group: it checks the type-swap and
+    branch-selection logic, not the actual cross-rank reduction a real NCCL
+    run would perform.
     """
     monkeypatch.setattr("torch.nn.parallel.DistributedDataParallel", _StubDDP)
     trainer = Trainer.__new__(Trainer)

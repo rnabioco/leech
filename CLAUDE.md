@@ -489,7 +489,9 @@ device is CUDA, never on the gloo/CPU path that exists only to exercise DDP's
 mechanics in tests — PyTorch's own DDP refuses to wrap a `SyncBatchNorm` on a
 CPU module. The conversion swaps `BatchNorm*d` children in place and keeps
 their parameter/buffer names, so it does not disturb the single-GPU
-checkpoint keys above.
+checkpoint keys above. The cross-rank reduction is SyncBatchNorm's own forward
+pass, so it runs on every accumulation micro-step, not just the final one —
+`no_sync()` only defers DDP's backward-hook allreduce.
 
 **Accumulation runs under `no_sync()` on the non-final micro-steps.** Every
 `backward()` triggers an allreduce, so N sub-batches otherwise pay N times the
