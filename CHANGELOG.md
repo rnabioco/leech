@@ -35,6 +35,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `world_size > 1` alone — SyncBatchNorm cannot run on CPU, and the
   conversion never touches the `--gpus 1` path or checkpoint keys. (#273)
 
+- **`data prepare` no longer exits 0 on a run that lost every batch.**
+  Previously a failed Rust batch was swallowed to an empty result, a per-read
+  exception was `warning; continue`, and zero chunks extracted was a warning
+  and a normal return — so a systematic failure (a Rust panic on every batch,
+  a bad config, a dtype error) looked identical to "0 chunks, exit 0" plus N
+  warnings in an sbatch log. The parallel dispatcher
+  (`preparation/parallel.py`) now counts failed reads and failed batches per
+  run and raises if any batch failed outright, or if more than
+  `MAX_FAILED_READ_FRACTION` (50%, a module constant) of individual reads
+  failed; `handle_prepare` now raises rather than warning-and-returning when
+  zero chunks were extracted, on both the parallel and sequential paths. The
+  "read yield" log line breaks out failed reads/batches from "no motif
+  match" instead of folding them together. (#265)
+
+- **A `PrepareConfig` corner that diverged the two prepare backends is now
+  refused at construction.** `SignalConfig(refine_signal_map=False,
+  signal_refiner=<refiner>)` — constructible through the Python API, not
+  reachable from the CLI — gave the Python backend 3 more k-mer residual
+  feature rows than Rust, since Python computed them off the refiner alone
+  while Rust also required `refine_signal_map=True`. `SignalConfig.__post_init__`
+  now raises `ValueError` on the combination rather than unifying it (Rust's
+  own pipeline ties the residual computation to `refine_signal_map`
+  internally, not just at the dispatch call site, so unifying would mean
+  changing Rust rather than the Python driver). (#265)
+
+- **`data prepare` no longer imports torch before `preparation/parallel.py`
+  forks its worker pool.** `setup_random_seed`'s numpy/random seeding logic
+  moved to a new torch-free module, `leech.seeding` (torch is now imported
+  lazily, inside the function body, only when the seed call actually runs);
+  `leech.model_loading` re-exports the name so training code is unaffected.
+  Fork-after-torch-init is a known OpenMP hang hazard, and the CPU-only
+  `data prepare` path no longer pays for a torch import at all. (#265)
+
 ## [0.11.1] - 2026-09-12
 
 ### Changed

@@ -930,7 +930,7 @@ def merge_and_split_chunks(
         ...     seed=42
         ... )
     """
-    from leech.model_loading import setup_random_seed
+    from leech.seeding import setup_random_seed
 
     if train_frac + val_frac > 1.0:
         raise ValueError(f"train_frac ({train_frac}) + val_frac ({val_frac}) must be <= 1.0")
@@ -1057,7 +1057,7 @@ def merge_and_kfold_split_chunks(
         ...     seed=42
         ... )
     """
-    from leech.model_loading import setup_random_seed
+    from leech.seeding import setup_random_seed
 
     if k_fold < 3:
         raise ValueError(f"k_fold must be >= 3, got {k_fold}")
@@ -1123,7 +1123,7 @@ def merge_and_split_multiclass(
     Returns:
         Statistics dict with n_total, n_train, n_val, n_test, label_map.
     """
-    from leech.model_loading import setup_random_seed
+    from leech.seeding import setup_random_seed
 
     if len(input_paths) != len(labels):
         raise ValueError(
@@ -1199,7 +1199,7 @@ def merge_and_kfold_split_multiclass(
     Returns:
         Statistics dict with k_fold, n_total, label_map, folds.
     """
-    from leech.model_loading import setup_random_seed
+    from leech.seeding import setup_random_seed
 
     if k_fold < 3:
         raise ValueError(f"k_fold must be >= 3, got {k_fold}")

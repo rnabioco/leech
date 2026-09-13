@@ -113,9 +113,9 @@ def handle_prepare(
     from leech.configs import ChunkConfig, LabelConfig, MotifConfig, PrepareConfig, SignalConfig
     from leech.constants import DEFAULT_SIGNAL_CONTEXT
     from leech.io import get_reference_sequences
-    from leech.model_loading import setup_random_seed
     from leech.preparation import prepare_training_data_parallel, prepare_training_data_with_split
     from leech.preparation.orchestrator import split_rows_by_read
+    from leech.seeding import setup_random_seed
 
     logger.info(f"Preparing data from {pod5} and {bam}")
     logger.info(f"Motif reference mode: {motif_reference}")
@@ -279,22 +279,26 @@ def handle_prepare(
 
             if n_chunks == 0:
                 reads_processed = stats.get("total_reads", 0)
-                logger.warning(
-                    f"0 chunks extracted from {reads_processed} reads. "
-                    f"Common causes: indels at motif site, insufficient context, "
-                    f"or MAPQ filtering (--min-mapq={min_mapq})."
-                )
                 console.print(
-                    f"[bold red]Warning: 0 chunks extracted from {reads_processed} "
+                    f"[bold red]Error: 0 chunks extracted from {reads_processed} "
                     f"reads.[/bold red]\n"
                     f"[yellow]Stats: {stats}[/yellow]"
                 )
-                return {
-                    "n_chunks": 0,
-                    "n_train": 0,
-                    "n_val": 0,
-                    "n_test": 0,
-                }
+                # Issue #265: this used to warn and return a zero-chunk result
+                # with exit code 0, indistinguishable in an sbatch log from a
+                # systematic failure (bad config, every read rejected) that
+                # just happens to also produce 0 chunks. Raise instead --
+                # `prepare_training_data_parallel` already raises on its own
+                # for an outright-failed batch or too high a failed-read
+                # fraction, so reaching here with 0 chunks and no exception
+                # means every read was processed cleanly and legitimately had
+                # no motif match (indels at the motif site, insufficient
+                # context, or MAPQ filtering via --min-mapq={min_mapq}).
+                raise RuntimeError(
+                    f"0 chunks extracted from {reads_processed} reads. Common "
+                    f"causes: indels at motif site, insufficient context, or "
+                    f"MAPQ filtering (--min-mapq={min_mapq}). Stats: {stats}"
+                )
 
             # Setup seed and handle splitting/saving
             setup_random_seed(seed, output_dir)
@@ -379,6 +383,23 @@ def handle_prepare(
             task_id = progress_container["task"]
             if task_id is not None:
                 progress.update(task_id, completed=True)
+
+    # Zero chunks fails the run rather than warning and returning (issue
+    # #265). The parallel branch above already raises earlier with richer
+    # stats attached, and the sequential path's own
+    # `prepare_training_data_with_split` (orchestrator.py) already raises
+    # `ValueError("No chunks to save")` before returning -- so this check is
+    # not reachable through either path as they stand today. It is kept as a
+    # general safety net rather than removed: `handle_prepare` should never
+    # silently exit 0 on a run that produced nothing, and a future code path
+    # that forgets its own zero-chunk guard would otherwise reach
+    # `_display_prepare_results` below and divide by zero on the split
+    # percentages.
+    if result.get("n_chunks", 0) == 0:
+        raise RuntimeError(
+            f"0 chunks extracted. Common causes: indels at motif site, "
+            f"insufficient context, or MAPQ filtering (--min-mapq={min_mapq})."
+        )
 
     # Display results
     _display_prepare_results(result, no_split)
