@@ -133,6 +133,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `tests/test_backend_parity.py` / `tests/test_parallel_prep.py` /
   `tests/test_rust_python_parity.py` are unaffected. (#259)
 
+- **Snakemake pipeline rules passed CLI options `leech` does not have.**
+  `train.smk` and `compare_models.smk` passed a grid search's `best_params.json`
+  to `leech model train --config`, but that flag is `--model-config` — and even
+  the right flag name would have been wrong, since `best_params.json` holds
+  `left_context`/`right_context`/`dwell_offset` (data preparation parameters,
+  the signal-context window) rather than architecture kwargs. Both rules now
+  train on chunks re-extracted at the selected geometry via two new rules,
+  `reprepare_chunks_optimized_pairwise`/`merge_chunks_optimized_pairwise`
+  (grid_search.smk) and their `{architecture}`-wildcarded twins in
+  compare_models.smk, which re-run `leech data prepare --signal-context` from
+  the winning `left_context`/`right_context` before training.
+  `grid_search_architecture_pairwise` also passed `--max-epochs`/`--param-grid`
+  to `leech model optimize`, which has never had either flag (`optimize`
+  searches signal context and dwell offset, not learning rate / batch size /
+  layer sizes) — rewritten to mirror the working `grid_search_pairwise_aa`
+  pattern with an `{architecture}` wildcard. All four `model train`/
+  `model optimize` invocations across both files were also missing `--motif`,
+  which both commands mark `required=True` (for inference provenance) — added.
+  `test_pairwise_aa`/`test_architecture_pairwise` now evaluate against the
+  same optimized-or-base test split their matching train rule trained on,
+  instead of always the base one (a `signal_len` mismatch under
+  `use_grid_search: true`). A new `tests/test_pipeline_rules.py`
+  regex-extracts every `uv run leech ...` invocation from every `.smk` file
+  and asserts every `--flag` it passes is real and every `required=True`
+  option is actually present, so this class of drift fails a test instead of
+  a job partway through a real run. (#266)
+- **`chunk_context` config key wired to `data prepare --signal-context`.**
+  Previously read by no rule, so `prepare_chunks` always ran at the CLI's
+  `DEFAULT_SIGNAL_CONTEXT` regardless of what `config.yaml` said. The CLI help
+  string and CLAUDE.md also claimed that default was `(200, 200)`; it is
+  `(225, 225)` (`src/leech/constants.py`) — both corrected to match the code,
+  and `chunk_context` set to `[225, 225]` (was `[200, 200]`) so wiring it in
+  doesn't itself change any existing run's behavior. `kmer_len` (also unread,
+  and with no `data prepare` flag to wire it to) was removed from
+  `config.yaml` rather than left as dead documentation. (#266)
+- **Stale cluster profile entries and hard-coded partitions.**
+  `pipeline/cluster/slurm/config.yaml` named three `set-resources` rules that
+  no longer exist (`merge_chunks_charged`, `compare_architectures_charged`,
+  `summarize_charged_vs_uncharged` — the real rules are the `_pairwise`
+  versions) — removed. Per-rule `slurm_partition`/`runtime`/`cpus_per_task`
+  lambdas that switched on `use_cpu_training` (train.smk, grid_search.smk,
+  evaluate.smk, inference.smk, compare_models.smk) moved into the cluster
+  profile as static `set-resources`, split across a new CPU profile
+  (`pipeline/cluster/slurm-cpu/config.yaml`) and the existing GPU one, since
+  Snakemake's profile `set-resources` always overrides a rule's own
+  `resources:` — a single profile could never express both modes for one rule
+  name. `train_pairwise_aa`'s `mem_mb`/`gres`, which scale with the `train_gpus`
+  count rather than the CPU/GPU toggle, stay in the Snakefile. Its memory
+  formula (`18000 * train_gpus` MB) also under-provisioned against the 40.6
+  GiB/rank peak RSS CLAUDE.md documents measuring; it now derives from a new
+  `train_mem_mb_per_gpu` config key (default 45000, ~10% headroom). Stale
+  `profiles/slurm`/`profiles/lsf` path references (the real directory is
+  `pipeline/cluster/{slurm,lsf}`) corrected throughout the pipeline docs and
+  comments. (#266)
+
 ## [0.11.1] - 2026-09-12
 
 ### Changed

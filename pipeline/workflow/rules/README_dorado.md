@@ -69,49 +69,49 @@ align_threads: 8
 
 ```bash
 # Merge POD5 files for all samples
-snakemake --profile profiles/slurm all_merge_pods
+snakemake --profile pipeline/cluster/slurm all_merge_pods
 
 # Merge POD5 for specific sample
-snakemake --profile profiles/slurm results/pod5/my_sample/my_sample.pod5
+snakemake --profile pipeline/cluster/slurm results/pod5/my_sample/my_sample.pod5
 ```
 
 ### Rebasecall with dorado
 
 ```bash
 # Rebasecall all samples
-snakemake --profile profiles/slurm all_rebasecall
+snakemake --profile pipeline/cluster/slurm all_rebasecall
 
 # Rebasecall specific sample
-snakemake --profile profiles/slurm results/bam/rebasecall/my_sample/my_sample.rbc.bam
+snakemake --profile pipeline/cluster/slurm results/bam/rebasecall/my_sample/my_sample.rbc.bam
 ```
 
 ### Align rebasecalled reads
 
 ```bash
 # Align all samples (REQUIRED - preserves mv, ns, MM, ML tags)
-snakemake --profile profiles/slurm all_align
+snakemake --profile pipeline/cluster/slurm all_align
 
 # Align specific sample
-snakemake --profile profiles/slurm results/bam/rebasecall/my_sample/my_sample.aligned.bam
+snakemake --profile pipeline/cluster/slurm results/bam/rebasecall/my_sample/my_sample.aligned.bam
 ```
 
 ### Complete workflow
 
 ```bash
 # 1. Merge POD5 files
-snakemake --profile profiles/slurm all_merge_pods
+snakemake --profile pipeline/cluster/slurm all_merge_pods
 
 # 2. Rebasecall with dorado
-snakemake --profile profiles/slurm all_rebasecall
+snakemake --profile pipeline/cluster/slurm all_rebasecall
 
 # 3. Align to reference (preserves all tags)
-snakemake --profile profiles/slurm all_align
+snakemake --profile pipeline/cluster/slurm all_align
 
 # 4. Prepare training data
-snakemake --profile profiles/slurm all_prepare
+snakemake --profile pipeline/cluster/slurm all_prepare
 
 # 5. Train models
-snakemake --profile profiles/slurm all_train
+snakemake --profile pipeline/cluster/slurm all_train
 ```
 
 ## Output Files

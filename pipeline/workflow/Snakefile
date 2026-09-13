@@ -12,13 +12,14 @@ Supports both SLURM and LSF with GPU acceleration.
 
 Usage:
     # Dry run
-    snakemake --profile profiles/slurm -n
+    snakemake --profile pipeline/cluster/slurm -n
 
-    # Run with SLURM
-    snakemake --profile profiles/slurm
+    # Run with SLURM (GPU training; use pipeline/cluster/slurm-cpu for CPU
+    # training, paired with use_cpu_training: true in config/config.yaml)
+    snakemake --profile pipeline/cluster/slurm
 
     # Run with LSF
-    snakemake --profile profiles/lsf
+    snakemake --profile pipeline/cluster/lsf
 
     # Run locally (for testing)
     snakemake --cores 8
@@ -37,6 +38,18 @@ if "samples" in config:
     for sample_name, sample_data in config["samples"].items():
         if "pod5" in sample_data and "raw_pod5" not in sample_data:
             sample_data["raw_pod5"] = sample_data.pop("pod5")
+
+
+# `pair`/`architecture`/`sample` name path components and never contain "/",
+# but several rules' outputs now nest one inside another (e.g.
+# merge_chunks_optimized_pairwise's ".../{pair}/optimized/train.npz" vs.
+# merge_chunks_pairwise's ".../{pair}/train.npz") -- without this, Snakemake
+# can satisfy the longer path by matching the extra path segments into an
+# unconstrained {pair}, and raises AmbiguousRuleException.
+wildcard_constraints:
+    pair="[^/]+",
+    architecture="[^/]+",
+    sample="[^/]+",
 
 
 # Include common variables and functions

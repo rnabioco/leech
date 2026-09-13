@@ -232,6 +232,48 @@ PROJECT_ROOT = get_project_root()
 RUN_SUMMARY_FILE = str(Path(PROJECT_ROOT) / "run_summary.md")
 
 
+def build_reference_fasta_arg():
+    """Render `--reference-fasta <path>` from config, or "" when unset.
+
+    Shared by `prepare_chunks` and the grid-search re-prepare rules so the
+    same reference resolution logic isn't duplicated per rule.
+    """
+    reference_fasta = config.get("reference_fasta", None)
+    if reference_fasta and reference_fasta != "None":
+        return f"--reference-fasta {reference_fasta}"
+    return ""
+
+
+def build_skip_indels_arg():
+    """Render `--skip-motif-indels` when configured (default: enabled)."""
+    return "--skip-motif-indels" if config.get("skip_motif_indels", True) else ""
+
+
+def build_label_arg(wildcards):
+    """Render `--label <label>` for a sample's configured label, or "" when unset."""
+    label = config["samples"][wildcards.sample].get("label", None)
+    return f"--label {label}" if label else ""
+
+
+def build_signal_context_arg():
+    """Render `--signal-context LEFT RIGHT` from config `chunk_context`, or "".
+
+    `chunk_context` is a `[left, right]` pair of raw signal samples around the
+    focus base -- the same shape `leech data prepare --signal-context` takes.
+    Left unset, `data prepare` falls back to its own default (currently
+    (225, 225); see `DEFAULT_SIGNAL_CONTEXT` in src/leech/constants.py).
+    """
+    chunk_context = config.get("chunk_context", None)
+    if not chunk_context:
+        return ""
+    if len(chunk_context) != 2:
+        raise WorkflowError(
+            f"config 'chunk_context' must be a [left, right] pair, got {chunk_context!r}"
+        )
+    left, right = chunk_context
+    return f"--signal-context {left} {right}"
+
+
 def get_grid_search_setting(key, default):
     """Read a key from the `grid_search:` config block, falling back to default."""
     grid = config.get("grid_search") or {}

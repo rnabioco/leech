@@ -307,7 +307,7 @@ data.command_order = ("prepare", "merge")
     nargs=2,
     type=int,
     default=None,
-    help="Asymmetric signal context window as LEFT RIGHT (raw samples). E.g., --signal-context 90 450. Default: symmetric (200, 200).",
+    help="Asymmetric signal context window as LEFT RIGHT (raw samples). E.g., --signal-context 90 450. Default: symmetric (225, 225) (DEFAULT_SIGNAL_CONTEXT).",
 )
 @click.option(
     "--focus-tsv",

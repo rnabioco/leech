@@ -34,8 +34,8 @@ project_name: ""
 #   /scratch/alpine/user/leech/pod5 -> /scratch/alpine/user/leech/synthetic-trna/pod5
 #
 # For cluster-specific configurations:
-# - Alpine: See profiles/slurm/config.yaml for /scratch and /projects paths
-# - Bodhi: Use these defaults or override in profiles/lsf/config.yaml
+# - Alpine: See pipeline/cluster/slurm/config.yaml for /scratch and /projects paths
+# - Bodhi: Use these defaults or override in pipeline/cluster/lsf/config.yaml
 #
 # All outputs on scratch for testing (fast I/O, 90-day purge)
 # Move to /projects for permanent storage after testing
@@ -61,8 +61,8 @@ metrics_dir: "/scratch/alpine/$USER/leech/metrics"
 #   - label: sample label used in comparison spec files (e.g., "Ala", "Gly", "uncharged")
 #
 # Usage:
-#   snakemake --configfile config/samples-alpine.yaml --profile profiles/slurm
-#   snakemake --configfile config/samples-bodhi.yaml --profile profiles/lsf
+#   snakemake --configfile config/samples-alpine.yaml --profile pipeline/cluster/slurm
+#   snakemake --configfile config/samples-bodhi.yaml --profile pipeline/cluster/lsf
 #
 # Note: samples are no longer defined in this main config file to avoid
 # cluster-specific paths and conflicts.
@@ -92,21 +92,27 @@ comparison_spec_file: "config/comparisons_charged_uncharged.tsv"
 # ============================================================================
 # Device Configuration (CPU vs GPU)
 # ============================================================================
-# Toggle between CPU and GPU training modes
-# - GPU mode (use_cpu_training: false): Uses aa100 partition with GPU acceleration
-# - CPU mode (use_cpu_training: true): Uses amilan partition with CPU-only training
+# Toggle the leech CLI's --device flag (cpu vs. cuda) for training, eval,
+# inference and grid search.
+# - GPU mode (use_cpu_training: false): --device cuda
+# - CPU mode (use_cpu_training: true): --device cpu
 #
 # CPU training is ~10-50x slower but useful when:
 # - GPU partition queue times are long
 # - Running small experiments or debugging
 # - GPU resources are limited
 #
-# When enabled, automatically:
-# - Changes partition from aa100 to amilan
-# - Removes GPU resource requests
-# - Increases runtime allocation (60 min → 240 min)
-# - Increases CPU cores (10 → 16)
-# - Sets --device cpu flag for all training/inference commands
+# This key ONLY changes the --device flag passed to leech. It does NOT by
+# itself move jobs off the GPU partition or drop their GPU request -- SLURM
+# resources (partition, runtime, cpus, GPU count) come entirely from the
+# cluster profile you pass with --profile (see "Cluster-specific settings"
+# below), because Snakemake's profile `set-resources` always overrides a
+# rule's own resource logic. Set this key AND pick the matching profile:
+#   use_cpu_training: false (default) + --profile pipeline/cluster/slurm      (GPU)
+#   use_cpu_training: true             + --profile pipeline/cluster/slurm-cpu (CPU)
+# A mismatched pair (e.g. use_cpu_training: true with the GPU profile) runs
+# --device cpu on a GPU-partitioned, GPU-provisioned job -- it works, it just
+# wastes the GPU allocation.
 use_cpu_training: true # Set to true to enable CPU training mode
 
 # ============================================================================
@@ -117,8 +123,15 @@ motif_offset: 3           # Focus on the position where amino acid is attached (
 motif_reference: "fasta"  # Search motif in reference ("fasta") or basecalled ("bam") sequence
 reference_fasta: "pipeline/resources/references/synthetic-trna.fa"  # External reference FASTA
 skip_motif_indels: true   # Skip reads with indels in motif region
-kmer_len: 3               # K-mer context length (bases on each side of focus base)
-chunk_context: [200, 200] # Signal context (left, right) in samples
+# Signal context (left, right) in raw samples, passed to
+# `leech data prepare --signal-context LEFT RIGHT` by prepare_chunks and the
+# grid-search re-prepare rules. Set to match the leech CLI's own default,
+# DEFAULT_SIGNAL_CONTEXT = (225, 225) in src/leech/constants.py -- NOT
+# (200, 200), which this key (and this comment) wrongly claimed until
+# rnabioco/leech#266 wired it into `data prepare` for the first time. Kept at
+# the code default rather than changed to preserve existing run behavior;
+# raise the value here (not the constant) if a wider window is wanted.
+chunk_context: [225, 225]
 train_split: 0.7          # Training set fraction
 val_split: 0.15           # Validation set fraction (test = 1 - train - val)
 
@@ -213,9 +226,11 @@ modifications: ""
 dorado_opts: "--emit-moves"
 
 # Resource allocation for rebasecalling
-# NOTE: Resource allocation (threads, memory, time, GPUs) is now fully managed
-# by cluster profiles. See profiles/slurm/config.yaml or profiles/lsf/config.yaml
-# for cluster-specific resource configurations.
+# NOTE: Resource allocation (threads, memory, time, GPUs) is fully managed
+# by cluster profiles. See pipeline/cluster/slurm/config.yaml (or
+# pipeline/cluster/slurm-cpu/config.yaml for CPU training) or
+# pipeline/cluster/lsf/config.yaml for cluster-specific resource
+# configurations.
 
 # ============================================================================
 # Model Configuration
@@ -249,6 +264,19 @@ batch_size: 128
 learning_rate: 0.001
 early_stopping_patience: 5
 
+# Data-parallel ranks for `leech model train --gpus N` (train_pairwise_aa
+# only; see CLAUDE.md "Multi-GPU training"). 1 = single GPU, no DDP.
+train_gpus: 1
+
+# Memory to request per data-parallel rank (MB), train_pairwise_aa's
+# `mem_mb = train_mem_mb_per_gpu * train_gpus`. Each rank loads its own copy
+# of the corpus, so this must cover the corpus size, not just the model.
+# 45000 (~44 GiB) gives ~10% headroom over the 40.6 GiB/rank peak RSS
+# measured on the production charging corpus (6.72M chunks, 36.5 GiB npz;
+# see CLAUDE.md's multi-GPU measurement table) -- re-measure and raise this
+# for a substantially larger corpus.
+train_mem_mb_per_gpu: 45000
+
 # Inference parameters
 infer_batch_size: 256
 
@@ -274,21 +302,28 @@ grid_search_parallel: 1   # Concurrent trials per grid search job
 # Cluster-specific settings
 # ============================================================================
 # NOTE: All cluster-specific settings (partitions, QoS, resource allocation,
-# accounts, queues, etc.) are now managed by cluster profiles.
+# accounts, queues, etc.) are managed by cluster profiles, NOT by config keys
+# in this file. `use_cpu_training` above is the one exception -- it only
+# selects the leech CLI's --device flag, not SLURM resources; pick the
+# profile that matches it (see that key's comment).
 #
 # To use this pipeline on a cluster:
-# 1. Choose the appropriate profile: profiles/slurm or profiles/lsf
+# 1. Choose the appropriate profile:
+#      pipeline/cluster/slurm      (Alpine, GPU training -- default)
+#      pipeline/cluster/slurm-cpu  (Alpine, CPU training)
+#      pipeline/cluster/lsf        (Bodhi)
 # 2. Edit the profile's config.yaml for your cluster environment
-# 3. Run with: snakemake --profile profiles/slurm [other options]
+# 3. Run with: snakemake --profile pipeline/cluster/slurm [other options]
 #
 # Cluster profiles provide:
-# - SLURM (Alpine): profiles/slurm/config.yaml
+# - SLURM (Alpine): pipeline/cluster/slurm/config.yaml and
+#   pipeline/cluster/slurm-cpu/config.yaml
 #   * Partition/QoS settings (amilan, aa100, atesting_a100, etc.)
 #   * Account/billing configuration
 #   * GPU allocation for training/inference
 #   * Per-rule resource overrides
 #
-# - LSF (Bodhi): profiles/lsf/config.yaml
+# - LSF (Bodhi): pipeline/cluster/lsf/config.yaml
 #   * Queue configuration (gpuqueue, etc.)
 #   * GPU model selection
 #   * Per-rule resource overrides

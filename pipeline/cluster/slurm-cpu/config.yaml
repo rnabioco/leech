@@ -1,24 +1,19 @@
-# Snakemake SLURM Profile - Production (GPU)
-# ============================================
-# Alpine cluster production configuration, GPU training/inference/grid-search.
-# Usage: snakemake --profile pipeline/cluster/slurm --configfile config/samples-alpine.yaml
+# Snakemake SLURM Profile - Production (CPU training)
+# ======================================================
+# Alpine cluster configuration for CPU-only training/eval/inference/grid-search.
+# Usage: snakemake --profile pipeline/cluster/slurm-cpu --configfile config/samples-alpine.yaml
 #
-# CPU/GPU Toggle Support:
-# -----------------------
-# `use_cpu_training` in config/config.yaml picks the leech CLI's `--device`
-# flag (cpu vs. cuda) for training/eval/inference/grid-search -- an
-# application-level choice, so it stays a rule `params:` lambda. The SLURM
-# resources those same rules need (partition, runtime, cpus, GPU count) are a
-# *cluster* choice, and Snakemake's `set-resources` (profile) always wins over
-# a rule's own `resources:` block -- so a single profile cannot express both
-# modes for one rule name; it always uses whatever this file says. Pick the
-# profile that matches your `use_cpu_training` setting:
+# Pair this profile with `use_cpu_training: true` in pipeline/config/config.yaml
+# (the leech CLI's `--device cpu` flag lives in the rule `params:`, independent
+# of this file -- see pipeline/cluster/slurm/config.yaml's header for why the
+# two have to be set together rather than one implying the other). CPU
+# training is ~10-50x slower than GPU; use it for long GPU queues, debugging,
+# or small experiments.
 #
-#   use_cpu_training: false (default) -> --profile pipeline/cluster/slurm       (this file, GPU)
-#   use_cpu_training: true             -> --profile pipeline/cluster/slurm-cpu  (CPU)
-#
-# Rules whose resources do not depend on that toggle (POD5 processing, data
-# preparation, comparison/summary) are identical in both profiles.
+# This file is otherwise identical to pipeline/cluster/slurm/config.yaml:
+# rules whose resources do not depend on use_cpu_training (POD5 processing,
+# data preparation, comparison/summary, and dorado basecalling, which has no
+# CPU mode) carry the same values in both profiles.
 
 executor: slurm
 jobs: 200
@@ -29,12 +24,6 @@ rerun-incomplete: true
 keep-going: true
 printshellcmds: true
 
-# SLURM settings
-# No storage provider needed - using shared filesystem directly
-
-# Job naming - use project name, rule name and wildcards for readable job names
-# Example: "Snakemake-synthetic-trna-prepare_chunks-ala_synthetic-12345"
-# jobname: "Snakemake-{config[project_name]}-{rule}-{wildcards}-{jobid}"
 jobname: "leech-{rule}-{wildcards}-{jobid}"
 
 # Default resources
@@ -77,8 +66,7 @@ set-resources:
   # ============================================================================
   # Basecalling and Alignment Rules
   # ============================================================================
-  # Always GPU: dorado basecalling, unlike training/eval/inference below, has
-  # no CPU mode in this pipeline, so these are identical in both profiles.
+  # Always GPU: dorado basecalling has no CPU mode in this pipeline.
   rebasecall:
     slurm_partition: aa100
     runtime: 480
@@ -107,8 +95,6 @@ set-resources:
     mem_mb: 16000
     cpus_per_task: 4
 
-  # Grid-search-optimized re-prepare/re-merge handoff (grid_search.smk,
-  # compare_models.smk) -- same shape as prepare_chunks/merge_chunks_pairwise.
   reprepare_chunks_optimized_pairwise:
     runtime: 240
     mem_mb: 8000
@@ -130,67 +116,59 @@ set-resources:
     cpus_per_task: 4
 
   # ============================================================================
-  # Grid Search Rules (GPU)
+  # Grid Search Rules (CPU)
   # ============================================================================
   grid_search_pairwise_aa:
-    slurm_partition: aa100
+    slurm_partition: amilan
     runtime: 240
-    cpus_per_task: 4
+    cpus_per_task: 16
     mem_mb: 16000
-    gres: "gpu:1"
 
   grid_search_architecture_pairwise:
-    slurm_partition: aa100
-    runtime: 480
-    cpus_per_task: 4
+    slurm_partition: amilan
+    runtime: 1400
+    cpus_per_task: 16
     mem_mb: 16000
-    gres: "gpu:1"
 
   # ============================================================================
-  # Training Rules (GPU)
+  # Training Rules (CPU)
   # ============================================================================
-  # train_pairwise_aa: mem_mb/gres are NOT set here -- they scale with the
-  # `train_gpus` config key (a per-run GPU count, not a CPU/GPU mode choice)
-  # and stay in train.smk's `resources:` lambda, which this profile's
-  # per-rule set-resources leaves untouched by omission.
+  # train_pairwise_aa: mem_mb/gres stay in train.smk's `resources:` lambda --
+  # see pipeline/cluster/slurm/config.yaml's matching entry.
   train_pairwise_aa:
-    slurm_partition: aa100
-    runtime: 60
-    cpus_per_task: 10
+    slurm_partition: amilan
+    runtime: 480
+    cpus_per_task: 16
 
   train_architecture_pairwise:
-    slurm_partition: aa100
+    slurm_partition: amilan
     runtime: 480
-    cpus_per_task: 4
+    cpus_per_task: 16
     mem_mb: 16000
-    gres: "gpu:1"
 
   # ============================================================================
-  # Inference Rules (GPU)
+  # Inference Rules (CPU)
   # ============================================================================
   infer_pairwise_aa:
-    slurm_partition: aa100
-    runtime: 240
-    cpus_per_task: 4
+    slurm_partition: amilan
+    runtime: 960
+    cpus_per_task: 16
     mem_mb: 8000
-    gres: "gpu:1"
 
   # ============================================================================
-  # Testing/Evaluation Rules (GPU)
+  # Testing/Evaluation Rules (CPU)
   # ============================================================================
   test_pairwise_aa:
-    slurm_partition: atesting_a100
-    runtime: 60
-    cpus_per_task: 2
+    slurm_partition: amilan
+    runtime: 240
+    cpus_per_task: 16
     mem_mb: 4000
-    gres: "gpu:1"
 
   test_architecture_pairwise:
-    slurm_partition: atesting_a100
-    runtime: 60
-    cpus_per_task: 2
+    slurm_partition: amilan
+    runtime: 240
+    cpus_per_task: 16
     mem_mb: 4000
-    gres: "gpu:1"
 
   # ============================================================================
   # Comparison and Summary Rules (CPU only, identical in both profiles)
