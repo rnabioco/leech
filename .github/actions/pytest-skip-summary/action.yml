@@ -1,0 +1,26 @@
+name: Surface pytest skip counts in the job summary
+description: >
+  Shared "print the short test summary info section" step for ci.yml's and
+  release.yml's test jobs, reading the `pytest-output.log` their `-rs` pytest
+  invocation writes. Factored out for the same reason install-with-rust was:
+  two copies kept in sync only by a comment drift the moment either workflow
+  changes without the other (rnabioco/leech#261).
+runs:
+  using: composite
+  steps:
+    - name: Surface skip counts in job summary
+      if: always()
+      shell: bash
+      run: |
+        {
+          echo "## Test summary"
+          echo '```'
+          if [ ! -f pytest-output.log ]; then
+            echo "pytest did not run -- see the failed step above"
+          elif grep -q "short test summary info" pytest-output.log; then
+            awk '/short test summary info/,0' pytest-output.log
+          else
+            echo "no skipped/xfailed tests"
+          fi
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"

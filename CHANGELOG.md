@@ -93,6 +93,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   updating `.forward_module` too, the same way `training.py`'s DDP wrapping
   already does. (#264)
 
+- **A `leech_core` build failure can no longer pass CI silently.** `ci.yml`
+  and `release.yml` installed with
+  `uv pip install -e ".[test,rust,pod5,onnx]" || uv pip install -e ".[test,pod5,onnx]"`,
+  so a maturin/escapepod-signal build break silently dropped the Rust
+  extension and the job stayed green with ~20 `pytest.importorskip("leech_core")`
+  call sites across 8 test modules skipped — including
+  `tests/test_backend_parity.py`, the parity net
+  CLAUDE.md describes. The fallback is gone; both workflows now call one
+  composite action (`.github/actions/install-with-rust`) so their extras
+  cannot silently diverge again, and `tests/test_workflows.py` asserts no
+  workflow reintroduces a `|| uv pip install` fallback.
+- **`pytest -rs` skip counts land in the job summary.** A jump in skips (a
+  dropped `leech_core`, or anything else) is now visible without opening the
+  raw log. Both workflows call the same `.github/actions/pytest-skip-summary`
+  composite action, for the same reason as the install action below: two
+  copies kept in sync by a comment invite exactly the drift this issue is
+  about.
+- **`release.yml`'s `release` job now depends on `test`, and the release
+  test install includes the `onnx` extra**, matching `ci.yml`'s coverage.
+  Previously the build jobs alone gated the GitHub Release, and the release
+  revision's test install skipped the ONNX export round-trip tests.
+- **`cargo test` runs in the existing Rust lint job**, with new unit tests for
+  `cigar_kind` (an unknown CIGAR op consumes neither query nor reference),
+  `chunk_signal_kmer_inputs` (an underflowing window, a window past the end
+  of the signal, and a `seq_to_sig` map shorter than the sequence it
+  accompanies), and the `PipelineConfig` `kmer_win`/`dwell_width` derivations
+  (`rust/src` had no `#[test]` at all before this). (#261)
+- **The Python-callable test-only exports `_test_process_read` and
+  `_test_ref_to_signal`** (used by `tests/test_rust_python_parity.py` and
+  `tests/test_data_prep.py` to compare the Rust pipeline against the
+  pure-Python reference) **are now gated behind a `test-utils` Cargo feature**,
+  on by default everywhere. `_rust_accel.py` imports `_test_process_read` in
+  the same `try`/`except` block as every real production symbol, so a build
+  without the feature raises `ImportError` before any of them bind — the
+  feature stays on for `release.yml`'s wheel build too until that import is
+  split out, rather than shipping a wheel that silently loses Rust
+  acceleration.
+
 ### Changed
 
 - **`eval test` and `predict` now share one precision policy.** `eval test`

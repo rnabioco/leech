@@ -11,13 +11,17 @@ use crate::encoding::encode_signal_kmer_inner;
 use crate::kmer_levels::KmerLevels;
 use crate::pod5_io::PreloadedSignals;
 
-use super::features::{compute_dwell_features, encode_base_onehot, sequence_to_int};
+#[cfg(feature = "test-utils")]
+use super::features::compute_dwell_features;
+use super::features::{encode_base_onehot, sequence_to_int};
+#[cfg(feature = "test-utils")]
 use super::features_stats::compute_per_base_stats;
+#[cfg(feature = "test-utils")]
 use super::numeric::normalize_median_mad;
 use super::processing::process_read_signal;
-use super::signal_mapping::{
-    build_seq_to_sig_map, chunk_signal_kmer_inputs, compute_ref_to_signal,
-};
+use super::signal_mapping::chunk_signal_kmer_inputs;
+#[cfg(feature = "test-utils")]
+use super::signal_mapping::{build_seq_to_sig_map, compute_ref_to_signal};
 use super::types::{BaseJustify, ChunkResult, PipelineConfig, ProcessedRead};
 
 /// One inference chunk returned to Python: (signal, seq_encoding, features?, read_id, base_idx).
@@ -30,6 +34,7 @@ type InferenceChunkPy = (
 );
 
 /// Test helper return: (norm_signal, sig_map, dwells, features_2d).
+#[cfg(feature = "test-utils")]
 type TestProcessReadResult = (
     Py<PyArray1<f32>>,
     Py<PyArray1<i64>>,
@@ -651,6 +656,7 @@ pub fn extract_chunks_from_preloaded<'py>(
 // ---------------------------------------------------------------------------
 
 /// Process a single read through the Rust pipeline (no POD5, for testing).
+#[cfg(feature = "test-utils")]
 #[pyfunction]
 #[pyo3(signature = (raw_signal, mv_array, stride, trim_offset, num_samples, reverse_signal = true))]
 pub fn _test_process_read<'py>(
@@ -718,6 +724,7 @@ pub fn _test_process_read<'py>(
 }
 
 /// Expose compute_ref_to_signal for direct Python<->Rust comparison testing.
+#[cfg(feature = "test-utils")]
 #[pyfunction]
 #[pyo3(signature = (query_to_sig, cigar_ops))]
 pub fn _test_ref_to_signal(
@@ -725,4 +732,98 @@ pub fn _test_ref_to_signal(
     cigar_ops: Vec<(u32, u32)>,
 ) -> PyResult<Vec<i64>> {
     Ok(compute_ref_to_signal(&query_to_sig, &cigar_ops))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Representative, otherwise-inert values for the parameters this test
+    // isn't exercising -- only kmer_context/feature_start/feature_end vary
+    // between cases below.
+    #[allow(clippy::too_many_arguments)]
+    fn build_default_config(
+        kmer_context: i64,
+        feature_start: Option<i64>,
+        feature_end: Option<i64>,
+    ) -> PipelineConfig<'static> {
+        build_config(
+            true,
+            "reference",
+            "base_onehot",
+            None,
+            200,
+            200,
+            kmer_context,
+            400,
+            true,
+            feature_start,
+            feature_end,
+            true,
+            None,
+            9,
+            4,
+            5,
+            2,
+            1,
+            "center",
+        )
+    }
+
+    #[test]
+    fn kmer_win_is_twice_the_context_plus_one() {
+        let cfg = build_default_config(5, None, None);
+        assert_eq!(cfg.kmer_win, 11);
+
+        let cfg = build_default_config(0, None, None);
+        assert_eq!(cfg.kmer_win, 1);
+    }
+
+    #[test]
+    fn dwell_width_spans_the_default_kmer_window_when_unset() {
+        // feature_start/feature_end default to +/-kmer_context, so an unset
+        // feature window covers the whole k-mer window: dwell_width ==
+        // kmer_win.
+        let cfg = build_default_config(5, None, None);
+        assert_eq!(cfg.feat_start, -5);
+        assert_eq!(cfg.feat_end, 5);
+        assert_eq!(cfg.dwell_width, 11);
+        assert_eq!(cfg.dwell_width, cfg.kmer_win);
+    }
+
+    #[test]
+    fn dwell_width_honors_an_explicit_feature_start_of_zero() {
+        // feature_start = 0 is a legitimate, non-default window (features
+        // begin AT the focus base -- the right-only window used for tRNA 3'
+        // ends) and must not be mistaken for "unset". `chunking.py`'s `or
+        // -kmer_context` fallback got exactly this wrong for every
+        // `--feature-start 0` run (issue #189); `Option::unwrap_or` here does
+        // not have that failure mode because `Some(0)` is not `None`, but the
+        // derivation is worth pinning directly rather than trusting that no
+        // future edit reintroduces a truthiness-style fallback.
+        let cfg = build_default_config(5, Some(0), None);
+        assert_eq!(cfg.feat_start, 0);
+        assert_eq!(cfg.feat_end, 5);
+        assert_eq!(cfg.dwell_width, 6);
+    }
+
+    #[test]
+    fn dwell_width_honors_a_fully_explicit_feature_window() {
+        let cfg = build_default_config(5, Some(-2), Some(3));
+        assert_eq!(cfg.feat_start, -2);
+        assert_eq!(cfg.feat_end, 3);
+        assert_eq!(cfg.dwell_width, 6);
+    }
+
+    #[test]
+    fn dwell_width_honors_an_explicit_feature_end_with_start_defaulted() {
+        // feat_start/feat_end resolve independently via two separate
+        // `unwrap_or` calls -- exercise the mirror case of the test above
+        // (only feature_end explicit) so a regression that defaults only
+        // one side correctly cannot hide behind the other's coverage.
+        let cfg = build_default_config(5, None, Some(2));
+        assert_eq!(cfg.feat_start, -5);
+        assert_eq!(cfg.feat_end, 2);
+        assert_eq!(cfg.dwell_width, 8);
+    }
 }
