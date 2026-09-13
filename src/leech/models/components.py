@@ -92,8 +92,23 @@ def _cached_segment_mean_tensor(
     cache is a FakeTensor built under tracing (see :func:`segment_mean_matrix`
     for the path tracing/export takes instead, which never touches this
     cache).
+
+    Built inside ``torch.inference_mode(False)`` regardless of the caller's
+    own mode. Without that, the first eager call at a given key made from
+    inside ``validate()``/``eval test``/``predict``/``bundle`` (all run
+    under ``torch.inference_mode()``) would cache an *inference tensor* —
+    and this cache is process-global and outlives any one call, so a later
+    grad-enabled forward at that same ``(length, output_size)`` (same
+    process, e.g. a pytest session running eval tests before training ones,
+    or a script that evaluates then fine-tunes) reuses it and dies in
+    ``backward()`` with "Inference tensors cannot be saved for backward" —
+    the exact FakeTensor-style poisoning risk the class-level docstring
+    above already warns about, just from ``inference_mode`` instead of
+    export tracing. Escaping inference_mode for the build makes the cached
+    tensor safe to read from *either* context afterwards.
     """
-    return torch.tensor(_segment_mean_weights(length, output_size), dtype=dtype, device=device)
+    with torch.inference_mode(False):
+        return torch.tensor(_segment_mean_weights(length, output_size), dtype=dtype, device=device)
 
 
 class AdaptiveAvgPool1d(nn.AdaptiveAvgPool1d):
