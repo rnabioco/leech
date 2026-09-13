@@ -18,7 +18,9 @@ mod training;
 mod types;
 
 // Public API (unchanged from original inference_pipeline.rs)
+#[cfg(feature = "test-utils")]
 pub use inference::_test_process_read;
+#[cfg(feature = "test-utils")]
 pub use inference::_test_ref_to_signal;
 pub use inference::extract_chunks_from_preloaded;
 pub use inference::extract_inference_chunks;

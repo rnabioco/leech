@@ -134,3 +134,102 @@ pub(super) fn chunk_signal_kmer_inputs(
 
     (map, ctx)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cigar_kind_maps_the_sam_spec_ops() {
+        assert_eq!(cigar_kind(0), CigarKind::Match);
+        assert_eq!(cigar_kind(1), CigarKind::Insertion);
+        assert_eq!(cigar_kind(2), CigarKind::Deletion);
+        assert_eq!(cigar_kind(3), CigarKind::Skip);
+        assert_eq!(cigar_kind(4), CigarKind::SoftClip);
+        assert_eq!(cigar_kind(5), CigarKind::HardClip);
+        assert_eq!(cigar_kind(7), CigarKind::SequenceMatch);
+        assert_eq!(cigar_kind(8), CigarKind::SequenceMismatch);
+    }
+
+    #[test]
+    fn cigar_kind_maps_padding_via_the_wildcard() {
+        // Op 6 (`P`, Padding) IS an assigned SAM op -- it just has no
+        // explicit match arm here, unlike 0-5/7/8. It reaches `Pad` only
+        // through the wildcard, which happens to be correct: `P` already
+        // consumes neither query nor reference, the same as `Pad`'s meaning
+        // for a genuinely unrecognised code below.
+        assert_eq!(cigar_kind(6), CigarKind::Pad);
+    }
+
+    #[test]
+    fn cigar_kind_treats_an_unrecognized_op_as_consuming_nothing() {
+        // 9 and 255 are outside the whole SAM `MIDNSHP=X` table (0-8) --
+        // genuinely unknown, not merely un-matched like op 6 above. An
+        // unrecognised code must not be treated as any op that advances a
+        // coordinate -- mapping it to `Pad` (consumes neither query nor
+        // reference) is what keeps a bad/future op code from silently
+        // shifting `compute_ref_to_signal`'s output rather than erroring.
+        for op in [9u32, 255] {
+            let kind = cigar_kind(op);
+            assert_eq!(kind, CigarKind::Pad, "op {op}");
+            assert!(!kind.consumes_query(), "op {op}");
+            assert!(!kind.consumes_reference(), "op {op}");
+        }
+    }
+
+    // Four bases (map has 5 boundaries, 0..=40 in steps of 10).
+    const MAP: [i64; 5] = [0, 10, 20, 30, 40];
+
+    #[test]
+    fn chunk_signal_kmer_inputs_underflowing_window_clamps_to_zero_and_snaps_edges() {
+        // sig_start_pos is negative -- the window starts before the signal.
+        // `ss = sig_start_pos.max(0)` clamps the search, but the returned map
+        // stays offset against the UNCLAMPED start (Python reaches the same
+        // value via `sig_start - seq_to_sig_offset`), and the first/last
+        // covered bases snap to the chunk edges regardless.
+        let seq_bytes = b"ACGT";
+        let (map, ctx) = chunk_signal_kmer_inputs(&MAP, seq_bytes, -15, 25, 40, 40, (2, 2));
+
+        assert_eq!(map, vec![0, 25, 35, 40], "map: {map:?}");
+        assert!(!ctx.is_empty());
+    }
+
+    #[test]
+    fn chunk_signal_kmer_inputs_window_past_end_clamps_to_num_samples() {
+        // sig_end_pos exceeds num_samples -- the window runs off the end of
+        // the signal. `se = sig_end_pos.min(num_samples)` clamps the search.
+        let seq_bytes = b"ACGT";
+        let (map, ctx) = chunk_signal_kmer_inputs(&MAP, seq_bytes, 15, 55, 40, 40, (2, 2));
+
+        assert_eq!(map, vec![0, 5, 15, 40], "map: {map:?}");
+        assert!(!ctx.is_empty());
+    }
+
+    #[test]
+    fn chunk_signal_kmer_inputs_map_shorter_than_sequence_bounds_by_the_map() {
+        // The map covers only 2 bases, but the sequence carries 6 -- an
+        // alignment that stopped short of the full read (CLAUDE.md: "the map
+        // can be shorter than the reference slice"). `seq_end` must clamp to
+        // `num_bases_map`, not to `seq_bytes.len()`, or this indexes past
+        // what the map actually describes.
+        let short_map = [0i64, 10, 20];
+        let seq_bytes = b"ACGTAC";
+        let (map, ctx) = chunk_signal_kmer_inputs(&short_map, seq_bytes, 0, 20, 20, 20, (2, 2));
+
+        assert_eq!(map, vec![0, 10, 20], "map: {map:?}");
+        assert!(!ctx.is_empty());
+    }
+
+    #[test]
+    fn chunk_signal_kmer_inputs_map_too_short_to_have_any_base_returns_empty() {
+        // seq_to_sig.len() < 2: no base has both boundaries, so there is
+        // nothing to chunk.
+        let degenerate_map = [5i64];
+        let seq_bytes = b"ACGT";
+        let (map, ctx) =
+            chunk_signal_kmer_inputs(&degenerate_map, seq_bytes, 0, 20, 20, 20, (2, 2));
+
+        assert!(map.is_empty());
+        assert!(ctx.is_empty());
+    }
+}

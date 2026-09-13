@@ -33,7 +33,13 @@ fn leech_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
         inference_pipeline::extract_chunks_from_preloaded,
         m
     )?)?;
+    // Test-only helpers, gated behind the `test-utils` cargo feature. Left on
+    // (the default) everywhere, including release.yml's wheel build: see the
+    // `test-utils` doc comment in Cargo.toml for why release does not
+    // currently turn it off (rnabioco/leech#261).
+    #[cfg(feature = "test-utils")]
     m.add_function(wrap_pyfunction!(inference_pipeline::_test_process_read, m)?)?;
+    #[cfg(feature = "test-utils")]
     m.add_function(wrap_pyfunction!(
         inference_pipeline::_test_ref_to_signal,
         m

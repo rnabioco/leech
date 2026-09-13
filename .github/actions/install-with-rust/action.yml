@@ -1,0 +1,31 @@
+name: Install leech with the Rust extension
+description: >
+  Shared "uv venv" + "uv pip install -e" step for ci.yml's and release.yml's
+  test jobs. There is intentionally no fallback to an install without the
+  `rust` extra: a maturin/escapepod-signal build break must fail the job, not
+  silently drop leech_core and skip the ~20 pytest.importorskip("leech_core")
+  call sites across 8 test modules, including tests/test_backend_parity.py
+  -- the parity net CLAUDE.md describes. ci.yml and release.yml must call
+  this action rather than inlining their own install line, or the two can
+  drift again (rnabioco/leech#261).
+inputs:
+  extras:
+    description: >
+      Comma-separated extras to install, e.g. "test,rust,pod5,onnx". Always
+      include "rust" -- that is the whole point of this action.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Install dependencies
+      shell: bash
+      env:
+        # GPU-less runner: install the CPU-only torch wheel so uv doesn't pull
+        # the multi-GB CUDA stack (nvidia-cu13-*). `uv sync` installs the
+        # locked CUDA torch regardless of this, so we install via
+        # `uv pip install`, which honors --torch-backend. The lock (and
+        # local/cluster GPU installs via `uv sync`) are unchanged.
+        UV_TORCH_BACKEND: cpu
+      run: |
+        uv venv
+        uv pip install --torch-backend=cpu -e ".[${{ inputs.extras }}]"

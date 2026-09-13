@@ -19,6 +19,21 @@ edition = "2024"
 name = "leech_core"
 crate-type = ["cdylib"]
 
+[features]
+default = ["test-utils"]
+# Gates the Python-callable `_test_process_read` / `_test_ref_to_signal`
+# helpers (see inference_pipeline/inference.rs) that tests/test_rust_python_parity.py
+# and tests/test_data_prep.py call directly to compare the Rust pipeline
+# against the pure-Python reference (rnabioco/leech#261). On by default and
+# left on everywhere, including release.yml's wheel build: `_rust_accel.py`
+# imports `_test_process_read` in the same try/except block as every real
+# production symbol, so a build without this feature raises ImportError
+# before any of them bind and silently disables Rust acceleration for real
+# installs. Turning it off requires first splitting that import block; until
+# then this feature exists so the symbols are visibly test-only and
+# opt-out-able in principle, not to actually ship a stripped build.
+test-utils = []
+
 [dependencies]
 # `abi3-py312` builds one stable-ABI wheel per platform that loads on CPython
 # 3.12 and every later 3.x, so a new CPython release does not require a new

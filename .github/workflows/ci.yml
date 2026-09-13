@@ -54,7 +54,7 @@ jobs:
         run: uvx ty check src/leech/
 
   rust-lint:
-    name: Rust lint (fmt + clippy)
+    name: Rust lint + test (fmt + clippy + cargo test)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -72,6 +72,9 @@ jobs:
 
       - name: clippy
         run: cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test --manifest-path rust/Cargo.toml
 
   test:
     name: Test - Python ${{ matrix.python-version }}
@@ -102,33 +105,32 @@ jobs:
         with:
           workspaces: rust
 
+      # Only the test runner + runtime deps are needed here — no lint/type
+      # tooling (that's the Lint job) and no pipeline/notebook extras (tests
+      # don't import snakemake/plotnine). `rust` is required, not best-effort:
+      # a build break here must fail the job rather than silently drop
+      # leech_core (see .github/actions/install-with-rust). `onnx` is here so
+      # the export round-trip tests actually RUN rather than skipping: they
+      # compare onnxruntime against torch across the serialization boundary,
+      # which is the check an in-process assert cannot make.
       - name: Install dependencies
-        env:
-          # GPU-less runner: install the CPU-only torch wheel so uv doesn't pull
-          # the multi-GB CUDA stack (nvidia-cu13-*). `uv sync` installs the locked
-          # CUDA torch regardless of this, so we install via `uv pip install`,
-          # which honors --torch-backend. The lock (and local/cluster GPU installs
-          # via `uv sync`) are unchanged.
-          UV_TORCH_BACKEND: cpu
-        run: |
-          uv venv
-          # Only the test runner + runtime deps are needed here — no lint/type
-          # tooling (that's the Lint job) and no pipeline/notebook extras (tests
-          # don't import snakemake/plotnine). Full install (Rust extension +
-          # escapepod); fall back without the Rust extension (leech_core) but keep
-          # escapepod (a PyPI wheel), which leech imports unconditionally.
-          # `onnx` is here so the export round-trip tests actually RUN rather
-          # than skipping: they compare onnxruntime against torch across the
-          # serialization boundary, which is the check an in-process assert
-          # cannot make.
-          uv pip install --torch-backend=cpu -e ".[test,rust,pod5,onnx]" \
-            || uv pip install --torch-backend=cpu -e ".[test,pod5,onnx]"
+        uses: ./.github/actions/install-with-rust
+        with:
+          extras: test,rust,pod5,onnx
 
       - name: Run tests
         env:
           UV_TORCH_BACKEND: cpu
         # --no-sync: don't let `uv run` re-sync the env to the CUDA-pinned lock.
-        run: uv run --no-sync pytest --cov=leech --cov-report=xml --cov-report=term
+        # -rs: print a one-line reason for every skipped test, and pytest's
+        # short-summary section (piped below into the job summary) totals them
+        # -- so a jump in skip count from a dropped leech_core is visible
+        # without opening the raw log.
+        run: |
+          uv run --no-sync pytest -rs --cov=leech --cov-report=xml --cov-report=term \
+            2>&1 | tee pytest-output.log
+
+      - uses: ./.github/actions/pytest-skip-summary
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v7

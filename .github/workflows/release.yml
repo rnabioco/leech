@@ -75,19 +75,24 @@ jobs:
         with:
           workspaces: rust
 
+      # `rust` and `onnx` both required, matching ci.yml's coverage exactly —
+      # this is the revision being shipped, so it must run the full suite
+      # (backend parity, ONNX round-trip) rather than a lesser one. See
+      # .github/actions/install-with-rust: the two workflows call the same
+      # action so their extras cannot silently diverge again (rnabioco/leech#261).
       - name: Install dependencies
-        env:
-          # GPU-less runner: CPU-only torch, as in ci.yml.
-          UV_TORCH_BACKEND: cpu
-        run: |
-          uv venv
-          uv pip install --torch-backend=cpu -e ".[test,rust,pod5]" \
-            || uv pip install --torch-backend=cpu -e ".[test,pod5]"
+        uses: ./.github/actions/install-with-rust
+        with:
+          extras: test,rust,pod5,onnx
 
       - name: Run tests
         env:
           UV_TORCH_BACKEND: cpu
-        run: uv run --no-sync pytest
+        # -rs + job-summary skip report, matching ci.yml.
+        run: |
+          uv run --no-sync pytest -rs 2>&1 | tee pytest-output.log
+
+      - uses: ./.github/actions/pytest-skip-summary
 
   # ── Build leech-core (Rust extension) platform wheels ──────────────
   build-rust-wheels:
@@ -115,6 +120,16 @@ jobs:
       # No --find-interpreter: the crate builds against the stable ABI
       # (pyo3 `abi3-py312`), so maturin emits a single cp312-abi3 wheel per
       # target that loads on CPython 3.12 and every later 3.x.
+      #
+      # Default features (including `test-utils`, see rust/Cargo.toml) stay
+      # on here deliberately: `src/leech/_rust_accel.py` imports
+      # `_test_process_read` in the SAME try/except block as every real
+      # production symbol, so a wheel built without `test-utils` raises
+      # ImportError before any of them bind -- silently disabling Rust
+      # acceleration for every real install, invisibly to CI (whose test job
+      # always builds from local source, where the feature defaults on).
+      # `test-utils` gates the symbol out of a *hypothetical* stripped build,
+      # not out of what actually ships (rnabioco/leech#261).
       - name: Build wheels
         uses: PyO3/maturin-action@v1.51.0
         with:
@@ -176,7 +191,10 @@ jobs:
   release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
-    needs: [build-rust-wheels, build-rust-sdist, build-python]
+    # `test` included, not just the build jobs: the build jobs prove the
+    # wheels compile, not that the release revision passes its test suite
+    # (rnabioco/leech#261).
+    needs: [test, build-rust-wheels, build-rust-sdist, build-python]
     timeout-minutes: 15
     # Only this job needs write — it creates the GitHub Release.
     permissions:
