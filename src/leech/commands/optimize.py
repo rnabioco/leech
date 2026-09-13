@@ -103,6 +103,13 @@ def handle_optimize(
     Returns:
         Path to grid search summary file
     """
+    from leech.configs import (
+        AugmentConfig,
+        AuxHeadConfig,
+        OptimConfig,
+        SchedulerConfig,
+        TrainConfig,
+    )
     from leech.gridsearch import GridSearchConfig, parse_context_grid, parse_values, run_grid_search
 
     # Validate: need context_grid as fallback if left/right not both provided
@@ -126,6 +133,53 @@ def handle_optimize(
     logger.info(f"Right contexts: {right_contexts_list}")
     logger.info(f"Dwell offsets: {dwell_offsets_list}")
 
+    # The training recipe as one object (#270), shared unchanged across every
+    # grid point (run_grid_point derives each point's left_context/
+    # right_context via dataclasses.replace); GridSearchConfig itself only
+    # adds what a sweep needs beyond one recipe.
+    cfg = TrainConfig(
+        epochs=epochs,
+        batch_size=batch_size,
+        early_stopping_patience=early_stopping,
+        loss_type=loss_type,
+        focal_gamma=focal_gamma,
+        label_smoothing=label_smoothing,
+        mixed_precision=mixed_precision,
+        motif=motif,
+        motif_offset=motif_offset,
+        base_justify=base_justify,
+        balance_groups=balance_groups,
+        oversample_minority=oversample_minority,
+        confound=confound,
+        signal_mode=signal_mode,
+        optim=OptimConfig(
+            learning_rate=learning_rate,
+            weight_decay=weight_decay,
+            max_grad_norm=max_grad_norm,
+        ),
+        scheduler=SchedulerConfig(
+            scheduler_type=scheduler,
+            scheduler_patience=scheduler_patience,
+            scheduler_factor=scheduler_factor,
+            warmup_epochs=warmup_epochs,
+        ),
+        augment=AugmentConfig(
+            jitter=augment_jitter,
+            scale_min=augment_scale_min,
+            scale_max=augment_scale_max,
+            time_mask_bases=augment_time_mask_bases,
+            time_mask_count=augment_time_mask_count,
+            shift_max_bases=augment_shift_max_bases,
+            feature_noise_scale=augment_feature_noise_scale,
+        ),
+        aux_head=AuxHeadConfig(
+            adversarial_lambda=adversarial_lambda,
+            adversarial_anneal_epochs=adversarial_anneal_epochs,
+            cl_regression=cl_regression,
+            cl_lambda=cl_lambda,
+        ),
+    )
+
     # Create config
     config = GridSearchConfig(
         train_data_path=train_data,
@@ -134,44 +188,13 @@ def handle_optimize(
         output_dir=output_dir,
         left_contexts=left_contexts_list,
         right_contexts=right_contexts_list,
+        cfg=cfg,
         kmer_context=kmer_context,
-        epochs=epochs,
-        batch_size=batch_size,
-        learning_rate=learning_rate,
         device=device,
         seed=seed,
-        early_stopping_patience=early_stopping,
-        base_justify=base_justify,
         dwell_offsets=dwell_offsets_list,
         n_parallel=parallel,
-        weight_decay=weight_decay,
-        max_grad_norm=max_grad_norm,
-        scheduler=scheduler,
-        scheduler_patience=scheduler_patience,
-        scheduler_factor=scheduler_factor,
-        warmup_epochs=warmup_epochs,
-        loss_type=loss_type,
-        focal_gamma=focal_gamma,
-        label_smoothing=label_smoothing,
-        mixed_precision=mixed_precision,
-        augment_jitter=augment_jitter,
-        augment_scale_min=augment_scale_min,
-        augment_scale_max=augment_scale_max,
-        augment_time_mask_bases=augment_time_mask_bases,
-        augment_time_mask_count=augment_time_mask_count,
-        augment_shift_max_bases=augment_shift_max_bases,
-        augment_feature_noise_scale=augment_feature_noise_scale,
         num_workers=num_workers,
-        balance_groups=balance_groups,
-        oversample_minority=oversample_minority,
-        motif=motif,
-        motif_offset=motif_offset,
-        adversarial_lambda=adversarial_lambda,
-        adversarial_anneal_epochs=adversarial_anneal_epochs,
-        confound=confound,
-        cl_regression=cl_regression,
-        cl_lambda=cl_lambda,
-        signal_mode=signal_mode,
         selection_metric=selection_metric,
     )
 

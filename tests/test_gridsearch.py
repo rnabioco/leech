@@ -8,6 +8,7 @@ import pytest
 
 import leech.gridsearch
 from leech.chunking import load_chunks, save_chunks
+from leech.configs import TrainConfig
 from leech.gridsearch import (
     GridSearchConfig,
     parse_context_grid,
@@ -162,7 +163,13 @@ def _fake_history():
     }
 
 
-def _config(train, val, output_dir, **kwargs):
+def _config(train, val, output_dir, cfg=None, **kwargs):
+    """Build a GridSearchConfig for tests.
+
+    ``cfg`` overrides the default training recipe (TrainConfig); other
+    keyword arguments apply to GridSearchConfig's own sweep/runtime fields
+    (n_parallel, device, ...) -- the two are separate dataclasses since #270.
+    """
     return GridSearchConfig(
         train_data_path=train,
         val_data_path=val,
@@ -170,14 +177,11 @@ def _config(train, val, output_dir, **kwargs):
         output_dir=output_dir,
         left_contexts=[200],
         right_contexts=[200],
+        cfg=cfg if cfg is not None else TrainConfig(epochs=1, batch_size=8, motif="CCAGGC"),
         kmer_context=5,
-        epochs=1,
-        batch_size=8,
-        learning_rate=0.001,
         device="cpu",
         seed=42,
         num_workers=0,
-        motif="CCAGGC",
         **kwargs,
     )
 
@@ -270,7 +274,7 @@ class TestGridSearchStreamsTheCorpus:
         seen = []
 
         def spy(**kwargs):
-            seen.append(kwargs.get("pos_weight"))
+            seen.append(kwargs["cfg"].pos_weight)
             return _fake_history()
 
         monkeypatch.setattr(leech.gridsearch, "train_model", spy)
@@ -310,11 +314,12 @@ class TestGridSearchStreamsTheCorpus:
         file instead, which is real, shared-filesystem I/O either way.
         """
         train, val = grid_corpus
+        recipe = TrainConfig(epochs=1, batch_size=8, motif="CCAGGC", oversample_minority=True)
 
         def make_spy(record_path):
             def spy(**kwargs):
                 with open(record_path, "a") as f:
-                    f.write(f"{kwargs.get('oversample_minority')}\n")
+                    f.write(f"{kwargs['cfg'].oversample_minority}\n")
                 return _fake_history()
 
             return spy
@@ -326,7 +331,7 @@ class TestGridSearchStreamsTheCorpus:
                 train,
                 val,
                 tmp_path / "sequential",
-                oversample_minority=True,
+                cfg=recipe,
                 n_parallel=1,
             )
         )
@@ -338,7 +343,7 @@ class TestGridSearchStreamsTheCorpus:
                 train,
                 val,
                 tmp_path / "parallel",
-                oversample_minority=True,
+                cfg=recipe,
                 n_parallel=2,
             )
         )

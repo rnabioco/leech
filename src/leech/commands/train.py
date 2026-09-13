@@ -187,7 +187,27 @@ def handle_train(
         "signal_mode",
         "dwell_template_table",
         "checkpoint_metric",
+        "signal_kmer_context",
+        "left_context",
+        "right_context",
+        "label_map",
     }
+    # These four reach this function only via **model_kwargs / --model-config
+    # (grid search's best_params.json, for instance, supplies left_context/
+    # right_context this way) -- pop them out before the rest of
+    # _explicit_keys strips the set, and thread them into `cfg` explicitly.
+    # Leaving them in extra_kwargs while cfg carries its own (default) value
+    # for the same name doesn't raise, because train_model's cfg-priority
+    # unpack overwrites its own parameter with cfg's default unconditionally
+    # -- so the explicit value from --model-config would be silently
+    # reverted to the TrainConfig default instead of erroring or applying.
+    _train_config_defaults = TrainConfig()
+    signal_kmer_context = extra_kwargs.pop(
+        "signal_kmer_context", _train_config_defaults.signal_kmer_context
+    )
+    left_context = extra_kwargs.pop("left_context", _train_config_defaults.left_context)
+    right_context = extra_kwargs.pop("right_context", _train_config_defaults.right_context)
+    label_map = extra_kwargs.pop("label_map", _train_config_defaults.label_map)
     for key in _explicit_keys:
         extra_kwargs.pop(key, None)
 
@@ -222,9 +242,13 @@ def handle_train(
         motif_offset=motif_offset,
         base_justify=base_justify,
         seq_encoding=seq_encoding,
+        signal_kmer_context=signal_kmer_context,
         allow_encoding_fallback=allow_encoding_fallback,
+        left_context=left_context,
+        right_context=right_context,
         balance_groups=balance_groups,
         oversample_minority=oversample_minority,
+        label_map=label_map,
         confound=confound,
         optim=OptimConfig(
             learning_rate=learning_rate,

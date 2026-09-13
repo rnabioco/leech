@@ -93,6 +93,7 @@ class TestGridPointProvenance:
     """run_grid_point() must persist motif/base_justify in config.json."""
 
     def test_grid_point_writes_provenance(self, temp_chunks_file, tmp_path):
+        from leech.configs import TrainConfig
         from leech.gridsearch import run_grid_point
 
         output_dir = tmp_path / "grid_prov"
@@ -104,20 +105,96 @@ class TestGridPointProvenance:
             left_context=200,
             right_context=200,
             kmer_len=11,
-            epochs=1,
-            batch_size=2,
-            learning_rate=0.001,
             device="cpu",
             seed=42,
-            motif="CCAGGC",
-            motif_offset=2,
-            base_justify="center",
+            cfg=TrainConfig(
+                epochs=1,
+                batch_size=2,
+                motif="CCAGGC",
+                motif_offset=2,
+                base_justify="center",
+            ),
         )
         config = _read_config(output_dir)
 
         assert config["motif"] == "CCAGGC"
         assert config["motif_offset"] == 2
         assert config["base_justify"] == "center"
+
+
+# ---------------------------------------------------------------------------
+# handle_train's cfg must not silently revert --model-config values (#270)
+# ---------------------------------------------------------------------------
+
+
+class TestHandleTrainModelConfigNotOverwritten:
+    """A `--model-config` value for a field cfg also carries must win.
+
+    handle_train builds one `TrainConfig` (#270) and passes it to
+    train_model, which -- once cfg is non-None -- unpacks cfg's value into
+    its own same-named parameter unconditionally. `signal_kmer_context`,
+    `left_context`, `right_context` and `label_map` used to reach
+    train_model only via `--model-config`/`**model_kwargs`, never through
+    handle_train's own cfg construction, so cfg's TrainConfig default
+    silently overwrote whatever `--model-config` supplied -- the exact
+    class of bug #270 was filed to fix in `_grid_point_worker`, just at a
+    different call site. `label_map` is the one field here with no coupling
+    to the fixture's actual chunk geometry, so it is what this test runs
+    end to end; `signal_kmer_context`/`left_context`/`right_context` change
+    what the dataset/model expect to extract from the corpus (confirmed:
+    a non-default `signal_kmer_context` against this fixture's real
+    extraction window raises an unrelated IndexError in
+    `encode_signal_kmer`), so exercising those live would need a purpose-
+    built corpus. handle_train pops all four through the identical code
+    path, so this one field is enough to cover the fix.
+    """
+
+    def test_label_map_survives_model_config(self, temp_chunks_file, tmp_path):
+        from leech.commands.train import handle_train
+
+        output_dir = tmp_path / "model_config_fields"
+        model_config = tmp_path / "model_config.json"
+        label_map = {"charged": 1, "uncharged": 0}
+        model_config.write_text(json.dumps({"label_map": label_map}))
+
+        handle_train(
+            train_data=temp_chunks_file,
+            val_data=None,
+            model_name="ConvLSTMDwell",
+            model_config=model_config,
+            output_dir=output_dir,
+            epochs=1,
+            batch_size=2,
+            learning_rate=0.001,
+            device="cpu",
+            seed=42,
+            early_stopping=0,
+            use_class_weights=True,
+            pos_weight=None,
+            resume=None,
+            weight_decay=0.0,
+            max_grad_norm=0.0,
+            scheduler="none",
+            scheduler_patience=5,
+            scheduler_factor=0.5,
+            warmup_epochs=0,
+            loss_type="bce",
+            focal_gamma=2.0,
+            label_smoothing=0.0,
+            mixed_precision=False,
+            augment_jitter=0.0,
+            augment_scale_min=1.0,
+            augment_scale_max=1.0,
+            augment_time_mask_bases=0,
+            augment_time_mask_count=1,
+            augment_shift_max_bases=0.0,
+            augment_feature_noise_scale=0.0,
+            num_workers=0,
+            motif="CCAGGC",
+        )
+
+        config = _read_config(output_dir)
+        assert config["label_map"] == label_map
 
 
 # ---------------------------------------------------------------------------

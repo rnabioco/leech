@@ -955,8 +955,14 @@ class TestUtilTrainingParams:
 
         Imports the actual symbol (#270) instead of re-declaring a copy here,
         which had drifted out of sync with what config.json actually writes.
+
+        The config dict below includes both the original training-only keys
+        AND the ~15 #270 added (label_smoothing, checkpoint_metric, gpus,
+        and the augmentation/adversarial/CL-regression knobs) -- a config
+        dict that only exercised the pre-#270 keys would pass even if those
+        15 additions were reverted, since nothing would ask about them.
         """
-        from leech.model_loading import _TRAINING_PARAMS, _architecture_config
+        from leech.model_loading import _architecture_config
 
         # Simulate what load_model_from_checkpoint does
         config = {
@@ -982,6 +988,23 @@ class TestUtilTrainingParams:
             "resume_from": "/some/path",
             "device": "cpu",
             "seed": 42,
+            # The keys #270 added to _TRAINING_PARAMS -- this is the actual
+            # regression this test exists to catch.
+            "label_smoothing": 0.1,
+            "augment_scale_range": {"signal": [0.9, 1.1]},
+            "augment_time_mask_bases": 5,
+            "augment_time_mask_count": 2,
+            "augment_shift_max_bases": 1.0,
+            "augment_feature_noise_scale": 0.01,
+            "balance_groups": True,
+            "oversample_minority": True,
+            "adversarial_lambda": 0.5,
+            "adversarial_anneal_epochs": 3,
+            "confound": "flowcell",
+            "cl_lambda": 2.0,
+            "checkpoint_metric": "val_f1",
+            "signal_mode": "signal_only",
+            "gpus": 4,
             # Provenance fields read at predict time -- must survive filtering.
             "motif": "CCAGGC",
             "dwell_offset": 2,
@@ -1001,9 +1024,29 @@ class TestUtilTrainingParams:
         assert "weight_decay" not in model_kwargs
         assert "loss_type" not in model_kwargs
         assert "augment_jitter" not in model_kwargs
-        for key in ("scheduler", "weight_decay", "loss_type", "augment_jitter"):
-            assert key in _TRAINING_PARAMS
         assert "resume_from" not in model_kwargs
+
+        # The #270 additions: excluded from the bundle's architecture config,
+        # not merely present in the _TRAINING_PARAMS set (which would be
+        # implied by, not independent of, the checks above).
+        for key in (
+            "label_smoothing",
+            "augment_scale_range",
+            "augment_time_mask_bases",
+            "augment_time_mask_count",
+            "augment_shift_max_bases",
+            "augment_feature_noise_scale",
+            "balance_groups",
+            "oversample_minority",
+            "adversarial_lambda",
+            "adversarial_anneal_epochs",
+            "confound",
+            "cl_lambda",
+            "checkpoint_metric",
+            "signal_mode",
+            "gpus",
+        ):
+            assert key not in model_kwargs, f"{key!r} leaked into the bundle architecture config"
 
 
 # ---------------------------------------------------------------------------
