@@ -479,6 +479,18 @@ private head while the backbone stays in sync. Each is wrapped separately, and
 `test_auxiliary_heads_are_wrapped_for_gradient_sync` fails if a head is added
 without one.
 
+**BatchNorm converts to SyncBatchNorm before every CUDA DDP wrap.** Left
+alone, a BN-default architecture (`TCNDwell`, every `*BN*` ConvLSTM variant,
+`ResNetDwell`, `ConvOnly`, ...) normalizes over its own rank's shard of the
+global batch instead of the whole thing — the same silent-divergence shape as
+the checkpoint prefix and the unwrapped aux heads. `_wrap_ddp` calls
+`nn.SyncBatchNorm.convert_sync_batchnorm` when `self.dist.enabled` *and* the
+device is CUDA, never on the gloo/CPU path that exists only to exercise DDP's
+mechanics in tests — PyTorch's own DDP refuses to wrap a `SyncBatchNorm` on a
+CPU module. The conversion swaps `BatchNorm*d` children in place and keeps
+their parameter/buffer names, so it does not disturb the single-GPU
+checkpoint keys above.
+
 **Accumulation runs under `no_sync()` on the non-final micro-steps.** Every
 `backward()` triggers an allreduce, so N sub-batches otherwise pay N times the
 communication for identical arithmetic.

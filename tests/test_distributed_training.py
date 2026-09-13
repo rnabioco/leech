@@ -264,6 +264,159 @@ def test_auxiliary_heads_are_wrapped_for_gradient_sync(monkeypatch):
 
 
 # --------------------------------------------------------------------------
+# BatchNorm must reduce across ranks, not just its own shard (issue #273)
+# --------------------------------------------------------------------------
+
+
+class _BNStub(nn.Module):
+    """A BatchNorm-default module small enough to check by hand."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.bn = nn.BatchNorm1d(4)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.bn(x)
+
+
+def _fixed_bn_batch() -> torch.Tensor:
+    generator = torch.Generator().manual_seed(99)
+    return torch.randn(8, 4, generator=generator)
+
+
+def test_batchnorm_left_untouched_at_world_size_one():
+    """``--gpus 1`` must be the old path: no new module type, no behavior change."""
+    trainer = Trainer.__new__(Trainer)
+    trainer.dist = SINGLE
+    trainer._ddp_modules = []
+    module = _BNStub()
+
+    wrapped = trainer._wrap_ddp(module, "cpu")
+
+    assert wrapped is module
+    assert type(module.bn) is nn.BatchNorm1d
+
+
+class _StubDDP(nn.Module):
+    """Stands in for ``torch``'s ``DistributedDataParallel``.
+
+    Real DDP needs an initialized process group, and -- the whole reason this
+    stub exists -- refuses outright to wrap a module containing
+    ``SyncBatchNorm`` unless it is a CUDA module (``SyncBatchNorm layers only
+    work with GPU modules``). This isolates ``_wrap_ddp``'s *decision* of
+    whether to convert from those two requirements, so the CUDA branch is
+    testable without a GPU or a live process group.
+    """
+
+    def __init__(self, module: nn.Module, device_ids=None) -> None:
+        super().__init__()
+        self.module = module
+        self.device_ids = device_ids
+
+    @contextlib.contextmanager
+    def no_sync(self):
+        yield
+
+
+def test_batchnorm_converts_to_syncbatchnorm_only_on_cuda(monkeypatch):
+    """The conversion gates on the device, not just ``world_size > 1``.
+
+    SyncBatchNorm is a GPU-only construct -- DDP itself raises
+    ``ValueError: SyncBatchNorm layers only work with GPU modules`` if asked
+    to wrap one on a CPU module. The gloo/CPU harness the rest of this file
+    uses exists only to exercise DDP's sharding and gradient-sync mechanics;
+    it trains no real model, so there is no batch-norm statistic to fix there,
+    and converting anyway would crash every gloo-backed BN test in this suite.
+    """
+    monkeypatch.setattr("torch.nn.parallel.DistributedDataParallel", _StubDDP)
+    trainer = Trainer.__new__(Trainer)
+    trainer.dist = DistContext(rank=0, local_rank=0, world_size=2, backend="nccl")
+    trainer._ddp_modules = []
+
+    cpu_module = _BNStub()
+    wrapped_cpu = trainer._wrap_ddp(cpu_module, "cpu")
+    assert isinstance(wrapped_cpu, _StubDDP)
+    assert type(cpu_module.bn) is nn.BatchNorm1d, "gloo/CPU must never convert"
+
+    cuda_module = _BNStub()
+    keys_before = set(cuda_module.state_dict().keys())
+    wrapped_cuda = trainer._wrap_ddp(cuda_module, "cuda")
+    assert isinstance(wrapped_cuda, _StubDDP)
+    assert type(cuda_module.bn) is nn.SyncBatchNorm
+    assert wrapped_cuda.device_ids == [0]
+    assert set(cuda_module.state_dict().keys()) == keys_before, (
+        "conversion must not rename state_dict keys"
+    )
+
+
+def _cpu_bn_ddp_worker(rank: int, world: int, port: int, out_dir: str) -> None:
+    """DDP must still wrap a plain (unconverted) BatchNorm1d fine on gloo/CPU."""
+    os.environ["MASTER_ADDR"] = "127.0.0.1"
+    os.environ["MASTER_PORT"] = str(port)
+    td.init_process_group("gloo", rank=rank, world_size=world)
+    try:
+        ctx = DistContext(rank=rank, local_rank=rank, world_size=world, backend="gloo")
+        trainer = Trainer.__new__(Trainer)
+        trainer.dist = ctx
+        trainer._ddp_modules = []
+
+        module = _BNStub()
+        wrapped = trainer._wrap_ddp(module, "cpu")
+        wrapped(_fixed_bn_batch()[rank::world])  # forward+DDP hookup must not raise
+
+        if rank == 0:
+            torch.save(
+                {"wrapped_type": type(wrapped).__name__, "bn_type": type(module.bn).__name__},
+                Path(out_dir) / "cpu_bn_ddp.pt",
+            )
+        td.barrier()
+    finally:
+        td.destroy_process_group()
+
+
+def test_batchnorm_still_wraps_on_the_cpu_harness_without_conversion(tmp_path):
+    """The fix must not break the gloo/CPU tests the rest of this suite runs on."""
+    import torch.multiprocessing as mp
+
+    mp.spawn(_cpu_bn_ddp_worker, args=(2, _free_port(), str(tmp_path)), nprocs=2, join=True)
+    result = torch.load(tmp_path / "cpu_bn_ddp.pt")
+
+    assert result["wrapped_type"] == "DistributedDataParallel"
+    assert result["bn_type"] == "BatchNorm1d"
+
+
+def test_tcn_dwell_batchnorm_layers_become_syncbatchnorm_on_cuda(monkeypatch):
+    """The real registry model this issue names, not just a hand-built stub.
+
+    TCNDwell, every ``*BN*`` ConvLSTM variant, ResNetDwell and ConvOnly all
+    default to BatchNorm; this is the architecture the issue calls out.
+    """
+    from leech.models import get_model
+
+    monkeypatch.setattr("torch.nn.parallel.DistributedDataParallel", _StubDDP)
+    trainer = Trainer.__new__(Trainer)
+    trainer.dist = DistContext(rank=0, local_rank=0, world_size=2, backend="nccl")
+    trainer._ddp_modules = []
+
+    model = get_model(
+        "TCNDwell",
+        signal_len=400,
+        kmer_len=11,
+        num_features=5,
+        hidden_channels=8,
+        num_layers=2,
+        kernel_size=3,
+    )
+    bn_before = sum(1 for m in model.modules() if isinstance(m, nn.BatchNorm1d))
+    assert bn_before > 0, "TCNDwell must be BatchNorm-default for this test to mean anything"
+
+    trainer._wrap_ddp(model, "cuda")
+
+    assert sum(1 for m in model.modules() if isinstance(m, nn.BatchNorm1d)) == 0
+    assert sum(1 for m in model.modules() if isinstance(m, nn.SyncBatchNorm)) == bn_before
+
+
+# --------------------------------------------------------------------------
 # Numerical equivalence: two ranks at half the batch == one rank at the batch
 # --------------------------------------------------------------------------
 

@@ -20,6 +20,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unaffected. Re-implementing feature importance or sequence ablation is a
   new feature with its own spec, not this fix. (#262)
 
+### Fixed
+
+- **BatchNorm models under `--gpus N` now sync statistics across ranks.**
+  `_wrap_ddp` converts BatchNorm to `SyncBatchNorm` before the CUDA DDP wrap,
+  so a BN-default architecture (`TCNDwell`, every `*BN*` ConvLSTM variant,
+  `ResNetDwell`, `ConvOnly`, `TransformerDwell`'s feature conv,
+  `NormMLPHead(norm_type=batchnorm)`) computes its running statistics over the
+  full global batch instead of its own rank's shard
+  (`--batch-size / world_size`). Previously silent: the run still converged
+  and reported plausible metrics, just for a different recipe than the
+  command line asked for, breaking the "same command line, same recipe at any
+  `--gpus`" invariant for a norm-type grid search. Gated on CUDA rather than
+  `world_size > 1` alone — SyncBatchNorm cannot run on CPU, and the
+  conversion never touches the `--gpus 1` path or checkpoint keys. (#273)
+
 ## [0.11.1] - 2026-09-12
 
 ### Changed
