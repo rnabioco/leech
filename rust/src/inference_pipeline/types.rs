@@ -28,14 +28,12 @@ pub(super) struct ChunkResult {
 }
 
 /// Per-chunk result for training (raw arrays, no pre-encoding).
-#[allow(dead_code)]
 pub(super) struct TrainingChunkResult {
     pub(super) signal: Vec<f32>,
     pub(super) sequence: String,
     pub(super) dwell: Vec<f32>,
     pub(super) features: Vec<f32>,
     pub(super) num_features: usize,
-    pub(super) kmer_len: usize,
     pub(super) read_id: String,
     pub(super) base_idx: i64,
     pub(super) focus_signal_pos: i64,

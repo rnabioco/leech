@@ -18,7 +18,7 @@ from leech._rust_accel import (
     rust_supports_softclip_recovery,
 )
 from leech.chunking import extraction_sequence
-from leech.constants import BELOW_THRESHOLD_LABEL
+from leech.constants import BELOW_THRESHOLD_LABEL, DEFAULT_REFINE_HALF_BANDWIDTH
 from leech.features import encode_signal_kmer, sequence_to_int
 from leech.model_loading import load_model_from_checkpoint
 from leech.models.inference_wrapper import ModelInferenceWrapper, TracedModelWrapper
@@ -417,7 +417,9 @@ def load_model_auto(
         # Pass through signal refinement parameters
         if remora_meta.get("refine_signal_map", False):
             config["refine_signal_map"] = True
-            config["refine_half_bandwidth"] = remora_meta.get("refine_half_bandwidth", 5)
+            config["refine_half_bandwidth"] = remora_meta.get(
+                "refine_half_bandwidth", DEFAULT_REFINE_HALF_BANDWIDTH
+            )
             config["refine_do_rough_rescale"] = remora_meta.get("refine_do_rough_rescale", True)
             config["refine_scale_iters"] = remora_meta.get("refine_scale_iters", -1)
             config["refine_kmer_center_idx"] = remora_meta.get("refine_kmer_center_idx", -1)

@@ -29,6 +29,7 @@ from torch.utils.data import DataLoader, DistributedSampler, Sampler, WeightedRa
 import leech
 from leech.chunking.table import ChunkTable
 from leech.cli_config import make_console
+from leech.constants import DEFAULT_REFINE_HALF_BANDWIDTH
 from leech.dataset import (
     LeechDataset,
     collate_fn,
@@ -2288,7 +2289,9 @@ def train_model(
         # requiring a clean query mapping drops 28% of charged reads against
         # 6% of uncharged. See ReferenceMotifSearcher.
         "require_query_mapping": prepare_metadata.get("require_query_mapping", True),
-        "refine_half_bandwidth": prepare_metadata.get("refine_half_bandwidth", 5),
+        "refine_half_bandwidth": prepare_metadata.get(
+            "refine_half_bandwidth", DEFAULT_REFINE_HALF_BANDWIDTH
+        ),
         "refine_do_rough_rescale": prepare_metadata.get("refine_do_rough_rescale", True),
         "refine_kmer_center_idx": prepare_metadata.get("refine_kmer_center_idx", -1),
         "recover_softclip_signal": prepare_metadata.get("recover_softclip_signal", False),

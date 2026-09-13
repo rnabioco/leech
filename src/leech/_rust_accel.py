@@ -34,7 +34,6 @@ try:
     from leech_core import extract_levels as _rs_extract_levels
     from leech_core import extract_training_chunks as _rs_extract_training_chunks
     from leech_core import preload_pod5_signals as _rs_preload_pod5_signals
-    from leech_core import read_pod5_batch as _rs_read_pod5_batch
     from leech_core import rough_rescale_quantile as _rs_rough_rescale_quantile
     from leech_core import seq_banded_dp as _rs_seq_banded_dp
 
@@ -51,7 +50,6 @@ except ImportError:
     _rs_extract_training_chunks = None
     _rs_extract_levels = None
     _rs_preload_pod5_signals = None
-    _rs_read_pod5_batch = None
     _rs_rough_rescale_quantile = None
     _rs_seq_banded_dp = None
     logger.debug("Rust acceleration not available, using pure Python fallbacks")

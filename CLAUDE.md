@@ -433,12 +433,13 @@ of the short file — silently, in one input order, and as an `IndexError` on lo
 in the other. The merge validates this up front and asserts every output member
 has one row per chunk before `np.savez`.
 
-**`prepare` never holds the corpus as a list.** `ChunkNpzWriter`/`ChunkSpool`
-take batches as they are extracted and spool each member to disk; peak is ~0.25x
-the payload rather than ~2.5x. The `.npz` it assembles is byte-compatible with
-`save_chunks`, which stays for callers that already have a list. The corpus is
-written twice (spill, then `.npz`) — that disk cost is the trade, and both
-prepare paths log it at the start of a run.
+**`prepare` never holds the corpus as a list.** `ChunkSpool` takes batches as
+they are extracted and spools each member to disk; peak is ~0.25x the payload
+rather than ~2.5x. The `.npz` it assembles (`write_npz`) is byte-compatible
+with `save_chunks`, which stays for callers that already have a list. The
+corpus is written twice (spill, then `.npz`) — that disk cost is the trade, and
+both prepare paths log it at the start of a run. (`ChunkNpzWriter`, a thin
+one-shot wrapper around `ChunkSpool` used only by tests, was removed in #277.)
 
 **`None` is written as `""`, never as the string "None".** `chunk.get(field, "")`
 returns the default only when the key is *missing*; a key present with the value

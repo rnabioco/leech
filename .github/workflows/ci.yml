@@ -116,7 +116,7 @@ jobs:
       - name: Install dependencies
         uses: ./.github/actions/install-with-rust
         with:
-          extras: test,rust,pod5,onnx
+          extras: test,rust,onnx
 
       - name: Run tests
         env:

@@ -12,7 +12,7 @@ from pathlib import Path
 import pysam
 
 from leech.constants import REQUIRED_BAM_TAGS
-from leech.features import MoveTable, extract_move_table
+from leech.features import MoveTable
 
 logger = logging.getLogger("leech.io.bam_reader")
 
@@ -199,7 +199,7 @@ class ReadInfo:
         """Resolve :attr:`reference_sequence` now and release the alignment.
 
         For callers that hold many ReadInfos at once and have no alignment list
-        of their own keeping those objects alive anyway (:func:`collect_read_infos`).
+        of their own keeping those objects alive anyway.
         """
         _ = self.reference_sequence
 
@@ -260,54 +260,6 @@ class MockAlignment:
         self.is_reverse = read_info.is_reverse
 
 
-def collect_read_infos(
-    bam_path: Path,
-    min_mapq: int = 0,
-    require_tags: list[str] | None = None,
-) -> list[ReadInfo]:
-    """
-    Collect lightweight read information from BAM file.
-
-    This is useful for two-pass processing where you first collect metadata,
-    then process reads in parallel.
-
-    Args:
-        bam_path: Path to BAM file
-        min_mapq: Minimum mapping quality
-        require_tags: List of required BAM tags (default: ["mv", "ns"])
-
-    Returns:
-        List of ReadInfo objects
-
-    Example:
-        >>> read_infos = collect_read_infos(Path("alignments.bam"))
-        >>> print(f"Found {len(read_infos)} reads")
-        >>> for info in read_infos[:5]:
-        ...     print(f"{info.read_id}: {len(info.sequence)} bases")
-    """
-    if require_tags is None:
-        require_tags = REQUIRED_BAM_TAGS
-
-    read_infos = []
-
-    for aln in iter_bam_alignments(bam_path, min_mapq=min_mapq, require_tags=require_tags):
-        try:
-            read_info = ReadInfo(aln)
-            # This one collects the whole BAM into a list with nothing else
-            # holding the alignments alive, so the lazy reference sequence is
-            # resolved here rather than pinning an AlignedSegment per read for
-            # the life of the list. Use `iter_read_info_batches` to get the
-            # laziness with bounded memory.
-            read_info.materialize_reference_sequence()
-            read_infos.append(read_info)
-        except Exception as e:
-            logger.warning(f"Skipping read {aln.query_name}: {e}")
-            continue
-
-    logger.info(f"Collected {len(read_infos)} read infos from {bam_path}")
-    return read_infos
-
-
 def iter_read_info_batches(
     bam_path: Path,
     batch_size: int = 5000,
@@ -317,13 +269,13 @@ def iter_read_info_batches(
     """
     Yield batches of ReadInfo objects from a BAM file.
 
-    Streaming alternative to collect_read_infos() that allows overlapping
-    BAM reading with downstream processing.
+    Streaming alternative to collecting the whole BAM into a list up front,
+    allowing overlapping BAM reading with downstream processing.
 
-    Unlike ``collect_read_infos`` this keeps :attr:`ReadInfo.reference_sequence`
-    lazy: a batch is bounded, so pinning its alignments until each read is
-    either used or pickled costs a few MB, and a run that never asks for the
-    reference sequence (``anchor="basecall"``) never pays to rebuild it.
+    This keeps :attr:`ReadInfo.reference_sequence` lazy: a batch is bounded,
+    so pinning its alignments until each read is either used or pickled costs
+    a few MB, and a run that never asks for the reference sequence
+    (``anchor="basecall"``) never pays to rebuild it.
 
     Args:
         bam_path: Path to BAM file
@@ -349,88 +301,3 @@ def iter_read_info_batches(
             batch = []
     if batch:
         yield batch
-
-
-class BAMReader:
-    """
-    Context manager for efficient BAM reading.
-
-    Provides high-level interface for reading BAM alignments with filtering.
-
-    Example:
-        >>> with BAMReader(Path("alignments.bam"), min_mapq=10) as reader:
-        ...     for aln in reader.iter_alignments():
-        ...         move_table = reader.extract_move_table(aln)
-        ...         print(f"{aln.query_name}: {move_table.num_bases} bases")
-    """
-
-    def __init__(
-        self,
-        bam_path: Path,
-        min_mapq: int = 0,
-        require_tags: list[str] | None = None,
-    ):
-        """
-        Initialize BAM reader.
-
-        Args:
-            bam_path: Path to BAM file
-            min_mapq: Minimum mapping quality
-            require_tags: List of required BAM tags (default: ["mv", "ns"])
-        """
-        self.bam_path = bam_path
-        self.min_mapq = min_mapq
-        self.require_tags = require_tags if require_tags is not None else REQUIRED_BAM_TAGS
-        self._bam = None
-
-    def __enter__(self):
-        """Open BAM file."""
-        self._bam = pysam.AlignmentFile(str(self.bam_path), "rb")
-        return self
-
-    def __exit__(self, _exc_type, _exc_val, _exc_tb):
-        """Close BAM file."""
-        if self._bam is not None:
-            self._bam.close()
-
-    def iter_alignments(self) -> Iterator[pysam.AlignedSegment]:
-        """
-        Iterate over filtered alignments.
-
-        Yields:
-            Filtered BAM alignments
-
-        Raises:
-            RuntimeError: If reader not opened (use as context manager)
-        """
-        if self._bam is None:
-            raise RuntimeError("BAMReader must be used as a context manager")
-
-        for aln in self._bam:
-            # Apply filters
-            if aln.is_unmapped or aln.is_secondary or aln.is_supplementary:
-                continue
-            if aln.mapping_quality < self.min_mapq:
-                continue
-            if not all(aln.has_tag(tag) for tag in self.require_tags):
-                continue
-            if aln.query_name is None or aln.query_sequence is None:
-                continue
-
-            yield aln
-
-    @staticmethod
-    def extract_move_table(aln: pysam.AlignedSegment) -> MoveTable:
-        """
-        Extract move table from alignment.
-
-        Args:
-            aln: BAM alignment
-
-        Returns:
-            MoveTable object
-
-        Raises:
-            ValueError: If required tags missing
-        """
-        return extract_move_table(aln)

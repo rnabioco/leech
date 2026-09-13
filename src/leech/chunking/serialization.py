@@ -510,7 +510,7 @@ def save_chunks(chunks: list[dict], output_path: Path, *, compressed: bool = Tru
         Members are stacked and written one at a time rather than collected
         into a ``np.savez`` call, so only one of them is resident at a time.
         Callers that do not already have the whole corpus as a list should use
-        :class:`ChunkNpzWriter`, which never builds one.
+        :class:`ChunkSpool`, which never builds one.
 
     Examples:
         >>> chunks = extract_training_chunks(read, motif="CCAGGC")
@@ -917,66 +917,6 @@ class ChunkSpool:
         self.close()
 
 
-class ChunkNpzWriter:
-    """Write one .npz from chunk batches, without ever holding the corpus.
-
-    The streaming counterpart of :func:`save_chunks`, for callers that produce
-    chunks a batch at a time (``data prepare``). Output is byte-compatible; see
-    :class:`ChunkSpool` for the mechanics and the disk-space trade-off.
-
-    Args:
-        output_path: Output file path (.npz appended if absent).
-        compressed: If True (default), compress members with zlib.
-        spill_dir: Where the temp files go. Defaults to the output directory.
-        batch_rows: Chunks buffered before a spill write.
-
-    Examples:
-        >>> with ChunkNpzWriter(Path("out/all.npz")) as writer:  # doctest: +SKIP
-        ...     for batch in batches:
-        ...         writer.append(batch)
-    """
-
-    def __init__(
-        self,
-        output_path: Path,
-        *,
-        compressed: bool = True,
-        spill_dir: Path | None = None,
-        batch_rows: int = 4096,
-    ):
-        self.output_path = Path(output_path)
-        self.output_path.parent.mkdir(parents=True, exist_ok=True)
-        self._spool = ChunkSpool(
-            spill_dir if spill_dir is not None else self.output_path.parent,
-            compressed=compressed,
-            batch_rows=batch_rows,
-        )
-
-    def append(self, chunks: list[dict]) -> None:
-        """Add a batch of chunks. The caller may drop them immediately after."""
-        self._spool.append(chunks)
-
-    @property
-    def n_chunks(self) -> int:
-        return self._spool.n_chunks
-
-    def close(self) -> None:
-        """Write the .npz and drop the spill files."""
-        try:
-            self._spool.write_npz(self.output_path)
-        finally:
-            self._spool.close()
-
-    def __enter__(self) -> "ChunkNpzWriter":
-        return self
-
-    def __exit__(self, exc_type, *_exc) -> None:
-        if exc_type is None:
-            self.close()
-        else:
-            self._spool.close()
-
-
 def load_seq_to_sig_csr(input_path: Path) -> tuple[np.ndarray, np.ndarray] | None:
     """Load the base-to-signal maps in CSR form: ``(values, offsets)``.
 
@@ -1177,81 +1117,3 @@ def load_chunks(input_path: Path, *, defer: Collection[str] = ()) -> list[dict]:
 
     logger.info(f"Loaded {len(chunks)} chunks from {input_path}")
     return chunks
-
-
-def get_chunk_statistics(chunks: list[dict]) -> dict:
-    """
-    Compute statistics about a list of chunks.
-
-    Args:
-        chunks: List of chunk dictionaries
-
-    Returns:
-        Dictionary with statistics:
-        - n_chunks: Number of chunks
-        - n_reads: Number of unique reads
-        - labels: Distribution of string labels
-        - label_ints: Distribution of numeric labels
-        - signal_lengths: Mean/std/min/max signal lengths
-        - sequence_lengths: Mean/std/min/max sequence lengths
-
-    Examples:
-        >>> chunks = load_chunks(Path("chunks.npz"))
-        >>> stats = get_chunk_statistics(chunks)
-        >>> print(f"Chunks: {stats['n_chunks']}")
-        >>> print(f"Reads: {stats['n_reads']}")
-        >>> print(f"Labels: {stats['labels']}")
-    """
-    if not chunks:
-        return {
-            "n_chunks": 0,
-            "n_reads": 0,
-            "labels": {},
-            "label_ints": {},
-            "signal_lengths": {"mean": 0, "std": 0, "min": 0, "max": 0},
-            "sequence_lengths": {"mean": 0, "std": 0, "min": 0, "max": 0},
-        }
-
-    # Count unique reads
-    unique_reads = {chunk["read_id"] for chunk in chunks}
-
-    # Label distribution
-    label_counts: dict[str, int] = {}
-    for chunk in chunks:
-        label = chunk.get("label")
-        if label is not None:
-            label_counts[label] = label_counts.get(label, 0) + 1
-
-    # Numeric label distribution
-    label_int_counts: dict[int, int] = {}
-    for chunk in chunks:
-        label_int = chunk.get("label_int")
-        if label_int is not None and label_int >= 0:
-            label_int_counts[label_int] = label_int_counts.get(label_int, 0) + 1
-
-    # Signal length statistics
-    signal_lengths = [len(chunk["signal"]) for chunk in chunks]
-    signal_stats = {
-        "mean": float(np.mean(signal_lengths)),
-        "std": float(np.std(signal_lengths)),
-        "min": int(np.min(signal_lengths)),
-        "max": int(np.max(signal_lengths)),
-    }
-
-    # Sequence length statistics
-    seq_lengths = [len(chunk["sequence"]) for chunk in chunks]
-    seq_stats = {
-        "mean": float(np.mean(seq_lengths)),
-        "std": float(np.std(seq_lengths)),
-        "min": int(np.min(seq_lengths)),
-        "max": int(np.max(seq_lengths)),
-    }
-
-    return {
-        "n_chunks": len(chunks),
-        "n_reads": len(unique_reads),
-        "labels": label_counts,
-        "label_ints": label_int_counts,
-        "signal_lengths": signal_stats,
-        "sequence_lengths": seq_stats,
-    }

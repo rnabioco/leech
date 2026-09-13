@@ -47,7 +47,6 @@ fn extract_training_chunks_from_read(
         let bi = base_idx as usize;
         let kmer_start = base_idx - cfg.kmer_ctx;
         let kmer_end = base_idx + cfg.kmer_ctx + 1;
-        let kmer_len = (kmer_end - kmer_start) as usize;
 
         // Signal chunk (same logic as inference)
         let focus_sig = cfg
@@ -164,7 +163,6 @@ fn extract_training_chunks_from_read(
             dwell: dwell_chunk,
             features: feat_flat,
             num_features,
-            kmer_len,
             read_id: rid.to_string(),
             base_idx,
             focus_signal_pos,

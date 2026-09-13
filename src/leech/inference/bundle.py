@@ -12,6 +12,7 @@ import torch
 from rich.progress import Progress
 
 from leech.configs import ChunkConfig, InferenceConfig, MotifConfig, SignalConfig
+from leech.constants import DEFAULT_REFINE_HALF_BANDWIDTH
 from leech.features import extract_move_table
 from leech.inference.aggregation import (
     aggregate_one_vs_all,
@@ -350,7 +351,7 @@ def run_bundle_inference(
         _warn_if_kmer_table_drifted(config.get("kmer_table_sha256"), kmer_table_path)
         bundle_refiner = SigMapRefiner.from_table(
             kmer_table_path,
-            half_bandwidth=config.get("refine_half_bandwidth", 5),
+            half_bandwidth=config.get("refine_half_bandwidth", DEFAULT_REFINE_HALF_BANDWIDTH),
             do_rough_rescale=config.get("refine_do_rough_rescale", True),
             scale_iters=config.get("refine_scale_iters", 2),
             center_idx=config.get("refine_kmer_center_idx", -1),
@@ -538,7 +539,9 @@ def run_bundle_inference(
             signal_kmer_context=signal_kmer_context,
             refine_signal_map=bundle_refine,
             signal_refiner=bundle_refiner,
-            refine_half_bandwidth=config.get("refine_half_bandwidth", 5),
+            refine_half_bandwidth=config.get(
+                "refine_half_bandwidth", DEFAULT_REFINE_HALF_BANDWIDTH
+            ),
             refine_scale_iters=config.get("refine_scale_iters", 2),
             signal_in_channels=bundle_signal_in_channels,
             base_justify=base_justify,
@@ -868,7 +871,7 @@ def run_bundle_inference(
             logger.info(f"Output written to: {output_path}")
             return
 
-        with POD5Reader(pod5_path, backend=backend) as pod5_reader:
+        with POD5Reader(pod5_path) as pod5_reader:
             for aln_batch in iter_bam_batches(
                 bam_path, batch_size=read_batch_size, min_mapq=min_mapq
             ):

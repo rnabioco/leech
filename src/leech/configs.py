@@ -14,7 +14,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from leech.constants import DEFAULT_KMER_CONTEXT, DEFAULT_SIGNAL_CONTEXT
+from leech.constants import (
+    DEFAULT_KMER_CONTEXT,
+    DEFAULT_REFINE_HALF_BANDWIDTH,
+    DEFAULT_SIGNAL_CONTEXT,
+)
 
 if TYPE_CHECKING:
     from leech.signal_refine import SigMapRefiner
@@ -31,7 +35,7 @@ class SignalConfig:
     pa_stdev: float | None = None
     refine_signal_map: bool = True
     refine_scale_iters: int = 2
-    refine_half_bandwidth: int = 5
+    refine_half_bandwidth: int = DEFAULT_REFINE_HALF_BANDWIDTH
     refine_do_rough_rescale: bool = True
     refine_kmer_center_idx: int = -1
     signal_refiner: SigMapRefiner | None = None

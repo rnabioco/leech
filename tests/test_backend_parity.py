@@ -35,10 +35,11 @@ from __future__ import annotations
 import numpy as np
 import pytest
 from conftest import LEVELS_FILE, TRNA_BAM, TRNA_FIXTURES_AVAILABLE, TRNA_POD5, TRNA_REF
+from legacy_bam_helpers import collect_read_infos
 
 from leech.chunking import save_chunks
 from leech.configs import ChunkConfig, LabelConfig, MotifConfig, PrepareConfig, SignalConfig
-from leech.io import collect_read_infos, get_motif_searcher, get_reference_sequences
+from leech.io import get_motif_searcher, get_reference_sequences
 
 pytestmark = pytest.mark.skipif(not TRNA_FIXTURES_AVAILABLE, reason="tRNA fixtures not available")
 

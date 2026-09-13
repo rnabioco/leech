@@ -1,11 +1,16 @@
 """Every base encoder in the tree must agree on the alphabet.
 
-There are five: two in Python (``preparation.encoding.encode_kmer`` and
-``encoding.seq_to_int``), one more in ``features.sequence_to_int``, and two in
-Rust (``sequence_to_int`` and ``encode_base_onehot`` in
-``rust/src/inference_pipeline/features.rs``). They are reached by different
-code paths for the same chunk depending on backend and ``seq_encoding``, so a
-disagreement about a single letter is a disagreement about the model's input.
+There are four in production: ``preparation.encoding.encode_kmer`` and
+``features.sequence_to_int`` in Python, and ``sequence_to_int`` /
+``encode_base_onehot`` in Rust (``rust/src/inference_pipeline/features.rs``).
+They are reached by different code paths for the same chunk depending on
+backend and ``seq_encoding``, so a disagreement about a single letter is a
+disagreement about the model's input.
+
+``encoding.seq_to_int`` (below, moved from ``leech.preparation.encoding`` in
+#277 -- it had no production callers) rides along here purely as a fifth,
+independently-written reference implementation that the other four are
+checked against.
 
 ``encode_kmer`` mapped only ACGT, so U -- present in RNA references and some
 basecaller output -- became an all-zero column there and a T everywhere else.
@@ -15,9 +20,10 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from legacy_encoding import seq_to_int
 
 from leech.features import sequence_to_int
-from leech.preparation.encoding import encode_kmer, seq_to_int
+from leech.preparation.encoding import encode_kmer
 
 ACGT = "ACGT"
 

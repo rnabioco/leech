@@ -9,11 +9,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
+from legacy_encoding import int_to_seq, one_hot_encode_sequence, seq_to_int
 
 from leech.chunking import LeechRead, extract_training_chunks, load_chunks, save_chunks
 from leech.configs import ChunkConfig, LabelConfig, MotifConfig
 from leech.io.motif_search import find_motif_in_sequence, map_reference_to_query_coords
-from leech.preparation import encode_kmer, int_to_seq, one_hot_encode_sequence, seq_to_int
+from leech.preparation import encode_kmer
 from leech.splitting import split_chunks_by_read
 
 
@@ -1289,7 +1290,7 @@ class TestReadInfoReferenceSequence:
 
     def test_collect_read_infos_holds_no_alignments(self):
         """The unbounded collector must stay a lightweight container."""
-        from leech.io.bam_reader import collect_read_infos
+        from legacy_bam_helpers import collect_read_infos
 
         infos = collect_read_infos(self.BAM, min_mapq=0)
         assert infos

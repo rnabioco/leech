@@ -16,18 +16,41 @@ from __future__ import annotations
 import numpy as np
 import pytest
 from conftest import LEVELS_FILE, TRNA_BAM, TRNA_FIXTURES_AVAILABLE, TRNA_POD5, TRNA_REF
+from legacy_bam_helpers import collect_read_infos
 
 from leech.configs import ChunkConfig, LabelConfig, MotifConfig, PrepareConfig, SignalConfig
 from leech.constants import DEFAULT_KMER_CONTEXT
-from leech.io import collect_read_infos, get_reference_sequences
+from leech.io import get_reference_sequences
 from leech.io.pod5_reader import (
     _DATASET_CACHE,
-    get_cached_reader,
-    read_pod5_signals_batch,
+    _batch_from_dataset,
+    _get_cached_dataset,
+    _get_cached_entry,
     read_pod5_signals_batch_cached,
 )
 
 pytestmark = pytest.mark.skipif(not TRNA_FIXTURES_AVAILABLE, reason="tRNA fixtures not available")
+
+
+def get_cached_reader(pod5_path):
+    """Return ``(dataset, run_infos)`` for a POD5 source, cached by path.
+
+    Moved here from ``leech.io.pod5_reader`` in #277: production code reaches
+    the same cache through ``read_pod5_signals_batch_cached``, and this thin
+    wrapper (which exposes the raw ``DatasetReader`` for identity checks) had
+    no callers outside this test.
+    """
+    return _get_cached_entry(pod5_path)
+
+
+def read_pod5_signals_batch(pod5_path, read_ids):
+    """Batch POD5 read using a cached :class:`DatasetReader`, warning on misses.
+
+    Moved here from ``leech.io.pod5_reader`` in #277: it differed from the
+    kept ``read_pod5_signals_batch_cached`` only in ``warn_missing=True`` and
+    had no production callers.
+    """
+    return _batch_from_dataset(_get_cached_dataset(pod5_path), read_ids, warn_missing=True)
 
 
 # ---------------------------------------------------------------------------
