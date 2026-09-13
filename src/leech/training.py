@@ -683,10 +683,34 @@ class Trainer:
 
         Returns the module itself at ``world_size == 1``, so nothing about the
         single-GPU path changes -- not the type, not the forward, not the keys.
+
+        BatchNorm otherwise normalizes over its own rank's shard of the global
+        batch (``--batch-size / world_size``), silently: the run still
+        converges and reports plausible metrics, just for a different recipe
+        than the command line asked for. ``convert_sync_batchnorm`` replaces
+        every ``BatchNorm*d`` child with ``SyncBatchNorm`` in place -- same
+        parameter/buffer names, so checkpoint keys are unaffected -- and
+        reduces statistics across every rank instead.
+
+        Gated on CUDA, not just ``world_size > 1``: SyncBatchNorm is a
+        GPU-only construct and DDP itself refuses to wrap one on a CPU module
+        (``SyncBatchNorm layers only work with GPU modules``). The gloo/CPU
+        path exists in this codebase only to exercise DDP's sharding and
+        gradient-sync mechanics in tests; it never trains a real model, so
+        there is no batch-norm statistic to fix there.
+
+        Known cost, not a bug: SyncBatchNorm's cross-rank reduction happens in
+        its own forward pass, so it fires on every gradient-accumulation
+        micro-step, not just the final one -- ``_accumulating``'s
+        ``no_sync()`` only suppresses DDP's backward-hook allreduce and has no
+        say over a norm layer's own collective.
         """
         if not self.dist.enabled:
             return module
         from torch.nn.parallel import DistributedDataParallel
+
+        if device.startswith("cuda"):
+            module = nn.SyncBatchNorm.convert_sync_batchnorm(module)
 
         wrapped = DistributedDataParallel(
             module,
