@@ -2299,8 +2299,18 @@ def train_model(
     # Drawing a batch to learn a shape spawns persistent DataLoader workers
     # and, under a weighted sampler, one draw from the multinomial (a
     # 6.7M-way draw on the production corpus) purely to inspect .shape.
-    if train_dataset._needs_features and train_dataset._features_tensor is not None:
-        num_features = train_dataset._features_tensor.shape[1]
+    if train_dataset._needs_features:
+        if train_dataset._features_tensor is not None:
+            num_features = train_dataset._features_tensor.shape[1]
+        elif train_dataset._features:
+            # Degraded to per-chunk list storage (_TensorFill falls back here
+            # when a chunk's feature shape disagrees with the first one) --
+            # the tensor branch above is empty in this state even though the
+            # corpus genuinely has features, so this is not the "no features"
+            # case. Each item is (num_features, feat_width).
+            num_features = train_dataset._features[0].shape[0]
+        else:
+            num_features = 1
     else:
         num_features = 1
     signal_in_channels = train_dataset.signal_channels
