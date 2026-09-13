@@ -168,12 +168,15 @@ class ModelInferenceWrapper:
         Returns:
             Model logits
         """
-        signal = batch["signal"].to(device)
-        sequence = batch["sequence"].to(device)
+        # non_blocking=True overlaps the H2D copy with the CUDA queue instead
+        # of syncing the stream at the start of every step -- pinned memory
+        # (both loaders set pin_memory=True) is what makes this safe/async.
+        signal = batch["signal"].to(device, non_blocking=True)
+        sequence = batch["sequence"].to(device, non_blocking=True)
 
         output: torch.Tensor
         if self.requires_features:
-            features = batch["features"].to(device)
+            features = batch["features"].to(device, non_blocking=True)
             output = self.forward_module(signal, sequence, features)
         else:
             output = self.forward_module(signal, sequence)
@@ -238,12 +241,15 @@ class TracedModelWrapper:
 
     def forward_batch(self, batch: dict, device: str) -> torch.Tensor:
         """Forward pass from batch dictionary."""
-        signal = batch["signal"].to(device)
-        sequence = batch["sequence"].to(device)
+        # non_blocking=True overlaps the H2D copy with the CUDA queue instead
+        # of syncing the stream at the start of every step -- pinned memory
+        # (both loaders set pin_memory=True) is what makes this safe/async.
+        signal = batch["signal"].to(device, non_blocking=True)
+        sequence = batch["sequence"].to(device, non_blocking=True)
 
         output: torch.Tensor
         if self.requires_features:
-            features = batch["features"].to(device)
+            features = batch["features"].to(device, non_blocking=True)
             output = self.model(signal, sequence, features)
         else:
             output = self.model(signal, sequence)

@@ -869,6 +869,40 @@ class TestEpochMetricAccumulation:
             f"extra batches; epoch metrics must be read once, not per batch"
         )
 
+    def test_batch_tensors_move_non_blocking(self, grouped_chunks_file, model_config, monkeypatch):
+        """Every batch tensor H2D copy must be async (issue #272 item 1).
+
+        Both loaders set ``pin_memory=True``, so a blocking ``.to(device)``
+        pays a stream sync it does not need to. Distinguishes a device
+        transfer from a dtype-only cast (e.g. ``.to(torch.float64)``) by
+        whether the first positional argument is a device-like value; a
+        dtype cast on an already-placed tensor is unaffected by this rule.
+        """
+        # Built before the patch: one-time model/head placement at construction
+        # (self.model.to(device)) is not a per-batch transfer and is exempt.
+        trainer = _trainer_over(grouped_chunks_file, model_config, n_batches=2)
+
+        offenders = []
+        original_to = torch.Tensor.to
+        sources = {Path(leech.training.__file__).name, "inference_wrapper.py"}
+
+        def spy(tensor, *args, **kwargs):
+            caller = sys._getframe(1).f_code.co_filename
+            is_device_like = (args and isinstance(args[0], (str, torch.device))) or (
+                "device" in kwargs
+            )
+            if Path(caller).name in sources and is_device_like:
+                if not kwargs.get("non_blocking"):
+                    offenders.append((Path(caller).name, sys._getframe(1).f_lineno))
+            return original_to(tensor, *args, **kwargs)
+
+        monkeypatch.setattr(torch.Tensor, "to", spy)
+
+        trainer.train_epoch()
+        trainer.validate()
+
+        assert not offenders, f"blocking device .to() calls found at: {sorted(set(offenders))}"
+
     def test_validate_reads_at_most_two_tensors_per_batch(
         self, grouped_chunks_file, model_config, monkeypatch
     ):

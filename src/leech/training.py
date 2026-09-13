@@ -895,7 +895,7 @@ class Trainer:
         assert self.adversarial_head is not None
         assert self.adversarial_criterion is not None
         repr_vec = self.model_wrapper.captured_repr
-        confound_labels = batch["confound_label"].to(self.device)
+        confound_labels = batch["confound_label"].to(self.device, non_blocking=True)
         if repr_vec is None:
             return (
                 torch.tensor(0.0, device=self.device),
@@ -916,7 +916,7 @@ class Trainer:
         """
         assert self.cl_regression_head is not None
         repr_vec = self.model_wrapper.captured_repr
-        cl_targets = batch["cl_target"].to(self.device)
+        cl_targets = batch["cl_target"].to(self.device, non_blocking=True)
         if repr_vec is None:
             return torch.tensor(0.0, device=self.device)
         mask = cl_targets >= 0
@@ -943,7 +943,7 @@ class Trainer:
         when those heads are active, and ``adv`` is
         ``(adv_loss, adv_preds, adv_labels)`` or None.
         """
-        labels = batch["label"].to(self.device)
+        labels = batch["label"].to(self.device, non_blocking=True)
 
         # Apply label smoothing to binary targets (BCE/focal only;
         # CrossEntropyLoss handles its own smoothing via constructor arg).
@@ -1195,7 +1195,7 @@ class Trainer:
         with torch.inference_mode():
             for batch in self.val_loader:
                 # Move labels to device
-                labels = batch["label"].to(self.device)
+                labels = batch["label"].to(self.device, non_blocking=True)
 
                 # Adapt labels for CrossEntropyLoss
                 if self.loss_type == "cross_entropy":
@@ -1234,7 +1234,7 @@ class Trainer:
                     and "cl_target" in batch
                     and self.model_wrapper.captured_repr is not None
                 ):
-                    cl_targets = batch["cl_target"].to(self.device)
+                    cl_targets = batch["cl_target"].to(self.device, non_blocking=True)
                     cl_mask = cl_targets >= 0
                     if cl_mask.any():
                         cl_preds = self.cl_regression_head(
