@@ -2294,11 +2294,16 @@ def train_model(
             **val_loader_kwargs,
         )
 
-    # Determine num_features and signal_channels from first batch
-    first_batch = next(iter(train_loader))
-    num_features = first_batch.get("features", torch.zeros(1, 1, kmer_len)).shape[1]
-    signal_shape = first_batch["signal"].shape
-    signal_in_channels = signal_shape[1] if len(signal_shape) == 3 else 1
+    # num_features and signal_channels come straight from the dataset's own
+    # state -- it already computed both while pre-tensorizing (#272 item 4).
+    # Drawing a batch to learn a shape spawns persistent DataLoader workers
+    # and, under a weighted sampler, one draw from the multinomial (a
+    # 6.7M-way draw on the production corpus) purely to inspect .shape.
+    if train_dataset._needs_features and train_dataset._features_tensor is not None:
+        num_features = train_dataset._features_tensor.shape[1]
+    else:
+        num_features = 1
+    signal_in_channels = train_dataset.signal_channels
 
     # Auto-detect num_out from training data when not explicitly set
     if num_out <= 1:
