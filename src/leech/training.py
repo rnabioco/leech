@@ -514,6 +514,16 @@ class Trainer:
         # below already keys off, and cfg.num_out always has a concrete int
         # (defaulted to 1), so unpacking it would turn "not yet known" into
         # "1" for every caller that passes num_out=None.
+        #
+        # self.cfg is currently write-only: nothing in this class reads it
+        # back, and it does not enter a checkpoint payload. It is also not
+        # re-synced after construction, so self.cfg.pos_weight (float-typed
+        # here; the Tensor actually used is a local, never assigned back),
+        # self.cfg.num_out (may differ from the auto-detected value above)
+        # and self.cfg.checkpoint_metric (pre-"auto"-resolution) can all
+        # disagree with what the run actually used. Do not read self.cfg
+        # expecting it to reflect resolved values until something here
+        # actually consumes it and that gap gets closed.
         self.cfg = cfg
 
         # Which rank this is. SINGLE has world_size 1, so every guard below is

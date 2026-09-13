@@ -285,23 +285,78 @@ class TestGridSearchStreamsTheCorpus:
 
         assert seen == [pytest.approx(expected)]
 
-    def test_grid_point_worker_forwards_every_key_run_grid_point_accepts(self):
-        """`_grid_point_worker` can no longer silently drop a grid_args key.
+    def test_grid_point_worker_and_sequential_path_pass_exactly_run_grid_points_keys(
+        self, grid_corpus, tmp_path, monkeypatch
+    ):
+        """Both dispatch paths must pass run_grid_point exactly its parameters.
 
-        It used to hand-list ~35 of run_grid_point's parameters and simply
-        missed `oversample_minority` (#270): --parallel > 1 always trained
-        with it off while --parallel 1 (which called run_grid_point(**args)
-        directly) honored it. The worker now does the same `**args` spread,
-        so the only way a key can be missing is if it were never in
-        grid_args to begin with -- this asserts the two are exactly the
-        parameters `run_grid_point` accepts, with no `self`.
+        `_grid_point_worker` used to hand-list ~35 of run_grid_point's
+        parameters and simply missed `oversample_minority` (#270):
+        `--parallel > 1` always trained with it off while `--parallel 1`
+        (`run_grid_point(**args)` directly) honored it. A prior version of
+        this test only checked that `_grid_point_worker`'s source contained
+        the literal substring `"run_grid_point(**args)"` -- a source-text
+        match that would stay green even if `grid_args` drifted out of sync
+        with a signature change, since nothing it asserts is actually about
+        keys. Issue #270's own acceptance criteria calls for comparing
+        `inspect.signature(run_grid_point)` against the keys actually
+        passed, so this does that directly: it records the kwargs
+        run_grid_point is called with (in-process, so fork-based
+        `--parallel` dispatch isn't exercised here -- both dispatchers draw
+        from the identical `grid_args` list built once in run_grid_search,
+        so proving that list's shape here covers both).
         """
+        import leech.gridsearch as gs
         from leech.gridsearch import _grid_point_worker
 
-        worker_src = inspect.getsource(_grid_point_worker)
-        assert "run_grid_point(**args)" in worker_src, (
-            "the worker must forward the whole args dict, not re-list keys"
+        train, val = grid_corpus
+        expected_params = set(inspect.signature(gs.run_grid_point).parameters.keys())
+
+        monkeypatch.setattr(gs, "train_model", lambda **kwargs: _fake_history())
+
+        seen_keys: list[set] = []
+        original_run_grid_point = gs.run_grid_point
+
+        def recording_run_grid_point(**kwargs):
+            seen_keys.append(set(kwargs.keys()))
+            return original_run_grid_point(**kwargs)
+
+        monkeypatch.setattr(gs, "run_grid_point", recording_run_grid_point)
+
+        run_grid_search(_config(train, val, tmp_path / "seq", n_parallel=1))
+
+        assert seen_keys, "run_grid_point was never called"
+        for keys in seen_keys:
+            assert keys == expected_params, (
+                f"grid_args keys {keys} != run_grid_point's parameters {expected_params}"
+            )
+
+        # _grid_point_worker's own forwarding, called directly (no fork, so
+        # the same in-process recorder observes it) with a hand-built args
+        # dict -- this is what --parallel > 1 actually dispatches, and must
+        # forward the identical key set, not a re-listed subset.
+        seen_keys.clear()
+        worker_args = {
+            "train_data_path": train,
+            "val_data_path": val,
+            "model_name": "ConvLSTMDwell",
+            "output_dir": tmp_path / "worker",
+            "left_context": 200,
+            "right_context": 200,
+            "kmer_len": 11,
+            "device": "cpu",
+            "seed": 42,
+            "cfg": TrainConfig(epochs=1, batch_size=8, motif="CCAGGC"),
+            "dwell_offset": 0,
+            "pos_weight": None,
+            "num_workers": 0,
+            "selection_metric": "auto",
+        }
+        assert set(worker_args.keys()) == expected_params, (
+            "this test's own args dict has drifted from run_grid_point's signature"
         )
+        _grid_point_worker(worker_args)
+        assert seen_keys == [expected_params]
 
     def test_oversample_minority_reaches_train_model_under_parallel(
         self, grid_corpus, tmp_path, monkeypatch
