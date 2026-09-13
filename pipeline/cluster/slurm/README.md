@@ -60,6 +60,17 @@ snakemake --profile cluster/slurm-testing --configfile config/samples-alpine.yam
 - Shorter runtimes: 2-4 hours max (vs 8-24 hours)
 - Uses `testing` QoS for faster scheduling
 
+### CPU Training Runs
+
+For CPU-only training/eval/inference/grid-search (no GPU queue wait, ~10-50x
+slower), use the CPU profile and set `use_cpu_training: true` in
+`config/config.yaml` together -- see that profile's header for why both have
+to change:
+
+```bash
+snakemake --profile cluster/slurm-cpu --configfile config/samples-alpine.yaml <target>
+```
+
 ### Orchestrated runs
 
 Submit the workflow through the Slurm executor with an orchestrator job that
@@ -95,9 +106,15 @@ Resources are configured at three levels:
    - Training jobs get longer runtime and more memory
    - Lightweight tasks use minimal resources
 
-3. **Snakefile Resources**: Can be overridden in rule definitions
+3. **Snakefile Resources** (`resources:` in a rule): Can supply keys a
+   rule-specific override leaves unset (e.g. `train_pairwise_aa`'s `mem_mb`/
+   `gres`, which scale with the `train_gpus` config key)
 
-Priority: Snakefile > set-resources > default-resources
+Priority: `set-resources` > Snakefile `resources:` > `default-resources` --
+a per-rule override in `config.yaml` always wins over what the rule itself
+computes, which is why CPU vs. GPU mode is a profile choice
+(`cluster/slurm` vs. `cluster/slurm-cpu`) for the keys that differ by mode,
+rather than a `use_cpu_training`-conditional lambda in every rule.
 
 ## Resource Specifications
 

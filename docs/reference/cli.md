@@ -43,7 +43,7 @@ leech data prepare --pod5 FILE --bam FILE --output-dir DIR [OPTIONS]
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--feature-set STR` | `signal+dwell+levels` | Features to extract (combine with `+`) |
-| `--signal-context LEFT RIGHT` | *(symmetric 200/200)* | Asymmetric signal window as two ints (e.g. `--signal-context 90 450`) |
+| `--signal-context LEFT RIGHT` | *(symmetric 225/225)* | Asymmetric signal window as two ints (e.g. `--signal-context 90 450`) |
 | `--feature-start INT` | `-5` | Feature window start offset from focus base (negative = toward tRNA body) |
 | `--feature-end INT` | `5` | Feature window end offset from focus base (positive = toward adaptor) |
 

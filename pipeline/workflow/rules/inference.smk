@@ -19,20 +19,9 @@ rule infer_pairwise_aa:
         bai=INFER_DIR + "/pairwise/{pair}/{sample}_predictions.bam.bai",
     log:
         INFER_DIR + "/pairwise/{pair}/{sample}_infer.log",
-    resources:
-        slurm_partition=lambda wildcards, attempt: (
-            "amilan" if config.get("use_cpu_training", False) else "aa100"
-        ),
-        runtime=lambda wildcards, attempt: (
-            960 if config.get("use_cpu_training", False) else 240
-        ),
-        cpus_per_task=lambda wildcards, attempt: (
-            16 if config.get("use_cpu_training", False) else 4
-        ),
-        mem_mb=8000,
-        gres=lambda wildcards, attempt: (
-            "" if config.get("use_cpu_training", False) else "gpu:1"
-        ),
+    # slurm_partition/runtime/cpus_per_task/mem_mb/gres for this rule live in
+    # the cluster profile (pipeline/cluster/slurm{,-cpu}/config.yaml) -- see
+    # train.smk's train_pairwise_aa for why.
     params:
         model_dir=MODELS_DIR + "/pairwise/{pair}",
         batch_size=config.get("infer_batch_size", 256),

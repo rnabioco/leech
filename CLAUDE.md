@@ -1046,7 +1046,7 @@ The workflow is designed to integrate with the leech CLI commands and supports b
 4. **Anchor modes**: `reference` (default) anchors chunks to reference coordinates via CIGAR (matches Remora `--reference-anchored` behavior); `basecall` anchors to basecalled coordinates
 5. **Reference sequences**: For reference-based motif search, BAM must contain @SQ sequences in header OR provide `--reference-fasta` path
 6. **Signal orientation**: RNA signals are auto-reversed (3'→5' to 5'→3'). Use `--no-reverse-signal` for DNA data
-7. **Edge handling**: Chunks require sufficient context (default: 200 samples left/right for signal, 5 bases for k-mer)
+7. **Edge handling**: Chunks require sufficient context (default: 225 samples left/right for signal -- `DEFAULT_SIGNAL_CONTEXT` in `constants.py`, not 200 -- 5 bases for k-mer)
 8. **Feature alignment**: All three model inputs (signal, sequence, features) must be temporally aligned after convolution layers
 
 ## Dependencies

@@ -20,8 +20,8 @@ rule prepare_chunks:
         all=CHUNKS_DIR + "/{sample}/all.npz",
     log:
         CHUNKS_DIR + "/{sample}/prepare.log",
-    wildcard_constraints:
-        sample="[^/]+",  # Sample name cannot contain slashes (excludes merged/*/)
+    # `sample` is constrained globally (Snakefile) to exclude "/", so this
+    # rule's output can't be mistaken for a path under merged/, optimized/, etc.
     threads: config.get("workers", 4)  # Match threads to workers from config
     params:
         output_dir=CHUNKS_DIR + "/{sample}",
@@ -32,22 +32,12 @@ rule prepare_chunks:
         skip_motif_indels=config.get("skip_motif_indels", True),
         workers=config.get("workers", 4),
         chunk_size=config.get("chunk_size", 100),
-        label=lambda wildcards: config["samples"][wildcards.sample].get("label", None),
-        # Conditional arguments using lambda functions
-        ref_fasta_arg=lambda wildcards: (
-            f"--reference-fasta {config.get('reference_fasta', None)}"
-            if config.get("reference_fasta", None)
-            and config.get("reference_fasta", None) != "None"
-            else ""
-        ),
-        skip_indels_arg=lambda wildcards: (
-            "--skip-motif-indels" if config.get("skip_motif_indels", True) else ""
-        ),
-        label_arg=lambda wildcards: (
-            f"--label {config['samples'][wildcards.sample].get('label', None)}"
-            if config["samples"][wildcards.sample].get("label", None)
-            else ""
-        ),
+        # Shared with the grid-search re-prepare rules (grid_search.smk,
+        # compare_models.smk) so the arg-building logic lives in one place.
+        ref_fasta_arg=build_reference_fasta_arg(),
+        skip_indels_arg=build_skip_indels_arg(),
+        label_arg=lambda wildcards: build_label_arg(wildcards),
+        signal_context_arg=build_signal_context_arg(),
         slurm_extra="",  # No GPU needed for data preparation
     shell:
         """
@@ -61,6 +51,7 @@ rule prepare_chunks:
             {params.ref_fasta_arg} \
             {params.skip_indels_arg} \
             {params.label_arg} \
+            {params.signal_context_arg} \
             --workers {params.workers} \
             --chunk-size {params.chunk_size} \
             --no-split \
