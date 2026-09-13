@@ -14,6 +14,8 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 
+from leech.constants import DEFAULT_SEQ_ENCODING_FALLBACK
+
 logger = logging.getLogger("leech.model_export")
 
 
@@ -42,7 +44,7 @@ def _build_example_inputs(
 
     signal_len = config["signal_len"]
     kmer_len = config["kmer_len"]
-    seq_encoding = config.get("seq_encoding", "base_onehot")
+    seq_encoding = config.get("seq_encoding", DEFAULT_SEQ_ENCODING_FALLBACK)
     signal_kmer_context = config.get("signal_kmer_context", [4, 4])
 
     if seq_encoding == "signal_kmer":

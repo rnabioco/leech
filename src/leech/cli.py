@@ -1828,6 +1828,15 @@ def predict(
 
     from leech.commands.predict import handle_predict
 
+    # An explicit CLI value that happens to equal its own default (e.g.
+    # `--motif-offset 0`) must still be checked against the model config
+    # rather than silently losing to it -- see InferenceSpec.from_config.
+    _ctx = click.get_current_context()
+    parameter_sources = {
+        name: _ctx.get_parameter_source(name) is ParameterSource.COMMANDLINE
+        for name in ("motif", "motif_offset", "base_justify", "anchor")
+    }
+
     if reference_anchored:
         warnings.warn(
             "--reference-anchored is deprecated, use --anchor reference instead",
@@ -1835,6 +1844,11 @@ def predict(
             stacklevel=2,
         )
         anchor = "reference"
+        # The deprecated flag is itself an explicit request for anchor, same
+        # as --anchor reference would be -- without this, a model config
+        # recording anchor="basecall" silently wins over it instead of
+        # raising the conflict InferenceSpec.from_config exists to catch.
+        parameter_sources["anchor"] = True
 
     # Parse --copy-tags into a list
     parsed_copy_tags = [t.strip() for t in copy_tags.split(",") if t.strip()] if copy_tags else None
@@ -1846,8 +1860,6 @@ def predict(
     elif output_name.endswith(".bam"):
         output_format = "bam"
     else:
-        import rich_click as click
-
         raise click.UsageError(
             f"Cannot determine output format from extension: {output}. "
             "Use .bam for BAM output or .tsv / .tsv.gz for TSV output."
@@ -1880,6 +1892,7 @@ def predict(
         no_compile=no_compile,
         output_format=output_format,
         copy_tags=parsed_copy_tags,
+        parameter_sources=parameter_sources,
     )
 
 

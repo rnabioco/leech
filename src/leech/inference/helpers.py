@@ -4,7 +4,9 @@ import array
 import json
 import logging
 import threading
-from collections.abc import Callable, Hashable
+from collections.abc import Callable, Hashable, Mapping
+from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -17,16 +19,39 @@ from leech._rust_accel import (
     rust_supports_norm_method,
     rust_supports_softclip_recovery,
 )
-from leech.chunking import extraction_sequence
-from leech.constants import BELOW_THRESHOLD_LABEL, DEFAULT_REFINE_HALF_BANDWIDTH
-from leech.features import encode_signal_kmer, sequence_to_int
+from leech.chunking import extraction_sequence, feature_window_from_metadata
+from leech.constants import (
+    BELOW_THRESHOLD_LABEL,
+    DEFAULT_REFINE_HALF_BANDWIDTH,
+    DEFAULT_SEQ_ENCODING_FALLBACK,
+)
+from leech.features import encode_signal_kmer, encode_signal_kmer_batch, sequence_to_int
 from leech.model_loading import load_model_from_checkpoint
 from leech.models import requires_features as _requires_features
+from leech.models import wide_features as _wide_features
 from leech.models.inference_wrapper import ModelInferenceWrapper, TracedModelWrapper
 from leech.models.remora_compat import RemoraModelWrapper
 from leech.preparation import encode_kmer
 
 logger = logging.getLogger("leech.inference")
+
+
+def is_multiclass(config: Mapping) -> bool:
+    """Whether a model's config describes a categorical (softmax) output.
+
+    One definition, for every place that decides how predictions are
+    represented, tagged and calibrated: ``num_out > 1``. Before this,
+    ``evaluation.py`` and ``commands/calibrate.py`` used ``> 2`` here while
+    predict used ``> 1``, so a 2-output cross-entropy model got multiclass BAM
+    tags (``aa``/``pn``/``pp``) from predict but binary Platt calibration that
+    predict never applied to it (issue #269).
+
+    This is a different question from ``Trainer``'s internal ``_num_out > 2``
+    branches in the validation loop, which pick a *metric* (macro-F1 plus
+    accuracy for 3+ classes vs. an AUROC-style treatment for a 1- or 2-output
+    model) given an already-known loss type, and are left alone here.
+    """
+    return config.get("num_out", 1) > 1
 
 
 def _write_prediction_tags(
@@ -127,6 +152,8 @@ def _check_config_consistency[T](
     cli_value: T,
     config_value: T | None,
     cli_default: T,
+    *,
+    explicit: bool | None = None,
 ) -> T:
     """Resolve inference param from config, erroring on CLI conflict.
 
@@ -134,9 +161,18 @@ def _check_config_consistency[T](
     - config has value + CLI is default -> use config (normal auto-read)
     - config has value + CLI differs   -> raise InferenceConfigError
     - config is None/missing           -> use CLI value (old models without field)
+
+    ``explicit``, when given, comes from click's own
+    ``get_parameter_source(param_name) is COMMANDLINE`` rather than being
+    inferred from ``cli_value != cli_default`` -- the inferred form cannot
+    tell an explicit ``--motif-offset 0`` from "not passed" when the default
+    is also 0, so that call silently lost to the config instead of raising
+    on a real conflict. Callers with no click context (tests, programmatic
+    use) omit it and keep the inferred heuristic.
     """
     if config_value is not None:
-        if cli_value != cli_default and cli_value != config_value:
+        is_explicit = explicit if explicit is not None else cli_value != cli_default
+        if is_explicit and cli_value != config_value:
             raise InferenceConfigError(
                 f"CLI --{param_name}={cli_value!r} conflicts with training config "
                 f"{param_name}={config_value!r}. Inference must use the same "
@@ -144,6 +180,250 @@ def _check_config_consistency[T](
             )
         return config_value
     return cli_value
+
+
+@dataclass(frozen=True)
+class InferenceSpec:
+    """Everything predict needs to know about a model, resolved once.
+
+    Replaces the config-resolution block that used to be pasted into
+    ``run_inference`` and ``run_bundle_inference`` separately (motif/anchor/
+    base_justify via ``_check_config_consistency``, refinement setup, the
+    feature-window fallback chain, ``wide_features`` detection, the
+    ``is_multiclass``/``seq_encoding`` default disagreements) -- issue #269.
+    Both call :meth:`from_config` once and read every other field off the
+    result rather than re-deriving it.
+    """
+
+    # Model geometry
+    signal_len: int
+    kmer_len: int
+    signal_context: tuple[int, int]
+    kmer_context: int
+    dwell_offset: int
+    seq_encoding: str
+    signal_kmer_context: tuple[int, int]
+    wide_features: bool
+    requires_features: bool
+    signal_in_channels: int
+    feature_start: int | None
+    feature_end: int | None
+
+    # Motif / anchoring
+    motif: str
+    motif_offset: int
+    anchor: str
+    base_justify: str
+    reference_fasta: Path | None
+    skip_motif_indels: bool
+    require_query_mapping: bool
+    recover_softclip_signal: bool
+
+    # Signal map refinement
+    refine_signal_map: bool
+    refine_half_bandwidth: int
+    refine_do_rough_rescale: bool
+    refine_scale_iters: int
+    refine_kmer_center_idx: int
+
+    # Output representation
+    is_multiclass: bool
+    num_out: int
+    label_map: dict[str, int] | None
+    calibration: dict | None
+    cl_regression: bool
+    dwell_template_table: str | None
+
+    @classmethod
+    def from_config(
+        cls,
+        config: Mapping,
+        *,
+        model_type: str = "",
+        motif: str | None = None,
+        motif_offset: int = 0,
+        base_justify: str = "center",
+        anchor: str = "reference",
+        reference_fasta: Path | None = None,
+        default_refine_scale_iters: int = 2,
+        parameter_sources: Mapping[str, bool] | None = None,
+        strict_model_type: bool = False,
+        model_dwell_margin: Callable[[], int] | None = None,
+    ) -> "InferenceSpec":
+        """Resolve one :class:`InferenceSpec` from a model/bundle config dict.
+
+        Args:
+            config: A leech checkpoint's ``config.json``, a bundle's
+                ``config``, or the dict :func:`load_model_auto` synthesizes
+                for a Remora model. All three share this shape.
+            model_type: The registry name (``ModelInferenceWrapper.model_type``
+                or a bundle's ``model_name``), used only to resolve
+                ``wide_features``/``requires_features`` structurally via
+                :func:`leech.models.wide_features` /
+                :func:`leech.models.requires_features`. An unresolvable name
+                (e.g. a Remora model, or the empty default) falls back to
+                ``False`` for both rather than raising -- unlike bundling,
+                grid search and export, which read ``model_type`` from a real
+                config and treat an unresolvable name as a bug worth raising.
+            motif, motif_offset, base_justify, anchor, reference_fasta:
+                CLI-provided values, checked against the config for conflicts
+                via :func:`_check_config_consistency`.
+            default_refine_scale_iters: The literal fallback for
+                ``refine_scale_iters`` when the config lacks the key --
+                Remora configs default to ``-1`` (no refinement DP pass),
+                leech configs to ``2``. Callers must pass the right one; this
+                function does not infer it from the config shape.
+            parameter_sources: Optional ``{param_name: was_explicit}`` map
+                from click's ``get_parameter_source``, passed through to
+                :func:`_check_config_consistency` so an explicit CLI value
+                that happens to equal the default is still checked against
+                the config rather than assumed to be "not passed".
+            strict_model_type: When ``True`` and ``model_type`` is truthy but
+                not a recognized registry name, raise ``KeyError`` instead of
+                falling back to ``False`` for ``wide_features``/
+                ``requires_features``. Bundle callers pass this: a bundle's
+                ``model_type`` is read back from its own saved metadata, so
+                an unresolvable name means the bundle is stale, renamed out
+                from under it, or corrupted -- a real bug worth raising
+                loudly rather than silently guessing its feature-window
+                convention. Single-model callers leave this ``False``: a
+                Remora model has no registry name at all (``model_type`` is
+                the empty-string default), which is expected, not an error.
+            model_dwell_margin: Optional zero-arg callable returning a wide-
+                feature model's real ``dwell_margin`` attribute (e.g.
+                ``lambda: getattr(model_wrapper.model, "dwell_margin", 0)``),
+                for the rare fallback below. ``dwell_margin`` is a model
+                constructor default, never written into ``config.json``, so
+                reading it needs the model itself -- lazy because building
+                one (bundle.py's caller has to ``_instantiate_model(config)``)
+                is wasted work on every call that never reaches this branch.
+        """
+        sources = parameter_sources or {}
+
+        motif = _check_config_consistency(
+            "motif", motif, config.get("motif"), None, explicit=sources.get("motif")
+        )
+        motif_offset = _check_config_consistency(
+            "motif-offset",
+            motif_offset,
+            config.get("motif_offset"),
+            0,
+            explicit=sources.get("motif_offset"),
+        )
+        if motif is None:
+            raise InferenceConfigError(
+                "motif is None after auto-read from config. Either pass --motif on "
+                "the CLI or ensure the config contains a non-null 'motif' field. "
+                "Without a motif, inference predicts at every position, producing noise."
+            )
+
+        base_justify = _check_config_consistency(
+            "base-justify",
+            base_justify,
+            config.get("base_justify"),
+            "center",
+            explicit=sources.get("base_justify"),
+        )
+        anchor = _check_config_consistency(
+            "anchor", anchor, config.get("anchor"), "reference", explicit=sources.get("anchor")
+        )
+
+        resolved_reference_fasta = reference_fasta
+        if resolved_reference_fasta is None:
+            cfg_ref = config.get("reference_fasta")
+            if cfg_ref is not None:
+                cfg_path = Path(cfg_ref)
+                if cfg_path.exists():
+                    resolved_reference_fasta = cfg_path
+                else:
+                    logger.warning(
+                        f"reference_fasta from config ({cfg_ref}) not found; "
+                        f"pass --reference-fasta explicitly"
+                    )
+
+        signal_len = int(config.get("signal_len", 100))
+        kmer_len = int(config.get("kmer_len", 9))
+        kmer_context = kmer_len // 2
+        left_ctx = config.get("left_context")
+        right_ctx = config.get("right_context")
+        signal_context = (
+            (int(left_ctx), int(right_ctx))
+            if left_ctx is not None and right_ctx is not None
+            else (signal_len // 2, signal_len // 2)
+        )
+
+        seq_encoding = config.get("seq_encoding", DEFAULT_SEQ_ENCODING_FALLBACK)
+        signal_kmer_context = tuple(config.get("signal_kmer_context", (4, 4)))
+        dwell_offset = int(config.get("dwell_offset", 0))
+
+        try:
+            wide_features = _wide_features(model_type)
+        except KeyError as e:
+            if strict_model_type and model_type:
+                raise KeyError(
+                    f"Model architecture '{model_type}' is not a recognized "
+                    f"model (renamed, removed, or a corrupted checkpoint/bundle). "
+                    f"Cannot determine its feature-window convention."
+                ) from e
+            wide_features = False
+        feature_start, feature_end = feature_window_from_metadata(config, kmer_context)
+        if wide_features and feature_start is None and feature_end is None:
+            model_margin = model_dwell_margin() if model_dwell_margin is not None else 0
+            if model_margin:
+                feature_start = -(kmer_context + model_margin)
+                feature_end = kmer_context + model_margin
+                logger.warning(
+                    f"Config missing feature_start/end, "
+                    f"falling back to model default margin: {model_margin}"
+                )
+
+        num_out = int(config.get("num_out", 1))
+        label_map = config.get("label_map")
+
+        signal_in_channels = int(config.get("signal_in_channels", 1))
+        try:
+            requires_features = _requires_features(model_type)
+        except KeyError:
+            requires_features = False
+
+        refine_signal_map = bool(config.get("refine_signal_map", True) or signal_in_channels > 1)
+        refine_scale_iters = int(config.get("refine_scale_iters", default_refine_scale_iters))
+
+        return cls(
+            signal_len=signal_len,
+            kmer_len=kmer_len,
+            signal_context=signal_context,
+            kmer_context=kmer_context,
+            dwell_offset=dwell_offset,
+            seq_encoding=seq_encoding,
+            signal_kmer_context=signal_kmer_context,
+            wide_features=wide_features,
+            requires_features=requires_features,
+            signal_in_channels=signal_in_channels,
+            feature_start=feature_start,
+            feature_end=feature_end,
+            motif=motif,
+            motif_offset=motif_offset,
+            anchor=anchor,
+            base_justify=base_justify,
+            reference_fasta=resolved_reference_fasta,
+            skip_motif_indels=bool(config.get("skip_motif_indels", False)),
+            require_query_mapping=bool(config.get("require_query_mapping", True)),
+            recover_softclip_signal=bool(config.get("recover_softclip_signal", False)),
+            refine_signal_map=refine_signal_map,
+            refine_half_bandwidth=int(
+                config.get("refine_half_bandwidth", DEFAULT_REFINE_HALF_BANDWIDTH)
+            ),
+            refine_do_rough_rescale=bool(config.get("refine_do_rough_rescale", True)),
+            refine_scale_iters=refine_scale_iters,
+            refine_kmer_center_idx=int(config.get("refine_kmer_center_idx", -1)),
+            is_multiclass=num_out > 1,
+            num_out=num_out,
+            label_map=label_map,
+            calibration=config.get("calibration") if num_out > 1 else None,
+            cl_regression=bool(config.get("cl_regression", False)),
+            dwell_template_table=config.get("dwell_template_table") or None,
+        )
 
 
 def validate_inference_shapes(
@@ -481,6 +761,133 @@ def _encode_sequence_for_inference(
         return encode_kmer(chunk["sequence"])
 
 
+def chunks_for_read(
+    leech_read,
+    positions: list[int],
+    *,
+    chunk_config,
+    signal_len: int,
+    seq_encoding: str,
+    signal_kmer_context: tuple[int, int],
+    requires_features: bool,
+    kmer_len: int,
+    dwell_offset: int,
+    wide_features: bool,
+    dwell_templates: np.ndarray | None = None,
+    template_min_pos: int = 0,
+) -> list[tuple[np.ndarray, np.ndarray, np.ndarray | None, int]]:
+    """Extract ready-to-batch ``(signal, sequence, features, base_idx)`` tuples
+    from an already-built :class:`~leech.chunking.LeechRead` at each of
+    ``positions``.
+
+    The one place the per-chunk array-building triplet runs --
+    :func:`prepare_signal_channels`, :func:`_encode_sequence_for_inference`,
+    :func:`prepare_inference_features` -- for the Python serial extraction
+    path. ``run_inference``'s sequential path and ``run_bundle_inference``'s
+    serial path each carried their own copy of this loop, and only the bundle
+    copy applied dwell templates; the bundle copy also built its signal array
+    by hand rather than through ``prepare_signal_channels``, so it never
+    padded/cropped ``signal`` to ``signal_len`` the way every other extraction
+    path does (issue #268 -- found while unifying, not by design).
+
+    Building the ``LeechRead`` itself, and finding ``positions`` on it, stays
+    with the caller: a ``pysam.AlignedSegment`` and a ``ReadInfo`` differ too
+    much above this point (motif search takes a real alignment object one
+    caller has and the other reconstructs a mock of) for a shared protocol to
+    buy anything; this is the part that was actually duplicated array-copy
+    logic rather than read-shape plumbing.
+
+    ``signal_kmer`` is batched once per read rather than once per chunk
+    (issue #260): every chunk's raw ``sequence_with_kmer_context``/
+    ``seq_to_sig_map`` is collected first and run through
+    :func:`~leech.features.encode_signal_kmer_batch` in one call, instead of
+    one pyo3 call per chunk via :func:`_encode_sequence_for_inference`. Both
+    ``run_inference`` and ``run_bundle_inference`` get this from being routed
+    through this one function -- before #268 unified them, only the
+    ``run_inference`` copy of this loop had been given the batched path.
+    """
+    results: list[tuple[np.ndarray, np.ndarray, np.ndarray | None, int]] = []
+
+    if seq_encoding != "signal_kmer":
+        for base_idx in positions:
+            chunk = leech_read.get_chunk(base_idx, config=chunk_config)
+            if chunk is None:
+                continue
+
+            sig = prepare_signal_channels(chunk, signal_len)
+
+            seq_enc = _encode_sequence_for_inference(
+                chunk, seq_encoding, signal_len, signal_kmer_context
+            )
+            if seq_enc is None:
+                continue
+            seq_arr = seq_enc.numpy() if isinstance(seq_enc, torch.Tensor) else seq_enc
+
+            feat = None
+            if requires_features:
+                features_array = chunk["features"]
+                assert isinstance(features_array, np.ndarray)
+                feat = prepare_inference_features(
+                    features_array.astype(np.float32),
+                    kmer_len=kmer_len,
+                    feature_start=chunk.get("feature_start"),
+                    dwell_offset=dwell_offset,
+                    wide_features=wide_features,
+                    dwell_templates=dwell_templates,
+                    template_min_pos=template_min_pos,
+                )
+
+            results.append((sig, seq_arr, feat, base_idx))
+        return results
+
+    # signal_kmer: collect every chunk's raw inputs first, batch-encode once.
+    pending: list[tuple[np.ndarray, np.ndarray | None, int, np.ndarray, np.ndarray]] = []
+    for base_idx in positions:
+        chunk = leech_read.get_chunk(base_idx, config=chunk_config)
+        if chunk is None:
+            continue
+
+        seq_ctx = chunk.get("sequence_with_kmer_context")
+        seq_to_sig = chunk.get("seq_to_sig_map")
+        if seq_ctx is None or seq_to_sig is None:
+            continue
+
+        sig = prepare_signal_channels(chunk, signal_len)
+
+        feat = None
+        if requires_features:
+            features_array = chunk["features"]
+            assert isinstance(features_array, np.ndarray)
+            feat = prepare_inference_features(
+                features_array.astype(np.float32),
+                kmer_len=kmer_len,
+                feature_start=chunk.get("feature_start"),
+                dwell_offset=dwell_offset,
+                wide_features=wide_features,
+                dwell_templates=dwell_templates,
+                template_min_pos=template_min_pos,
+            )
+
+        pending.append((sig, feat, base_idx, sequence_to_int(seq_ctx), seq_to_sig))
+
+    if pending:
+        n = len(pending)
+        max_si = max(p[3].shape[0] for p in pending)
+        max_s2 = max(p[4].shape[0] for p in pending)
+        padded_seq_ints = np.full((n, max_si), -1, dtype=np.int8)
+        padded_s2s = np.full((n, max_s2), signal_len, dtype=np.int32)
+        for i, (_, _, _, seq_ints, s2s) in enumerate(pending):
+            padded_seq_ints[i, : seq_ints.shape[0]] = seq_ints
+            padded_s2s[i, : s2s.shape[0]] = s2s
+        batch_enc = encode_signal_kmer_batch(
+            padded_seq_ints, padded_s2s, signal_len, signal_kmer_context
+        )
+        for i, (sig, feat, base_idx, _, _) in enumerate(pending):
+            results.append((sig, batch_enc[i], feat, base_idx))
+
+    return results
+
+
 def _write_mega_batch_predictions(
     aln_batch: list[pysam.AlignedSegment],
     pending: dict[str, list],
@@ -534,6 +941,61 @@ def _write_mega_batch_predictions(
                 n_preds += 1
             bam_out.write(aln)
     return n_preds
+
+
+class GpuBatchRunner:
+    """Double-buffered, single-worker async submission of one scoring function.
+
+    The pattern ``run_inference``'s and ``run_bundle_inference``'s serial
+    paths each hand-rolled: a dedicated single-thread executor runs
+    ``score_fn`` on one batch while the caller's extraction loop keeps filling
+    the next one. Submitting a new batch waits for the previous one to finish
+    first, so at most one is ever in flight — the ``max_workers=1`` GPU
+    executor invariant PR #253 established, preserved here rather than
+    reintroduced independently on the bundle path (issue #268).
+
+    ``score_fn(signals, sequences, features, meta)`` is the same shape
+    :class:`BatchAccumulator`'s flush callback expects, so a bound
+    :meth:`submit` is a drop-in ``flush_fn``::
+
+        runner = GpuBatchRunner(score_fn)
+        accumulator = BatchAccumulator(batch_size, runner.submit)
+        ...
+        accumulator.flush()
+        runner.drain()
+        runner.shutdown()
+    """
+
+    __slots__ = ("_executor", "_future", "score_fn")
+
+    def __init__(self, score_fn: Callable[[list, list, list, list], None]):
+        self.score_fn = score_fn
+        self._executor = ThreadPoolExecutor(max_workers=1)
+        self._future: Future | None = None
+
+    def submit(self, signals: list, sequences: list, features: list, meta: list) -> None:
+        """Wait for any in-flight batch, then submit this one (non-blocking)."""
+        if self._future is not None:
+            self._future.result()
+        self._future = self._executor.submit(self.score_fn, signals, sequences, features, meta)
+
+    def drain(self) -> None:
+        """Block until the most recently submitted batch has finished."""
+        if self._future is not None:
+            self._future.result()
+            self._future = None
+
+    def shutdown(self) -> None:
+        """Wait for the executor's thread to exit.
+
+        Always call after :meth:`drain` — every batch is done by then, so
+        this costs nothing, but a caller that goes on to fork (an ``mp.Pool``
+        on the parallel path) must not leave the thread alive across it: a
+        fork inherits a running thread's memory but not the thread itself, so
+        any lock it held never releases (see ``run_inference``'s own note on
+        this at its ``_extract_pool.shutdown(wait=True)`` call).
+        """
+        self._executor.shutdown(wait=True)
 
 
 class BatchAccumulator:

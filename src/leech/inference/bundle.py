@@ -12,7 +12,6 @@ import torch
 from rich.progress import Progress
 
 from leech.configs import ChunkConfig, InferenceConfig, MotifConfig, SignalConfig
-from leech.constants import DEFAULT_REFINE_HALF_BANDWIDTH
 from leech.features import extract_move_table
 from leech.inference.aggregation import (
     aggregate_one_vs_all,
@@ -22,12 +21,13 @@ from leech.inference.aggregation import (
 )
 from leech.inference.helpers import (
     BatchAccumulator,
-    _check_config_consistency,
-    _encode_sequence_for_inference,
+    GpuBatchRunner,
+    InferenceSpec,
     _write_prediction_tags,
     build_rust_extraction_kwargs,
     cap_rayon_threads_for_slurm,
     check_rust_extraction_available,
+    chunks_for_read,
     collect_bam_metadata_for_rust,
     prepare_inference_features,
     validate_inference_shapes,
@@ -37,7 +37,6 @@ from leech.io.motif_search import get_motif_searcher
 from leech.io.pod5_reader import POD5Reader
 from leech.model_export import deserialize_exported_model, deserialize_traced_model
 from leech.model_loading import _instantiate_model
-from leech.models import wide_features as _wide_features
 from leech.models.inference_wrapper import ModelInferenceWrapper, TracedModelWrapper
 from leech.preparation.reader import build_leech_read
 
@@ -87,6 +86,95 @@ def _write_bundle_mega_batch(
     return n_written
 
 
+class BundleScorer:
+    """Runs every model in a bundle over one batch of chunks.
+
+    Replaces the ``_run_bundle_batch`` closure that all three of
+    ``run_bundle_inference``'s extraction paths (Rust, parallel, serial) used
+    to share: same vmap-vs-sequential-wrappers branch, same Platt scaling.
+    Wrapping it as a scorer object rather than a closure is what lets it be
+    handed to :class:`~leech.inference.helpers.GpuBatchRunner` the same way
+    the single-model path's ``_run_batch`` is (issue #268).
+    """
+
+    def __init__(
+        self,
+        *,
+        pairs: list[str],
+        pair_to_idx: dict[str, int],
+        n_pairs: int,
+        needs_features: bool,
+        device: str,
+        is_vmap: bool,
+        wrappers: dict | None = None,
+        platt_params: dict[str, tuple[float, float]] | None = None,
+        vmapped_forward=None,
+        vmap_stacked_params: dict | None = None,
+        vmap_stacked_buffers: dict | None = None,
+        vmap_platt_a=None,
+        vmap_platt_b=None,
+    ):
+        self.pairs = pairs
+        self.pair_to_idx = pair_to_idx
+        self.n_pairs = n_pairs
+        self.needs_features = needs_features
+        self.device = device
+        self.is_vmap = is_vmap
+        self.wrappers = wrappers or {}
+        self.platt_params = platt_params or {}
+        self.vmapped_forward = vmapped_forward
+        self.vmap_stacked_params = vmap_stacked_params
+        self.vmap_stacked_buffers = vmap_stacked_buffers
+        self.vmap_platt_a = vmap_platt_a
+        self.vmap_platt_b = vmap_platt_b
+        self.n_batches_done = 0
+
+    def score(self, sigs: list, seqs: list, feats: list, rids: list, *, read_probs: dict) -> None:
+        """Score one batch, writing each read's ``(n_pairs,)`` probability
+        vector into ``read_probs``. Matches :class:`GpuBatchRunner`'s
+        ``score_fn(signals, sequences, features, meta)`` shape via
+        ``functools.partial(scorer.score, read_probs=read_probs)``."""
+        sig_t = torch.stack(sigs).to(self.device)
+        seq_t = torch.stack(seqs).to(self.device)
+        feat_t = None
+        if self.needs_features:
+            valid_feats = [f for f in feats if f is not None]
+            if valid_feats:
+                feat_t = torch.stack(valid_feats).to(self.device)
+
+        with torch.inference_mode():
+            if self.is_vmap and self.vmapped_forward is not None:
+                if self.needs_features:
+                    all_logits = self.vmapped_forward(
+                        self.vmap_stacked_params, self.vmap_stacked_buffers, sig_t, seq_t, feat_t
+                    )
+                else:
+                    all_logits = self.vmapped_forward(
+                        self.vmap_stacked_params, self.vmap_stacked_buffers, sig_t, seq_t, None
+                    )
+                all_logits = (
+                    self.vmap_platt_a[:, None, None] * all_logits + self.vmap_platt_b[:, None, None]
+                )
+                all_p = torch.sigmoid(all_logits).squeeze(-1).cpu().numpy()
+            else:
+                all_p = np.empty((self.n_pairs, len(sigs)), dtype=np.float32)
+                for pair in self.pairs:
+                    batch_dict: dict[str, torch.Tensor] = {"signal": sig_t, "sequence": seq_t}
+                    if feat_t is not None:
+                        batch_dict["features"] = feat_t
+                    logits = self.wrappers[pair].forward_batch(batch_dict, self.device)
+                    pp = self.platt_params.get(pair)
+                    if pp is not None:
+                        a, b = pp
+                        logits = a * logits + b
+                    all_p[self.pair_to_idx[pair]] = torch.sigmoid(logits).cpu().numpy().flatten()
+
+        for i, rid in enumerate(rids):
+            read_probs[rid] = all_p[:, i]
+
+        self.n_batches_done += 1
+
+
 def run_bundle_inference(
     bundle_path: Path,
     pod5_path: Path,
@@ -108,6 +196,7 @@ def run_bundle_inference(
     num_workers: int = 0,
     read_batch_size: int = 10_000,
     backend: str = "auto",
+    parameter_sources: dict[str, bool] | None = None,
 ) -> None:
     """
     Run all models from a bundle on each read, aggregate to a single AA prediction.
@@ -146,101 +235,49 @@ def run_bundle_inference(
     comparison_type = metadata["comparison_type"]
     is_torchscript = metadata.get("torchscript", False)
 
-    signal_len = config["signal_len"]
-    kmer_len = config["kmer_len"]
     model_type = config.get("model_name", metadata.get("architecture", ""))
-    dwell_offset = config.get("dwell_offset", 0)
-    seq_encoding = config.get("seq_encoding", "signal_kmer")
-    signal_kmer_context = tuple(config.get("signal_kmer_context", (4, 4)))
-
-    # Resolve motif/offset/justify from config, erroring on CLI conflict
-    motif = _check_config_consistency("motif", motif, config.get("motif"), None)
-    motif_offset = _check_config_consistency(
-        "motif-offset", motif_offset, config.get("motif_offset"), 0
+    spec = InferenceSpec.from_config(
+        config,
+        model_type=model_type,
+        motif=motif,
+        motif_offset=motif_offset,
+        base_justify=base_justify,
+        anchor=anchor,
+        reference_fasta=reference_fasta,
+        default_refine_scale_iters=2,
+        parameter_sources=parameter_sources,
+        strict_model_type=True,
+        model_dwell_margin=lambda: getattr(_instantiate_model(config), "dwell_margin", 0),
     )
-    if motif is not None:
-        logger.info(f"Motif from bundle config: {motif} (offset={motif_offset})")
+    signal_len = spec.signal_len
+    kmer_len = spec.kmer_len
+    dwell_offset = spec.dwell_offset
+    seq_encoding = spec.seq_encoding
+    signal_kmer_context = spec.signal_kmer_context
+    motif = spec.motif
+    motif_offset = spec.motif_offset
+    base_justify = spec.base_justify
+    anchor = spec.anchor
+    reference_fasta = spec.reference_fasta
+    signal_context = spec.signal_context
+    kmer_context = spec.kmer_context
+    wide_features = spec.wide_features
+    _feature_start = spec.feature_start
+    _feature_end = spec.feature_end
 
-    if motif is None:
-        raise ValueError(
-            "motif is None after auto-read from bundle config. "
-            "Either pass --motif on the CLI or ensure the bundle config contains a non-null 'motif' field. "
-            "Without a motif, inference predicts at every position, producing noise."
-        )
-
-    base_justify = _check_config_consistency(
-        "base-justify", base_justify, config.get("base_justify"), "center"
-    )
+    logger.info(f"Motif from bundle config: {motif} (offset={motif_offset})")
     logger.info(f"base_justify: {base_justify}")
-
-    anchor = _check_config_consistency("anchor", anchor, config.get("anchor"), "reference")
     logger.info(f"anchor: {anchor}")
-
-    if reference_fasta is None:
-        cfg_ref = config.get("reference_fasta")
-        if cfg_ref is not None:
-            cfg_path = Path(cfg_ref)
-            if cfg_path.exists():
-                reference_fasta = cfg_path
-                logger.info(f"reference_fasta from config: {reference_fasta}")
-            else:
-                logger.warning(
-                    f"reference_fasta from config ({cfg_ref}) not found; "
-                    f"pass --reference-fasta explicitly"
-                )
-
-    # Use asymmetric context if available, otherwise fall back to symmetric
-    left_ctx = config.get("left_context")
-    right_ctx = config.get("right_context")
-    if left_ctx is not None and right_ctx is not None:
-        signal_context = (left_ctx, right_ctx)
-    else:
-        signal_context = (signal_len // 2, signal_len // 2)
-    kmer_context = kmer_len // 2
-
+    if reference_fasta is not None:
+        logger.info(f"reference_fasta: {reference_fasta}")
     logger.info(
         f"Bundle: {metadata['architecture']}, {len(pairs)} models, v{metadata['bundle_version']}"
         f"{' (TorchScript)' if is_torchscript else ''}"
     )
-
-    # Determine feature_start/feature_end from config (must match training data)
-    # model_type is read back from a saved bundle's own metadata, so it should
-    # always be a real registry name; an unrecognized one means the bundle is
-    # stale or corrupted and must fail loudly rather than silently guess its
-    # feature-window convention.
-    try:
-        wide_features = bool(model_type) and _wide_features(model_type)
-    except KeyError as e:
-        raise KeyError(
-            f"Bundle architecture '{model_type}' is not a recognized model "
-            f"(renamed, removed, or a corrupted bundle). Cannot determine "
-            f"its feature-window convention."
-        ) from e
-    _kmer_context = kmer_len // 2
-    _feature_start = config.get("feature_start")
-    _feature_end = config.get("feature_end")
-    if _feature_start is None and "feature_left" in config:
-        _feature_start = -config["feature_left"]
-    if _feature_end is None and "feature_right" in config:
-        _feature_end = config["feature_right"]
-    if _feature_start is None and "dwell_margin_left" in config:
-        _feature_start = -(_kmer_context + config["dwell_margin_left"])
-    if _feature_end is None and "dwell_margin_right" in config:
-        _feature_end = _kmer_context + config["dwell_margin_right"]
-    if wide_features and _feature_start is None and _feature_end is None:
-        _model_margin = getattr(_instantiate_model(config), "dwell_margin", 0)
-        if _model_margin:
-            _feature_start = -(_kmer_context + _model_margin)
-            _feature_end = _kmer_context + _model_margin
-            logger.warning(
-                f"Bundle config missing feature_start/end, "
-                f"falling back to model default margin: {_model_margin}"
-            )
-
     logger.info(f"Signal context: {signal_context}, kmer_len: {kmer_len}")
     logger.info(f"seq_encoding: {seq_encoding}, base_justify: {base_justify}")
-    _fs = _feature_start if _feature_start is not None else -_kmer_context
-    _fe = _feature_end if _feature_end is not None else _kmer_context
+    _fs = _feature_start if _feature_start is not None else -kmer_context
+    _fe = _feature_end if _feature_end is not None else kmer_context
     logger.info(f"dwell_offset: {dwell_offset}, feature window: [{_fs}, {_fe}]")
     if _feature_start is not None or _feature_end is not None:
         logger.info(f"Feature window: [{_fs}, {_fe}] relative to focus (width={_fe - _fs + 1})")
@@ -327,13 +364,13 @@ def run_bundle_inference(
     motif_searcher = get_motif_searcher(
         mode="fasta" if reference_sequences else "bam",
         reference_sequences=reference_sequences,
-        skip_indels=config.get("skip_motif_indels", False),
+        skip_indels=spec.skip_motif_indels,
         anchor=anchor,
         # Recorded by `data prepare` and carried through `model train`. Without
         # it, a corpus prepared with --no-require-query-mapping was scored at
         # predict time with the gate back on, i.e. on a different read
         # population than the model was trained on.
-        require_query_mapping=config.get("require_query_mapping", True),
+        require_query_mapping=spec.require_query_mapping,
     )
 
     # Open BAM for header only
@@ -348,13 +385,13 @@ def run_bundle_inference(
     else:
         first_wrapper = next(iter(wrappers.values()))
         needs_features = first_wrapper.requires_features
-    bundle_signal_in_channels = config.get("signal_in_channels", 1)
+    bundle_signal_in_channels = spec.signal_in_channels
     bundle_compute_features = needs_features or bundle_signal_in_channels > 1
 
     # Signal map refinement for bundle models (needed for kmer residual signal channel)
-    bundle_refine = False
+    bundle_refine = spec.refine_signal_map
     bundle_refiner = None
-    if config.get("refine_signal_map", True) or bundle_signal_in_channels > 1:
+    if bundle_refine:
         from leech.data import get_kmer_table
         from leech.inference.helpers import _warn_if_kmer_table_drifted
         from leech.signal_refine import SigMapRefiner
@@ -363,12 +400,11 @@ def run_bundle_inference(
         _warn_if_kmer_table_drifted(config.get("kmer_table_sha256"), kmer_table_path)
         bundle_refiner = SigMapRefiner.from_table(
             kmer_table_path,
-            half_bandwidth=config.get("refine_half_bandwidth", DEFAULT_REFINE_HALF_BANDWIDTH),
-            do_rough_rescale=config.get("refine_do_rough_rescale", True),
-            scale_iters=config.get("refine_scale_iters", 2),
-            center_idx=config.get("refine_kmer_center_idx", -1),
+            half_bandwidth=spec.refine_half_bandwidth,
+            do_rough_rescale=spec.refine_do_rough_rescale,
+            scale_iters=spec.refine_scale_iters,
+            center_idx=spec.refine_kmer_center_idx,
         )
-        bundle_refine = True
         logger.info(
             f"Signal map refinement enabled for bundle "
             f"(signal_in_channels={bundle_signal_in_channels})"
@@ -381,7 +417,7 @@ def run_bundle_inference(
     # verbatim at inference time.
     dwell_templates_arr: np.ndarray | None = None
     dwell_template_min_pos: int = 0
-    bundle_dwell_template_table = config.get("dwell_template_table") or None
+    bundle_dwell_template_table = spec.dwell_template_table
     if bundle_dwell_template_table:
         from leech.dataset import load_dwell_template_table
 
@@ -431,54 +467,29 @@ def run_bundle_inference(
     read_probs: dict[str, np.ndarray] = {}  # read_id -> shape (n_pairs,)
     _shape_validated = False
     n_chunks = 0
-    n_batches_done = 0
 
-    def _run_bundle_batch(sigs: list, seqs: list, feats: list, rids: list) -> None:
-        """Flush callback: run every model in the bundle over one batch."""
-        nonlocal n_batches_done
-
-        sig_t = torch.stack(sigs).to(device)
-        seq_t = torch.stack(seqs).to(device)
-        feat_t = None
-        if needs_features:
-            valid_feats = [f for f in feats if f is not None]
-            if valid_feats:
-                feat_t = torch.stack(valid_feats).to(device)
-
-        with torch.inference_mode():
-            if is_vmap and vmapped_forward is not None:
-                if needs_features:
-                    all_logits = vmapped_forward(
-                        vmap_stacked_params, vmap_stacked_buffers, sig_t, seq_t, feat_t
-                    )
-                else:
-                    all_logits = vmapped_forward(
-                        vmap_stacked_params, vmap_stacked_buffers, sig_t, seq_t, None
-                    )
-                all_logits = vmap_platt_a[:, None, None] * all_logits + vmap_platt_b[:, None, None]
-                all_p = torch.sigmoid(all_logits).squeeze(-1).cpu().numpy()
-            else:
-                all_p = np.empty((n_pairs, len(sigs)), dtype=np.float32)
-                for pair in pairs:
-                    batch_dict: dict[str, torch.Tensor] = {
-                        "signal": sig_t,
-                        "sequence": seq_t,
-                    }
-                    if feat_t is not None:
-                        batch_dict["features"] = feat_t
-                    logits = wrappers[pair].forward_batch(batch_dict, device)
-                    pp = platt_params.get(pair)
-                    if pp is not None:
-                        a, b = pp
-                        logits = a * logits + b
-                    all_p[pair_to_idx[pair]] = torch.sigmoid(logits).cpu().numpy().flatten()
-
-        for i, rid in enumerate(rids):
-            read_probs[rid] = all_p[:, i]
-
-        n_batches_done += 1
-
-    accumulator = BatchAccumulator(batch_size, _run_bundle_batch)
+    scorer = BundleScorer(
+        pairs=pairs,
+        pair_to_idx=pair_to_idx,
+        n_pairs=n_pairs,
+        needs_features=needs_features,
+        device=device,
+        is_vmap=is_vmap,
+        wrappers=wrappers,
+        platt_params=platt_params,
+        vmapped_forward=vmapped_forward,
+        vmap_stacked_params=vmap_stacked_params,
+        vmap_stacked_buffers=vmap_stacked_buffers,
+        vmap_platt_a=vmap_platt_a,
+        vmap_platt_b=vmap_platt_b,
+    )
+    # Double-buffered, single-worker GPU submission (PR #253's pattern,
+    # extended here to bundle predict -- issue #268). All three extraction
+    # paths below (Rust, parallel, serial) share this one accumulator and
+    # runner; each must `gpu_runner.drain()` before reading `read_probs`,
+    # since a flush only guarantees the batch was *submitted*, not scored.
+    gpu_runner = GpuBatchRunner(partial(scorer.score, read_probs=read_probs))
+    accumulator = BatchAccumulator(batch_size, gpu_runner.submit)
 
     n_reads = 0
     n_predicted = 0
@@ -499,7 +510,7 @@ def run_bundle_inference(
         feature_end=_feature_end,
         signal_context=signal_context,
         kmer_context=kmer_context,
-        recover_softclip_signal=config.get("recover_softclip_signal", False),
+        recover_softclip_signal=spec.recover_softclip_signal,
     )
 
     logger.info(f"Streaming bundle inference with read_batch_size={read_batch_size}")
@@ -551,10 +562,8 @@ def run_bundle_inference(
             signal_kmer_context=signal_kmer_context,
             refine_signal_map=bundle_refine,
             signal_refiner=bundle_refiner,
-            refine_half_bandwidth=config.get(
-                "refine_half_bandwidth", DEFAULT_REFINE_HALF_BANDWIDTH
-            ),
-            refine_scale_iters=config.get("refine_scale_iters", 2),
+            refine_half_bandwidth=spec.refine_half_bandwidth,
+            refine_scale_iters=spec.refine_scale_iters,
             signal_in_channels=bundle_signal_in_channels,
             base_justify=base_justify,
         )
@@ -579,8 +588,8 @@ def run_bundle_inference(
                 motif=motif,
                 motif_offset=motif_offset,
                 reference_sequences=reference_sequences,
-                skip_motif_indels=config.get("skip_motif_indels", False),
-                require_query_mapping=config.get("require_query_mapping", True),
+                skip_motif_indels=spec.skip_motif_indels,
+                require_query_mapping=spec.require_query_mapping,
             ),
             chunk=ChunkConfig(
                 base_justify=base_justify,
@@ -588,7 +597,7 @@ def run_bundle_inference(
                 feature_end=_feature_end,
                 signal_context=signal_context,
                 kmer_context=kmer_context,
-                recover_softclip_signal=config.get("recover_softclip_signal", False),
+                recover_softclip_signal=spec.recover_softclip_signal,
             ),
             seq_encoding=seq_encoding,
             signal_kmer_context=signal_kmer_context,
@@ -694,6 +703,7 @@ def run_bundle_inference(
 
                 # Flush remaining chunks for this mega-batch
                 accumulator.flush()
+                gpu_runner.drain()
 
                 # -- Aggregate per-read and write BAM for this mega-batch --
                 batch_preds = _write_bundle_mega_batch(
@@ -722,7 +732,7 @@ def run_bundle_inference(
                     advance=0,
                     description=(
                         f"[cyan]Processed {n_chunks} chunks from "
-                        f"{n_reads} reads ({n_batches_done} batches, "
+                        f"{n_reads} reads ({scorer.n_batches_done} batches, "
                         f"{n_predicted} predicted)..."
                     ),
                 )
@@ -730,6 +740,7 @@ def run_bundle_inference(
             logger.info(f"Extracted and inferred {n_chunks} chunks from {n_reads} reads")
             logger.info(f"Predicted {n_predicted} reads")
             bam_out.close()
+            gpu_runner.shutdown()
 
             logger.info(f"Bundle inference complete: {n_reads} reads, {len(pairs)} models")
             logger.info(f"Output written to: {output_path}")
@@ -821,7 +832,7 @@ def run_bundle_inference(
                                     feat,
                                     feat_start=_feature_start
                                     if _feature_start is not None
-                                    else -_kmer_context,
+                                    else -kmer_context,
                                     dwell_templates=dwell_templates_arr,
                                     template_min_pos=dwell_template_min_pos,
                                 )
@@ -842,6 +853,7 @@ def run_bundle_inference(
 
                     # Flush remaining chunks for this mega-batch
                     accumulator.flush()
+                    gpu_runner.drain()
 
                     # -- Aggregate per-read and write BAM for this mega-batch --
                     batch_preds = _write_bundle_mega_batch(
@@ -870,7 +882,7 @@ def run_bundle_inference(
                         advance=0,
                         description=(
                             f"[cyan]Processed {n_chunks} chunks from "
-                            f"{n_reads} reads ({n_batches_done} batches, "
+                            f"{n_reads} reads ({scorer.n_batches_done} batches, "
                             f"{n_predicted} predicted)..."
                         ),
                     )
@@ -878,6 +890,7 @@ def run_bundle_inference(
             logger.info(f"Extracted and inferred {n_chunks} chunks from {n_reads} reads")
             logger.info(f"Predicted {n_predicted} reads")
             bam_out.close()
+            gpu_runner.shutdown()
 
             logger.info(f"Bundle inference complete: {n_reads} reads, {len(pairs)} models")
             logger.info(f"Output written to: {output_path}")
@@ -957,68 +970,38 @@ def run_bundle_inference(
                     if not positions:
                         continue
 
-                    base_idx = positions[0]
-                    chunk = leech_read.get_chunk(base_idx, config=bundle_chunk_config)
-                    if chunk is None:
-                        continue
+                    # Bundle semantics: one chunk per read (the first motif
+                    # position), unlike single-model predict's all-positions
+                    # loop -- see chunks_for_read's own note on why read
+                    # construction and position-finding stay with the caller.
+                    for sig, seq_arr, feat, _base_idx in chunks_for_read(
+                        leech_read,
+                        positions[:1],
+                        chunk_config=bundle_chunk_config,
+                        signal_len=signal_len,
+                        seq_encoding=seq_encoding,
+                        signal_kmer_context=signal_kmer_context,
+                        requires_features=needs_features,
+                        kmer_len=kmer_len,
+                        dwell_offset=dwell_offset,
+                        wide_features=wide_features,
+                        dwell_templates=dwell_templates_arr,
+                        template_min_pos=dwell_template_min_pos,
+                    ):
+                        n_chunks += 1
+                        signal_t = torch.from_numpy(sig)
+                        seq_t = torch.from_numpy(seq_arr)
+                        feat_t = torch.from_numpy(feat) if feat is not None else None
 
-                    # Prepare tensors (with optional kmer residual channel)
-                    signal_array = chunk["signal"]
-                    assert isinstance(signal_array, np.ndarray)
-                    sig = signal_array.astype(np.float32)
-                    sig_residual = chunk.get("signal_residual")
-                    if sig_residual is not None:
-                        sig_residual = sig_residual.astype(np.float32)
-                        if len(sig_residual) < len(sig):
-                            sig_residual = np.pad(
-                                sig_residual,
-                                (0, len(sig) - len(sig_residual)),
-                                mode="constant",
-                            )
-                        elif len(sig_residual) > len(sig):
-                            sig_residual = sig_residual[: len(sig)]
-                        sig = np.stack([sig, sig_residual], axis=0)
-                    signal_t = torch.from_numpy(sig)
+                        if not _shape_validated:
+                            validate_inference_shapes(sig, feat, config)
+                            _shape_validated = True
 
-                    seq_t = _encode_sequence_for_inference(
-                        chunk, seq_encoding, signal_len, signal_kmer_context
-                    )
-                    if seq_t is None:
-                        continue
-
-                    n_chunks += 1
-
-                    feat_t = None
-                    if needs_features:
-                        features_array = chunk["features"]
-                        assert isinstance(features_array, np.ndarray)
-                        # Templates first, then narrowing -- the order
-                        # `dataset.py` used at training time. This site had it
-                        # the other way round, so the template channels were
-                        # keyed to the pre-narrowing column 0 while the array
-                        # had already been shifted out from under them.
-                        features_array = prepare_inference_features(
-                            features_array.astype(np.float32),
-                            kmer_len=kmer_len,
-                            feature_start=chunk.get("feature_start"),
-                            dwell_offset=dwell_offset,
-                            wide_features=wide_features,
-                            dwell_templates=dwell_templates_arr,
-                            template_min_pos=dwell_template_min_pos,
-                        )
-                        feat_t = torch.from_numpy(features_array)
-
-                    if not _shape_validated:
-                        _feat_for_check = (
-                            features_array.astype(np.float32) if needs_features else None
-                        )
-                        validate_inference_shapes(sig, _feat_for_check, config)
-                        _shape_validated = True
-
-                    accumulator.add(signal_t, seq_t, feat_t, leech_read.read_id)
+                        accumulator.add(signal_t, seq_t, feat_t, leech_read.read_id)
 
                 # Flush remaining chunks for this mega-batch
                 accumulator.flush()
+                gpu_runner.drain()
 
                 # -- Aggregate per-read and write BAM for this mega-batch --
                 batch_preds = _write_bundle_mega_batch(
@@ -1046,13 +1029,14 @@ def run_bundle_inference(
                     advance=0,
                     description=(
                         f"[cyan]Processed {n_chunks} chunks from {n_reads} reads "
-                        f"({n_batches_done} batches, {n_predicted} predicted)..."
+                        f"({scorer.n_batches_done} batches, {n_predicted} predicted)..."
                     ),
                 )
 
     logger.info(f"Extracted and inferred {n_chunks} chunks from {n_reads} reads")
     logger.info(f"Predicted {n_predicted} reads")
     bam_out.close()
+    gpu_runner.shutdown()
 
     logger.info(f"Bundle inference complete: {n_reads} reads, {len(pairs)} models")
     logger.info(f"Output written to: {output_path}")

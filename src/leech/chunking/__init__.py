@@ -9,6 +9,7 @@ from leech.chunking.extractor import (
     LeechRead,
     extract_training_chunks,
     extraction_sequence,
+    feature_window_from_metadata,
     find_focus_bases,
     resolve_feature_window,
 )
@@ -33,6 +34,7 @@ __all__ = [
     "LeechRead",
     "extract_training_chunks",
     "extraction_sequence",
+    "feature_window_from_metadata",
     "find_focus_bases",
     "resolve_feature_window",
     # Serialization

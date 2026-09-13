@@ -27,6 +27,7 @@ from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 from torch.utils.data import DataLoader, DistributedSampler, Sampler, WeightedRandomSampler
 
 import leech
+from leech.chunking import feature_window_from_metadata
 from leech.chunking.table import ChunkTable
 from leech.cli_config import make_console
 from leech.configs import AugmentConfig, AuxHeadConfig, OptimConfig, SchedulerConfig, TrainConfig
@@ -2392,29 +2393,30 @@ def train_model(
         loss_type = "cross_entropy"
         logger.info(f"Model {model_name} has num_out={num_out}, switching to cross_entropy loss")
 
-    # Introspect feature_start/feature_end from raw training data
-    _raw_chunk = train_dataset.chunks[0]
+    # Introspect feature_start/feature_end from the training corpus.
+    #
+    # Resolved from the whole corpus (`train_dataset.chunks`, a ChunkTable
+    # when one is in use), not chunk 0 -- reading a single row and trusting it
+    # for the run is exactly the failure mode issue #230 fixed for
+    # seq_encoding, generalized here to the feature window (issue #269).
+    # `feature_window_from_metadata` raises if the corpus disagrees with
+    # itself; when `train_dataset.chunks` is a plain list (legacy in-memory
+    # path) it falls back to chunk 0, same as before.
     _kmer_context = kmer_len // 2
-    if "feature_start" in _raw_chunk:
-        _feature_start = int(_raw_chunk["feature_start"])
-    elif "feature_left" in _raw_chunk:
-        _feature_start = -int(_raw_chunk["feature_left"])
-    elif "dwell_margin_left" in _raw_chunk:
-        _feature_start = -(_kmer_context + int(_raw_chunk["dwell_margin_left"]))
-    else:
+    _window_source = (
+        train_dataset.chunks
+        if isinstance(train_dataset.chunks, ChunkTable)
+        else train_dataset.chunks[0]
+    )
+    # For a mapping source (the legacy row-only path), the resolver already
+    # derives `feature_end` from the chunk's own feature array when only
+    # `dwell_margin_right` is stored; a ChunkTable has no single feature array
+    # to take a width from, so that one fallback is table-only unavailable and
+    # `feature_end` comes back None in that corner case.
+    _feature_start, _feature_end = feature_window_from_metadata(_window_source, _kmer_context)
+    if _feature_start is None:
         _feature_start = -_kmer_context
-    if "feature_end" in _raw_chunk:
-        _feature_end = int(_raw_chunk["feature_end"])
-    elif "feature_right" in _raw_chunk:
-        _feature_end = int(_raw_chunk["feature_right"])
-    elif "dwell_margin_right" in _raw_chunk:
-        _raw_features = _raw_chunk.get("features")
-        if _raw_features is not None and _raw_features.ndim > 1:
-            _feat_width = _raw_features.shape[1]
-            _feature_end = _feat_width - 1 + _feature_start
-        else:
-            _feature_end = _kmer_context
-    else:
+    if _feature_end is None:
         _feature_end = _kmer_context
 
     # Read preparation config sidecar if available (for provenance in config.json)

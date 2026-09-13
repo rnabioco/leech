@@ -13,18 +13,19 @@ import torch
 from rich.progress import Progress
 
 from leech.configs import ChunkConfig, InferenceConfig, MotifConfig, SignalConfig
-from leech.constants import DEFAULT_REFINE_HALF_BANDWIDTH, TORCH_COMPILE_MIN_SAMPLES
+from leech.constants import TORCH_COMPILE_MIN_SAMPLES
 from leech.features import encode_signal_kmer_batch, extract_move_table, sequence_to_int
 from leech.inference.helpers import (
     BatchAccumulator,
-    _check_config_consistency,
-    _encode_sequence_for_inference,
+    GpuBatchRunner,
+    InferenceSpec,
     _run_batch,
     _run_batch_multiclass,
     _write_mega_batch_predictions,
     build_rust_extraction_kwargs,
     cap_rayon_threads_for_slurm,
     check_rust_extraction_available,
+    chunks_for_read,
     collect_bam_metadata_for_rust,
     load_model_auto,
     prepare_inference_features,
@@ -35,7 +36,6 @@ from leech.io.bam_reader import count_bam_reads, iter_bam_batches
 from leech.io.motif_search import get_motif_searcher
 from leech.io.pod5_reader import POD5Reader
 from leech.models.inference_wrapper import ModelInferenceWrapper
-from leech.models.inference_wrapper import resolve_wide_features as _resolve_wide_features
 from leech.models.remora_compat import RemoraModelWrapper
 from leech.preparation.reader import build_leech_read
 
@@ -235,6 +235,7 @@ def run_inference(
     no_compile: bool = False,
     output_format: str = "bam",
     copy_tags: list[str] | None = None,
+    parameter_sources: dict[str, bool] | None = None,
 ) -> None:
     """
     Run inference on POD5 and BAM files.
@@ -273,6 +274,11 @@ def run_inference(
             writes predictions, then frees memory. Set to 0 to disable (load all).
         output_format: "bam" for BAM output with tags, "tsv" for gzipped TSV.
             TSV mode requires a multiclass model.
+        parameter_sources: Optional ``{param_name: was_explicit}`` from
+            click's ``get_parameter_source``, so an explicit CLI value that
+            equals its own default is still checked against the model config
+            rather than assumed to be "not passed" (see
+            ``InferenceSpec.from_config``).
     """
     # Apply backend override to signal_refine module
     logger.info(f"Extraction backend: {backend}")
@@ -298,178 +304,71 @@ def run_inference(
     # Determine if this is a Remora model or a leech model
     is_remora = config.get("is_remora", False)
 
-    # Signal map refinement setup
-    refine_signal_map = False
-    signal_refiner = None
-
     if is_remora:
         model_wrapper = wrapper_or_model
-        signal_len = config.get("signal_len", 100)
-        kmer_len = config.get("kmer_len", 9)
-        seq_encoding = "signal_kmer"
-        signal_kmer_context = tuple(config.get("signal_kmer_context", (4, 4)))
-        dwell_offset = 0
-
-        # Resolve motif/offset from config, erroring on CLI conflict
-        motif = _check_config_consistency("motif", motif, config.get("motif"), None)
-        motif_offset = _check_config_consistency(
-            "motif-offset", motif_offset, config.get("motif_offset"), 0
-        )
-        if motif is not None:
-            logger.info(f"Motif from remora config: {motif} (offset={motif_offset})")
-
-        if motif is None:
-            raise ValueError("--motif is required for Remora models (no config.json)")
-
-        # Set up signal map refinement if model specifies it
-        if config.get("refine_signal_map", True):
-            from leech.data import get_kmer_table
-            from leech.inference.helpers import _warn_if_kmer_table_drifted
-            from leech.signal_refine import SigMapRefiner
-
-            kmer_table_path = get_kmer_table()
-            _warn_if_kmer_table_drifted(config.get("kmer_table_sha256"), kmer_table_path)
-            half_bw = config.get("refine_half_bandwidth", DEFAULT_REFINE_HALF_BANDWIDTH)
-            do_rescale = config.get("refine_do_rough_rescale", True)
-            scale_iters = config.get("refine_scale_iters", -1)
-            center_idx = config.get("refine_kmer_center_idx", -1)
-            signal_refiner = SigMapRefiner.from_table(
-                kmer_table_path,
-                half_bandwidth=half_bw,
-                do_rough_rescale=do_rescale,
-                scale_iters=scale_iters,
-                center_idx=center_idx,
-            )
-            refine_signal_map = True
-            logger.info(
-                f"Signal map refinement: half_bw={half_bw}, "
-                f"scale_iters={scale_iters}, center_idx={center_idx}"
-            )
+    elif isinstance(wrapper_or_model, ModelInferenceWrapper):
+        model_wrapper = wrapper_or_model
     else:
-        # Leech model
-        if isinstance(wrapper_or_model, ModelInferenceWrapper):
-            model_wrapper = wrapper_or_model
-        else:
-            model_type = config["model_name"]
-            model_wrapper = ModelInferenceWrapper(wrapper_or_model, model_type)
+        model_wrapper = ModelInferenceWrapper(wrapper_or_model, config["model_name"])
 
-        signal_len = config["signal_len"]
-        kmer_len = config["kmer_len"]
-        dwell_offset = config.get("dwell_offset", 0)
-        seq_encoding = config.get("seq_encoding", "signal_kmer")
-        signal_kmer_context = tuple(config.get("signal_kmer_context", (4, 4)))
-
-        # Resolve motif/offset from config, erroring on CLI conflict
-        motif = _check_config_consistency("motif", motif, config.get("motif"), None)
-        motif_offset = _check_config_consistency(
-            "motif-offset", motif_offset, config.get("motif_offset"), 0
-        )
-        if motif is not None:
-            logger.info(f"Motif from config: {motif} (offset={motif_offset})")
-
-        if motif is None:
-            raise ValueError(
-                "motif is None after auto-read from config. "
-                "Either pass --motif on the CLI or ensure config.json contains a non-null 'motif' field. "
-                "Without a motif, inference predicts at every position, producing noise."
-            )
-
-        # Signal map refinement for leech models (needed for kmer residual signal channel)
-        if config.get("refine_signal_map", True) or config.get("signal_in_channels", 1) > 1:
-            from leech.data import get_kmer_table
-            from leech.inference.helpers import _warn_if_kmer_table_drifted
-            from leech.signal_refine import SigMapRefiner
-
-            kmer_table_path = get_kmer_table()
-            _warn_if_kmer_table_drifted(config.get("kmer_table_sha256"), kmer_table_path)
-            half_bw = config.get("refine_half_bandwidth", DEFAULT_REFINE_HALF_BANDWIDTH)
-            do_rescale = config.get("refine_do_rough_rescale", True)
-            scale_iters = config.get("refine_scale_iters", 2)
-            center_idx = config.get("refine_kmer_center_idx", -1)
-            signal_refiner = SigMapRefiner.from_table(
-                kmer_table_path,
-                half_bandwidth=half_bw,
-                do_rough_rescale=do_rescale,
-                scale_iters=scale_iters,
-                center_idx=center_idx,
-            )
-            refine_signal_map = True
-            logger.info(
-                f"Signal map refinement enabled for leech model "
-                f"(signal_in_channels={config.get('signal_in_channels', 1)})"
-            )
-
-    # Use asymmetric context if available, otherwise fall back to symmetric
-    left_ctx = config.get("left_context")
-    right_ctx = config.get("right_context")
-    if left_ctx is not None and right_ctx is not None:
-        signal_context = (left_ctx, right_ctx)
-    else:
-        signal_context = (signal_len // 2, signal_len // 2)
-    kmer_context = kmer_len // 2
-    requires_features = getattr(model_wrapper, "requires_features", False)
-
-    # Determine feature_start/feature_end from config (must match training data)
-    _model_type = getattr(model_wrapper, "model_type", "")
-    wide_features = _resolve_wide_features(model_wrapper, _model_type)
-    _kmer_context = kmer_len // 2
-
-    # Read new params, falling back to old dwell_margin_* for backward compat
-    _feature_start = config.get("feature_start")
-    _feature_end = config.get("feature_end")
-    if _feature_start is None and "feature_left" in config:
-        _feature_start = -config["feature_left"]
-    if _feature_end is None and "feature_right" in config:
-        _feature_end = config["feature_right"]
-    if _feature_start is None and "dwell_margin_left" in config:
-        _feature_start = -(_kmer_context + config["dwell_margin_left"])
-    if _feature_end is None and "dwell_margin_right" in config:
-        _feature_end = _kmer_context + config["dwell_margin_right"]
-    if wide_features and _feature_start is None and _feature_end is None:
-        _model_margin = (
+    spec = InferenceSpec.from_config(
+        config,
+        model_type=getattr(model_wrapper, "model_type", ""),
+        motif=motif,
+        motif_offset=motif_offset,
+        base_justify=base_justify,
+        anchor=anchor,
+        reference_fasta=reference_fasta,
+        default_refine_scale_iters=-1 if is_remora else 2,
+        parameter_sources=parameter_sources,
+        model_dwell_margin=lambda: (
             getattr(model_wrapper.model, "dwell_margin", 0)
             if hasattr(model_wrapper, "model")
             else 0
-        )
-        if _model_margin:
-            _feature_start = -(_kmer_context + _model_margin)
-            _feature_end = _kmer_context + _model_margin
-            logger.warning(
-                f"Config missing feature_start/end, "
-                f"falling back to model default margin: {_model_margin}"
-            )
-
-    # Detect multi-class model
-    num_out = config.get("num_out", 1)
-    label_map = config.get("label_map")  # {name: int} or None
-    if label_map:
-        # Invert to {int: name}
-        int_to_label = {v: k for k, v in label_map.items()}
-    else:
-        int_to_label = None
-    is_multiclass = num_out > 1
-
-    # Resolve base_justify from config, erroring on CLI conflict
-    base_justify = _check_config_consistency(
-        "base-justify", base_justify, config.get("base_justify"), "center"
+        ),
     )
-    logger.info(f"base_justify: {base_justify}")
+    signal_len = spec.signal_len
+    kmer_len = spec.kmer_len
+    seq_encoding = spec.seq_encoding
+    signal_kmer_context = spec.signal_kmer_context
+    dwell_offset = spec.dwell_offset
+    signal_context = spec.signal_context
+    kmer_context = spec.kmer_context
+    requires_features = spec.requires_features
+    wide_features = spec.wide_features
+    _feature_start = spec.feature_start
+    _feature_end = spec.feature_end
+    num_out = spec.num_out
+    is_multiclass = spec.is_multiclass
+    motif = spec.motif
+    motif_offset = spec.motif_offset
+    base_justify = spec.base_justify
+    anchor = spec.anchor
+    reference_fasta = spec.reference_fasta
 
-    anchor = _check_config_consistency("anchor", anchor, config.get("anchor"), "reference")
-    logger.info(f"anchor: {anchor}")
+    int_to_label = {v: k for k, v in spec.label_map.items()} if spec.label_map else None
 
-    if reference_fasta is None:
-        cfg_ref = config.get("reference_fasta")
-        if cfg_ref is not None:
-            cfg_path = Path(cfg_ref)
-            if cfg_path.exists():
-                reference_fasta = cfg_path
-                logger.info(f"reference_fasta from config: {reference_fasta}")
-            else:
-                logger.warning(
-                    f"reference_fasta from config ({cfg_ref}) not found; "
-                    f"pass --reference-fasta explicitly"
-                )
+    # Signal map refinement setup
+    refine_signal_map = spec.refine_signal_map
+    signal_refiner = None
+    if refine_signal_map:
+        from leech.data import get_kmer_table
+        from leech.inference.helpers import _warn_if_kmer_table_drifted
+        from leech.signal_refine import SigMapRefiner
+
+        kmer_table_path = get_kmer_table()
+        _warn_if_kmer_table_drifted(config.get("kmer_table_sha256"), kmer_table_path)
+        signal_refiner = SigMapRefiner.from_table(
+            kmer_table_path,
+            half_bandwidth=spec.refine_half_bandwidth,
+            do_rough_rescale=spec.refine_do_rough_rescale,
+            scale_iters=spec.refine_scale_iters,
+            center_idx=spec.refine_kmer_center_idx,
+        )
+        logger.info(
+            f"Signal map refinement enabled: half_bw={spec.refine_half_bandwidth}, "
+            f"scale_iters={spec.refine_scale_iters}, center_idx={spec.refine_kmer_center_idx}"
+        )
 
     logger.info(f"Signal length: {signal_len}, K-mer length: {kmer_len}")
     if is_multiclass:
@@ -477,11 +376,13 @@ def run_inference(
     logger.info(f"Signal context: {signal_context}")
     logger.info(f"Sequence encoding: {seq_encoding}, base_justify: {base_justify}")
     if _feature_start is not None or _feature_end is not None:
-        _fs = _feature_start if _feature_start is not None else -_kmer_context
-        _fe = _feature_end if _feature_end is not None else _kmer_context
+        _fs = _feature_start if _feature_start is not None else -kmer_context
+        _fe = _feature_end if _feature_end is not None else kmer_context
         logger.info(f"Feature window: [{_fs}, {_fe}] relative to focus (width={_fe - _fs + 1})")
-    if motif:
-        logger.info(f"Motif: {motif} (offset={motif_offset})")
+    logger.info(f"Motif: {motif} (offset={motif_offset})")
+    logger.info(f"anchor: {anchor}")
+    if reference_fasta is not None:
+        logger.info(f"reference_fasta: {reference_fasta}")
 
     # Open BAM for header and normalization detection
     bam_in = pysam.AlignmentFile(str(bam_path), "rb")
@@ -559,7 +460,7 @@ def run_inference(
 
     # Skip feature computation when model doesn't need them (big speedup)
     # But always compute when signal_in_channels > 1 (needed for kmer residual)
-    signal_in_channels = config.get("signal_in_channels", 1)
+    signal_in_channels = spec.signal_in_channels
     compute_features = requires_features or signal_in_channels > 1
 
     # Load reference sequences for reference-anchored mode and/or reference-based motif search
@@ -574,13 +475,13 @@ def run_inference(
     motif_searcher = get_motif_searcher(
         mode="fasta" if reference_sequences else "bam",
         reference_sequences=reference_sequences,
-        skip_indels=config.get("skip_motif_indels", False),
+        skip_indels=spec.skip_motif_indels,
         anchor=anchor,
         # Recorded by `data prepare` and carried through `model train`. Without
         # it, a corpus prepared with --no-require-query-mapping was scored at
         # predict time with the gate back on, i.e. on a different read
         # population than the model was trained on.
-        require_query_mapping=config.get("require_query_mapping", True),
+        require_query_mapping=spec.require_query_mapping,
     )
 
     # Prepare class_names_str for multiclass (shared across mega-batches)
@@ -660,8 +561,8 @@ def run_inference(
                 motif=motif,
                 motif_offset=motif_offset,
                 reference_sequences=reference_sequences,
-                skip_motif_indels=config.get("skip_motif_indels", False),
-                require_query_mapping=config.get("require_query_mapping", True),
+                skip_motif_indels=spec.skip_motif_indels,
+                require_query_mapping=spec.require_query_mapping,
             ),
             chunk=ChunkConfig(
                 base_justify=base_justify,
@@ -669,7 +570,7 @@ def run_inference(
                 feature_end=_feature_end,
                 signal_context=signal_context,
                 kmer_context=kmer_context,
-                recover_softclip_signal=config.get("recover_softclip_signal", False),
+                recover_softclip_signal=spec.recover_softclip_signal,
             ),
             seq_encoding=seq_encoding,
             signal_kmer_context=signal_kmer_context,
@@ -681,7 +582,7 @@ def run_inference(
             signal_in_channels=signal_in_channels,
         )
 
-        calibration = config.get("calibration") if is_multiclass else None
+        calibration = spec.calibration
         _batch_fn_p = (
             functools.partial(
                 _run_batch_multiclass,
@@ -791,7 +692,7 @@ def run_inference(
         pending: dict[str, list] = {}
         _shape_validated = False
 
-        calibration = config.get("calibration") if is_multiclass else None
+        calibration = spec.calibration
         _batch_fn = (
             functools.partial(
                 _run_batch_multiclass,
@@ -802,42 +703,27 @@ def run_inference(
             else _run_batch
         )
 
-        _gpu_executor = ThreadPoolExecutor(max_workers=1)
-        _gpu_future: Future | None = None
+        def _score_batch(sigs, seqs, feats, meta) -> None:
+            """Score one batch into the *current* ``pending`` dict.
+
+            A plain closure, not ``functools.partial(..., pending=pending)``:
+            ``_finalize_mega_batch`` below rebinds the name ``pending`` to a
+            fresh dict every mega-batch (so the async BAM-write thread can
+            keep draining the old one without racing the next mega-batch's
+            writes). A partial captures the dict *object* bound at
+            construction and keeps writing into it forever; a closure looks
+            ``pending`` up again on every call, which is what a rebind needs.
+            """
+            _batch_fn(sigs, seqs, feats, meta, model_wrapper, requires_features, device, pending)
+
+        # Double-buffered, single-worker GPU submission (PR #253): the
+        # accumulator has already detached each batch's buffers when it
+        # flushes, so the GPU thread owns them and extraction keeps filling
+        # the next batch while this one scores.
+        gpu_runner = GpuBatchRunner(_score_batch)
+        accumulator = BatchAccumulator(batch_size, gpu_runner.submit)
         _bam_write_executor = ThreadPoolExecutor(max_workers=1)
         _bam_write_future: Future | None = None
-
-        def _submit_gpu_batch(sigs, seqs, feats, meta) -> None:
-            """Flush callback: hand one batch to the GPU thread (double-buffered).
-
-            The accumulator has already detached these buffers, so the GPU
-            thread owns them and extraction can keep filling the next batch.
-            """
-            nonlocal _gpu_future
-            # Wait for previous GPU batch before submitting next
-            if _gpu_future is not None:
-                _gpu_future.result()
-            # Submit GPU work -- runs while main thread continues extraction
-            _gpu_future = _gpu_executor.submit(
-                _batch_fn,
-                sigs,
-                seqs,
-                feats,
-                meta,
-                model_wrapper,
-                requires_features,
-                device,
-                pending,
-            )
-
-        accumulator = BatchAccumulator(batch_size, _submit_gpu_batch)
-
-        def _drain_gpu() -> None:
-            """Wait for any in-flight GPU batch to complete."""
-            nonlocal _gpu_future
-            if _gpu_future is not None:
-                _gpu_future.result()
-                _gpu_future = None
 
         seq_signal_config = SignalConfig(
             reverse_signal=reverse_signal,
@@ -855,7 +741,7 @@ def run_inference(
             feature_end=_feature_end,
             signal_context=signal_context,
             kmer_context=kmer_context,
-            recover_softclip_signal=config.get("recover_softclip_signal", False),
+            recover_softclip_signal=spec.recover_softclip_signal,
         )
 
         # Extraction thread count + rust setup (all three shared with
@@ -942,68 +828,21 @@ def run_inference(
                 )
             ]
 
-            results: list[tuple[np.ndarray, np.ndarray, np.ndarray | None, tuple[str, int]]] = []
-            # signal_kmer encoding is batched once per read (issue #260)
-            # rather than once per chunk: `pending` holds every chunk's
-            # (signal, feat, key) plus its raw inputs, appended to `results`
-            # once the batch call below fills in the real sequence array.
-            pending: list[
-                tuple[np.ndarray, np.ndarray | None, tuple[str, int], np.ndarray, np.ndarray]
-            ] = []
-            for base_idx in positions:
-                chunk = leech_read.get_chunk(base_idx, config=seq_chunk_config)
-                if chunk is None:
-                    continue
-
-                # Signal (with optional kmer residual channel)
-                sig = prepare_signal_channels(chunk, signal_len)
-
-                feat = None
-                if requires_features:
-                    features_array = chunk["features"]
-                    assert isinstance(features_array, np.ndarray)
-                    feat = prepare_inference_features(
-                        features_array.astype(np.float32),
-                        kmer_len=kmer_len,
-                        feature_start=chunk.get("feature_start"),
-                        dwell_offset=dwell_offset,
-                        wide_features=wide_features,
-                    )
-
-                if seq_encoding == "signal_kmer":
-                    seq_ctx = chunk.get("sequence_with_kmer_context")
-                    seq_to_sig = chunk.get("seq_to_sig_map")
-                    if seq_ctx is None or seq_to_sig is None:
-                        continue
-                    pending.append(
-                        (sig, feat, (read_id, base_idx), sequence_to_int(seq_ctx), seq_to_sig)
-                    )
-                    continue
-
-                seq_enc = _encode_sequence_for_inference(
-                    chunk, seq_encoding, signal_len, signal_kmer_context
+            return [
+                (sig, seq_arr, feat, (read_id, base_idx))
+                for sig, seq_arr, feat, base_idx in chunks_for_read(
+                    leech_read,
+                    positions,
+                    chunk_config=seq_chunk_config,
+                    signal_len=signal_len,
+                    seq_encoding=seq_encoding,
+                    signal_kmer_context=signal_kmer_context,
+                    requires_features=requires_features,
+                    kmer_len=kmer_len,
+                    dwell_offset=dwell_offset,
+                    wide_features=wide_features,
                 )
-                if seq_enc is None:
-                    continue
-                seq_arr = seq_enc.numpy() if isinstance(seq_enc, torch.Tensor) else seq_enc
-                results.append((sig, seq_arr, feat, (read_id, base_idx)))
-
-            if pending:
-                n = len(pending)
-                max_si = max(p[3].shape[0] for p in pending)
-                max_s2 = max(p[4].shape[0] for p in pending)
-                padded_seq_ints = np.full((n, max_si), -1, dtype=np.int8)
-                padded_s2s = np.full((n, max_s2), signal_len, dtype=np.int32)
-                for i, (_, _, _, seq_ints, s2s) in enumerate(pending):
-                    padded_seq_ints[i, : seq_ints.shape[0]] = seq_ints
-                    padded_s2s[i, : s2s.shape[0]] = s2s
-                batch_enc = encode_signal_kmer_batch(
-                    padded_seq_ints, padded_s2s, signal_len, signal_kmer_context
-                )
-                for i, (sig, feat, key, _, _) in enumerate(pending):
-                    results.append((sig, batch_enc[i], feat, key))
-
-            return results
+            ]
 
         _extract_pool = ThreadPoolExecutor(max_workers=n_extract)
 
@@ -1023,10 +862,8 @@ def run_inference(
             signal_kmer_context=signal_kmer_context,
             refine_signal_map=refine_signal_map,
             signal_refiner=signal_refiner,
-            refine_half_bandwidth=config.get(
-                "refine_half_bandwidth", DEFAULT_REFINE_HALF_BANDWIDTH
-            ),
-            refine_scale_iters=config.get("refine_scale_iters", 2),
+            refine_half_bandwidth=spec.refine_half_bandwidth,
+            refine_scale_iters=spec.refine_scale_iters,
             signal_in_channels=signal_in_channels,
             base_justify=base_justify,
         )
@@ -1125,7 +962,7 @@ def run_inference(
             nonlocal total_reads, total_predictions, mega_batch_idx
             nonlocal pending, _bam_write_future
             accumulator.flush()
-            _drain_gpu()
+            gpu_runner.drain()
             # Wait for any previous BAM write (serializes bam_out access)
             _wait_for_bam_write()
             # Swap pending -> snapshot; next mega-batch gets a fresh dict
@@ -1384,15 +1221,15 @@ def run_inference(
         )
 
         # wait=True, not False. Every one of these pools is already drained here
-        # (`_drain_gpu` and `_wait_for_bam_write` above), so waiting costs
-        # nothing -- but `wait=False` leaves worker threads alive past the
-        # return, and the parallel path below forks an `mp.Pool`. A fork
+        # (`gpu_runner.drain()` and `_wait_for_bam_write` above), so waiting
+        # costs nothing -- but `wait=False` leaves worker threads alive past
+        # the return, and the parallel path below forks an `mp.Pool`. A fork
         # inherits the memory of a process with running threads, including any
         # lock those threads hold, but not the threads themselves, so nothing
         # ever releases it: calling `run_inference` with `num_workers=0` and
         # then with `num_workers>0` in one process hung forever, with no error.
         _extract_pool.shutdown(wait=True)
-        _gpu_executor.shutdown(wait=True)
+        gpu_runner.shutdown()
         _wait_for_bam_write()  # Ensure final BAM write completes before close
         _bam_write_executor.shutdown(wait=True)
 

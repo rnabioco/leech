@@ -70,6 +70,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from leech.constants import DEFAULT_SEQ_ENCODING_FALLBACK
+
 __all__ = [
     "OPSET",
     "InputSpec",
@@ -106,7 +108,7 @@ def describe_inputs(config: dict, example_inputs: tuple) -> list[InputSpec]:
     the graph; the *roles* come from the config, which is the only place they
     exist.
     """
-    seq_encoding = config.get("seq_encoding", "base_onehot")
+    seq_encoding = config.get("seq_encoding", DEFAULT_SEQ_ENCODING_FALLBACK)
     kmer_context = config.get("signal_kmer_context", [4, 4])
 
     if seq_encoding == "signal_kmer":

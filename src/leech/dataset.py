@@ -48,6 +48,7 @@ from torch.utils.data import Dataset
 
 from leech.chunking import (
     ChunkTable,
+    feature_window_from_metadata,
     iter_npz_row_blocks,
     load_chunks,
     load_seq_to_sig_csr,
@@ -1510,15 +1511,11 @@ class LeechDataset(Dataset):
         if self._wide_features:
             pass  # full-width features
         elif dwell_width > self.kmer_len:
-            # Determine feature_start (signed offset from focus).
-            # New chunks have it directly; old chunks need conversion.
-            if "feature_start" in chunk:
-                feat_start = int(chunk["feature_start"])
-            elif "feature_left" in chunk:
-                feat_start = -int(chunk["feature_left"])
-            elif "dwell_margin_left" in chunk:
-                feat_start = -(kmer_context + int(chunk["dwell_margin_left"]))
-            else:
+            # Determine feature_start (signed offset from focus). New chunks
+            # have it directly; old chunks need conversion -- the shared
+            # fallback chain (issue #269) covers both.
+            feat_start, _ = feature_window_from_metadata(chunk, kmer_context)
+            if feat_start is None:
                 feat_start = -(dwell_width - 1) // 2  # symmetric fallback
             # kmer-aligned start within the feature array
             # Feature array starts at focus + feat_start, kmer starts at focus - kmer_context
