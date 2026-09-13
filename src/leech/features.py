@@ -284,6 +284,8 @@ def normalize_read_signal(
     pa_stdev: float | None = None,
     cal_offset: float | None = None,
     cal_scale: float | None = None,
+    *,
+    include_diagnostics: bool = True,
 ) -> tuple[np.ndarray, dict[str, float]]:
     """
     Normalize raw signal data.
@@ -300,6 +302,16 @@ def normalize_read_signal(
         pa_stdev: Global scale for pa_scaling normalization (from basecaller model)
         cal_offset: POD5 calibration offset (DAC -> pA conversion)
         cal_scale: POD5 calibration scale (DAC -> pA conversion)
+        include_diagnostics: For ``method="median_mad"``, also compute and
+            return ``median``/``mad`` in the params dict. The transform itself
+            (:func:`escapepod.mad_normalize`) does not need them -- they exist
+            only for a caller that wants to report them. ``LeechRead.metadata``
+            (the only production reader of this return's params) never reads
+            them (issue #275), so ``build_leech_read`` passes ``False`` to skip
+            two full-signal ``np.median`` passes -- measured at 0.49 of 1.13 ms
+            per 20k-sample read -- on every read. Other methods are unaffected:
+            their params (mean/std, etc.) are the transform's own inputs, not a
+            side computation.
 
     Returns:
         Tuple of (normalized_signal, normalization_params)
@@ -311,11 +323,13 @@ def normalize_read_signal(
         # so the Python and Rust paths agree by construction. It also degrades
         # gracefully on a constant signal (dead pore / flat read), where the
         # naive form divides by a zero MAD and yields all-NaN.
-        median = np.median(raw_signal)
-        mad = np.median(np.abs(raw_signal - median))
-        scale_factor = 1.4826
         normalized = mad_normalize(np.ascontiguousarray(raw_signal, dtype=np.float32))
-        params = {"median": float(median), "mad": float(mad), "scale_factor": scale_factor}
+        if include_diagnostics:
+            median = np.median(raw_signal)
+            mad = np.median(np.abs(raw_signal - median))
+            params = {"median": float(median), "mad": float(mad), "scale_factor": 1.4826}
+        else:
+            params = {}
 
     elif method == "zscore":
         # Standard z-score normalization
@@ -566,8 +580,12 @@ def compute_dwell_features(dwells: np.ndarray, window: int = 5) -> dict[str, np.
     dwell_mean = windows.mean(axis=1).astype(np.float32)
     dwell_std = windows.std(axis=1).astype(np.float32)
 
-    # Ratio of dwell to local mean (normalized dwell)
-    dwell_ratio = dwells / (dwell_mean + eps)
+    # Ratio of dwell to local mean (normalized dwell). `dwells` is int64 and
+    # `dwell_mean` is float32, and numpy promotes an int64/float32 division to
+    # float64 -- cast explicitly, like every other channel here, so this row
+    # doesn't silently upcast the (F, num_bases) matrix `LeechRead.__init__`
+    # stacks every channel into (issue #275).
+    dwell_ratio = (dwells / (dwell_mean + eps)).astype(np.float32)
 
     return {
         "dwell": dwells.astype(np.float32),
@@ -614,6 +632,8 @@ def compute_kmer_residual_features(
     kmer_to_level: dict[str, float],
     kmer_len: int,
     center_idx: int | None = None,
+    *,
+    expected_levels: np.ndarray | None = None,
 ) -> dict[str, np.ndarray]:
     """
     Compute per-base kmer residual features by comparing observed signal to expected kmer levels.
@@ -631,6 +651,14 @@ def compute_kmer_residual_features(
             ``None`` means ``kmer_len // 2``. Pass the refiner's ``center_idx``
             so residuals are computed against the same attribution the refined
             boundaries were.
+        expected_levels: Precomputed ``extract_levels(sequence, kmer_to_level,
+            kmer_len, center_idx)`` (length ``len(sequence)``), for a caller
+            that already has it. ``build_leech_read`` computes this once per
+            read and passes it here, to ``SigMapRefiner.refine`` and to
+            ``compute_signal_residual``, rather than the three identical
+            per-read calls those three sites used to each make separately
+            (issue #275). ``None`` (the default) computes it here, unchanged
+            from before.
 
     Returns:
         Dictionary with per-base features:
@@ -638,12 +666,13 @@ def compute_kmer_residual_features(
             - 'kmer_residual': level_mean - kmer_expected (signed)
             - 'kmer_residual_abs': |kmer_residual| (unsigned)
     """
-    from leech.signal_refine import extract_levels
+    if expected_levels is None:
+        from leech.signal_refine import extract_levels
+
+        expected_levels = extract_levels(sequence, kmer_to_level, kmer_len, center_idx)
 
     num_bases = len(seq_to_sig_map) - 1
-    expected = levels_for_mapped_bases(
-        extract_levels(sequence, kmer_to_level, kmer_len, center_idx), num_bases
-    )
+    expected = levels_for_mapped_bases(expected_levels, num_bases)
 
     # Per-base observed mean -- the same one `compute_signal_features` reports
     # as `level_mean`, so it comes from the same helper.

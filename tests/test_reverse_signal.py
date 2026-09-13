@@ -6,7 +6,8 @@ it internally to work 5'->3'. The move table (mv/ts/ns tags) references
 the basecaller's reversed signal. We must reverse the POD5 signal to match.
 
 These tests verify:
-1. Signal reversal happens in iter_bam_with_pod5 (sequential path)
+1. Signal reversal happens in build_leech_read (the shared read-building step
+   every prepare/inference path goes through)
 2. Signal reversal happens in the parallel worker
 3. reverse_signal=False preserves original signal
 4. CLI flag --no-reverse-signal correctly maps to reverse_signal=False
@@ -35,107 +36,55 @@ def _make_asymmetric_signal(n=1000):
     return signal
 
 
-def _make_mock_alignment(read_id="test_read", num_bases=20, stride=5):
-    """Create a mock pysam alignment with mv/ns/ts tags.
+# ---------------------------------------------------------------------------
+# 1. build_leech_read: the shared read-building step
+# ---------------------------------------------------------------------------
 
-    Returns an alignment where every base gets exactly `stride` signal samples,
-    with trim_offset=0, so signal boundaries are trivially predictable.
 
-    The move array has num_bases * stride entries (one move per stride positions).
-    Each entry corresponds to `stride` raw signal samples, so the total signal
-    length is num_bases * stride * stride = num_bases * stride^2.
+class TestBuildLeechReadReverseSignal:
+    """Test signal reversal in build_leech_read, shared by every prepare path.
+
+    The sequential BAM+POD5 iterator this used to exercise
+    (``iter_bam_with_pod5``) was retired in issue #275 -- every worker count
+    now goes through ``prepare_training_data_parallel``, whose workers call
+    ``build_leech_read`` directly (with real signal/move-table objects, no BAM
+    mock needed).
     """
-    aln = MagicMock()
-    aln.query_name = read_id
-    aln.query_sequence = "ACGT" * (num_bases // 4) + "A" * (num_bases % 4)
-    aln.mapping_quality = 60
-    aln.reference_name = "chr1"
-    aln.reference_start = 0
-    aln.reference_end = num_bases
-    aln.is_reverse = False
-    aln.is_unmapped = False
-    aln.is_secondary = False
-    aln.is_supplementary = False
 
-    # Build mv tag: [stride, 1, 0, 0, ..., 1, 0, 0, ...]
-    # Each base = 1 move + (stride-1) stays → stride entries per base
-    moves = []
-    for _ in range(num_bases):
-        moves.append(1)
-        moves.extend([0] * (stride - 1))
-    mv_tag = np.array([stride] + moves, dtype=np.int8)
-
-    # num_samples = last move position * stride + stride = total signal length
-    # Move positions are at indices [0, stride, 2*stride, ...] in the array.
-    # Signal position = move_array_index * stride. The last base starts at
-    # (num_bases-1)*stride * stride and ends at num_bases*stride*stride.
-    num_samples = len(moves) * stride
-
-    def has_tag(tag):
-        return tag in ("mv", "ns")
-
-    def get_tag(tag):
-        if tag == "mv":
-            return mv_tag
-        if tag == "ns":
-            return num_samples
-        if tag == "ts":
-            return 0
-        raise KeyError(tag)
-
-    aln.has_tag = has_tag
-    aln.get_tag = get_tag
-
-    return aln, num_samples
-
-
-# ---------------------------------------------------------------------------
-# 1. Sequential path: iter_bam_with_pod5
-# ---------------------------------------------------------------------------
-
-
-class TestIterBamWithPod5ReverseSignal:
-    """Test signal reversal in the sequential reader path."""
-
-    def _run_iter(self, reverse_signal, raw_signal, num_bases=20, stride=5):
-        """Helper: patch I/O and run iter_bam_with_pod5, return first LeechRead."""
+    def _run_build(self, reverse_signal, raw_signal, num_bases=20, stride=5):
+        """Helper: call build_leech_read directly, return the LeechRead."""
         from leech.configs import SignalConfig
+        from leech.preparation.reader import build_leech_read
 
-        aln, num_samples = _make_mock_alignment(num_bases=num_bases, stride=stride)
-
-        # Trim raw_signal to match num_samples
+        num_samples = num_bases * stride
         raw = raw_signal[:num_samples].copy()
 
-        mock_pod5_reader = MagicMock()
-        mock_pod5_reader.get_signal.return_value = (raw, {"read_id": "test_read"})
-        mock_pod5_reader.__enter__ = MagicMock(return_value=mock_pod5_reader)
-        mock_pod5_reader.__exit__ = MagicMock(return_value=False)
+        moves = np.array([1] * num_bases, dtype=np.int8)
+        move_table = MoveTable(
+            stride=stride,
+            moves=moves,
+            read_id="test_read",
+            num_samples=num_samples,
+            trim_offset=0,
+        )
 
-        with (
-            patch("leech.preparation.reader.POD5Reader", return_value=mock_pod5_reader),
-            patch("leech.preparation.reader.iter_bam_batches", return_value=iter([[aln]])),
-        ):
-            from leech.preparation.reader import iter_bam_with_pod5
-
-            reads = list(
-                iter_bam_with_pod5(
-                    Path("fake.bam"),
-                    Path("fake.pod5"),
-                    signal_config=SignalConfig(
-                        reverse_signal=reverse_signal,
-                        anchor="basecall",
-                        refine_signal_map=False,
-                    ),
-                )
-            )
-
-        assert len(reads) == 1, f"Expected 1 read, got {len(reads)}"
-        return reads[0], raw
+        read = build_leech_read(
+            read_id="test_read",
+            sequence="ACGT" * (num_bases // 4) + "A" * (num_bases % 4),
+            raw_signal=raw,
+            move_table=move_table,
+            signal_config=SignalConfig(
+                reverse_signal=reverse_signal,
+                anchor="basecall",
+                refine_signal_map=False,
+            ),
+        )
+        return read, raw
 
     def test_reverse_signal_true_reverses(self):
         """With reverse_signal=True, the normalized signal should come from reversed raw."""
         raw_signal = _make_asymmetric_signal(10000)
-        read, raw = self._run_iter(reverse_signal=True, raw_signal=raw_signal)
+        read, raw = self._run_build(reverse_signal=True, raw_signal=raw_signal)
 
         # The signal stored in the LeechRead is normalized, so we can't compare
         # directly to raw. But we CAN verify it was normalized from the reversed
@@ -159,7 +108,7 @@ class TestIterBamWithPod5ReverseSignal:
     def test_reverse_signal_false_preserves(self):
         """With reverse_signal=False, the normalized signal should match original raw order."""
         raw_signal = _make_asymmetric_signal(10000)
-        read, raw = self._run_iter(reverse_signal=False, raw_signal=raw_signal)
+        read, raw = self._run_build(reverse_signal=False, raw_signal=raw_signal)
 
         corr_original = np.corrcoef(read.signal, raw)[0, 1]
         corr_reversed = np.corrcoef(read.signal, raw[::-1])[0, 1]
@@ -398,24 +347,6 @@ class TestParallelWorkerReverseSignal:
 
 class TestOrchestratorThreading:
     """Verify config-based functions accept the right parameters."""
-
-    def test_prepare_training_data_accepts_config(self):
-        """prepare_training_data should accept config: PrepareConfig."""
-        import inspect
-
-        from leech.preparation.orchestrator import prepare_training_data
-
-        sig = inspect.signature(prepare_training_data)
-        assert "config" in sig.parameters
-
-    def test_prepare_training_data_with_split_accepts_config(self):
-        """prepare_training_data_with_split should accept config: PrepareConfig."""
-        import inspect
-
-        from leech.preparation.orchestrator import prepare_training_data_with_split
-
-        sig = inspect.signature(prepare_training_data_with_split)
-        assert "config" in sig.parameters
 
     def test_prepare_training_data_parallel_accepts_config(self):
         """prepare_training_data_parallel should accept config: PrepareConfig."""

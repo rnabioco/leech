@@ -190,7 +190,11 @@ uv sync --upgrade
 
 ### Parallel Processing
 
-The `prepare` command processes batches of reads concurrently on either backend:
+The `prepare` command processes batches of reads concurrently on either
+backend, at every `--workers` value including 1 -- there is no separate
+sequential pipeline (issue #275 retired the one that used to live here:
+`prepare_training_data`, `prepare_training_data_with_split`,
+`iter_bam_with_pod5`).
 
 **Implementation** (`preparation/parallel.py`, `preparation/orchestrator.py`):
 - `collect_read_infos_from_bam()`: First pass to collect lightweight read metadata from BAM
@@ -199,7 +203,7 @@ The `prepare` command processes batches of reads concurrently on either backend:
 
 **Usage**:
 ```bash
-# Use --workers N to enable parallel processing (N > 1)
+# --workers sets batches in flight (1 = no concurrency, >1 = parallel)
 # Use --chunk-size M to control batch size (default: 100 reads)
 uv run leech data prepare --pod5 data.pod5 --bam alignments.bam \
   --output-dir chunks/ --workers 8 --chunk-size 100
@@ -232,6 +236,36 @@ caller (`prepare_training_data_parallel`) does progress and accounting once.
 "0 chunks, exit 0" and a pile of warnings — see "Failing loud on a broken
 prepare run" below (issue #265).
 
+**The Python pool's `config` and motif searcher are resolved once per worker
+process, not once per batch.** `mp.Pool(initializer=_init_worker,
+initargs=(config,))` builds both in a module global the moment each worker
+starts; tasks in `_iter_python_batches` carry `(seq, read_batch)` only. Before
+this (issue #275), `_worker_arg_stream` yielded `(seq, read_batch, config)`
+per task — pickling `config` (a `reference_sequences` dict up to 100k entries,
+and with refinement on, the 262,144-entry 9-mer table) onto the task queue and
+unpickling it in the worker once per *batch*, and rebuilding the motif
+searcher from it every time too. At `chunk_size=100` that is thousands of
+redundant conversions of the same object over a large BAM. `_process_read_infos`
+is the shared core loop both the pool path and the direct-call entry point
+(`_process_read_chunk_worker_with_failures`, which builds its own searcher —
+used by tests and benchmarks that call it outside a pool) run.
+
+**A test that exercises the real `mp.Pool` (not a direct call) must run in its
+own process.** `mp.Pool` forks on Linux, and forking a process that has
+already touched Rust/rayon (any `TestRustPythonWorkerParity`-style test that
+called `_prepare_batch_rust`) inherits a lock a rayon worker thread may be
+mid-acquisition on — a thread that does not exist in the child, so the lock
+never releases. Confirmed in practice, not theoretical: the two pool workers
+fork cleanly, then sit at 0% CPU forever.
+`TestPrepareTrainingDataParallel::test_python_backend_real_pool_matches_rust_chunk_set`
+runs its `prepare_training_data_parallel(..., backend_choice="python")` call
+via `subprocess.run([sys.executable, "-c", ...])` for exactly this reason — a
+fresh interpreter has never touched Rust, so it forks safely. This is a
+test-suite-ordering hazard only: `_select_prepare_backend` never calls Rust
+before choosing the Python path, so a real `data prepare --backend python`
+run never triggers it. Do not "simplify" that test back to an in-process
+call.
+
 **Do not turn either dispatcher back into a serial `for` loop.** This is the
 single easiest mistake to make in this module and it has been made before
 (issue #176): the Rust call looks self-parallelizing because per-read work
@@ -249,8 +283,7 @@ warnings in an sbatch log. `prepare_training_data_parallel` now raises a
 `RuntimeError` if any batch failed outright (`BatchOutcome.batch_failed`), or
 if more than `MAX_FAILED_READ_FRACTION` (50%, a module constant in
 `parallel.py`) of individual reads failed; `handle_prepare` raises rather than
-warning-and-returning when zero chunks were extracted, on both the parallel
-and sequential paths.
+warning-and-returning when zero chunks were extracted.
 
 This is deliberately zero-tolerance, not "log and keep going": a batch that
 failed outright signals the *pipeline itself* misbehaved (a panic, a dtype

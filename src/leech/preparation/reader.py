@@ -1,19 +1,21 @@
 """
-High-level read iteration combining BAM and POD5 data.
+Builds a :class:`~leech.chunking.LeechRead` from raw BAM/POD5 components.
 
-This module provides functions for iterating over aligned reads while
-extracting features from both BAM alignments and POD5 signal data.
+``build_leech_read`` is the shared feature-extraction step used by the
+parallel dispatch workers (``preparation/parallel.py``) and by inference. The
+sequential BAM+POD5 iterator that used to live here (``iter_bam_with_pod5``)
+was retired in issue #275: ``prepare_training_data_parallel(num_workers=1)``
+covers the same case through the same dispatcher every other worker count
+uses.
 """
 
 import logging
-from collections.abc import Iterator
 from pathlib import Path
 
 import numpy as np
 
 from leech.chunking import LeechRead
 from leech.configs import SignalConfig
-from leech.constants import REQUIRED_BAM_TAGS
 from leech.features import (
     MoveTable,
     compute_dwell_features,
@@ -21,10 +23,8 @@ from leech.features import (
     compute_ref_to_signal,
     compute_signal_features,
     compute_signal_residual,
-    extract_move_table,
     normalize_read_signal,
 )
-from leech.io import POD5Reader, iter_bam_batches
 
 logger = logging.getLogger("leech.preparation.reader")
 
@@ -44,7 +44,7 @@ def build_leech_read(
     """
     Build a LeechRead from raw components.
 
-    Shared helper used by iter_bam_with_pod5(), parallel workers, and inference workers.
+    Shared helper used by the parallel prepare workers and inference workers.
 
     Args:
         read_id: Read identifier
@@ -82,6 +82,11 @@ def build_leech_read(
         pa_stdev=signal_config.pa_stdev,
         cal_offset=cal_offset,
         cal_scale=cal_scale,
+        # Nothing downstream reads this dict's contents (only
+        # `leech_read.metadata["alignment"/"cl_value"/"reference_name"]` are
+        # ever read back) -- skip the two full-signal np.median passes that
+        # would otherwise exist only to populate it (issue #275).
+        include_diagnostics=False,
     )
 
     # Determine which sequence and mapping to use. In ref-anchored mode we
@@ -110,13 +115,35 @@ def build_leech_read(
         seq_to_sig_map = query_to_sig_map
         use_sequence = sequence
 
+    # `extract_levels(use_sequence, ...)` used to be called up to three times
+    # per read with byte-identical arguments -- once inside `refine()`, once
+    # here for the kmer-residual features, once more for the signal residual
+    # (issue #275). Computed once and threaded through instead. It depends
+    # only on `use_sequence` and the refiner's table/kmer_len/center_idx, none
+    # of which refinement changes (`refine()` only moves `seq_to_sig_map`
+    # boundaries; the returned `signal` and the sequence are unchanged), so
+    # one value is valid for both the refinement DP band and the post-
+    # refinement residual features below.
+    expected_levels: np.ndarray | None = None
+    if signal_config.signal_refiner is not None and hasattr(
+        signal_config.signal_refiner, "kmer_to_level"
+    ):
+        from leech.signal_refine import extract_levels
+
+        expected_levels = extract_levels(
+            use_sequence,
+            signal_config.signal_refiner.kmer_to_level,
+            signal_config.signal_refiner.kmer_len,
+            center_idx=signal_config.signal_refiner.center_idx,
+        )
+
     # Optional signal map refinement
     if signal_config.refine_signal_map and signal_config.signal_refiner is not None:
         from leech.signal_refine import SigMapRefiner
 
         if isinstance(signal_config.signal_refiner, SigMapRefiner):
             norm_signal, seq_to_sig_map = signal_config.signal_refiner.refine(
-                norm_signal, use_sequence, seq_to_sig_map
+                norm_signal, use_sequence, seq_to_sig_map, expected_levels=expected_levels
             )
 
     dwells = np.diff(seq_to_sig_map)
@@ -130,35 +157,22 @@ def build_leech_read(
 
     # Kmer residual features and signal-level residual
     sig_residual = None
-    if (
-        signal_config.compute_features
-        and signal_config.signal_refiner is not None
-        and hasattr(signal_config.signal_refiner, "kmer_to_level")
-    ):
+    if signal_config.compute_features and expected_levels is not None:
         # `center_idx` matters here, not just in refinement: it decides which
         # base of each k-mer window the expected level is attributed to, so
         # leaving it at extract_levels' default while the refiner used its own
         # would offset every residual feature against the boundaries that
         # produced it. The Rust pipeline passes one `kmer_center_idx` to both.
-        kmer_center_idx = signal_config.signal_refiner.center_idx
         kmer_residual_feats = compute_kmer_residual_features(
             norm_signal,
             seq_to_sig_map,
             use_sequence,
             signal_config.signal_refiner.kmer_to_level,
             signal_config.signal_refiner.kmer_len,
-            center_idx=kmer_center_idx,
+            center_idx=signal_config.signal_refiner.center_idx,
+            expected_levels=expected_levels,
         )
         signal_feats.update(kmer_residual_feats)
-
-        from leech.signal_refine import extract_levels
-
-        expected_levels = extract_levels(
-            use_sequence,
-            signal_config.signal_refiner.kmer_to_level,
-            signal_config.signal_refiner.kmer_len,
-            center_idx=kmer_center_idx,
-        )
         sig_residual = compute_signal_residual(norm_signal, seq_to_sig_map, expected_levels)
 
     meta = {"normalization": norm_params}
@@ -194,116 +208,3 @@ def read_pod5_signal(pod5_path: Path, read_id: str) -> tuple[np.ndarray, dict]:
     from leech.io import read_pod5_signal as _read_pod5_signal
 
     return _read_pod5_signal(pod5_path, read_id)
-
-
-def iter_bam_with_pod5(
-    bam_path: Path,
-    pod5_path: Path,
-    signal_config: SignalConfig,
-    min_mapq: int = 0,
-    require_tags: list[str] | None = None,
-    reference_sequences: dict[str, str] | None = None,
-    read_batch_size: int = 200_000,
-) -> Iterator[LeechRead]:
-    """
-    Iterate over aligned reads, loading signal from POD5.
-
-    Reads are processed in mega-batches (default 50K) to bound memory usage.
-    Each batch: load BAM alignments, preload POD5 signals, yield LeechReads,
-    then free the batch.
-
-    Args:
-        bam_path: Path to BAM file with mv tags
-        pod5_path: Path to POD5 file
-        signal_config: Signal processing configuration
-        min_mapq: Minimum mapping quality
-        require_tags: BAM tags that must be present (default: ["mv", "ns"])
-        reference_sequences: Dict of reference sequences (for anchor mode)
-        read_batch_size: Reads per mega-batch for memory-bounded streaming
-
-    Yields:
-        LeechRead objects with full feature extraction
-    """
-    if require_tags is None:
-        require_tags = REQUIRED_BAM_TAGS
-
-    with POD5Reader(pod5_path) as pod5_reader:
-        for aln_batch in iter_bam_batches(
-            bam_path, batch_size=read_batch_size, min_mapq=min_mapq, require_tags=require_tags
-        ):
-            # Preload POD5 signals for this batch only
-            batch_read_ids = [
-                aln.query_name
-                for aln in aln_batch
-                if aln.query_name is not None and aln.query_sequence is not None
-            ]
-            if not batch_read_ids:
-                continue
-            pod5_reader.preload(batch_read_ids)
-
-            for aln in aln_batch:
-                try:
-                    move_table = extract_move_table(aln)
-                    read_id = aln.query_name
-                    read_seq = aln.query_sequence
-                    if read_id is None or read_seq is None:
-                        continue
-
-                    raw_signal, pod5_metadata = pod5_reader.get_signal(read_id)
-
-                    cal_offset = pod5_metadata.get("calibration_offset")
-                    cal_scale = pod5_metadata.get("calibration_scale")
-
-                    # Get reference sequence for anchor mode
-                    ref_seq = None
-                    cigar_tuples = None
-                    if signal_config.anchor == "reference":
-                        if reference_sequences and aln.reference_name in reference_sequences:
-                            full_ref = reference_sequences[aln.reference_name]
-                            ref_seq = full_ref[aln.reference_start : aln.reference_end]
-                        else:
-                            try:
-                                ref_seq = aln.get_reference_sequence()
-                            except Exception as e:
-                                logger.warning(
-                                    "Could not get reference sequence for %s (anchor=reference): %s",
-                                    aln.query_name,
-                                    e,
-                                )
-                                ref_seq = None
-                        cigar_tuples = aln.cigartuples
-
-                    # Extract optional CL tag
-                    try:
-                        cl_tag = aln.get_tag("CL")
-                        cl_value = int(cl_tag[0]) if hasattr(cl_tag, "__getitem__") else int(cl_tag)
-                    except (KeyError, TypeError):
-                        cl_value = None
-
-                    metadata = {
-                        **pod5_metadata,
-                        "mapping_quality": aln.mapping_quality,
-                        "reference_name": aln.reference_name,
-                        "reference_start": aln.reference_start,
-                        "reference_end": aln.reference_end,
-                        "is_reverse": aln.is_reverse,
-                        "alignment": aln,
-                        "cl_value": cl_value,
-                    }
-
-                    yield build_leech_read(
-                        read_id=read_id,
-                        sequence=read_seq,
-                        raw_signal=raw_signal,
-                        move_table=move_table,
-                        signal_config=signal_config,
-                        metadata=metadata,
-                        reference_sequence=ref_seq,
-                        cigar_tuples=cigar_tuples,
-                        cal_offset=cal_offset,
-                        cal_scale=cal_scale,
-                    )
-
-                except Exception as e:
-                    logger.warning(f"Skipping read {aln.query_name}: {e}")
-                    continue

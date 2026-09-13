@@ -13,6 +13,11 @@ Covers:
 
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
+from pathlib import Path
+
 import numpy as np
 import pytest
 from conftest import LEVELS_FILE, TRNA_BAM, TRNA_FIXTURES_AVAILABLE, TRNA_POD5, TRNA_REF
@@ -739,6 +744,49 @@ class TestFeatureWindowParity:
             )
 
 
+class TestPoolInitializerFailsLoud:
+    """A bad config must raise, not hang the whole `mp.Pool` run.
+
+    `mp.Pool`'s `initializer` is a well-known trap: an exception there does
+    not propagate to the caller (CPython kills that worker and silently
+    spawns a replacement, forever), so `_init_worker` never lets one escape --
+    it stores the failure and `_process_pooled_batch` re-raises it, since a
+    normal task exception *does* propagate through `imap_unordered`
+    correctly. No real pool here (and so no fork, and no need for the
+    subprocess isolation `TestPrepareTrainingDataParallel` uses below) --
+    this calls both functions directly, in-process, which exercises the
+    exact same logic without paying for process spin-up.
+    """
+
+    def test_init_worker_stores_rather_than_raises(self, monkeypatch):
+        import leech.preparation.parallel as pp
+
+        monkeypatch.setattr(pp, "_worker_config", None)
+        monkeypatch.setattr(pp, "_worker_motif_searcher", None)
+        monkeypatch.setattr(pp, "_worker_init_error", None)
+
+        # motif_reference="fasta" with no reference_sequences is exactly what
+        # get_motif_searcher raises ValueError on.
+        bad_config = _trna_config()
+        bad_config.motif.motif_reference = "fasta"
+        bad_config.motif.reference_sequences = None
+
+        pp._init_worker(bad_config)  # must not raise
+
+        assert pp._worker_motif_searcher is None
+        assert isinstance(pp._worker_init_error, ValueError)
+
+    def test_process_pooled_batch_reraises_the_init_error(self, monkeypatch):
+        import leech.preparation.parallel as pp
+
+        monkeypatch.setattr(pp, "_worker_config", _trna_config())
+        monkeypatch.setattr(pp, "_worker_motif_searcher", None)
+        monkeypatch.setattr(pp, "_worker_init_error", ValueError("mode='fasta' requires ..."))
+
+        with pytest.raises(RuntimeError, match="mp.Pool worker failed to initialize"):
+            pp._process_pooled_batch((0, []))
+
+
 class TestPrepareTrainingDataParallel:
     def test_rust_backend_end_to_end(self):
         """Full prepare_training_data_parallel Rust path (no subprocess fork)."""
@@ -757,6 +805,94 @@ class TestPrepareTrainingDataParallel:
         # Every chunk should carry its label from config.
         assert all(c["label"] == "Ala" for c in chunks)
         assert all(int(c["label_int"]) == 1 for c in chunks)
+
+    def test_python_backend_real_pool_matches_rust_chunk_set(self):
+        """``backend_choice="python", num_workers=2`` -- the real mp.Pool path.
+
+        Every other test that drives the Python backend calls
+        ``_process_read_chunk_worker`` directly (a single in-process call, no
+        pool at all), so nothing exercised the ``mp.Pool`` dispatcher itself --
+        in particular ``_init_worker``/``_process_pooled_batch`` and the
+        pickling of ``PrepareConfig`` across a real process boundary (issue
+        #275). This is chunk-*set* equality (same ``(read_id, base_idx)``
+        keys), not array equality: that's what
+        ``tests/test_backend_parity.py`` and ``TestRustPythonWorkerParity``
+        above already hold to exact/toleranced field comparison, over a wider
+        settings matrix, without paying for real subprocess spin-up.
+
+        Runs the ``mp.Pool`` call in a **fresh subprocess**, deliberately, not
+        in-process. `mp.Pool` forks (the default start method on Linux), and by
+        the time this test class runs, the pytest process has already
+        exercised the Rust backend (``TestRustPythonWorkerParity`` and
+        friends above), which initializes escapepod's rayon thread pool.
+        Forking a process that already has live background threads is exactly
+        the hazard Python's own multiprocessing docs warn about (and CPython
+        warns about at runtime: "use of fork() may lead to deadlocks in the
+        child") -- confirmed here in practice: run in-process, right after the
+        Rust-backend tests, the two pool workers fork and then sit at 0% CPU
+        forever, stuck on a lock inherited mid-acquisition from a rayon
+        worker thread that does not exist in the child. A brand new
+        interpreter has never touched Rust/rayon, so it forks safely -- which
+        also matches production: `_select_prepare_backend` never calls into
+        Rust before choosing the Python path, so a real `data prepare
+        --backend python` run never hits this.
+        """
+        script = f"""
+import json
+from pathlib import Path
+from leech.configs import ChunkConfig, LabelConfig, MotifConfig, PrepareConfig, SignalConfig
+from leech.preparation.parallel import prepare_training_data_parallel
+
+config = PrepareConfig(
+    pod5_path=Path({str(TRNA_POD5)!r}),
+    signal=SignalConfig(
+        reverse_signal=True, anchor="basecall", norm_method="median_mad",
+        refine_signal_map=False,
+    ),
+    motif=MotifConfig(
+        motif="CCAGGC", motif_offset=2, motif_reference="bam",
+        reference_sequences=None, skip_motif_indels=False,
+    ),
+    chunk=ChunkConfig(base_justify="center", signal_context=(200, 200)),
+    labeling=LabelConfig(label="Ala", label_int=1),
+)
+chunks, stats = prepare_training_data_parallel(
+    Path({str(TRNA_BAM)!r}), config, num_workers=2, chunk_size=10,
+    backend_choice="python",
+)
+keys = sorted({{(c["read_id"], int(c["base_idx"])) for c in chunks}})
+labels_ok = all(c["label"] == "Ala" and int(c["label_int"]) == 1 for c in chunks)
+print(json.dumps({{"stats": stats, "keys": keys, "labels_ok": labels_ok}}))
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            cwd=Path(__file__).parent.parent,
+        )
+        assert result.returncode == 0, (
+            f"subprocess failed (rc={result.returncode}):\nstdout={result.stdout}\n"
+            f"stderr={result.stderr}"
+        )
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        py_stats = payload["stats"]
+        py_keys = {tuple(k) for k in payload["keys"]}
+        assert py_stats["total_reads"] > 0
+        assert py_stats["total_chunks"] > 0
+        assert payload["labels_ok"]
+
+        import leech.preparation.parallel as pp
+
+        if not (pp.HAS_RUST and pp._rs_extract_training_chunks is not None):
+            pytest.skip("leech_core Rust acceleration not available for the cross-backend check")
+
+        config = _trna_config()
+        rust_chunks, rust_stats = pp.prepare_training_data_parallel(
+            TRNA_BAM, config, num_workers=1, chunk_size=10, backend_choice="rust"
+        )
+        assert py_stats["total_reads"] == rust_stats["total_reads"]
+        assert py_keys == set(_chunks_by_key(rust_chunks))
 
 
 # ---------------------------------------------------------------------------

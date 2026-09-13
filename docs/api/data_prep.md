@@ -160,20 +160,23 @@ Per-chunk metadata as columns, read as a sequence of mappings — what
 
 ## Preparation Module (`leech.preparation`)
 
-### Sequential Preparation
+### Parallel Preparation
 
-Main data preparation function (sequential).
+Chunk extraction, at every worker count (including 1 -- there is no separate
+sequential pipeline).
 
-::: leech.preparation.orchestrator.prepare_training_data
+::: leech.preparation.parallel.prepare_training_data_parallel
     options:
       show_root_heading: true
       show_source: false
 
-### Parallel Preparation
+### Writing Splits
 
-Parallel data preparation for large datasets.
+Split a spooled corpus by read and write `train`/`val`/`test` `.npz` files --
+the one write step both the CLI and any other caller of the parallel
+dispatcher use.
 
-::: leech.preparation.parallel.prepare_training_data_parallel
+::: leech.preparation.orchestrator.write_splits
     options:
       show_root_heading: true
       show_source: false

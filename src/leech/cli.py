@@ -173,12 +173,6 @@ data.command_order = ("prepare", "merge")
     help="Minimum mapping quality",
 )
 @click.option(
-    "--feature-set",
-    type=click.Choice(["signal", "signal+dwell", "signal+levels", "signal+dwell+levels"]),
-    default="signal+dwell+levels",
-    help="Feature set to extract",
-)
-@click.option(
     "--train-split",
     type=float,
     default=0.7,
@@ -212,7 +206,7 @@ data.command_order = ("prepare", "merge")
     "--workers",
     type=int,
     default=8,
-    help="Number of parallel workers for data processing (1=sequential, >1=parallel)",
+    help="Number of batches in flight during data processing (1=no concurrency, >1=parallel)",
 )
 @click.option(
     "--chunk-size",
@@ -344,7 +338,6 @@ def prepare(
     require_query_mapping,
     label,
     min_mapq,
-    feature_set,
     train_split,
     val_split,
     seed,
@@ -396,7 +389,6 @@ def prepare(
         require_query_mapping=require_query_mapping,
         label=label,
         min_mapq=min_mapq,
-        feature_set=feature_set,
         train_split=train_split,
         val_split=val_split,
         seed=seed,
