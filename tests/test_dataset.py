@@ -863,7 +863,6 @@ class TestStandardizeFeatures:
         torch.testing.assert_close(plain[0]["features"], standardized[0]["features"])
 
 
-
 class TestTimeStretchPrimitives:
     """The pure numpy warp functions ``__getitems__`` composes (issue #281)."""
 
