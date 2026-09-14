@@ -687,6 +687,39 @@ class TestCropWindowPaddingWarningBlockFill:
         assert torch.all(sig[-75:] == 0)
         assert sig[-76].item() == 449.0
 
+    def test_block_fill_warns_once_on_plain_signal_len_pad(self, tmp_path, caplog):
+        """The symmetric case (no left_context/right_context) has the same gap
+        in the block-wise filler: a plain --signal-len wider than the stored
+        chunk zero-pads silently.
+        """
+        chunks = self._make_uniform_focus_chunks(6, signal_len=400, focus_signal_pos=200)
+        path = tmp_path / "chunks.npz"
+        save_chunks(chunks, path)
+
+        with caplog.at_level("WARNING", logger="leech.dataset"):
+            ds = LeechDataset(
+                chunk_path=path,
+                signal_len=1000,
+                kmer_len=KMER_LEN,
+                model_type="ConvLSTMDwell",
+                seq_encoding="base_onehot",
+            )
+
+        assert ds._array_stream is not None
+        assert ds._block_fill_supported()
+
+        pad_records = [r for r in caplog.records if "zero-padded" in r.getMessage()]
+        assert len(pad_records) == 1
+        msg = pad_records[0].getMessage()
+        assert "signal_len=1000" in msg
+        assert "stored length=400" in msg
+        assert "600 sample" in msg
+
+        sig = ds[0]["signal"]
+        assert sig.shape[-1] == 1000
+        assert torch.all(sig[-600:] == 0)
+        assert sig[399].item() == 399.0
+
 
 class TestLegacyFormats:
     """Old corpora keep working — they simply do not stream."""

@@ -706,6 +706,48 @@ class TestCropWindowPaddingWarning:
             )
         assert not any("zero-padded" in r.getMessage() for r in caplog.records)
 
+    def test_plain_signal_len_pad_warns_once(self, caplog):
+        """The symmetric case (no left_context/right_context) has the same gap:
+        a plain --signal-len wider than the stored chunk zero-pads silently.
+        """
+        chunks = TestAsymmetricFocusPosition._make_chunks(
+            signal_len=400, focus_signal_pos=None, n=3
+        )
+        with caplog.at_level("WARNING", logger="leech.dataset"):
+            ds = LeechDataset(
+                chunks=chunks,
+                signal_len=1000,
+                kmer_len=11,
+                model_type="ConvLSTMDwell",
+                seq_encoding="base_onehot",
+            )
+
+        pad_records = [r for r in caplog.records if "zero-padded" in r.getMessage()]
+        assert len(pad_records) == 1
+        msg = pad_records[0].getMessage()
+        assert "signal_len=1000" in msg
+        assert "stored length=400" in msg
+        assert "600 sample" in msg
+
+        sig = ds[0]["signal"]
+        assert sig.shape[-1] == 1000
+        assert torch.all(sig[-600:] == 0)
+        assert sig[399].item() == 399.0
+
+    def test_strict_window_raises_on_plain_signal_len_pad(self):
+        chunks = TestAsymmetricFocusPosition._make_chunks(
+            signal_len=400, focus_signal_pos=None, n=2
+        )
+        with pytest.raises(ValueError, match="strict_window"):
+            LeechDataset(
+                chunks=chunks,
+                signal_len=1000,
+                kmer_len=11,
+                model_type="ConvLSTMDwell",
+                seq_encoding="base_onehot",
+                strict_window=True,
+            )
+
 
 class TestBatchedFetch:
     """``__getitems__`` gathers a whole batch instead of one row at a time.

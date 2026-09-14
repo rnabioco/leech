@@ -2793,6 +2793,13 @@ def train_model(
         "base_justify": base_justify,
         "left_context": left_context,
         "right_context": right_context,
+        # Whether this run was guarded against silently zero-padding a crop
+        # that overran the stored corpus (#255) -- without this, two
+        # checkpoints with identical left_context/right_context but different
+        # strict_window are indistinguishable in config.json, so nothing
+        # downstream can tell whether a run was actually protected or merely
+        # happened not to trigger the mismatch.
+        "strict_window": strict_window,
         # The effective encoding, not the requested one: a checkpoint that does
         # not record what it trained on cannot be audited after the fact (#230).
         "seq_encoding": effective_seq_encoding,

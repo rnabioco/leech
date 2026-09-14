@@ -1590,37 +1590,58 @@ class LeechDataset(Dataset):
         production run the way it did for two retrains before #255: nothing
         raised, and nothing logged, so the last 75 samples of every chunk were
         zero for a `right_context` 75 samples wider than the stored corpus.
+        """
+        if n_padded <= 0:
+            return
+        left, right = self.left_context, self.right_context
+        self._warn_or_raise_padding(
+            f"asymmetric crop window (left_context={left}, right_context={right}) "
+            f"reaches outside the stored chunk (stored left={available_left}, "
+            f"stored right={available_right} samples around the focus base)",
+            n_padded,
+        )
+
+    def _note_plain_pad(self, stored_len: int, n_padded: int) -> None:
+        """Report the symmetric case: ``signal_len`` wider than the stored chunk.
+
+        Reached when ``left_context``/``right_context`` are not set at all, so
+        :meth:`_prepare_signal`/:meth:`_prepare_signals_block` just centre-pad
+        the whole stored chunk out to ``signal_len`` -- the same silent
+        zero-pad-on-mismatch failure mode as the asymmetric crop
+        (:meth:`_note_crop_padding`), reachable from the plainer, more common
+        ``--signal-len`` invocation that has no ``left_context``/
+        ``right_context`` to name.
+        """
+        if n_padded <= 0:
+            return
+        self._warn_or_raise_padding(
+            f"requested signal_len={self.signal_len} exceeds the stored chunk "
+            f"(stored length={stored_len} samples)",
+            n_padded,
+        )
+
+    def _warn_or_raise_padding(self, detail: str, n_padded: int) -> None:
+        """Shared warn-once-or-raise mechanics for :meth:`_note_crop_padding` and
+        :meth:`_note_plain_pad`.
 
         Raises immediately when ``strict_window`` was requested; otherwise
         warns once per dataset (subsequent calls are no-ops) rather than once
         per chunk, since a corpus/window mismatch is constant for the whole
         run and a Python warning per row would be the majority of __init__.
         """
-        if n_padded <= 0:
-            return
-        left, right = self.left_context, self.right_context
         if self._strict_window:
             raise ValueError(
-                f"Signal crop window (left_context={left}, right_context={right}) "
-                f"reaches outside the stored chunk (stored left={available_left}, "
-                f"stored right={available_right} samples around the focus base); "
-                f"{n_padded} sample(s) would be zero-padded. Re-prepare the corpus "
-                "with a matching --signal-context, request a narrower "
-                "left_context/right_context, or drop strict_window to allow the pad."
+                f"Signal crop: {detail}; {n_padded} sample(s) would be zero-padded. "
+                "Re-prepare the corpus with a matching window, request a narrower "
+                "one, or drop strict_window to allow the pad."
             )
         if not self._crop_pad_warned:
             logger.warning(
-                "Signal crop window (left_context=%s, right_context=%s) reaches "
-                "outside the stored chunk (stored left=%s, stored right=%s samples "
-                "around the focus base); %s sample(s) zero-padded on at least one "
-                "chunk in %s. This corpus's signal_context does not cover the "
-                "requested crop -- every affected chunk trains/predicts on zeros "
-                "for the missing samples. Pass strict_window=True (--strict-window) "
-                "to raise instead.",
-                left,
-                right,
-                available_left,
-                available_right,
+                "Signal crop: %s; %s sample(s) zero-padded on at least one chunk "
+                "in %s. Every affected chunk trains/predicts on zeros for the "
+                "missing samples. Pass strict_window=True (--strict-window) to "
+                "raise instead.",
+                detail,
                 n_padded,
                 self.chunk_path or "<pre-loaded chunks>",
             )
@@ -1686,6 +1707,7 @@ class LeechDataset(Dataset):
                         int(pad_per_row[worst]),
                     )
         elif stored_len < self.signal_len:
+            self._note_plain_pad(stored_len, self.signal_len - stored_len)
             signal = np.pad(signal, ((0, 0), (0, self.signal_len - stored_len)), mode="constant")
             if signal_residual is not None:
                 signal_residual = np.pad(
@@ -1840,6 +1862,7 @@ class LeechDataset(Dataset):
                 if signal_residual is not None:
                     signal_residual = signal_residual[start:end]
         elif len(signal) < self.signal_len:
+            self._note_plain_pad(len(signal), self.signal_len - len(signal))
             signal = np.pad(signal, (0, self.signal_len - len(signal)), mode="constant")
             if signal_residual is not None:
                 signal_residual = np.pad(
