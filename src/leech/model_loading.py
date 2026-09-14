@@ -114,6 +114,7 @@ _TRAINING_PARAMS = {
     "warmup_epochs",
     "loss_type",
     "focal_gamma",
+    "focal_neg_gamma",
     "label_smoothing",
     "augment_jitter",
     "augment_scale_min",

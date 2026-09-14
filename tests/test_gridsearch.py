@@ -11,6 +11,7 @@ from leech.chunking import load_chunks, save_chunks
 from leech.configs import TrainConfig
 from leech.gridsearch import (
     GridSearchConfig,
+    _resolve_selection_metric,
     parse_context_grid,
     parse_values,
     run_grid_point,
@@ -405,3 +406,58 @@ class TestGridSearchStreamsTheCorpus:
 
         assert sequential_record.read_text().strip() == "True"
         assert parallel_record.read_text().strip() == "True"
+
+
+class TestParametricSelectionMetric:
+    """--selection-metric accepts tpr_at_fpr:<f> / callable_at_precision:<p>,
+    the same parametric names Trainer's --checkpoint-metric does (#280)."""
+
+    def test_resolve_passes_through_parametric_metric_for_binary(self):
+        assert _resolve_selection_metric("tpr_at_fpr:0.0034", n_classes=2) == "tpr_at_fpr:0.0034"
+        assert (
+            _resolve_selection_metric("callable_at_precision:0.99", n_classes=2)
+            == "callable_at_precision:0.99"
+        )
+
+    def test_resolve_refuses_parametric_metric_for_multiclass(self):
+        with pytest.raises(ValueError, match="binary-only"):
+            _resolve_selection_metric("tpr_at_fpr:0.1", n_classes=4)
+
+    def test_resolve_refuses_unknown_metric(self):
+        with pytest.raises(ValueError, match="selection_metric must be one of"):
+            _resolve_selection_metric("not_a_real_metric", n_classes=2)
+
+    def test_grid_search_ranks_on_the_parametric_metric(self, grid_corpus, tmp_path, monkeypatch):
+        """run_grid_point/run_grid_search read best_epoch and
+        best_val_selection off history["val_selection"] -- the only place a
+        parametric metric's per-epoch value lives, since history has no key
+        literally named "tpr_at_fpr:0.5"."""
+        train, val = grid_corpus
+
+        def fake_history_with_selection(values):
+            return {
+                "train_loss": [0.5] * len(values),
+                "train_acc": [0.5] * len(values),
+                "val_loss": [0.5] * len(values),
+                "val_acc": [0.5] * len(values),
+                "val_auc": [0.5] * len(values),
+                "val_f1": [0.5] * len(values),
+                "val_selection": values,
+            }
+
+        monkeypatch.setattr(
+            leech.gridsearch,
+            "train_model",
+            lambda **kwargs: fake_history_with_selection([0.3, 0.7]),
+        )
+
+        config = _config(train, val, tmp_path / "grid", selection_metric="tpr_at_fpr:0.5")
+        run_grid_search(config)
+
+        with open(tmp_path / "grid" / "grid_summary.csv") as handle:
+            rows = list(csv.DictReader(handle))
+
+        assert len(rows) == 1
+        assert rows[0]["selection_metric"] == "tpr_at_fpr:0.5"
+        assert float(rows[0]["best_val_selection"]) == pytest.approx(0.7)
+        assert int(rows[0]["best_epoch"]) == 2

@@ -47,6 +47,9 @@ DEFAULT_SCHEDULER_FACTOR = 0.5
 DEFAULT_WARMUP_EPOCHS = 0
 DEFAULT_LOSS_TYPE = "bce"  # "bce", "focal", "cross_entropy", or "noise_corrected_bce"
 DEFAULT_FOCAL_GAMMA = 2.0
+# None = symmetric focal loss (neg_gamma == gamma), bit-for-bit identical to
+# the pre-#280 loss. See FocalBCEWithLogitsLoss.
+DEFAULT_FOCAL_NEG_GAMMA = None
 DEFAULT_LABEL_SMOOTHING = 0.0  # 0 = disabled; e.g., 0.05 softens 0/1 targets
 DEFAULT_MIXED_PRECISION = False
 DEFAULT_AUGMENT_JITTER = 0.0

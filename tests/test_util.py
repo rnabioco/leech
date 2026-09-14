@@ -17,7 +17,16 @@ from leech.bundling import (
     list_bundle_models,
     load_model_from_bundle,
 )
-from leech.metrics import compute_metrics, print_metrics, save_metrics, sweep_thresholds
+from leech.metrics import (
+    callable_at_precision,
+    compute_metrics,
+    compute_parametric_metric,
+    parse_selection_metric,
+    print_metrics,
+    save_metrics,
+    sweep_thresholds,
+    tpr_at_fpr,
+)
 from leech.model_export import (
     _build_example_inputs,
     deserialize_exported_model,
@@ -243,6 +252,180 @@ class TestSweepThresholds:
 
         assert "threshold_sweep" in metrics
         assert metrics["threshold_sweep"]["at_youden"]["youden_j"] == 1.0
+
+
+class TestTprAtFpr:
+    """Test tpr_at_fpr: TPR at a fixed FPR, read off the ROC curve (#280)."""
+
+    def test_perfectly_separable_is_one_everywhere(self):
+        """A separable problem's ROC curve is a single step at fpr=0, so TPR
+        is 1.0 at any target FPR > 0 -- and, by np.interp's own tie
+        resolution (last of duplicate x wins), at fpr=0 too."""
+        y_true = np.array([0, 0, 1, 1])
+        y_prob = np.array([0.2, 0.4, 0.6, 0.8])
+
+        for target_fpr in (0.0, 0.25, 0.5, 0.75, 1.0):
+            assert tpr_at_fpr(y_true, y_prob, target_fpr) == pytest.approx(1.0)
+
+    def test_hand_computed_step_function(self):
+        """Three positives and three negatives, no score ties, so roc_curve
+        keeps every threshold and forms a clean 3-step staircase::
+
+            fpr: [0, 0, 1/3, 1/3, 2/3, 2/3, 1]
+            tpr: [0, 1/3, 1/3, 2/3, 2/3, 1, 1]
+
+        (verified directly against ``sklearn.metrics.roc_curve`` -- this is
+        that function's own points, not a re-derivation). tpr_at_fpr linearly
+        interpolates this curve, so a target FPR inside a flat plateau reads
+        off the plateau's TPR exactly, and a target AT a breakpoint reads the
+        higher of the two tied points (np.interp resolves an exact tie to the
+        last-indexed duplicate).
+        """
+        y_true = np.array([0, 0, 0, 1, 1, 1])
+        y_prob = np.array([0.1, 0.3, 0.5, 0.2, 0.4, 0.6])
+
+        assert tpr_at_fpr(y_true, y_prob, 0.0) == pytest.approx(1 / 3)
+        assert tpr_at_fpr(y_true, y_prob, 1 / 6) == pytest.approx(1 / 3)
+        assert tpr_at_fpr(y_true, y_prob, 1 / 3) == pytest.approx(2 / 3)
+        assert tpr_at_fpr(y_true, y_prob, 0.5) == pytest.approx(2 / 3)
+        assert tpr_at_fpr(y_true, y_prob, 2 / 3) == pytest.approx(1.0)
+        assert tpr_at_fpr(y_true, y_prob, 1.0) == pytest.approx(1.0)
+
+    def test_single_class_returns_zero(self):
+        """No ROC curve is defined with only one class present."""
+        assert tpr_at_fpr(np.array([1, 1, 1]), np.array([0.2, 0.5, 0.9]), 0.1) == 0.0
+        assert tpr_at_fpr(np.array([0, 0, 0]), np.array([0.2, 0.5, 0.9]), 0.1) == 0.0
+
+
+class TestCallableAtPrecision:
+    """Test callable_at_precision: coverage at a precision floor (#280)."""
+
+    # pred = (prob > 0.5); confidence = |prob - 0.5|.
+    #   idx:   0     1     2     3     4     5
+    #   true:  1     0     1     1     0     0
+    #   prob: 0.9   0.8   0.6   0.4   0.3   0.5
+    #   pred:  1     1     1     0     0     0
+    #   ok:    T     F     T     F     T     T
+    #   conf: 0.4   0.3   0.1   0.1   0.2   0.0
+    # Sorted by confidence descending (stable, so idx2 before idx3 on the
+    # 0.1 tie): order = [0, 1, 4, 2, 3, 5]; correct in that order:
+    #   [T, F, T, T, F, T]
+    # cumulative correct: [1, 1, 2, 3, 3, 4]
+    # running precision:  [1.0, 0.5, 0.667, 0.75, 0.6, 0.667]
+    # (hand computation cross-checked against the implementation directly)
+    Y_TRUE = np.array([1, 0, 1, 1, 0, 0])
+    Y_PROB = np.array([0.9, 0.8, 0.6, 0.4, 0.3, 0.5])
+
+    def test_calling_everyone_already_clears_the_floor(self):
+        """Overall accuracy is 4/6 = 0.667, so a floor at or below that is
+        cleared by calling every read -- coverage 1.0, the most permissive
+        threshold, since the definition doesn't require monotonic precision
+        as more reads are called, only that the chosen call count clears it."""
+        assert callable_at_precision(self.Y_TRUE, self.Y_PROB, 0.6) == pytest.approx(1.0)
+
+    def test_tighter_floor_drops_the_least_confident_calls(self):
+        """At precision>=0.7, the largest call count still meeting it is 4
+        (running precision 0.75), not 6 -- coverage 4/6."""
+        assert callable_at_precision(self.Y_TRUE, self.Y_PROB, 0.7) == pytest.approx(4 / 6)
+
+    def test_near_perfect_floor_keeps_only_the_most_confident_call(self):
+        """Only the single most confident call (idx0, correct) reaches
+        precision 1.0 -- coverage 1/6."""
+        assert callable_at_precision(self.Y_TRUE, self.Y_PROB, 0.8) == pytest.approx(1 / 6)
+        assert callable_at_precision(self.Y_TRUE, self.Y_PROB, 1.0) == pytest.approx(1 / 6)
+
+    def test_unreachable_floor_returns_zero(self):
+        assert callable_at_precision(self.Y_TRUE, self.Y_PROB, 1.01) == 0.0
+
+    def test_empty_input_returns_zero(self):
+        assert callable_at_precision(np.array([]), np.array([]), 0.9) == 0.0
+
+
+class TestParseSelectionMetric:
+    """Test parse_selection_metric's grammar (#280)."""
+
+    def test_plain_names_pass_through_unvalidated(self):
+        assert parse_selection_metric("auto") == ("auto", None)
+        assert parse_selection_metric("val_auc") == ("val_auc", None)
+        assert parse_selection_metric("anything_without_a_colon") == (
+            "anything_without_a_colon",
+            None,
+        )
+
+    def test_parametric_names_parse_the_float(self):
+        assert parse_selection_metric("tpr_at_fpr:0.0034") == ("tpr_at_fpr", pytest.approx(0.0034))
+        assert parse_selection_metric("callable_at_precision:0.99") == (
+            "callable_at_precision",
+            pytest.approx(0.99),
+        )
+
+    def test_unknown_kind_raises(self):
+        with pytest.raises(ValueError, match="Unknown parametric metric"):
+            parse_selection_metric("roc_auc:0.5")
+
+    def test_non_numeric_parameter_raises(self):
+        with pytest.raises(ValueError, match="not a float"):
+            parse_selection_metric("tpr_at_fpr:abc")
+
+
+class TestComputeParametricMetric:
+    """Test compute_parametric_metric's dispatch (#280)."""
+
+    def test_dispatches_to_tpr_at_fpr(self):
+        y_true = np.array([0, 0, 1, 1])
+        y_prob = np.array([0.2, 0.4, 0.6, 0.8])
+        assert compute_parametric_metric(y_true, y_prob, "tpr_at_fpr:0.5") == tpr_at_fpr(
+            y_true, y_prob, 0.5
+        )
+
+    def test_dispatches_to_callable_at_precision(self):
+        y_true = TestCallableAtPrecision.Y_TRUE
+        y_prob = TestCallableAtPrecision.Y_PROB
+        assert compute_parametric_metric(
+            y_true, y_prob, "callable_at_precision:0.7"
+        ) == callable_at_precision(y_true, y_prob, 0.7)
+
+    def test_plain_metric_name_raises(self):
+        with pytest.raises(ValueError, match="not a parametric"):
+            compute_parametric_metric(np.array([0, 1]), np.array([0.1, 0.9]), "val_auc")
+
+
+class TestComputeMetricsParametricReporting:
+    """compute_metrics(checkpoint_metric=...) reports the requested parametric
+    metric so a run can be compared after the fact (#280)."""
+
+    Y_TRUE = np.array([0, 0, 1, 1])
+    Y_PRED = np.array([0, 0, 1, 1])
+    Y_PROB = np.array([0.2, 0.4, 0.6, 0.8])
+
+    def test_parametric_metric_is_added_under_its_own_name(self):
+        metrics = compute_metrics(
+            self.Y_TRUE, self.Y_PRED, self.Y_PROB, checkpoint_metric="tpr_at_fpr:0.5"
+        )
+        assert metrics["tpr_at_fpr:0.5"] == pytest.approx(tpr_at_fpr(self.Y_TRUE, self.Y_PROB, 0.5))
+
+    def test_plain_metric_adds_nothing(self):
+        metrics = compute_metrics(
+            self.Y_TRUE, self.Y_PRED, self.Y_PROB, checkpoint_metric="val_auc"
+        )
+        assert not any(
+            k.startswith("tpr_at_fpr") or k.startswith("callable_at_precision") for k in metrics
+        )
+
+    def test_none_matches_default_behavior(self):
+        with_none = compute_metrics(self.Y_TRUE, self.Y_PRED, self.Y_PROB, checkpoint_metric=None)
+        without = compute_metrics(self.Y_TRUE, self.Y_PRED, self.Y_PROB)
+        assert with_none == without
+
+    def test_single_class_adds_nothing(self):
+        """No parametric metric is computed when there's no ROC curve to read it off."""
+        metrics = compute_metrics(
+            np.array([1, 1, 1]),
+            np.array([1, 1, 1]),
+            np.array([0.6, 0.7, 0.8]),
+            checkpoint_metric="tpr_at_fpr:0.5",
+        )
+        assert "tpr_at_fpr:0.5" not in metrics
 
 
 class TestSaveLoadMetrics:

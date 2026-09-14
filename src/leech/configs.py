@@ -270,6 +270,9 @@ class TrainConfig:
     #: parsed from ``--label-noise-rate`` by ``leech.losses.parse_label_noise_rate``.
     #: Unmapped groups get rate 0. Recorded verbatim in config.json.
     label_noise_rates: dict[str, float] | None = None
+    # Asymmetric focal loss (--focal-neg-gamma, issue #280): None keeps the
+    # symmetric loss bit-for-bit; see FocalBCEWithLogitsLoss for why.
+    focal_neg_gamma: float | None = None
     label_smoothing: float = 0.0
     mixed_precision: bool = False
     checkpoint_metric: str = "auto"

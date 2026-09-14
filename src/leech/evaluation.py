@@ -372,7 +372,18 @@ def evaluate_model(
     )
     all_preds_arr = (all_probs_arr > 0.5).astype(int)
 
-    metrics = compute_metrics(all_labels_arr, all_preds_arr, all_probs_arr)
+    # checkpoint_metric (config.json, from training) is threaded through so a
+    # run selected on a parametric metric (tpr_at_fpr:<f> /
+    # callable_at_precision:<p>, issue #280) reports that same metric here --
+    # this is "test_metrics.json" (the --output file): the test half of
+    # "reports them ... so runs can be compared after the fact". A run that
+    # used a plain metric (or predates checkpoint_metric) adds nothing new.
+    metrics = compute_metrics(
+        all_labels_arr,
+        all_preds_arr,
+        all_probs_arr,
+        checkpoint_metric=config.get("checkpoint_metric"),
+    )
 
     # Add metadata
     metrics["model_path"] = str(model_path)

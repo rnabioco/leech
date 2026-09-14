@@ -64,6 +64,7 @@ def handle_optimize(
     cl_lambda: float = 1.0,
     signal_mode: str = "both",
     selection_metric: str = "auto",
+    focal_neg_gamma: float | None = None,
 ) -> Path:
     """
     Handle the optimize command logic.
@@ -146,6 +147,7 @@ def handle_optimize(
         early_stopping_patience=early_stopping,
         loss_type=loss_type,
         focal_gamma=focal_gamma,
+        focal_neg_gamma=focal_neg_gamma,
         label_smoothing=label_smoothing,
         mixed_precision=mixed_precision,
         motif=motif,
