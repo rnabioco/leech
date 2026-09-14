@@ -199,6 +199,7 @@ class InferenceSpec:
     signal_len: int
     kmer_len: int
     signal_context: tuple[int, int]
+    signal_context_bases: tuple[int, int] | None
     kmer_context: int
     dwell_offset: int
     seq_encoding: str
@@ -350,6 +351,13 @@ class InferenceSpec:
             if left_ctx is not None and right_ctx is not None
             else (signal_len // 2, signal_len // 2)
         )
+        # Base-defined signal window (issue #278): recorded by `model train`
+        # from the `data prepare` sidecar, `None` for a sample-context model.
+        # `signal_len` above already holds the model's actual trained width
+        # either way, so predict re-derives the identical window via
+        # `LeechRead.get_chunk`'s `signal_context_bases`/`signal_len` pair.
+        _scb = config.get("signal_context_bases")
+        signal_context_bases = (int(_scb[0]), int(_scb[1])) if _scb is not None else None
 
         seq_encoding = config.get("seq_encoding", DEFAULT_SEQ_ENCODING_FALLBACK)
         signal_kmer_context = tuple(config.get("signal_kmer_context", (4, 4)))
@@ -392,6 +400,7 @@ class InferenceSpec:
             signal_len=signal_len,
             kmer_len=kmer_len,
             signal_context=signal_context,
+            signal_context_bases=signal_context_bases,
             kmer_context=kmer_context,
             dwell_offset=dwell_offset,
             seq_encoding=seq_encoding,
@@ -1246,6 +1255,7 @@ def check_rust_extraction_available(
     backend: str,
     norm_method: str = RUST_NORM_METHOD,
     recover_softclip_signal: bool = False,
+    signal_context_bases: tuple[int, int] | None = None,
 ) -> tuple[bool, object, object, object]:
     """Decide whether the rust monolithic extraction hot path is usable.
 
@@ -1259,6 +1269,12 @@ def check_rust_extraction_available(
             real soft-clipped samples at alignment edges. The Rust pipeline
             discards the pre-crop signal that recovery reads from (see
             ``rust_supports_softclip_recovery``), so this also forces Python.
+        signal_context_bases: The model's base-defined signal window
+            (``(L, R)``), or ``None`` for a sample-context model. The Rust
+            *inference* pipeline (``inference.rs``) has no base-defined
+            window support -- that landed only in the training/prepare path
+            (``training.rs``, issue #278) -- so a model trained with
+            ``--signal-context-bases`` always forces Python at predict time.
 
     Returns:
         (use_rust, extract_inference_chunks, preload_pod5_signals,
@@ -1274,6 +1290,7 @@ def check_rust_extraction_available(
         _rs_extract_chunks_from_preloaded,
         _rs_extract_inference_chunks,
         _rs_preload_pod5_signals,
+        rust_supports_signal_context_bases,
     )
 
     rust_available = HAS_RUST and _rs_extract_inference_chunks is not None
@@ -1284,6 +1301,7 @@ def check_rust_extraction_available(
         )
     norm_ok = rust_supports_norm_method(norm_method)
     softclip_ok = rust_supports_softclip_recovery(recover_softclip_signal)
+    bases_ok = rust_supports_signal_context_bases(signal_context_bases)
     if backend == "rust" and not norm_ok:
         raise RuntimeError(
             f"--backend rust requested but the Rust pipeline only implements "
@@ -1296,7 +1314,13 @@ def check_rust_extraction_available(
             "recover_softclip_signal, which this model's config enables. "
             "Use --backend python."
         )
-    use_rust = rust_available and backend != "python" and norm_ok and softclip_ok
+    if backend == "rust" and not bases_ok:
+        raise RuntimeError(
+            "--backend rust requested but this model was trained with "
+            "--signal-context-bases and the Rust inference pipeline does not "
+            "implement a base-defined signal window. Use --backend python."
+        )
+    use_rust = rust_available and backend != "python" and norm_ok and softclip_ok and bases_ok
     if rust_available and backend != "python" and not norm_ok:
         logger.warning(
             f"Signal normalization '{norm_method}' is not implemented in the Rust "
@@ -1309,6 +1333,12 @@ def check_rust_extraction_available(
             "path (it discards the pre-crop signal the recovery reads from); "
             "falling back to the Python path so chunks match how the model was "
             "trained."
+        )
+    if rust_available and backend != "python" and norm_ok and softclip_ok and not bases_ok:
+        logger.warning(
+            "This model was trained with --signal-context-bases, which the Rust "
+            "inference pipeline does not implement; falling back to the Python "
+            "path so chunks match how the model was trained."
         )
     return (
         use_rust,

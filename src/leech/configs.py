@@ -104,6 +104,12 @@ class ChunkConfig:
     # preserves the Remora-compatible zero-pad behavior; see R4 in the
     # coordinate-positioning audit for why it's opt-in.
     recover_softclip_signal: bool = False
+    # Base-defined signal window (issue #278): `(L, R)` base offsets around
+    # the focus base, mutually exclusive with `signal_context`. When set,
+    # `signal_len` (the fixed emitted width) must also be set -- see
+    # `LeechRead.get_chunk` and `chunking.resolve_signal_context_bases`.
+    signal_context_bases: tuple[int, int] | None = None
+    signal_len: int | None = None
 
     def resolved_feature_window(self) -> tuple[int, int, int]:
         """``(start, end, width)`` of the feature window this config asks for.
@@ -190,6 +196,12 @@ class PrepareConfig:
             "feature_end_resolved": _feat_end,
             "feature_width": _feat_width,
             "signal_context": list(self.chunk.signal_context),
+            "signal_context_bases": (
+                list(self.chunk.signal_context_bases)
+                if self.chunk.signal_context_bases is not None
+                else None
+            ),
+            "signal_len": self.chunk.signal_len,
             "kmer_context": self.chunk.kmer_context,
             "recover_softclip_signal": self.chunk.recover_softclip_signal,
             "label": self.labeling.label,

@@ -14,6 +14,7 @@ import numpy as np
 
 from leech.constants import (
     DEFAULT_KMER_CONTEXT,
+    DEFAULT_MAX_SAMPLES_PER_BASE,
     DEFAULT_SIGNAL_CONTEXT,
     DEFAULT_SIGNAL_KMER_CONTEXT,
 )
@@ -49,6 +50,66 @@ def resolve_feature_window(
     start = feature_start if feature_start is not None else -kmer_context
     end = feature_end if feature_end is not None else kmer_context
     return start, end, end - start + 1
+
+
+def resolve_signal_context_bases(
+    seq_to_sig_map: np.ndarray,
+    base_idx: int,
+    left_bases: int,
+    right_bases: int,
+    num_mapped_bases: int,
+) -> tuple[int, int]:
+    """Resolve a base-defined signal window to a sample interval.
+
+    ``--signal-context-bases L,R`` (issue #278) cuts the signal window at the
+    base-to-signal map positions of offsets ``-L`` and ``+R`` (inclusive)
+    around ``base_idx``, so two reads at different translocation speeds read
+    the same *bases* of context instead of the same number of *samples* -- a
+    sample-defined window can't reach a base at +24 on a slow read
+    (~36 samples/base) without also reaching a base at +25 on a fast one
+    (~24 samples/base).
+
+    Returns ``(sample_start, sample_end)``, a half-open sample interval:
+    ``sample_start`` is the first sample of base ``base_idx - L`` and
+    ``sample_end`` is the first sample *past* base ``base_idx + R``. Both
+    bounds are clamped to the read's own mapped span (base 0 through
+    ``num_mapped_bases - 1``) rather than allowed to run off it -- a focus
+    base near either edge of the read gets a *narrower* window, never a
+    dropped chunk, matching the one allowed drop rule (CLAUDE.md: only
+    ``base_idx`` itself having no signal boundaries drops a chunk).
+
+    This is the single definition of the rule; the Rust chunk loop
+    (``rust/src/inference_pipeline/training.rs``) mirrors it exactly (it
+    cannot call into Python) and the two are held equal by
+    ``tests/test_backend_parity.py``.
+
+    ``left_bases``/``right_bases`` are meant to be ``>= 0`` -- the CLI and
+    ``handle_prepare`` both refuse a negative value before any read is
+    touched -- but ``lo_base``/``hi_base`` are independently clamped to
+    ``[0, num_mapped_bases - 1]`` regardless, rather than relying on the
+    caller: an unclamped negative ``right_bases`` could otherwise turn
+    ``seq_to_sig_map[hi_base + 1]`` into a silently-wrong wraparound index
+    (Python's negative indexing) instead of an error, and an unclamped
+    large-magnitude negative ``left_bases`` indexes past the array entirely.
+    """
+    last_base = num_mapped_bases - 1
+    lo_base = max(0, min(last_base, base_idx - left_bases))
+    hi_base = max(0, min(last_base, base_idx + right_bases))
+    return int(seq_to_sig_map[lo_base]), int(seq_to_sig_map[hi_base + 1])
+
+
+def default_signal_len_for_bases_context(left_bases: int, right_bases: int) -> int:
+    """Default ``signal_len`` for ``--signal-context-bases L,R``.
+
+    Used when the caller does not pass ``--signal-len`` explicitly. The
+    window covers ``L + R + 1`` bases (the focus base itself, plus ``L``
+    before and ``R`` after); sizing at :data:`~leech.constants.
+    DEFAULT_MAX_SAMPLES_PER_BASE` samples/base -- the slow-read rate -- keeps
+    a typical read's resolved window narrower than ``signal_len``, so it gets
+    zero-padded (the conservative default this issue's acceptance criteria
+    calls for) rather than centre-cropped.
+    """
+    return (left_bases + right_bases + 1) * DEFAULT_MAX_SAMPLES_PER_BASE
 
 
 def _assert_constant_column(column: np.ndarray, name: str) -> None:
@@ -297,6 +358,8 @@ class LeechRead:
         feature_start: int | None = None,
         feature_end: int | None = None,
         recover_softclip_signal: bool = False,
+        signal_context_bases: tuple[int, int] | None = None,
+        signal_len: int | None = None,
     ) -> dict[str, np.ndarray | str | int | None] | None:
         """
         Extract a training chunk centered on a specific base.
@@ -304,7 +367,8 @@ class LeechRead:
         Args:
             base_idx: Index of the focus base
             config: Optional ChunkConfig that overrides individual params.
-            signal_context: (left, right) signal padding around focus base
+            signal_context: (left, right) signal padding around focus base.
+                Ignored when ``signal_context_bases`` is set.
             kmer_context: Number of bases on each side for k-mer encoding
             base_justify: "center", "start", or "end"
             feature_start: Signed offset from focus for feature window start.
@@ -313,7 +377,23 @@ class LeechRead:
                 (ref-anchored mode), fill chunk-window samples that fall
                 outside the aligned region with real soft-clipped signal
                 instead of zeros. Off by default to preserve Remora-compatible
-                behavior — see R4 in the coordinate audit.
+                behavior — see R4 in the coordinate audit. Not honored in
+                base-defined mode (``signal_context_bases`` set) -- the
+                windows there never underflow the read's own signal (see
+                below), so there is nothing to recover.
+            signal_context_bases: ``(L, R)`` base offsets (issue #278) --
+                mutually exclusive with ``signal_context``. When set, the
+                signal window is cut at the base-to-signal map positions of
+                ``base_idx - L`` and ``base_idx + R`` (inclusive) via
+                :func:`resolve_signal_context_bases`, then pads (narrower) or
+                centre-crops (wider) to a fixed ``signal_len`` -- the same
+                pad/crop split ``escapepod_signal::chunk::place_window``
+                applies on the Rust side, since the number of samples
+                spanning ``L + R`` bases varies read to read.
+            signal_len: Fixed emitted signal length when
+                ``signal_context_bases`` is set. Required in that case;
+                ignored otherwise (sample mode's ``chunk_len`` is
+                ``signal_context[0] + signal_context[1]``).
 
         Returns:
             Dictionary with 'signal', 'kmer', 'dwell', 'features' arrays,
@@ -327,6 +407,8 @@ class LeechRead:
             feature_start = config.feature_start
             feature_end = config.feature_end
             recover_softclip_signal = config.recover_softclip_signal
+            signal_context_bases = config.signal_context_bases
+            signal_len = config.signal_len
 
         # Check boundaries: base_idx must be valid for seq_to_sig_map access.
         # Bound on the map, not the sequence — they can differ (see
@@ -346,72 +428,138 @@ class LeechRead:
             focus_sig_pos = int(
                 (self.seq_to_sig_map[base_idx] + self.seq_to_sig_map[base_idx + 1]) // 2
             )
-        chunk_len = signal_context[0] + signal_context[1]
-        sig_start = focus_sig_pos - signal_context[0]
-        sig_end = focus_sig_pos + signal_context[1]
 
-        seq_to_sig_offset = 0
-        if sig_start >= 0 and sig_end <= self.num_samples:
-            signal_chunk = self.signal[sig_start:sig_end].copy()
-            signal_residual_chunk = (
-                self.signal_residual[sig_start:sig_end].copy()
-                if self.signal_residual is not None
-                else None
+        if signal_context_bases is not None:
+            # Base-defined window (issue #278). `sample_start`/`sample_end`
+            # are always within [0, num_samples] -- resolve_signal_context_bases
+            # clamps at the base level (base 0 / num_mapped_bases - 1), and
+            # seq_to_sig_map never exceeds num_samples -- so there is no
+            # read-underflow/overflow case to handle here, only the
+            # narrower-than/wider-than-signal_len split below.
+            left_bases, right_bases = signal_context_bases
+            assert signal_len is not None, "signal_len is required when signal_context_bases is set"
+            chunk_len = signal_len
+            sample_start, sample_end = resolve_signal_context_bases(
+                self.seq_to_sig_map, base_idx, left_bases, right_bases, self.num_mapped_bases
             )
-        else:
+            # The REQUESTED (pre-crop) window -- used below for seq_to_sig_map
+            # / sequence_with_kmer_context, matching
+            # escapepod_signal::chunk::cut_chunk's own SignalKmer branch,
+            # which hands signal_kmer_inputs this same pre-crop pair rather
+            # than the post-crop one place_window actually placed.
+            sig_start = sample_start
+            sig_end = sample_end
+            seq_to_sig_offset = 0
+            requested = max(0, sig_end - sig_start)
+
+            # The anchor's offset within the emitted signal_len-wide array,
+            # and the true copy bound -- mirrors
+            # escapepod_signal::chunk::place_window exactly:
+            #   - narrower (or equal): copy is bounded by the REQUESTED
+            #     `sample_end`, not `win_start + chunk_len` -- the shortfall
+            #     is genuine padding (bases -L..+R and then zeros), not "keep
+            #     copying real signal past +R until chunk_len samples are
+            #     full", which is what `win_start + chunk_len` would give
+            #     whenever the read has more signal beyond `sample_end`.
+            #   - wider: centre-crop, where the cropped width equals
+            #     chunk_len exactly, so `win_start + chunk_len` is correct.
+            # Named `win_*` (not `eff_*`) to avoid colliding with
+            # `resolve_feature_window`'s unrelated `eff_start`/`eff_end` below.
+            if requested <= chunk_len:
+                win_start = sample_start
+                win_end = sample_end
+            else:
+                crop = (requested - chunk_len) // 2
+                win_start = sample_start + crop
+                win_end = win_start + chunk_len
+            focus_signal_pos_value = focus_sig_pos - win_start
+
             signal_chunk = np.zeros(chunk_len, dtype=np.float32)
             signal_residual_chunk = (
                 np.zeros(chunk_len, dtype=np.float32) if self.signal_residual is not None else None
             )
-            fill_st = 0
-            fill_en = chunk_len
-            if sig_start < 0:
-                fill_st = -sig_start
-                seq_to_sig_offset = -sig_start
-                sig_start = 0
-            if sig_end > self.num_samples:
-                fill_en = self.num_samples - sig_start + seq_to_sig_offset
-                sig_end = self.num_samples
-            if fill_en > fill_st:
-                signal_chunk[fill_st:fill_en] = self.signal[sig_start:sig_end]
-                if self.signal_residual is not None and signal_residual_chunk is not None:
-                    signal_residual_chunk[fill_st:fill_en] = self.signal_residual[sig_start:sig_end]
+            lo = max(win_start, 0)
+            hi = min(win_end, self.num_samples)
+            if hi > lo:
+                off = lo - win_start
+                n = min(hi - lo, chunk_len - off)
+                if n > 0:
+                    signal_chunk[off : off + n] = self.signal[lo : lo + n]
+                    if self.signal_residual is not None and signal_residual_chunk is not None:
+                        signal_residual_chunk[off : off + n] = self.signal_residual[lo : lo + n]
+            chunk_sig_len = chunk_len
+        else:
+            chunk_len = signal_context[0] + signal_context[1]
+            sig_start = focus_sig_pos - signal_context[0]
+            sig_end = focus_sig_pos + signal_context[1]
 
-            # R4: in ref-anchored mode, the cropped self.signal drops
-            # soft-clipped samples that may still exist in self.full_signal.
-            # When the chunk window underflows past the aligned region, copy
-            # those samples in instead of leaving zeros. Restricted to the
-            # primary signal channel — self.signal_residual is only defined
-            # for the refined aligned region, so it stays zero-padded.
-            if recover_softclip_signal and self.full_signal is not None:
-                # signal_chunk[i] corresponds to absolute full_signal index
-                # (i + chunk_sig_start_in_cropped) + self.signal_offset, where
-                # chunk_sig_start_in_cropped is the original sig_start before
-                # the underflow clamping above. Reconstruct it from fill_st.
-                chunk_sig_start_in_cropped = sig_start - fill_st
-                abs_start = chunk_sig_start_in_cropped + self.signal_offset
-                full_len = len(self.full_signal)
-                # Left edge: fill [0, fill_st) from full_signal before the aligned region.
-                if fill_st > 0:
-                    src_st = max(0, abs_start)
-                    src_en = min(full_len, abs_start + fill_st)
-                    if src_en > src_st:
-                        dst_st = src_st - abs_start
-                        dst_en = dst_st + (src_en - src_st)
-                        signal_chunk[dst_st:dst_en] = self.full_signal[src_st:src_en].astype(
-                            np.float32
-                        )
-                # Right edge: fill [fill_en, chunk_len) from full_signal past the aligned region.
-                if fill_en < chunk_len:
-                    src_st = max(0, abs_start + fill_en)
-                    src_en = min(full_len, abs_start + chunk_len)
-                    if src_en > src_st:
-                        dst_st = src_st - abs_start
-                        dst_en = dst_st + (src_en - src_st)
-                        signal_chunk[dst_st:dst_en] = self.full_signal[src_st:src_en].astype(
-                            np.float32
-                        )
-        chunk_sig_len = chunk_len
+            seq_to_sig_offset = 0
+            if sig_start >= 0 and sig_end <= self.num_samples:
+                signal_chunk = self.signal[sig_start:sig_end].copy()
+                signal_residual_chunk = (
+                    self.signal_residual[sig_start:sig_end].copy()
+                    if self.signal_residual is not None
+                    else None
+                )
+            else:
+                signal_chunk = np.zeros(chunk_len, dtype=np.float32)
+                signal_residual_chunk = (
+                    np.zeros(chunk_len, dtype=np.float32)
+                    if self.signal_residual is not None
+                    else None
+                )
+                fill_st = 0
+                fill_en = chunk_len
+                if sig_start < 0:
+                    fill_st = -sig_start
+                    seq_to_sig_offset = -sig_start
+                    sig_start = 0
+                if sig_end > self.num_samples:
+                    fill_en = self.num_samples - sig_start + seq_to_sig_offset
+                    sig_end = self.num_samples
+                if fill_en > fill_st:
+                    signal_chunk[fill_st:fill_en] = self.signal[sig_start:sig_end]
+                    if self.signal_residual is not None and signal_residual_chunk is not None:
+                        signal_residual_chunk[fill_st:fill_en] = self.signal_residual[
+                            sig_start:sig_end
+                        ]
+
+                # R4: in ref-anchored mode, the cropped self.signal drops
+                # soft-clipped samples that may still exist in self.full_signal.
+                # When the chunk window underflows past the aligned region, copy
+                # those samples in instead of leaving zeros. Restricted to the
+                # primary signal channel — self.signal_residual is only defined
+                # for the refined aligned region, so it stays zero-padded.
+                if recover_softclip_signal and self.full_signal is not None:
+                    # signal_chunk[i] corresponds to absolute full_signal index
+                    # (i + chunk_sig_start_in_cropped) + self.signal_offset, where
+                    # chunk_sig_start_in_cropped is the original sig_start before
+                    # the underflow clamping above. Reconstruct it from fill_st.
+                    chunk_sig_start_in_cropped = sig_start - fill_st
+                    abs_start = chunk_sig_start_in_cropped + self.signal_offset
+                    full_len = len(self.full_signal)
+                    # Left edge: fill [0, fill_st) from full_signal before the aligned region.
+                    if fill_st > 0:
+                        src_st = max(0, abs_start)
+                        src_en = min(full_len, abs_start + fill_st)
+                        if src_en > src_st:
+                            dst_st = src_st - abs_start
+                            dst_en = dst_st + (src_en - src_st)
+                            signal_chunk[dst_st:dst_en] = self.full_signal[src_st:src_en].astype(
+                                np.float32
+                            )
+                    # Right edge: fill [fill_en, chunk_len) from full_signal past the aligned region.
+                    if fill_en < chunk_len:
+                        src_st = max(0, abs_start + fill_en)
+                        src_en = min(full_len, abs_start + chunk_len)
+                        if src_en > src_st:
+                            dst_st = src_st - abs_start
+                            dst_en = dst_st + (src_en - src_st)
+                            signal_chunk[dst_st:dst_en] = self.full_signal[src_st:src_en].astype(
+                                np.float32
+                            )
+            chunk_sig_len = chunk_len
+            focus_signal_pos_value = signal_context[0]
 
         # Extract k-mer sequence context with safe boundary handling
         kmer_start = base_idx - kmer_context
@@ -511,10 +659,12 @@ class LeechRead:
             chunk_dict["signal_residual"] = signal_residual_chunk
         # Store the focus base position within the signal chunk so that
         # downstream consumers (dataset.py) can crop asymmetrically without
-        # assuming the focus is at center.  The focus is always at
-        # signal_context[0] samples from the left edge, regardless of
-        # boundary zero-padding.
-        chunk_dict["focus_signal_pos"] = signal_context[0]
+        # assuming the focus is at center. In sample mode the focus is always
+        # at signal_context[0] samples from the left edge, regardless of
+        # boundary zero-padding; in base-defined mode it is resolved per
+        # chunk above, since the window's width relative to signal_len (pad
+        # vs. centre-crop) varies read to read.
+        chunk_dict["focus_signal_pos"] = focus_signal_pos_value
         return chunk_dict
 
 

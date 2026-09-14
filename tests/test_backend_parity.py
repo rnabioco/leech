@@ -95,6 +95,8 @@ def _config(
     feature_start: int | None = None,
     feature_end: int | None = None,
     signal_context: tuple[int, int] = (200, 200),
+    signal_context_bases: tuple[int, int] | None = None,
+    signal_len: int | None = None,
     require_query_mapping: bool = True,
 ) -> PrepareConfig:
     reference_sequences = None
@@ -129,6 +131,8 @@ def _config(
         chunk=ChunkConfig(
             base_justify=base_justify,
             signal_context=signal_context,
+            signal_context_bases=signal_context_bases,
+            signal_len=signal_len,
             feature_start=feature_start,
             feature_end=feature_end,
         ),
@@ -286,6 +290,58 @@ class TestBackendFieldParity:
     @pytest.mark.parametrize("signal_context", [(200, 200), (90, 300), (400, 100)])
     def test_asymmetric_signal_context(self, _rust_available, tmp_path, signal_context):
         py, rs = _run_both_backends(_config(signal_context=signal_context), tmp_path)
+        _assert_npz_parity(py, rs)
+
+    @pytest.mark.parametrize(("left_bases", "right_bases"), [(8, 24), (5, 5)])
+    def test_signal_context_bases(self, _rust_available, tmp_path, left_bases, right_bases):
+        """Base-defined signal window (issue #278), the in-range case.
+
+        A modest `(L, R)` that a tRNA-length fixture read comfortably holds
+        on both sides of its motif -- no read-edge clamping is exercised
+        here, only that the base-to-signal-map resolution and the resulting
+        pad-to-signal_len agree between backends.
+        """
+        from leech.chunking import default_signal_len_for_bases_context
+
+        signal_len = default_signal_len_for_bases_context(left_bases, right_bases)
+        py, rs = _run_both_backends(
+            _config(
+                signal_context_bases=(left_bases, right_bases),
+                signal_len=signal_len,
+            ),
+            tmp_path,
+        )
+        _assert_npz_parity(py, rs)
+
+    def test_signal_context_bases_edge_padding(self, _rust_available, tmp_path):
+        """Base-defined window, the read-edge clamp case (CLAUDE.md's fixture-
+        reach note): `(L, R)` wide enough that every fixture read's window
+        runs off BOTH ends -- `resolve_signal_context_bases` clamps rather
+        than drops, and the emitted signal is zero-padded on the side(s)
+        that ran off the read, which the "any exact 0.0 sample" check below
+        would not have caught if the fixture never reached this branch.
+        """
+        left_bases, right_bases = 100, 100
+        from leech.chunking import default_signal_len_for_bases_context
+
+        signal_len = default_signal_len_for_bases_context(left_bases, right_bases)
+        py, rs = _run_both_backends(
+            _config(
+                signal_context_bases=(left_bases, right_bases),
+                signal_len=signal_len,
+            ),
+            tmp_path,
+        )
+        # Base-defined chunks are always uniform-width (signal_len), so this
+        # is "signals_flat" (a stacked 2D array), never the object-array
+        # "signals" form -- but read either so this doesn't silently start
+        # comparing zero rows if that assumption ever changes.
+        signals = py["signals_flat"] if "signals_flat" in py else py["signals"]
+        assert any(np.asarray(row).size and np.asarray(row)[-1] == 0.0 for row in signals), (
+            f"signal_context_bases=({left_bases}, {right_bases}) produced no "
+            f"right-padded chunk, so this test is vacuous -- widen it until some "
+            f"chunk's window runs off the read"
+        )
         _assert_npz_parity(py, rs)
 
     def test_issue_193_production_config(self, _rust_available, tmp_path):

@@ -516,11 +516,24 @@ def _prepare_batch_rust_with_failures(
     if not read_ids:
         return [], n_failed, n_submitted
 
-    # Resolve signal context
+    # Resolve signal context. Base-defined mode (issue #278) resolves its own
+    # per-chunk sample window inside Rust from `signal_context_bases_left/
+    # right`; `signal_context_left/right` become unused placeholders there
+    # (still passed through since the pyo3 signature requires them), and
+    # `signal_len` is the fixed emitted width `handle_prepare` already
+    # resolved (explicit --signal-len, or the (L+R+1)*36 default).
     from leech.constants import DEFAULT_SIGNAL_CONTEXT
 
-    sig_ctx = config.chunk.signal_context or DEFAULT_SIGNAL_CONTEXT
-    signal_len = sig_ctx[0] + sig_ctx[1]
+    bases_ctx = config.chunk.signal_context_bases
+    if bases_ctx is not None:
+        sig_ctx = (0, 0)
+        signal_len = config.chunk.signal_len
+        assert signal_len is not None, (
+            "PrepareConfig.chunk.signal_len must be resolved when signal_context_bases is set"
+        )
+    else:
+        sig_ctx = config.chunk.signal_context or DEFAULT_SIGNAL_CONTEXT
+        signal_len = sig_ctx[0] + sig_ctx[1]
 
     # Resolve kmer table for signal refinement.
     #
@@ -583,6 +596,8 @@ def _prepare_batch_rust_with_failures(
         if (config.signal.refine_signal_map and kmer_levels is not None)
         else 1,
         base_justify=config.chunk.base_justify,
+        signal_context_bases_left=bases_ctx[0] if bases_ctx is not None else None,
+        signal_context_bases_right=bases_ctx[1] if bases_ctx is not None else None,
     )
 
     # Attach Python-side labels/metadata.

@@ -17,6 +17,16 @@ DEFAULT_SIGNAL_CONTEXT = (225, 225)  # (left, right) signal samples around focus
 DEFAULT_KMER_CONTEXT = 5  # Number of bases on each side of focus base
 DEFAULT_DWELL_MARGIN = 15  # Extra bases on each side for dwell_offset tuning (symmetric fallback)
 
+# Conservative slow-read translocation rate (samples/base), used only to size
+# the fixed `--signal-len` window `--signal-context-bases L,R` needs when the
+# caller does not pass `--signal-len` explicitly (issue #278). A sample-based
+# window can't reach the same *bases* of context on a fast read (~24
+# samples/base) and a slow one (~36 samples/base) without either missing
+# context on the slow read or overrunning it on the fast one -- sizing off the
+# slow-read rate means a typical read's window is narrower than `signal_len`
+# and gets zero-padded (the conservative default) rather than centre-cropped.
+DEFAULT_MAX_SAMPLES_PER_BASE = 36
+
 # Model architecture defaults
 DEFAULT_CONV_CHANNELS = [4, 16, 256]  # Channel sizes for conv layers
 DEFAULT_SIGNAL_KERNEL = 5  # Kernel size for signal branch convolutions

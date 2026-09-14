@@ -296,7 +296,32 @@ data.command_order = ("prepare", "merge")
     nargs=2,
     type=int,
     default=None,
-    help="Asymmetric signal context window as LEFT RIGHT (raw samples). E.g., --signal-context 90 450. Default: symmetric (225, 225) (DEFAULT_SIGNAL_CONTEXT).",
+    help="Asymmetric signal context window as LEFT RIGHT (raw samples). E.g., --signal-context 90 450. Default: symmetric (225, 225) (DEFAULT_SIGNAL_CONTEXT). Mutually exclusive with --signal-context-bases.",
+)
+@click.option(
+    "--signal-context-bases",
+    nargs=2,
+    type=int,
+    default=None,
+    help=(
+        "Base-defined signal context window as L R bases relative to the focus "
+        "base (e.g., --signal-context-bases 8 24). The window is cut at the "
+        "base-to-signal map positions of offsets -L and +R (inclusive) so two "
+        "reads at different translocation speeds read the same BASES of "
+        "context, then padded/centre-cropped to a fixed --signal-len. Mutually "
+        "exclusive with --signal-context."
+    ),
+)
+@click.option(
+    "--signal-len",
+    type=int,
+    default=None,
+    help=(
+        "Fixed emitted signal length for --signal-context-bases. Default: "
+        "(L + R + 1) * 36 samples/base (a conservative slow-read rate, so a "
+        "typical read pads rather than centre-crops). Ignored without "
+        "--signal-context-bases."
+    ),
 )
 @click.option(
     "--focus-tsv",
@@ -353,6 +378,8 @@ def prepare(
     kmer_table,
     scale_iters,
     signal_context,
+    signal_context_bases,
+    signal_len,
     focus_tsv,
     recover_softclip_signal,
 ):
@@ -362,6 +389,15 @@ def prepare(
     # Validate pa_scaling params
     if signal_norm == "pa_scaling" and (pa_mean is None or pa_stdev is None):
         raise click.UsageError("--signal-norm pa_scaling requires --pa-mean and --pa-stdev")
+    if signal_context is not None and signal_context_bases is not None:
+        raise click.UsageError("--signal-context and --signal-context-bases are mutually exclusive")
+    if signal_context_bases is not None and (
+        signal_context_bases[0] < 0 or signal_context_bases[1] < 0
+    ):
+        raise click.UsageError(
+            f"--signal-context-bases L R must both be >= 0, got {signal_context_bases}. "
+            f"A negative value indexes past either end of a read's base-to-signal map."
+        )
     if refine_signal_map and kmer_table is None:
         from leech.data import get_kmer_table
 
@@ -403,6 +439,8 @@ def prepare(
         kmer_table=kmer_table,
         scale_iters=scale_iters,
         signal_context=signal_context,
+        signal_context_bases=signal_context_bases,
+        signal_len=signal_len,
         focus_tsv=focus_tsv,
         recover_softclip_signal=recover_softclip_signal,
     )

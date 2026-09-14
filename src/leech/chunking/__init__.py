@@ -7,11 +7,13 @@ processed reads and saving/loading them to disk.
 
 from leech.chunking.extractor import (
     LeechRead,
+    default_signal_len_for_bases_context,
     extract_training_chunks,
     extraction_sequence,
     feature_window_from_metadata,
     find_focus_bases,
     resolve_feature_window,
+    resolve_signal_context_bases,
 )
 from leech.chunking.serialization import (
     DEFERRABLE_FIELDS,
@@ -32,11 +34,13 @@ from leech.chunking.table import ChunkRow, ChunkTable
 __all__ = [
     # Extraction
     "LeechRead",
+    "default_signal_len_for_bases_context",
     "extract_training_chunks",
     "extraction_sequence",
     "feature_window_from_metadata",
     "find_focus_bases",
     "resolve_feature_window",
+    "resolve_signal_context_bases",
     # Serialization
     "save_chunks",
     "ChunkSpool",
