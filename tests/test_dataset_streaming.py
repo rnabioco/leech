@@ -619,6 +619,75 @@ class TestShapeMismatchFallback:
         assert torch.equal(streamed._signals_tensor, eager._signals_tensor)
 
 
+class TestCropWindowPaddingWarningBlockFill:
+    """#255's warning fires from the block-wise filler too, not only the row one.
+
+    ``_note_crop_padding`` is called from both ``_prepare_signal`` (row path,
+    covered in ``tests/test_dataset.py::TestCropWindowPaddingWarning``) and
+    ``_prepare_signals_block`` (block path, exercised here via
+    ``chunk_path=``) -- the two are not one code path below that call, so a
+    fix that only reached one of them would leave the streamed corpus loader
+    silent again.
+    """
+
+    @staticmethod
+    def _make_uniform_focus_chunks(n: int, signal_len: int, focus_signal_pos: int) -> list[dict]:
+        chunks = []
+        for i in range(n):
+            chunks.append(
+                {
+                    "signal": np.arange(signal_len, dtype=np.float32),
+                    "sequence": "ACGTACGTACG"[:KMER_LEN],
+                    "dwell": np.ones(FEAT_WIDTH, dtype=np.float32),
+                    "features": np.zeros((NUM_FEATURES, FEAT_WIDTH), dtype=np.float32),
+                    "label": "charged" if i % 2 else "uncharged",
+                    "label_int": i % 2,
+                    "read_id": f"read_{i:03d}",
+                    "base_idx": 100 + i,
+                    "source_group": "Ala",
+                    "feature_start": -(FEAT_WIDTH // 2),
+                    "feature_end": FEAT_WIDTH // 2,
+                    "cl_value": None,
+                    "focus_signal_pos": focus_signal_pos,
+                }
+            )
+        return chunks
+
+    def test_block_fill_warns_once_on_stored_context_mismatch(self, tmp_path, caplog):
+        # Same shape as the production bug: stored (225, 225), asked (225, 300).
+        chunks = self._make_uniform_focus_chunks(6, signal_len=450, focus_signal_pos=225)
+        path = tmp_path / "chunks.npz"
+        save_chunks(chunks, path)
+
+        with caplog.at_level("WARNING", logger="leech.dataset"):
+            ds = LeechDataset(
+                chunk_path=path,
+                signal_len=525,
+                kmer_len=KMER_LEN,
+                model_type="ConvLSTMDwell",
+                seq_encoding="base_onehot",
+                left_context=225,
+                right_context=300,
+            )
+
+        # Confirms this test actually exercises _prepare_signals_block and
+        # not a row-path fallback.
+        assert ds._array_stream is not None
+        assert ds._block_fill_supported()
+
+        pad_records = [r for r in caplog.records if "zero-padded" in r.getMessage()]
+        assert len(pad_records) == 1
+        msg = pad_records[0].getMessage()
+        assert "left_context=225" in msg
+        assert "right_context=300" in msg
+        assert "75 sample" in msg
+
+        sig = ds[0]["signal"]
+        assert sig.shape[-1] == 525
+        assert torch.all(sig[-75:] == 0)
+        assert sig[-76].item() == 449.0
+
+
 class TestLegacyFormats:
     """Old corpora keep working — they simply do not stream."""
 

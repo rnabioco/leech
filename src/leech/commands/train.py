@@ -60,6 +60,7 @@ def handle_train(
     base_justify: str = "center",
     seq_encoding: str = "signal_kmer",
     allow_encoding_fallback: bool = True,
+    strict_window: bool = False,
     balance_groups: bool = False,
     oversample_minority: bool = False,
     sample_weight_field: str | None = None,
@@ -121,6 +122,10 @@ def handle_train(
         allow_encoding_fallback: Permit signal_kmer to degrade to base_onehot
             when the corpus carries no base-to-signal maps (False raises
             instead; a partially covered corpus raises either way)
+        strict_window: Raise instead of zero-padding when the asymmetric crop
+            (left_context/right_context, reached via --model-config) extends
+            outside the stored chunk. Default False logs one warning per
+            dataset the first time it happens.
         balance_groups: Balance sampling across source groups
         label_noise_rates: ``{source_group: flip_rate}`` for
             ``loss_type="noise_corrected_bce"``; unmapped groups get rate 0
@@ -198,6 +203,7 @@ def handle_train(
         "num_workers",
         "seq_encoding",
         "allow_encoding_fallback",
+        "strict_window",
         "balance_groups",
         "oversample_minority",
         "sample_weight_field",
@@ -278,6 +284,7 @@ def handle_train(
         allow_encoding_fallback=allow_encoding_fallback,
         left_context=left_context,
         right_context=right_context,
+        strict_window=strict_window,
         balance_groups=balance_groups,
         oversample_minority=oversample_minority,
         sample_weight_field=sample_weight_field,
