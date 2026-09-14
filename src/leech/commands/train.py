@@ -70,6 +70,7 @@ def handle_train(
     signal_mode: str = "both",
     dwell_template_table: str | None = None,
     checkpoint_metric: str = "auto",
+    focal_neg_gamma: float | None = None,
     **model_kwargs: Any,
 ) -> dict[str, Any]:
     """
@@ -163,6 +164,7 @@ def handle_train(
         "pos_weight",
         "mixed_precision",
         "focal_gamma",
+        "focal_neg_gamma",
         "label_smoothing",
         "augment_jitter",
         "augment_scale_min",
@@ -238,6 +240,7 @@ def handle_train(
         pos_weight=pos_weight,
         loss_type=loss_type,
         focal_gamma=focal_gamma,
+        focal_neg_gamma=focal_neg_gamma,
         label_smoothing=label_smoothing,
         mixed_precision=mixed_precision,
         checkpoint_metric=checkpoint_metric,

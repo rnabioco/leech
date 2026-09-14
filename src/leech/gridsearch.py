@@ -21,6 +21,11 @@ from rich.table import Table
 from leech.chunking import load_chunks
 from leech.cli_config import make_console
 from leech.configs import TrainConfig
+from leech.metrics import (
+    PARAMETRIC_SELECTION_METRICS,
+    PLAIN_SELECTION_METRICS,
+    parse_selection_metric,
+)
 from leech.models import requires_features
 from leech.training import train_model
 
@@ -28,7 +33,7 @@ logger = logging.getLogger("leech.gridsearch")
 console = make_console()
 
 
-_VALID_SELECTION_METRICS = ("auto", "val_acc", "val_f1", "val_auc")
+_VALID_SELECTION_METRICS = PLAIN_SELECTION_METRICS
 
 
 def _resolve_selection_metric(metric: str, *, n_classes: int) -> str:
@@ -36,14 +41,32 @@ def _resolve_selection_metric(metric: str, *, n_classes: int) -> str:
 
     Multiclass (>=3 classes) -> val_f1 (macro-F1, unaffected by class imbalance).
     Binary -> val_auc (threshold-free, robust to one-vs-all imbalance).
+
+    Also accepts the two parametric metrics Trainer does ("tpr_at_fpr:<f>" /
+    "callable_at_precision:<p>", issue #280) -- binary-only, same restriction
+    Trainer's own ``_resolve_checkpoint_metric`` enforces, since each grid
+    point's checkpoint_metric is set to this function's return value
+    (run_grid_point) and would otherwise fail deep inside training instead of
+    before the sweep starts.
     """
-    if metric not in _VALID_SELECTION_METRICS:
+    if metric in _VALID_SELECTION_METRICS:
+        if metric != "auto":
+            return metric
+        return "val_f1" if n_classes > 2 else "val_auc"
+    kind, _param = parse_selection_metric(metric)
+    if kind not in PARAMETRIC_SELECTION_METRICS:
         raise ValueError(
-            f"selection_metric must be one of {_VALID_SELECTION_METRICS}, got {metric!r}"
+            f"selection_metric must be one of {_VALID_SELECTION_METRICS} or a "
+            f"parametric metric ({PARAMETRIC_SELECTION_METRICS}, each with a "
+            f"':<float>' suffix, e.g. 'tpr_at_fpr:0.0034'), got {metric!r}"
         )
-    if metric != "auto":
-        return metric
-    return "val_f1" if n_classes > 2 else "val_auc"
+    if n_classes > 2:
+        raise ValueError(
+            f"selection_metric={metric!r} is binary-only -- this training "
+            f"corpus has {n_classes} classes. Use 'val_f1' or 'val_auc' "
+            "instead."
+        )
+    return metric
 
 
 def parse_values(spec: str) -> list[int]:
@@ -291,12 +314,22 @@ def run_grid_point(
         # Extract best metrics. best_epoch is keyed off the selection metric so
         # the recorded epoch matches the model that gets checkpointed in training.
         # `selection_metric` is the resolved key (run_grid_search collapses "auto"
-        # to val_f1 / val_auc / val_acc before this point).
+        # to val_f1 / val_auc / val_acc, or a parametric metric, before this point).
         best_val_acc = max(history["val_acc"]) if history["val_acc"] else 0.0
         best_val_auc = max(history["val_auc"]) if history["val_auc"] else 0.0
         best_val_f1 = max(history["val_f1"]) if history["val_f1"] else 0.0
-        epoch_series = history.get(selection_metric) or history.get("val_acc")
+        # Trainer's history carries "val_selection" -- whatever
+        # selection_metric resolved to, every epoch -- which is what makes a
+        # parametric metric's best_epoch derivable at all: history has no key
+        # literally named "tpr_at_fpr:0.0034". Falls back to the old
+        # dict-key-by-name lookup for a history that predates val_selection
+        # (a mocked train_model in tests), where it still works for the
+        # three plain metrics.
+        epoch_series = (
+            history.get("val_selection") or history.get(selection_metric) or history.get("val_acc")
+        )
         best_epoch = int(np.argmax(epoch_series) + 1) if epoch_series else cfg.epochs
+        best_val_selection = max(history["val_selection"]) if history.get("val_selection") else 0.0
 
         result = {
             "left_context": left_context,
@@ -306,6 +339,7 @@ def run_grid_point(
             "best_val_acc": best_val_acc,
             "best_val_auc": best_val_auc,
             "best_val_f1": best_val_f1,
+            "best_val_selection": best_val_selection,
             "best_val_loss": min(history["val_loss"]) if history["val_loss"] else 0.0,
             "best_epoch": best_epoch,
             "final_train_acc": history["train_acc"][-1] if history["train_acc"] else 0.0,
@@ -523,19 +557,25 @@ def run_grid_search(config: GridSearchConfig) -> Path:
         raise RuntimeError(f"Grid search failed: all {len(results)} grid points failed")
 
     if successful_results:
-        # Map history-key metric -> result-dict key produced by run_grid_point
+        # Map history-key metric -> result-dict key produced by run_grid_point.
+        # A parametric metric (tpr_at_fpr:<f> / callable_at_precision:<p>) has
+        # no dedicated best_val_* column of its own -- it ranks on the generic
+        # best_val_selection field instead (populated for every metric kind).
         sort_key = {
             "val_acc": "best_val_acc",
             "val_f1": "best_val_f1",
             "val_auc": "best_val_auc",
-        }[resolved_metric]
+        }.get(resolved_metric, "best_val_selection")
 
-        # Create results table; tag the column we ranked on with [*]
+        # Create results table; tag the column we ranked on with [*]. A
+        # parametric metric marks none of the three plain columns -- its
+        # value shows in the always-present "Selection" column instead.
         col_marker = {
             "best_val_acc": ("Val Accuracy[*]", "Val F1", "Val AUC"),
             "best_val_f1": ("Val Accuracy", "Val F1[*]", "Val AUC"),
             "best_val_auc": ("Val Accuracy", "Val F1", "Val AUC[*]"),
-        }[sort_key]
+        }.get(sort_key, ("Val Accuracy", "Val F1", "Val AUC"))
+        selection_col = f"{resolved_metric}[*]" if sort_key == "best_val_selection" else "Selection"
         table = Table(title="Grid Search Results", show_header=True, header_style="bold magenta")
         table.add_column("Left Context", justify="right", style="cyan")
         table.add_column("Right Context", justify="right", style="cyan")
@@ -543,6 +583,7 @@ def run_grid_search(config: GridSearchConfig) -> Path:
         table.add_column(col_marker[0], justify="right", style="green")
         table.add_column(col_marker[1], justify="right", style="green")
         table.add_column(col_marker[2], justify="right", style="yellow")
+        table.add_column(selection_col, justify="right", style="magenta")
         table.add_column("Best Epoch", justify="right", style="blue")
         table.add_column("Training Time", justify="right", style="white")
 
@@ -556,6 +597,7 @@ def run_grid_search(config: GridSearchConfig) -> Path:
                 f"{r.get('best_val_acc', 0):.4f}",
                 f"{r.get('best_val_f1', 0):.4f}",
                 f"{r.get('best_val_auc', 0):.4f}",
+                f"{r.get('best_val_selection', 0):.4f}",
                 str(r.get("best_epoch", 0)),
                 f"{r.get('train_time_sec', 0):.1f}s",
                 style="bold" if r == sorted_results[0] else None,
@@ -578,6 +620,10 @@ def run_grid_search(config: GridSearchConfig) -> Path:
         summary_table.add_row("Validation Accuracy", f"{best_result['best_val_acc']:.4f}")
         summary_table.add_row("Validation F1", f"{best_result.get('best_val_f1', 0):.4f}")
         summary_table.add_row("Validation AUC", f"{best_result.get('best_val_auc', 0):.4f}")
+        if sort_key == "best_val_selection":
+            summary_table.add_row(
+                f"Validation {resolved_metric}", f"{best_result.get('best_val_selection', 0):.4f}"
+            )
         summary_table.add_row("Best Epoch", str(best_result.get("best_epoch", 0)))
         summary_table.add_row("Model Path", str(best_result["model_path"]))
 
@@ -622,6 +668,7 @@ def save_grid_summary(results: list[dict], output_path: Path) -> None:
         "best_val_acc",
         "best_val_f1",
         "best_val_auc",
+        "best_val_selection",
         "best_val_loss",
         "best_epoch",
         "final_train_acc",

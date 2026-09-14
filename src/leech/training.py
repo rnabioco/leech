@@ -59,6 +59,12 @@ from leech.losses import (
     NoiseCorrectedBCEWithLogitsLoss,
     RegressionHead,
 )
+from leech.metrics import (
+    PARAMETRIC_SELECTION_METRICS,
+    PLAIN_SELECTION_METRICS,
+    compute_parametric_metric,
+    parse_selection_metric,
+)
 from leech.models import get_model
 from leech.models.inference_wrapper import ModelInferenceWrapper
 
@@ -435,6 +441,7 @@ class Trainer:
         warmup_epochs: int = 0,
         loss_type: str = "bce",
         focal_gamma: float = 2.0,
+        focal_neg_gamma: float | None = None,
         label_smoothing: float = 0.0,
         use_mixed_precision: bool = False,
         resume_checkpoint: Path | None = None,
@@ -470,6 +477,7 @@ class Trainer:
                 epochs=epochs,
                 loss_type=loss_type,
                 focal_gamma=focal_gamma,
+                focal_neg_gamma=focal_neg_gamma,
                 label_smoothing=label_smoothing,
                 mixed_precision=use_mixed_precision,
                 checkpoint_metric=checkpoint_metric,
@@ -507,6 +515,7 @@ class Trainer:
         warmup_epochs = cfg.scheduler.warmup_epochs
         loss_type = cfg.loss_type
         focal_gamma = cfg.focal_gamma
+        focal_neg_gamma = cfg.focal_neg_gamma
         label_smoothing = cfg.label_smoothing
         use_mixed_precision = cfg.mixed_precision
         epochs = cfg.epochs
@@ -666,13 +675,17 @@ class Trainer:
                 self.criterion = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
             logger.info(f"Using CrossEntropyLoss ({self._num_out}-class)")
         elif loss_type == "focal":
-            self.criterion = FocalBCEWithLogitsLoss(gamma=focal_gamma, pos_weight=pw)
+            self.criterion = FocalBCEWithLogitsLoss(
+                gamma=focal_gamma, pos_weight=pw, neg_gamma=focal_neg_gamma
+            )
+            neg_gamma_note = f", neg_gamma={focal_neg_gamma}" if focal_neg_gamma is not None else ""
             if label_smoothing > 0:
                 logger.info(
-                    f"Using focal loss (gamma={focal_gamma}) with label smoothing={label_smoothing}"
+                    f"Using focal loss (gamma={focal_gamma}{neg_gamma_note}) "
+                    f"with label smoothing={label_smoothing}"
                 )
             else:
-                logger.info(f"Using focal loss (gamma={focal_gamma})")
+                logger.info(f"Using focal loss (gamma={focal_gamma}{neg_gamma_note})")
         elif loss_type == "noise_corrected_bce":
             self.criterion = NoiseCorrectedBCEWithLogitsLoss(pos_weight=pw)
             logger.info(
@@ -746,9 +759,34 @@ class Trainer:
         self.best_val_acc = 0.0
         self.best_val_f1 = 0.0
         self.best_val_auc = 0.0
+        # Generic "best value of whatever self._checkpoint_metric names" --
+        # equal to best_val_{acc,f1,auc} for the three plain metrics, and the
+        # only record kept for the two parametric ones (tpr_at_fpr:<f> /
+        # callable_at_precision:<p>), which have no dedicated best_val_*
+        # field of their own.
+        #
+        # -inf, not 0.0: a strict tpr_at_fpr/callable_at_precision target can
+        # legitimately score 0.0 on every epoch (e.g. tpr_at_fpr:0.0001 on a
+        # model that never clears that FPR ceiling), and a 0.0 floor would
+        # make every such epoch "not improved" forever -- no checkpoint ever
+        # saved inside the loop, best_epoch stuck at 0, and _ensure_best_
+        # checkpoint's fallback (whatever the last epoch happened to be)
+        # silently standing in for "best" instead. -inf guarantees the first
+        # validated epoch always registers as an improvement, whatever its
+        # value. _serializable_best_val_selection is what keeps this sentinel
+        # out of the JSON/checkpoint outputs if validation never runs at all.
+        self.best_val_selection = float("-inf")
         self.best_epoch = 0
         self.start_epoch = 1
         self._best_model_state: dict[str, Any] | None = None
+        # Raw gathered (labels, probs) from the most recent validate() call,
+        # needed to compute a parametric checkpoint metric -- those can't be
+        # reduced to a scalar inside validate() the way val_acc/auc/f1 are,
+        # since which scalar they need depends on self._checkpoint_metric.
+        # Only ever populated for binary (_resolve_checkpoint_metric refuses
+        # a parametric metric on a multiclass model).
+        self._last_val_labels: np.ndarray | None = None
+        self._last_val_probs: np.ndarray | None = None
 
         # History
         self.history: dict[str, list[float]] = {
@@ -758,6 +796,13 @@ class Trainer:
             "val_acc": [],
             "val_auc": [],
             "val_f1": [],
+            # Whatever self._checkpoint_metric resolved to, every epoch --
+            # numerically identical to the matching val_acc/val_auc/val_f1
+            # entry for the three plain metrics, and the only per-epoch
+            # record of the two parametric ones. run_grid_point reads this
+            # (rather than history[selection_metric], which doesn't exist for
+            # a parametric metric string) to find a grid point's best epoch.
+            "val_selection": [],
         }
         if self.adversarial_head is not None:
             self.history["train_adv_loss"] = []
@@ -837,16 +882,54 @@ class Trainer:
         if self._is_main:
             console.print(*args, **kwargs)
 
-    _VALID_CHECKPOINT_METRICS = ("auto", "val_acc", "val_f1", "val_auc")
+    _VALID_CHECKPOINT_METRICS = PLAIN_SELECTION_METRICS
 
     def _resolve_checkpoint_metric(self, metric: str) -> str:
         if metric == "auto":
             return "val_f1" if self._num_out > 2 else "val_auc"
-        if metric not in self._VALID_CHECKPOINT_METRICS:
+        if metric in self._VALID_CHECKPOINT_METRICS:
+            return metric
+        # Parametric: tpr_at_fpr:<f> / callable_at_precision:<p> (issue #280).
+        # parse_selection_metric already raises for an unknown "<kind>:..."
+        # prefix or a non-numeric parameter; the membership check below only
+        # catches a bare unknown name (no colon), which parse_selection_metric
+        # deliberately doesn't validate since it doesn't know which plain
+        # names a given caller accepts.
+        kind, _param = parse_selection_metric(metric)
+        if kind not in PARAMETRIC_SELECTION_METRICS:
             raise ValueError(
-                f"checkpoint_metric must be one of {self._VALID_CHECKPOINT_METRICS}, got {metric!r}"
+                f"checkpoint_metric must be one of {self._VALID_CHECKPOINT_METRICS} "
+                f"or a parametric metric ({PARAMETRIC_SELECTION_METRICS}, each with "
+                f"a ':<float>' suffix, e.g. 'tpr_at_fpr:0.0034'), got {metric!r}"
+            )
+        if self._num_out > 2:
+            raise ValueError(
+                f"checkpoint_metric={metric!r} is binary-only -- it reduces "
+                "validation to a single ROC curve, which multiclass has no "
+                f"one version of. This model has num_out={self._num_out}; "
+                "use 'val_f1' or 'val_auc' instead."
             )
         return metric
+
+    def _current_selection_value(self, val_acc: float, val_auc: float, val_f1: float) -> float:
+        """This epoch's scalar for ``self._checkpoint_metric``.
+
+        ``val_acc``/``val_auc``/``val_f1`` are always computed by
+        ``validate()``; the two parametric metrics instead need the raw
+        (labels, probs) from that same validation pass, which ``validate()``
+        stashes in ``self._last_val_labels``/``self._last_val_probs`` -- always
+        populated whenever a parametric metric is selected, since
+        ``_resolve_checkpoint_metric`` refuses one on a non-binary model.
+        """
+        if self._checkpoint_metric == "val_f1":
+            return val_f1
+        if self._checkpoint_metric == "val_auc":
+            return val_auc
+        if self._checkpoint_metric == "val_acc":
+            return val_acc
+        return compute_parametric_metric(
+            self._last_val_labels, self._last_val_probs, self._checkpoint_metric
+        )
 
     def _resume_from_checkpoint(self, checkpoint_path: Path) -> None:
         """Restore training state from a checkpoint."""
@@ -868,6 +951,40 @@ class Trainer:
         self.best_val_acc = checkpoint.get("best_val_acc", 0.0)
         self.best_val_f1 = checkpoint.get("best_val_f1", 0.0)
         self.best_val_auc = checkpoint.get("best_val_auc", 0.0)
+        # best_val_selection is only trustworthy when it was computed under
+        # the SAME checkpoint_metric this run is using: resuming under a
+        # different one (e.g. checkpointed on val_auc, resumed on
+        # tpr_at_fpr:0.01) makes the stored value a different, incomparable
+        # scale -- reusing it would let the very first post-resume epoch
+        # "improve" on a number that means nothing for the new metric and
+        # silently overwrite model_best.pt with a worse model. A checkpoint
+        # from before #280 has no "checkpoint_metric" key either, which
+        # equally fails the match and falls into the same safe branch.
+        resumed_metric = checkpoint.get("checkpoint_metric")
+        if resumed_metric == self._checkpoint_metric:
+            # -inf, not 0.0: matches the fresh-Trainer sentinel below, so a
+            # checkpoint saved before validation ever improved anything (also
+            # possible pre-#280, when the floor was 0.0) doesn't resurrect a
+            # stale "already improved" baseline either.
+            self.best_val_selection = checkpoint.get("best_val_selection", float("-inf"))
+        else:
+            if resumed_metric is not None:
+                logger.warning(
+                    f"Resuming with checkpoint_metric={self._checkpoint_metric!r}, but "
+                    f"{checkpoint_path} was checkpointed under {resumed_metric!r}. "
+                    "best_val_selection from that run isn't comparable on the new "
+                    "metric's scale, so the best-so-far baseline is reset instead "
+                    "of trusting the stored value."
+                )
+            # No comparable record for the current metric: whichever of the
+            # three plain best_val_* fields matches it (0.0, its own fresh-
+            # Trainer floor, if the checkpoint predates that field or the
+            # metric is parametric and has no dedicated field of its own).
+            self.best_val_selection = {
+                "val_acc": self.best_val_acc,
+                "val_f1": self.best_val_f1,
+                "val_auc": self.best_val_auc,
+            }.get(self._checkpoint_metric, float("-inf"))
         self.best_epoch = checkpoint.get("best_epoch", 0)
         self.start_epoch = checkpoint.get("epoch", 0) + 1
 
@@ -1370,6 +1487,14 @@ class Trainer:
             accuracy = accuracy_score(labels_arr, all_preds_binary)
             auc = roc_auc_score(labels_arr, preds_arr) if len(np.unique(labels_arr)) > 1 else 0.0
             f1 = f1_score(labels_arr, all_preds_binary, zero_division=0.0)
+            # Stashed for _current_selection_value: the parametric metrics
+            # need the raw gathered (labels, probs), not a scalar already
+            # reduced here. Post-gather under DDP -- the same population
+            # val_acc/val_auc/val_f1 above were computed from -- so a
+            # parametric metric is "computed once on the gathered
+            # predictions" exactly like the others (see CLAUDE.md).
+            self._last_val_labels = labels_arr
+            self._last_val_probs = preds_arr
 
         # CL regression validation metrics
         if self.cl_regression_head is not None:
@@ -1470,6 +1595,13 @@ class Trainer:
                     self.history["val_acc"].append(val_acc)
                     self.history["val_auc"].append(val_auc)
                     self.history["val_f1"].append(val_f1)
+                    current_value = self._current_selection_value(val_acc, val_auc, val_f1)
+                    self.history["val_selection"].append(current_value)
+                    is_parametric_metric = self._checkpoint_metric not in (
+                        "val_acc",
+                        "val_f1",
+                        "val_auc",
+                    )
 
                     progress.remove_task(val_task)
 
@@ -1487,15 +1619,7 @@ class Trainer:
                     ):
                         old_lr = self.optimizer.param_groups[0]["lr"]
                         if self.scheduler_type == "reduce_on_plateau":
-                            if self._checkpoint_metric == "val_f1":
-                                plateau_signal = -val_f1
-                            elif self._checkpoint_metric == "val_auc":
-                                plateau_signal = -val_auc
-                            elif self._checkpoint_metric == "val_acc":
-                                plateau_signal = -val_acc
-                            else:
-                                plateau_signal = val_loss
-                            self.scheduler.step(plateau_signal)
+                            self.scheduler.step(-current_value)
                         else:
                             # Epoch-based schedulers (cosine, etc.)
                             self.scheduler.step()
@@ -1511,6 +1635,11 @@ class Trainer:
                     acc_label = "Acc[*]" if self._checkpoint_metric == "val_acc" else "Acc"
                     f1_label = "F1[*]" if self._checkpoint_metric == "val_f1" else "F1"
                     auc_label = "AUC[*]" if self._checkpoint_metric == "val_auc" else "AUC"
+                    sel_str = (
+                        f" | {self._checkpoint_metric}[*]: {current_value:.4f}"
+                        if is_parametric_metric
+                        else ""
+                    )
                     adv_str = ""
                     if self.adversarial_head is not None and self.history["train_adv_loss"]:
                         _adv_l = self.history["train_adv_loss"][-1]
@@ -1529,30 +1658,31 @@ class Trainer:
                         f"Train Loss: {train_loss:.4f} Acc: {train_acc:.4f} | "
                         f"Val Loss: {val_loss:.4f} {acc_label}: {val_acc:.4f} "
                         f"{f1_label}: {val_f1:.4f} {auc_label}: {val_auc:.4f}"
-                        f"{lr_str}{adv_str}{cl_str}"
+                        f"{sel_str}{lr_str}{adv_str}{cl_str}"
                     )
 
                     # Save best model per configured checkpoint metric
-                    if self._checkpoint_metric == "val_f1":
-                        improved = val_f1 > self.best_val_f1
-                    elif self._checkpoint_metric == "val_auc":
-                        improved = val_auc > self.best_val_auc
-                    else:
-                        improved = val_acc > self.best_val_acc
+                    improved = current_value > self.best_val_selection
                     if improved:
                         self.best_val_acc = val_acc
                         self.best_val_f1 = val_f1
                         self.best_val_auc = val_auc
+                        self.best_val_selection = current_value
                         self.best_epoch = epoch
                         self._best_model_state = copy.deepcopy(self.model.state_dict())
                         patience_counter = 0
 
                         if self.output_dir:
                             self.save_checkpoint("model_best.pt", epoch=epoch)
+                            sel_note = (
+                                f", {self._checkpoint_metric}: {current_value:.4f}"
+                                if is_parametric_metric
+                                else ""
+                            )
                             self._print(
                                 f"[bold green]✓ Saved best model "
                                 f"(val_acc: {val_acc:.4f}, val_f1: {val_f1:.4f}, "
-                                f"val_auc: {val_auc:.4f})[/bold green]"
+                                f"val_auc: {val_auc:.4f}{sel_note})[/bold green]"
                             )
                     else:
                         patience_counter += 1
@@ -1580,6 +1710,19 @@ class Trainer:
 
         return self.history
 
+    def _serializable_best_val_selection(self) -> float:
+        """``best_val_selection`` for JSON output, never the ``-inf`` sentinel.
+
+        ``-inf`` is a legitimate value inside this class (see its
+        initialization) but not strict JSON, and would round-trip through
+        ``json.dump`` as the literal token ``-Infinity`` -- fine for another
+        Python reader, not for a non-Python consumer of ``summary.json``.
+        Only reachable when validation never ran at all (``val_loader`` is
+        None, or zero epochs), the same case ``best_val_acc``/etc. already
+        report as their own untouched 0.0 init.
+        """
+        return self.best_val_selection if math.isfinite(self.best_val_selection) else 0.0
+
     def _ensure_best_checkpoint(self) -> None:
         """Ensure model_best.pt exists, creating it from stored best weights if needed."""
         if self.output_dir is None or not self._is_main:
@@ -1596,6 +1739,8 @@ class Trainer:
                 "best_val_acc": self.best_val_acc,
                 "best_val_f1": self.best_val_f1,
                 "best_val_auc": self.best_val_auc,
+                "best_val_selection": self.best_val_selection,
+                "checkpoint_metric": self._checkpoint_metric,
                 "best_epoch": self.best_epoch,
                 "epoch": self.best_epoch,
                 "scheduler_state_dict": self.scheduler.state_dict() if self.scheduler else None,
@@ -1639,6 +1784,8 @@ class Trainer:
             "best_val_acc": self.best_val_acc,
             "best_val_f1": self.best_val_f1,
             "best_val_auc": self.best_val_auc,
+            "best_val_selection": self.best_val_selection,
+            "checkpoint_metric": self._checkpoint_metric,
             "best_epoch": self.best_epoch,
             "epoch": epoch,
             "scheduler_state_dict": self.scheduler.state_dict() if self.scheduler else None,
@@ -1668,6 +1815,7 @@ class Trainer:
             "best_val_acc": self.best_val_acc,
             "best_val_f1": self.best_val_f1,
             "best_val_auc": self.best_val_auc,
+            "best_val_selection": self._serializable_best_val_selection(),
             "best_epoch": self.best_epoch,
             "checkpoint_metric": self._checkpoint_metric,
             "final_train_loss": self.history["train_loss"][-1],
@@ -1683,6 +1831,29 @@ class Trainer:
                     "final_val_f1": self.history["val_f1"][-1],
                 }
             )
+            # Full binary metrics (accuracy/precision/recall/f1/auroc/auprc,
+            # the threshold sweep, and -- whenever checkpoint_metric names one
+            # -- the parametric low-FPR metric) for the LAST epoch's
+            # validation set, the same "final" population the four fields
+            # above already summarize. This is "val_metrics.json" (issue
+            # #280): the validation half of "reports them ... so runs can be
+            # compared after the fact" -- kept here in summary.json rather
+            # than a new file, since it already plays that role for training.
+            # Multiclass has no single positive-class score, so this is
+            # binary-only, same as the parametric metrics themselves.
+            if (
+                self._num_out <= 2
+                and self._last_val_labels is not None
+                and self._last_val_probs is not None
+            ):
+                from leech.metrics import compute_metrics as _compute_binary_metrics
+
+                summary["val_metrics"] = _compute_binary_metrics(
+                    self._last_val_labels,
+                    (self._last_val_probs > 0.5).astype(int),
+                    self._last_val_probs,
+                    checkpoint_metric=self._checkpoint_metric,
+                )
 
         summary_path = self.output_dir / "summary.json"
         with open(summary_path, "w") as f:
@@ -1742,6 +1913,7 @@ def train_model(
     warmup_epochs: int = 0,
     loss_type: str = "bce",
     focal_gamma: float = 2.0,
+    focal_neg_gamma: float | None = None,
     mixed_precision: bool = False,
     label_smoothing: float = 0.0,
     augment_jitter: float = 0.0,
@@ -1860,6 +2032,7 @@ def train_model(
             pos_weight=pos_weight,
             loss_type=loss_type,
             focal_gamma=focal_gamma,
+            focal_neg_gamma=focal_neg_gamma,
             label_smoothing=label_smoothing,
             mixed_precision=mixed_precision,
             checkpoint_metric=checkpoint_metric,
@@ -1915,6 +2088,7 @@ def train_model(
     pos_weight = cfg.pos_weight
     loss_type = cfg.loss_type
     focal_gamma = cfg.focal_gamma
+    focal_neg_gamma = cfg.focal_neg_gamma
     label_smoothing = cfg.label_smoothing
     mixed_precision = cfg.mixed_precision
     checkpoint_metric = cfg.checkpoint_metric
@@ -2520,6 +2694,7 @@ def train_model(
         "loss_type": loss_type,
         "num_out": num_out,
         "focal_gamma": focal_gamma,
+        "focal_neg_gamma": focal_neg_gamma,
         "mixed_precision": mixed_precision,
         "label_smoothing": label_smoothing,
         "augment_jitter": jitter_cfg,

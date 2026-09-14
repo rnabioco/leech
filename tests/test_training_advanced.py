@@ -321,6 +321,82 @@ class TestNoiseCorrectedBCETrainer:
         assert not torch.allclose(main_loss, plain)
 
 
+class TestAsymmetricFocalLoss:
+    """Test FocalBCEWithLogitsLoss's --focal-neg-gamma asymmetry (#280)."""
+
+    def test_default_neg_gamma_is_bit_for_bit_identical(self):
+        """neg_gamma=None (the default) must not take the per-element branch
+        at all -- bit-for-bit, not merely close, since a run's exact loss
+        curve is what a paired comparison measures."""
+        torch.manual_seed(7)
+        logits = torch.randn(16, 1)
+        targets = torch.randint(0, 2, (16, 1)).float()
+
+        symmetric = FocalBCEWithLogitsLoss(gamma=2.0)
+        explicit_none = FocalBCEWithLogitsLoss(gamma=2.0, neg_gamma=None)
+
+        assert torch.equal(symmetric(logits, targets), explicit_none(logits, targets))
+
+    def test_neg_gamma_equal_to_gamma_is_also_bit_for_bit_identical(self):
+        """Rate 1.0 reproduces the current loss (issue #280): every target
+        is exactly 0.0 or 1.0, so `targets * gamma + (1 - targets) * gamma`
+        equals `gamma` exactly, with no rounding -- even though this DOES
+        take the per-element gamma_t branch, unlike the neg_gamma=None case
+        above."""
+        torch.manual_seed(11)
+        logits = torch.randn(16, 1)
+        targets = torch.randint(0, 2, (16, 1)).float()
+
+        symmetric = FocalBCEWithLogitsLoss(gamma=2.0)
+        same_rate = FocalBCEWithLogitsLoss(gamma=2.0, neg_gamma=2.0)
+
+        assert torch.equal(symmetric(logits, targets), same_rate(logits, targets))
+
+    def test_pos_weight_and_neg_gamma_together_are_also_identical_at_rate_one(self):
+        """The two knobs are independent: pos_weight still only touches the
+        BCE term, so the bit-for-bit property holds with it set too."""
+        torch.manual_seed(13)
+        logits = torch.randn(16, 1)
+        targets = torch.randint(0, 2, (16, 1)).float()
+        pos_weight = torch.tensor([3.0])
+
+        symmetric = FocalBCEWithLogitsLoss(gamma=1.5, pos_weight=pos_weight)
+        same_rate = FocalBCEWithLogitsLoss(gamma=1.5, pos_weight=pos_weight, neg_gamma=1.5)
+
+        assert torch.equal(symmetric(logits, targets), same_rate(logits, targets))
+
+    def test_higher_neg_gamma_down_weights_easy_negatives_harder(self):
+        """A well-classified negative (easy, low p_t modulation) should lose
+        more of its loss under a higher neg_gamma than under the symmetric
+        loss, while an equally well-classified positive is untouched."""
+        easy_negative_logits = torch.tensor([[-5.0]])
+        easy_negative_targets = torch.tensor([[0.0]])
+        easy_positive_logits = torch.tensor([[5.0]])
+        easy_positive_targets = torch.tensor([[1.0]])
+
+        symmetric = FocalBCEWithLogitsLoss(gamma=2.0)
+        asymmetric = FocalBCEWithLogitsLoss(gamma=2.0, neg_gamma=6.0)
+
+        neg_symmetric = symmetric(easy_negative_logits, easy_negative_targets)
+        neg_asymmetric = asymmetric(easy_negative_logits, easy_negative_targets)
+        pos_symmetric = symmetric(easy_positive_logits, easy_positive_targets)
+        pos_asymmetric = asymmetric(easy_positive_logits, easy_positive_targets)
+
+        assert neg_asymmetric.item() < neg_symmetric.item()
+        assert pos_asymmetric.item() == pytest.approx(pos_symmetric.item())
+
+    def test_negative_gamma_raises(self):
+        """(1 - p_t) is in [0, 1], so a negative exponent sends the
+        modulating factor toward infinity for a confidently-correct example
+        -- reject it up front rather than poisoning the loss with inf/nan."""
+        with pytest.raises(ValueError, match="gamma must be >= 0"):
+            FocalBCEWithLogitsLoss(gamma=-1.0)
+
+    def test_negative_neg_gamma_raises(self):
+        with pytest.raises(ValueError, match="neg_gamma must be >= 0"):
+            FocalBCEWithLogitsLoss(gamma=2.0, neg_gamma=-0.5)
+
+
 class TestWeightDecay:
     """Test weight decay in Trainer."""
 
@@ -671,6 +747,30 @@ class TestFocalLossTrainer:
         )
         assert isinstance(trainer.criterion, FocalBCEWithLogitsLoss)
 
+    def test_focal_neg_gamma_reaches_the_criterion(self, sample_model, sample_dataloader):
+        """--focal-neg-gamma threads through to FocalBCEWithLogitsLoss (#280)."""
+        trainer = Trainer(
+            model=sample_model,
+            model_type="ConvLSTMDwell",
+            train_loader=sample_dataloader,
+            device="cpu",
+            loss_type="focal",
+            focal_gamma=2.0,
+            focal_neg_gamma=5.0,
+        )
+        assert trainer.criterion.neg_gamma == 5.0
+
+    def test_focal_neg_gamma_defaults_to_none(self, sample_model, sample_dataloader):
+        """The default keeps the symmetric (bit-for-bit) loss path."""
+        trainer = Trainer(
+            model=sample_model,
+            model_type="ConvLSTMDwell",
+            train_loader=sample_dataloader,
+            device="cpu",
+            loss_type="focal",
+        )
+        assert trainer.criterion.neg_gamma is None
+
     def test_bce_loss_in_trainer(self, sample_model, sample_dataloader):
         """Test Trainer with default BCE loss."""
         trainer = Trainer(
@@ -693,6 +793,211 @@ class TestFocalLossTrainer:
         )
         loss, acc = trainer.train_epoch()
         assert loss >= 0
+
+
+class TestParametricCheckpointMetric:
+    """checkpoint_metric accepts tpr_at_fpr:<f> / callable_at_precision:<p>
+    on a binary model, refuses them on multiclass, and drives checkpointing
+    and early stopping the same way the three plain metrics do (#280)."""
+
+    def test_resolves_and_stores_tpr_at_fpr(self, sample_model, sample_dataloader):
+        trainer = Trainer(
+            model=sample_model,
+            model_type="ConvLSTMDwell",
+            train_loader=sample_dataloader,
+            val_loader=sample_dataloader,
+            device="cpu",
+            checkpoint_metric="tpr_at_fpr:0.5",
+        )
+        assert trainer._checkpoint_metric == "tpr_at_fpr:0.5"
+
+    def test_resolves_and_stores_callable_at_precision(self, sample_model, sample_dataloader):
+        trainer = Trainer(
+            model=sample_model,
+            model_type="ConvLSTMDwell",
+            train_loader=sample_dataloader,
+            val_loader=sample_dataloader,
+            device="cpu",
+            checkpoint_metric="callable_at_precision:0.6",
+        )
+        assert trainer._checkpoint_metric == "callable_at_precision:0.6"
+
+    def test_refused_on_multiclass(self, sample_model, sample_dataloader):
+        with pytest.raises(ValueError, match="binary-only"):
+            Trainer(
+                model=sample_model,
+                model_type="ConvLSTMDwell",
+                train_loader=sample_dataloader,
+                val_loader=sample_dataloader,
+                device="cpu",
+                num_out=3,
+                checkpoint_metric="tpr_at_fpr:0.1",
+            )
+
+    def test_unknown_metric_name_raises(self, sample_model, sample_dataloader):
+        with pytest.raises(ValueError, match="checkpoint_metric must be one of"):
+            Trainer(
+                model=sample_model,
+                model_type="ConvLSTMDwell",
+                train_loader=sample_dataloader,
+                device="cpu",
+                checkpoint_metric="not_a_real_metric",
+            )
+
+    def test_malformed_parametric_metric_raises(self, sample_model, sample_dataloader):
+        with pytest.raises(ValueError, match="not a float"):
+            Trainer(
+                model=sample_model,
+                model_type="ConvLSTMDwell",
+                train_loader=sample_dataloader,
+                device="cpu",
+                checkpoint_metric="tpr_at_fpr:not_a_number",
+            )
+
+    def test_end_to_end_training_uses_the_parametric_metric(
+        self, sample_model, sample_dataloader, tmp_path
+    ):
+        """Selection, checkpointing, and reporting all key off the same
+        parametric value, computed once from the gathered (labels, probs)
+        each epoch."""
+        from leech.metrics import compute_parametric_metric
+
+        trainer = Trainer(
+            model=sample_model,
+            model_type="ConvLSTMDwell",
+            train_loader=sample_dataloader,
+            val_loader=sample_dataloader,
+            device="cpu",
+            output_dir=tmp_path,
+            checkpoint_metric="tpr_at_fpr:0.5",
+        )
+        history = trainer.train(epochs=2, early_stopping_patience=0)
+
+        assert len(history["val_selection"]) == 2
+        for value in history["val_selection"]:
+            assert 0.0 <= value <= 1.0
+        assert trainer.best_val_selection == pytest.approx(max(history["val_selection"]))
+        # Recomputable independently from the stashed final-epoch (labels,
+        # probs) -- val_selection isn't a number invented separately from
+        # what compute_parametric_metric would give the same inputs.
+        assert history["val_selection"][-1] == pytest.approx(
+            compute_parametric_metric(
+                trainer._last_val_labels, trainer._last_val_probs, "tpr_at_fpr:0.5"
+            )
+        )
+
+        with open(tmp_path / "summary.json") as f:
+            summary = json.load(f)
+        assert summary["checkpoint_metric"] == "tpr_at_fpr:0.5"
+        assert summary["best_val_selection"] == pytest.approx(trainer.best_val_selection)
+        assert "tpr_at_fpr:0.5" in summary["val_metrics"]
+
+    def test_metric_that_is_zero_every_epoch_still_checkpoints_the_first_one(
+        self, sample_model, sample_dataloader, tmp_path, monkeypatch
+    ):
+        """A strict tpr_at_fpr target (e.g. tpr_at_fpr:0.0001) can legitimately
+        score 0.0 on every epoch. best_val_selection must start below any real
+        score (including 0.0) so the first validated epoch still counts as an
+        improvement -- a 0.0 floor would make "improved" false forever, and
+        model_best.pt would never be written inside the loop."""
+        trainer = Trainer(
+            model=sample_model,
+            model_type="ConvLSTMDwell",
+            train_loader=sample_dataloader,
+            val_loader=sample_dataloader,
+            device="cpu",
+            output_dir=tmp_path,
+            checkpoint_metric="tpr_at_fpr:0.5",
+        )
+        monkeypatch.setattr(trainer, "_current_selection_value", lambda *a, **k: 0.0)
+
+        trainer.train(epochs=2, early_stopping_patience=0)
+
+        assert trainer.best_epoch == 1
+        assert trainer.best_val_selection == 0.0
+        assert (tmp_path / "model_best.pt").exists()
+        with open(tmp_path / "summary.json") as f:
+            summary = json.load(f)
+        # The serialization guard must not turn a real 0.0 into anything else.
+        assert summary["best_val_selection"] == 0.0
+
+    @staticmethod
+    def _hand_built_checkpoint(model, *, checkpoint_metric, best_val_selection, epoch=1):
+        """A minimal checkpoint dict shaped like save_checkpoint's output,
+        without running a real Trainer -- deterministic, unlike relying on a
+        real validation pass to land on a particular relative ordering of
+        two different metrics' scores."""
+        return {
+            "model_state_dict": model.state_dict(),
+            "best_val_acc": 0.9,
+            "best_val_f1": 0.9,
+            "best_val_auc": 0.87,
+            "best_val_selection": best_val_selection,
+            "checkpoint_metric": checkpoint_metric,
+            "best_epoch": epoch,
+            "epoch": epoch,
+            "scheduler_state_dict": None,
+            "scaler_state_dict": None,
+            "best_model_state_dict": None,
+        }
+
+    def test_resume_resets_baseline_when_checkpoint_metric_changes(
+        self, sample_model, sample_dataloader, tmp_path, caplog
+    ):
+        """Resuming under a DIFFERENT checkpoint_metric than the checkpoint
+        was saved with must not trust its best_val_selection -- that number
+        is on the old metric's scale and comparing a new metric's values
+        against it is meaningless, and would silently let an early epoch
+        "improve" on a number it has nothing to do with."""
+        checkpoint_path = tmp_path / "model_last.pt"
+        torch.save(
+            self._hand_built_checkpoint(
+                sample_model, checkpoint_metric="val_auc", best_val_selection=0.87
+            ),
+            checkpoint_path,
+        )
+
+        with caplog.at_level("WARNING"):
+            trainer = Trainer(
+                model=sample_model,
+                model_type="ConvLSTMDwell",
+                train_loader=sample_dataloader,
+                device="cpu",
+                checkpoint_metric="tpr_at_fpr:0.01",
+                resume_checkpoint=checkpoint_path,
+            )
+
+        assert trainer.best_val_selection == float("-inf")
+        assert "isn't comparable" in caplog.text
+
+    def test_resume_trusts_best_val_selection_when_metric_matches(
+        self, sample_model, sample_dataloader, tmp_path, caplog
+    ):
+        """The companion case: the same metric on both sides is exactly when
+        the stored value IS comparable, and must still be honored."""
+        checkpoint_path = tmp_path / "model_last.pt"
+        torch.save(
+            self._hand_built_checkpoint(
+                sample_model,
+                checkpoint_metric="tpr_at_fpr:0.01",
+                best_val_selection=0.42,
+                epoch=3,
+            ),
+            checkpoint_path,
+        )
+
+        with caplog.at_level("WARNING"):
+            trainer = Trainer(
+                model=sample_model,
+                model_type="ConvLSTMDwell",
+                train_loader=sample_dataloader,
+                device="cpu",
+                checkpoint_metric="tpr_at_fpr:0.01",
+                resume_checkpoint=checkpoint_path,
+            )
+
+        assert trainer.best_val_selection == pytest.approx(0.42)
+        assert "isn't comparable" not in caplog.text
 
 
 class TestSignalAugmentation:

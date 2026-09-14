@@ -221,12 +221,44 @@ class FocalBCEWithLogitsLoss(nn.Module):
         gamma: Focusing parameter. Higher values increase focus on hard examples.
             gamma=0 is equivalent to standard BCE loss.
         pos_weight: Weight for positive class (same as BCEWithLogitsLoss).
+        neg_gamma: Optional separate focusing parameter for negative-labeled
+            examples (``--focal-neg-gamma``), making the loss asymmetric.
+            ``None`` (the default) keeps the single-``gamma`` formula below
+            and is bit-for-bit identical to the pre-#280 loss; passing the
+            SAME value as ``gamma`` takes the per-element branch instead but
+            is *also* bit-for-bit identical, since every target is exactly
+            0.0 or 1.0 so ``targets * gamma + (1 - targets) * gamma == gamma``
+            with no rounding -- "rate 1.0" reproduces the current loss either
+            way (issue #280). A ``neg_gamma`` larger than ``gamma`` down-
+            weights easy negatives harder than easy positives, concentrating
+            gradient on the hard negatives sitting near the decision
+            boundary -- the population that sets the model's FPR at a given
+            threshold -- without touching ``pos_weight``, which only scales
+            the positive term's magnitude and says nothing about which
+            negatives contribute gradient.
+
+    Raises:
+        ValueError: ``gamma`` or ``neg_gamma`` is negative. ``(1 - p_t)`` is
+            in ``[0, 1]``, so a negative exponent sends the modulating factor
+            toward infinity as a confidently-correct example's ``p_t``
+            approaches 1 -- silently poisoning the batch loss/gradient with
+            inf/nan rather than raising anywhere near the mistake.
     """
 
-    def __init__(self, gamma: float = 2.0, pos_weight: torch.Tensor | None = None) -> None:
+    def __init__(
+        self,
+        gamma: float = 2.0,
+        pos_weight: torch.Tensor | None = None,
+        neg_gamma: float | None = None,
+    ) -> None:
         super().__init__()
+        if gamma < 0:
+            raise ValueError(f"gamma must be >= 0, got {gamma}")
+        if neg_gamma is not None and neg_gamma < 0:
+            raise ValueError(f"neg_gamma must be >= 0, got {neg_gamma}")
         self.gamma = gamma
         self.pos_weight = pos_weight
+        self.neg_gamma = neg_gamma
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         bce = F.binary_cross_entropy_with_logits(
@@ -234,5 +266,9 @@ class FocalBCEWithLogitsLoss(nn.Module):
         )
         probs = torch.sigmoid(logits)
         p_t = probs * targets + (1 - probs) * (1 - targets)
-        focal_weight = (1 - p_t) ** self.gamma
+        if self.neg_gamma is None:
+            focal_weight = (1 - p_t) ** self.gamma
+        else:
+            gamma_t = targets * self.gamma + (1 - targets) * self.neg_gamma
+            focal_weight = (1 - p_t) ** gamma_t
         return (focal_weight * bce).mean()

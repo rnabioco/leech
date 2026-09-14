@@ -18,6 +18,7 @@ from leech.cli_options import (
     model_provenance,
     training_hyperparams,
     training_loop_options,
+    validate_selection_metric,
 )
 from leech.constants import DEFAULT_DEVICE, DEFAULT_SEED
 from leech.logging_config import setup_logging
@@ -804,12 +805,16 @@ def merge(
 )
 @click.option(
     "--checkpoint-metric",
-    type=click.Choice(["auto", "val_acc", "val_f1", "val_auc"]),
+    type=str,
     default="auto",
+    callback=validate_selection_metric,
     help=(
         "Validation metric used for best-model checkpointing and early stopping. "
         "'auto' = val_f1 for multiclass, val_auc for binary (recommended; "
-        "val_acc is gameable on imbalanced one-vs-all heads)."
+        "val_acc is gameable on imbalanced one-vs-all heads). Also accepts "
+        "'tpr_at_fpr:<f>' (TPR at a fixed FPR) and 'callable_at_precision:<p>' "
+        "(fraction of validation reads callable at a precision floor) for the "
+        "low-FPR operating regime -- binary tasks only."
     ),
 )
 def train(
@@ -838,6 +843,7 @@ def train(
     warmup_epochs,
     loss_type,
     focal_gamma,
+    focal_neg_gamma,
     label_smoothing,
     mixed_precision,
     augment_jitter,
@@ -913,6 +919,7 @@ def train(
         warmup_epochs=warmup_epochs,
         loss_type=loss_type,
         focal_gamma=focal_gamma,
+        focal_neg_gamma=focal_neg_gamma,
         label_smoothing=label_smoothing,
         mixed_precision=mixed_precision,
         augment_jitter=augment_jitter,
@@ -1439,12 +1446,14 @@ def fetch(name, model_version, tag, output_dir, repo):
 )
 @click.option(
     "--selection-metric",
-    type=click.Choice(["auto", "val_acc", "val_f1", "val_auc"]),
+    type=str,
     default="auto",
+    callback=validate_selection_metric,
     help=(
         "Metric used to rank grid points and checkpoint the best model. "
         "'auto' = val_f1 for multiclass, val_auc for binary (recommended; "
-        "val_acc is gameable on imbalanced one-vs-all heads)."
+        "val_acc is gameable on imbalanced one-vs-all heads). Also accepts "
+        "'tpr_at_fpr:<f>' and 'callable_at_precision:<p>' -- binary tasks only."
     ),
 )
 def optimize(
@@ -1473,6 +1482,7 @@ def optimize(
     warmup_epochs,
     loss_type,
     focal_gamma,
+    focal_neg_gamma,
     label_smoothing,
     mixed_precision,
     augment_jitter,
@@ -1534,6 +1544,7 @@ def optimize(
         warmup_epochs=warmup_epochs,
         loss_type=loss_type,
         focal_gamma=focal_gamma,
+        focal_neg_gamma=focal_neg_gamma,
         label_smoothing=label_smoothing,
         mixed_precision=mixed_precision,
         augment_jitter=augment_jitter,

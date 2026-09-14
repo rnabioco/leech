@@ -8,6 +8,7 @@ The rest covers how the eval DataLoader is sized: a worker-less loader on a GPU
 is what left issue #205 running at 8% utilisation.
 """
 
+import json
 from types import SimpleNamespace
 from unittest import mock
 
@@ -177,6 +178,81 @@ class TestFp32ProbabilitiesUnderSimulatedAMP:
         )
 
         assert calls == []
+
+
+class TestParametricCheckpointMetricReporting:
+    """`eval test`'s output ("test_metrics.json") reports the same parametric
+    checkpoint metric a run was trained with, so it can be compared against
+    another run that used the same one after the fact (#280)."""
+
+    def test_reports_the_training_run_s_parametric_metric(self, temp_chunks_file, tmp_path):
+        from leech.evaluation import evaluate_model
+        from leech.training import train_model
+
+        model_dir = tmp_path / "model"
+        train_model(
+            train_data_path=temp_chunks_file,
+            val_data_path=None,
+            model_name="ConvLSTMDwell",
+            output_dir=model_dir,
+            epochs=1,
+            batch_size=2,
+            device="cpu",
+            motif="CCAGGC",
+            seed=42,
+            checkpoint_metric="tpr_at_fpr:0.5",
+        )
+
+        with open(model_dir / "config.json") as f:
+            config = json.load(f)
+        assert config["checkpoint_metric"] == "tpr_at_fpr:0.5"
+
+        metrics = evaluate_model(
+            model_path=model_dir,
+            test_data_path=temp_chunks_file,
+            output_path=tmp_path / "test_metrics.json",
+            device="cpu",
+            batch_size=2,
+        )
+
+        assert "tpr_at_fpr:0.5" in metrics
+        assert isinstance(metrics["tpr_at_fpr:0.5"], float)
+        assert 0.0 <= metrics["tpr_at_fpr:0.5"] <= 1.0
+
+        with open(tmp_path / "test_metrics.json") as f:
+            saved = json.load(f)
+        assert saved["tpr_at_fpr:0.5"] == metrics["tpr_at_fpr:0.5"]
+
+    def test_plain_checkpoint_metric_reports_nothing_new(self, temp_chunks_file, tmp_path):
+        """A run selected on val_auc (the default) adds no parametric key --
+        non-goal: this must not change what a plain run reports."""
+        from leech.evaluation import evaluate_model
+        from leech.training import train_model
+
+        model_dir = tmp_path / "model"
+        train_model(
+            train_data_path=temp_chunks_file,
+            val_data_path=None,
+            model_name="ConvLSTMDwell",
+            output_dir=model_dir,
+            epochs=1,
+            batch_size=2,
+            device="cpu",
+            motif="CCAGGC",
+            seed=42,
+        )
+
+        metrics = evaluate_model(
+            model_path=model_dir,
+            test_data_path=temp_chunks_file,
+            output_path=tmp_path / "test_metrics.json",
+            device="cpu",
+            batch_size=2,
+        )
+
+        assert not any(
+            k.startswith("tpr_at_fpr") or k.startswith("callable_at_precision") for k in metrics
+        )
 
 
 class TestDataLoaderWorkers:

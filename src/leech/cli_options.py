@@ -18,6 +18,7 @@ from leech.constants import (
     DEFAULT_DEVICE,
     DEFAULT_EPOCHS,
     DEFAULT_FOCAL_GAMMA,
+    DEFAULT_FOCAL_NEG_GAMMA,
     DEFAULT_GRAD_ACCUM_SPLIT,
     DEFAULT_LABEL_SMOOTHING,
     DEFAULT_LEARNING_RATE,
@@ -75,6 +76,33 @@ class FloatOrDict(click.ParamType):
 
 
 FLOAT_OR_DICT = FloatOrDict()
+
+#: Plain (non-parametric) checkpoint/selection metric names. Kept here, not
+#: imported from leech.metrics, so this module (evaluated at CLI decoration
+#: time, i.e. on every `leech --help`) never imports torch/sklearn -- see
+#: get_model_choices above for why that import cost matters here.
+_PLAIN_SELECTION_METRICS = ("auto", "val_acc", "val_f1", "val_auc")
+
+
+def validate_selection_metric(ctx, param, value):
+    """Click callback for ``--checkpoint-metric`` / ``--selection-metric``.
+
+    Accepts the four plain names or a parametric one ("tpr_at_fpr:<f>" /
+    "callable_at_precision:<p>", issue #280) -- mirrors
+    ``leech.metrics.parse_selection_metric``'s grammar so a malformed value
+    ("tpr_at_fpr:abc", "roc_auc:1") is rejected at the CLI boundary with a
+    clear ``click.BadParameter``, not a bare ``ValueError`` three tensors and
+    a training run deep.
+    """
+    if value in _PLAIN_SELECTION_METRICS:
+        return value
+    from leech.metrics import parse_selection_metric
+
+    try:
+        parse_selection_metric(value)
+    except ValueError as exc:
+        raise click.BadParameter(str(exc)) from exc
+    return value
 
 
 class LazyChoice(click.Choice):
@@ -163,6 +191,18 @@ def training_hyperparams(f):
         type=float,
         default=DEFAULT_LABEL_SMOOTHING,
         help="Label smoothing factor (0 = disabled; e.g., 0.05 softens 0/1 targets)",
+    )(f)
+    f = click.option(
+        "--focal-neg-gamma",
+        type=float,
+        default=DEFAULT_FOCAL_NEG_GAMMA,
+        help=(
+            "Separate focal-loss gamma for negative-labeled examples, making the "
+            "loss asymmetric (only used with --loss focal; default: same as "
+            "--focal-gamma, i.e. symmetric). Larger than --focal-gamma down-weights "
+            "easy negatives harder, concentrating gradient on the hard negatives "
+            "that set FPR at a given threshold -- for the low-FPR operating regime."
+        ),
     )(f)
     f = click.option(
         "--focal-gamma",
