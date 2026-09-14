@@ -25,7 +25,6 @@ from torch.utils.data import DataLoader
 
 from leech.constants import DEFAULT_SEQ_ENCODING_FALLBACK
 from leech.dataset import LeechDataset, collate_fn, resolve_val_dataloader_workers
-from leech.models import get_model
 from leech.models.inference_wrapper import ModelInferenceWrapper
 
 logger = logging.getLogger("leech.calibration")
@@ -145,27 +144,25 @@ def calibrate_model(
     seq_encoding = config.get("seq_encoding", DEFAULT_SEQ_ENCODING_FALLBACK)
     signal_kmer_context = tuple(config.get("signal_kmer_context", (4, 4)))
 
-    # Build model init kwargs
-    signal_in_channels = config.get("signal_in_channels", 1)
-    model_kwargs: dict = {
-        "signal_len": signal_len,
-        "kmer_len": kmer_len,
-        "seq_encoding": seq_encoding,
-        "signal_kmer_context": signal_kmer_context,
-        "signal_in_channels": signal_in_channels,
-    }
-    if "num_features" in config:
-        model_kwargs["num_features"] = config["num_features"]
+    from leech.model_loading import _instantiate_model, _migrate_state_dict_keys
 
-    model = get_model(model_name, **model_kwargs)
+    # _instantiate_model (not a hand-picked model_kwargs dict) is the single
+    # place that resolves a full config.json into constructor kwargs, filtered
+    # to what the model class actually accepts -- predict/eval/bundle/
+    # onnx_export all go through it. A second, manually-maintained copy here
+    # is exactly how this fell out of sync with #283's causal/feature_mean/
+    # feature_std params: this function kept building model_kwargs by hand and
+    # silently dropped both, either crashing on load_state_dict (a standardized
+    # model's state_dict carries AffineStandardize buffers this rebuild
+    # wouldn't have) or calibrating against a model with a different receptive
+    # field (causal) than the one actually deployed.
+    model = _instantiate_model(config)
 
     # Load weights (always load to CPU first, then move to device)
     checkpoint_path = model_dir / "model_best.pt"
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     state_dict = checkpoint["model_state_dict"]
     state_dict = {k.removeprefix("_orig_mod."): v for k, v in state_dict.items()}
-
-    from leech.model_loading import _migrate_state_dict_keys
 
     state_dict = _migrate_state_dict_keys(state_dict)
     model.load_state_dict(state_dict)
@@ -502,28 +499,20 @@ def calibrate_model_multiclass(
     seq_encoding = config.get("seq_encoding", DEFAULT_SEQ_ENCODING_FALLBACK)
     signal_kmer_context = tuple(config.get("signal_kmer_context", (4, 4)))
 
-    # Build model init kwargs
-    signal_in_channels = config.get("signal_in_channels", 1)
-    model_kwargs: dict = {
-        "signal_len": signal_len,
-        "kmer_len": kmer_len,
-        "seq_encoding": seq_encoding,
-        "signal_kmer_context": signal_kmer_context,
-        "signal_in_channels": signal_in_channels,
-    }
-    if "num_features" in config:
-        model_kwargs["num_features"] = config["num_features"]
-    model_kwargs["num_out"] = num_out
+    from leech.model_loading import _instantiate_model, _migrate_state_dict_keys
 
-    model = get_model(model_name, **model_kwargs)
+    # See the identical note in calibrate_model: _instantiate_model is the one
+    # place a full config.json resolves to constructor kwargs, so this stays
+    # in sync with new model params (causal, feature_mean/feature_std, ...)
+    # for free instead of needing a second manual model_kwargs dict updated
+    # every time one is added.
+    model = _instantiate_model(config)
 
     # Load weights
     checkpoint_path = model_dir / "model_best.pt"
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     state_dict = checkpoint["model_state_dict"]
     state_dict = {k.removeprefix("_orig_mod."): v for k, v in state_dict.items()}
-
-    from leech.model_loading import _migrate_state_dict_keys
 
     state_dict = _migrate_state_dict_keys(state_dict)
     model.load_state_dict(state_dict)

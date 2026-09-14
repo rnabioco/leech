@@ -535,6 +535,7 @@ class LeechDataset(Dataset):
         shift_max_bases: float = 0.0,
         feature_noise_scale: float = 0.0,
         dwell_template_table: str | Path | None = None,
+        standardize_features: bool = False,
     ):
         """
         Initialize dataset.
@@ -588,6 +589,15 @@ class LeechDataset(Dataset):
                 to features: ``dwell / expected_dwell[AA_i, pos]`` for each of
                 20 AAs. The correct AA's channel has ratio closest to 1.0.
                 TSV columns: aa, position, dwell_mean, ...
+            standardize_features: Compute corpus-wide per-channel feature
+                mean/std once (see :attr:`feature_mean`/:attr:`feature_std`)
+                for ``--standardize-features``. This dataset never applies
+                them to its own output -- the caller (``train_model``) reads
+                them and passes them to the model constructor, which builds a
+                frozen affine layer from them. Meaningful only for the
+                *training* dataset; a validation/test/predict dataset should
+                leave this False and reuse the training corpus's stats via
+                the model instead.
         """
         self.chunk_path = chunk_path
         self.signal_len = signal_len
@@ -603,6 +613,7 @@ class LeechDataset(Dataset):
         self._time_mask_count = time_mask_count
         self._shift_max_bases = shift_max_bases
         self._feature_noise_scale = feature_noise_scale
+        self._standardize_features = standardize_features
 
         # Load dwell template table for 20-channel AA template features
         self._dwell_templates: np.ndarray | None = None
@@ -876,6 +887,26 @@ class LeechDataset(Dataset):
             else:
                 logger.warning("Feature shapes differ, feature noise disabled")
                 self._feature_noise_scale = 0.0
+
+        # Corpus-wide per-channel mean/std for --standardize-features (#283):
+        # one number per feature channel, reusing the same already-stacked
+        # _features_tensor as the noise pass above rather than a second scan.
+        # Collapsed over both the chunk axis AND the window axis (dim 0 and
+        # 2) -- unlike the noise std, which is deliberately per-position --
+        # because a channel's physical scale (a dwell sample count, a
+        # MAD-unit level stat, ...) is a property of the channel, not of
+        # where in the window it's read.
+        self.feature_mean: torch.Tensor | None = None
+        self.feature_std: torch.Tensor | None = None
+        if self._standardize_features and self._needs_features:
+            if self._features_tensor is not None:
+                self.feature_mean = self._features_tensor.mean(dim=(0, 2))  # (C,)
+                self.feature_std = self._features_tensor.std(dim=(0, 2))  # (C,)
+            else:
+                logger.warning(
+                    "Feature shapes differ across chunks; --standardize-features disabled"
+                )
+                self._standardize_features = False
 
         # Approx samples per base for cross-layer shift/mask
         self._samples_per_base = signal_len / max(kmer_len, 1)

@@ -26,6 +26,13 @@ seq_encoding = "base_onehot"
 signal_kmer_context = "${DEFAULT_SIGNAL_KMER_CONTEXT}"
 norm_type = "batchnorm"
 num_out = 1
+# TemporalBlock padding: left-only (causal) by default. False splits the
+# same total padding symmetrically -- see components.TemporalBlock.
+causal = "${DEFAULT_CAUSAL_TCN}"
+# Per-channel corpus mean/std for --standardize-features (issue #283): None
+# (the default) means no standardization, exactly today's behavior.
+feature_mean = "${None}"
+feature_std = "${None}"
 
 [derived]
 seq_in_channels = "${4 * (signal_kmer_context[0] + signal_kmer_context[1] + 1) if seq_encoding == 'signal_kmer' else 4}"
@@ -47,6 +54,7 @@ num_layers = "${num_layers}"
 kernel_size = "${kernel_size}"
 dropout = "${dropout}"
 norm_type = "${norm_type}"
+causal = "${causal}"
 
 [[nodes]]
 name = "signal_pool"
@@ -68,6 +76,7 @@ num_layers = "${num_layers}"
 kernel_size = "${kernel_size}"
 dropout = "${dropout}"
 norm_type = "${norm_type}"
+causal = "${causal}"
 
 [[nodes]]
 name = "seq_pool"
@@ -87,6 +96,8 @@ out = "feat_out"
 num_features = "${num_features}"
 conv_channels = "${DEFAULT_CONV_CHANNELS}"
 norm_type = "${norm_type}"
+feature_mean = "${feature_mean}"
+feature_std = "${feature_std}"
 
 # ── merge + dwell cross-attention ─────────────────────────────────────────
 

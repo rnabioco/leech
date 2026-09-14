@@ -71,11 +71,17 @@ DEFAULT_AUGMENT_SHIFT_MAX_BASES = (
     0.0  # Max cross-layer shift in bases (0 = disabled, float for sub-base)
 )
 DEFAULT_AUGMENT_FEATURE_NOISE_SCALE = 0.0  # Per-channel Gaussian noise scale (0 = disabled)
+DEFAULT_STANDARDIZE_FEATURES = False  # Per-channel feature standardization (frozen affine layer)
+# Floor for a standardized channel's corpus std, so a near-constant channel
+# (dwell_ratio is close to 1 everywhere in some corpora) divides by something
+# other than ~0 instead of blowing up to +/-inf.
+FEATURE_STANDARDIZE_EPS = 1e-6
 
 # Model defaults
 DEFAULT_SIGNAL_LEN = 400  # Default signal chunk length
 DEFAULT_KMER_LEN = 11  # Default k-mer length (2*context+1)
 DEFAULT_NUM_FEATURES = 5  # Default number of feature channels (dwell + signal levels)
+DEFAULT_CAUSAL_TCN = True  # TemporalBlock padding: causal (left-only) by default
 
 # Device defaults
 DEFAULT_DEVICE = "cuda"

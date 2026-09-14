@@ -290,6 +290,9 @@ class TrainConfig:
     checkpoint_metric: str = "auto"
     num_out: int = 1
     signal_mode: str = "both"
+    # Per-channel feature standardization: compute corpus-wide mean/std once
+    # and freeze them into the feature branch's first layer (issue #283).
+    standardize_features: bool = False
 
     # Provenance / extraction geometry recorded in config.json, not used to
     # extract anything here -- see chunking.resolve_feature_window and

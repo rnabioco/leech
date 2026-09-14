@@ -951,6 +951,80 @@ class TestModelBundle:
         with pytest.raises(ValueError, match="Architecture config mismatch"):
             create_bundle(model_dirs, bundle_path, "pairwise", "0.1.0")
 
+    def _standardized_model_dir(self, pair_dir, model_config, feature_mean, feature_std):
+        pair_dir.mkdir(parents=True)
+        kwargs = {**model_config, "feature_mean": feature_mean, "feature_std": feature_std}
+        config = {
+            "model_name": "ConvLSTMDwell",
+            **kwargs,
+            "epochs": 10,
+            "batch_size": 32,
+            "learning_rate": 0.001,
+        }
+        with open(pair_dir / "config.json", "w") as f:
+            json.dump(config, f)
+        model = get_model("ConvLSTMDwell", **kwargs)
+        torch.save(
+            {"model_state_dict": model.state_dict(), "best_val_acc": 0.9, "best_epoch": 5},
+            pair_dir / "model_best.pt",
+        )
+        return pair_dir
+
+    def test_bundle_tolerates_different_standardize_feature_values(self, tmp_path, model_config):
+        """issue #283: --standardize-features computes per-corpus stats, so
+        two pairwise models trained on different label-pair subsets have
+        different (but same-length) feature_mean/feature_std even though the
+        architecture is otherwise identical. That must bundle, not raise."""
+        num_features = model_config["num_features"]
+        model_dirs = {
+            "Ala_Gly": self._standardized_model_dir(
+                tmp_path / "models" / "Ala_Gly",
+                model_config,
+                [0.1] * num_features,
+                [1.0] * num_features,
+            ),
+            "Ala_Ser": self._standardized_model_dir(
+                tmp_path / "models" / "Ala_Ser",
+                model_config,
+                [9.9] * num_features,  # different corpus, different mean
+                [2.5] * num_features,  # and different std
+            ),
+        }
+
+        bundle_path = tmp_path / "standardized_bundle.pt"
+        create_bundle(model_dirs, bundle_path, "pairwise", "0.1.0")  # must not raise
+
+        bundle = torch.load(bundle_path, map_location="cpu", weights_only=False)
+        assert set(bundle["models"]) == {"Ala_Gly", "Ala_Ser"}
+
+    def test_bundle_still_rejects_a_real_standardize_mismatch(self, tmp_path, model_config):
+        """One model standardized and the other not IS a structural mismatch
+        (different state_dict keys/shapes) and must still raise -- only the
+        VALUES of feature_mean/feature_std are tolerated, not their
+        presence/absence or length."""
+        num_features = model_config["num_features"]
+        model_dirs = {
+            "Ala_Gly": self._standardized_model_dir(
+                tmp_path / "models" / "Ala_Gly",
+                model_config,
+                [0.1] * num_features,
+                [1.0] * num_features,
+            ),
+        }
+        # Second model: no standardization at all.
+        pair_dir = tmp_path / "models" / "Ala_Ser"
+        pair_dir.mkdir(parents=True)
+        config = {"model_name": "ConvLSTMDwell", **model_config, "epochs": 10}
+        with open(pair_dir / "config.json", "w") as f:
+            json.dump(config, f)
+        model = get_model("ConvLSTMDwell", **model_config)
+        torch.save({"model_state_dict": model.state_dict()}, pair_dir / "model_best.pt")
+        model_dirs["Ala_Ser"] = pair_dir
+
+        bundle_path = tmp_path / "bad_standardized_bundle.pt"
+        with pytest.raises(ValueError, match="Architecture config mismatch"):
+            create_bundle(model_dirs, bundle_path, "pairwise", "0.1.0")
+
 
 class TestAggregatePairwise:
     """Test pairwise voting aggregation."""

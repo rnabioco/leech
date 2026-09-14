@@ -12,11 +12,13 @@ import torch
 import torch.nn as nn
 
 from leech.constants import (
+    DEFAULT_CAUSAL_TCN,
     DEFAULT_CONV_CHANNELS,
     DEFAULT_DROPOUT,
     DEFAULT_FEATURE_KERNEL,
     DEFAULT_SEQ_KERNEL,
     DEFAULT_SIGNAL_KERNEL,
+    FEATURE_STANDARDIZE_EPS,
 )
 
 
@@ -350,6 +352,51 @@ class SequenceBranch(nn.Module):
         return output
 
 
+class AffineStandardize(nn.Module):
+    """Frozen per-channel affine standardization: ``(x - mean) / std``.
+
+    ``mean``/``std`` are corpus-wide per-channel statistics computed once
+    over the training corpus (``LeechDataset``'s ``--standardize-features``
+    pass -- see ``leech.dataset.LeechDataset.__init__``) and registered as
+    buffers rather than parameters: they ride along in every checkpoint and
+    every exported ONNX graph (a plain ``Sub``/``Div`` against two constant
+    initializers), but are never touched by an optimizer and carry no
+    gradient of their own to save.
+
+    Broadcasts over the window axis: a ``(num_features,)`` vector applies to
+    a ``(batch, num_features, kmer_len)`` input, one scale per feature
+    channel regardless of window width. Channel order must match
+    ``leech.chunking.extractor.merge_feature_channels`` (dwell rows, then
+    signal-level rows, then k-mer residual rows) -- that is the order every
+    feature array already has, and the only order this class knows about.
+    """
+
+    def __init__(self, mean: list[float], std: list[float]) -> None:
+        super().__init__()
+        mean_t = torch.as_tensor(mean, dtype=torch.float32)
+        std_t = torch.as_tensor(std, dtype=torch.float32)
+        if mean_t.shape != std_t.shape:
+            raise ValueError(
+                f"feature_mean (len {mean_t.numel()}) and feature_std "
+                f"(len {std_t.numel()}) must have the same length"
+            )
+        # Floor the std so a near-constant channel (dwell_ratio sits close to
+        # 1 in some corpora) divides by something other than ~0 instead of
+        # producing inf/nan for every chunk. clamp_min alone would not rescue
+        # a NaN std -- torch.std's unbiased (N-1) estimator gives 0/0 = NaN
+        # when a channel's total sample count is 1 (a single-chunk corpus, or
+        # kmer_len=1), and clamp_min(NaN, eps) is still NaN under IEEE754 --
+        # so replace NaN with "no scaling" (std=1) before flooring.
+        std_t = torch.nan_to_num(std_t, nan=1.0).clamp_min(FEATURE_STANDARDIZE_EPS)
+        self.register_buffer("mean", mean_t.view(1, -1, 1))
+        self.register_buffer("std", std_t.view(1, -1, 1))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        assert isinstance(self.mean, torch.Tensor)
+        assert isinstance(self.std, torch.Tensor)
+        return (x - self.mean) / self.std
+
+
 class FeatureBranch(nn.Module):
     """
     Reusable 1D convolutional branch for engineered features (dwell + signal levels).
@@ -362,6 +409,13 @@ class FeatureBranch(nn.Module):
         kernel_size: Kernel size for convolutions (default: 3)
         use_batchnorm: Insert BatchNorm1d after each Conv1d (default: False)
         norm_type: Normalization type ("none", "batchnorm", "groupnorm", "layernorm")
+        feature_mean: Optional per-channel corpus mean (length ``num_features``).
+            When given together with ``feature_std``, a frozen
+            :class:`AffineStandardize` layer is prepended before the first
+            Conv1d, so raw feature scales (a dwell sample count, a MAD-unit
+            level stat, ...) never reach a conv weight unscaled. Both or
+            neither -- see ``--standardize-features``.
+        feature_std: Optional per-channel corpus std (length ``num_features``).
 
     Input shape:
         (batch_size, num_features, kmer_len)
@@ -377,6 +431,8 @@ class FeatureBranch(nn.Module):
         kernel_size: int = DEFAULT_FEATURE_KERNEL,
         use_batchnorm: bool = False,
         norm_type: str = "none",
+        feature_mean: list[float] | None = None,
+        feature_std: list[float] | None = None,
     ):
         super().__init__()
 
@@ -386,6 +442,15 @@ class FeatureBranch(nn.Module):
         resolved = _resolve_norm_type(norm_type, use_batchnorm)
 
         layers: list[nn.Module] = []
+        if feature_mean is not None or feature_std is not None:
+            if feature_mean is None or feature_std is None:
+                raise ValueError("feature_mean and feature_std must both be given or both omitted")
+            if len(feature_mean) != num_features or len(feature_std) != num_features:
+                raise ValueError(
+                    f"feature_mean/feature_std length must equal num_features "
+                    f"({num_features}); got {len(feature_mean)}/{len(feature_std)}"
+                )
+            layers.append(AffineStandardize(feature_mean, feature_std))
         in_ch = num_features
         for out_ch in conv_channels:
             layers.append(
@@ -413,7 +478,7 @@ class FeatureBranch(nn.Module):
 
 class TemporalBlock(nn.Module):
     """
-    Temporal convolutional block with dilated causal convolutions and residual connection.
+    Temporal convolutional block with dilated convolutions and residual connection.
 
     Args:
         in_channels: Number of input channels
@@ -422,6 +487,19 @@ class TemporalBlock(nn.Module):
         dilation: Dilation rate
         dropout: Dropout probability
         norm_type: Normalization type ("batchnorm", "groupnorm", "layernorm")
+        causal: When True (default), pad left-only so position *i* only ever
+            sees positions ``<= i`` -- the sequence-modelling convention,
+            appropriate when the model must not look ahead. leech's chunk
+            classifiers have the whole fixed window available at every
+            position, so causal padding just halves the receptive field for
+            no benefit (6 layers, kernel 3 reaches 253 samples causally vs.
+            127 samples on each side symmetrically). ``causal=False`` splits
+            the same total padding ``(kernel_size - 1) * dilation`` evenly
+            across both sides instead. Neither conv gains or loses a
+            parameter either way -- only the padding changes -- so a
+            checkpoint's ``state_dict()`` keys and shapes are identical
+            regardless of this flag; the *values* trained under one mode are
+            not a meaningful initialization for the other.
     """
 
     def __init__(
@@ -432,12 +510,21 @@ class TemporalBlock(nn.Module):
         dilation: int = 1,
         dropout: float = DEFAULT_DROPOUT,
         norm_type: str = "batchnorm",
+        causal: bool = DEFAULT_CAUSAL_TCN,
     ):
         super().__init__()
 
-        # Padding to maintain sequence length
-        # For causal convolutions: padding = (kernel_size - 1) * dilation
+        self.causal = causal
+        # Total padding needed to keep the sequence length fixed after each
+        # conv: causal puts all of it on the left, non-causal splits it evenly.
+        # Precomputed once (fixed for the module's lifetime) rather than
+        # rebuilt on every forward() call, of which there are two per block.
         self.padding = (kernel_size - 1) * dilation
+        if causal:
+            self._pad_amounts = (self.padding, 0)
+        else:
+            left = self.padding // 2
+            self._pad_amounts = (left, self.padding - left)
 
         # Two convolutional layers with normalization and dropout
         self.conv1 = nn.Conv1d(
@@ -469,6 +556,9 @@ class TemporalBlock(nn.Module):
 
         self.relu = nn.ReLU()
 
+    def _pad(self, x: torch.Tensor) -> torch.Tensor:
+        return nn.functional.pad(x, self._pad_amounts)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Args:
@@ -477,8 +567,7 @@ class TemporalBlock(nn.Module):
         Returns:
             Output tensor (batch, out_channels, length)
         """
-        # Causal padding (left padding only)
-        x_padded = nn.functional.pad(x, (self.padding, 0))
+        x_padded = self._pad(x)
 
         # First conv block
         out = self.conv1(x_padded)
@@ -486,8 +575,7 @@ class TemporalBlock(nn.Module):
         out = self.relu(out)
         out = self.dropout1(out)
 
-        # Causal padding again
-        out = nn.functional.pad(out, (self.padding, 0))
+        out = self._pad(out)
 
         # Second conv block
         out = self.conv2(out)
@@ -512,6 +600,7 @@ class TCN(nn.Module):
         kernel_size: Convolution kernel size
         dropout: Dropout probability
         norm_type: Normalization type ("batchnorm", "groupnorm", "layernorm")
+        causal: Passed through to every :class:`TemporalBlock` -- see there.
     """
 
     def __init__(
@@ -522,6 +611,7 @@ class TCN(nn.Module):
         kernel_size: int = 3,
         dropout: float = DEFAULT_DROPOUT,
         norm_type: str = "batchnorm",
+        causal: bool = DEFAULT_CAUSAL_TCN,
     ):
         super().__init__()
 
@@ -537,6 +627,7 @@ class TCN(nn.Module):
                     dilation=dilation,
                     dropout=dropout,
                     norm_type=norm_type,
+                    causal=causal,
                 )
             )
 

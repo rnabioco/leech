@@ -28,6 +28,11 @@ seq_encoding = "base_onehot"
 signal_kmer_context = "${DEFAULT_SIGNAL_KMER_CONTEXT}"
 num_out = 1
 signal_in_channels = 1
+# Per-channel corpus mean/std for --standardize-features (issue #283): None
+# (the default) means no standardization, exactly today's behavior. Unused
+# by Base variants (no feature_branch node), harmless to declare regardless.
+feature_mean = "${None}"
+feature_std = "${None}"
 
 [derived]
 seq_in_channels = "${4 * (signal_kmer_context[0] + signal_kmer_context[1] + 1) if seq_encoding == 'signal_kmer' else 4}"
@@ -66,6 +71,8 @@ out = "feat_feat"
 num_features = "${num_features}"
 conv_channels = "${conv_channels}"
 norm_type = "${norm_type}"
+feature_mean = "${feature_mean}"
+feature_std = "${feature_std}"
 
 # ── temporal alignment: every branch must emit kmer_len positions ──────────
 

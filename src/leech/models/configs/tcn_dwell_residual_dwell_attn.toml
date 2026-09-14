@@ -61,6 +61,13 @@ seq_encoding = "base_onehot"
 signal_kmer_context = "${DEFAULT_SIGNAL_KMER_CONTEXT}"
 norm_type = "batchnorm"
 num_out = 1
+# TemporalBlock padding: left-only (causal) by default. False splits the
+# same total padding symmetrically -- see components.TemporalBlock.
+causal = "${DEFAULT_CAUSAL_TCN}"
+# Per-channel corpus mean/std for --standardize-features (issue #283): None
+# (the default) means no standardization, exactly today's behavior.
+feature_mean = "${None}"
+feature_std = "${None}"
 
 [derived]
 seq_in_channels = "${4 * (signal_kmer_context[0] + signal_kmer_context[1] + 1) if seq_encoding == 'signal_kmer' else 4}"
@@ -68,6 +75,17 @@ pooled_seq = "${seq_encoding == 'signal_kmer'}"
 merged_dim = "${hidden_channels * 2}"
 feat_dim = "${DEFAULT_CONV_CHANNELS[-1]}"
 dwell_channels = "${dwell_conv_channels if dwell_conv_channels else [4, 16, 64]}"
+# dwell_branch below sees only the first num_dwell_features channels (dwell
+# rows, via the dwell_slice node), so its standardization stats (if any) must
+# be the matching PREFIX of feature_mean/feature_std, not the full vector.
+# This assumes index i of feature_mean/feature_std is channel i of `features`
+# -- true because both come from the same row order
+# (chunking.extractor.merge_feature_channels: dwell rows, then signal-level
+# rows, then k-mer residual rows), an order tests/test_data_prep.py::
+# TestFeatureChannelOrder pins. If that row order ever changes, this slice
+# must change with it.
+dwell_feature_mean = "${feature_mean[:num_dwell_features] if feature_mean is not None else None}"
+dwell_feature_std = "${feature_std[:num_dwell_features] if feature_std is not None else None}"
 
 # ── branches ──────────────────────────────────────────────────────────────
 
@@ -83,6 +101,7 @@ num_layers = "${num_layers}"
 kernel_size = "${kernel_size}"
 dropout = "${dropout}"
 norm_type = "${norm_type}"
+causal = "${causal}"
 
 [[nodes]]
 name = "signal_pool"
@@ -104,6 +123,7 @@ num_layers = "${num_layers}"
 kernel_size = "${kernel_size}"
 dropout = "${dropout}"
 norm_type = "${norm_type}"
+causal = "${causal}"
 
 [[nodes]]
 name = "seq_pool"
@@ -123,6 +143,8 @@ out = "feat_out"
 num_features = "${num_features}"
 conv_channels = "${DEFAULT_CONV_CHANNELS}"
 norm_type = "${norm_type}"
+feature_mean = "${feature_mean}"
+feature_std = "${feature_std}"
 
 [[nodes]]
 name = "feat_to_time_major"
@@ -154,6 +176,8 @@ out = "dwell_out"
 num_features = "${num_dwell_features}"
 conv_channels = "${dwell_channels}"
 norm_type = "${norm_type}"
+feature_mean = "${dwell_feature_mean}"
+feature_std = "${dwell_feature_std}"
 
 [[nodes]]
 name = "dwell_to_time_major"

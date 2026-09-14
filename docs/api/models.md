@@ -50,7 +50,13 @@ statistics) — merged into a BiLSTM followed by a fully connected head.
 **`ConvLSTMBase`** is the same architecture without the feature branch; compare
 the two to measure the impact of dwell features.
 
-The TCN family replaces the BiLSTM with stacks of dilated causal convolutions.
+The TCN family replaces the BiLSTM with stacks of dilated convolutions,
+causally padded (left-only) by default -- pass `causal=false` via
+`--model-config` for symmetric padding instead, which doubles the receptive
+field on each side of a position at the same depth/kernel size (see
+`components.TemporalBlock`; parameter shapes are unchanged either way, so a
+checkpoint loads regardless of which mode trained it, but the trained values
+are not a meaningful initialization for the other mode).
 `Residual` variants take a 2-channel signal input (raw + k-mer model residual),
 `SplitResidual` keeps separate branches for the raw signal and the residual,
 `Motor` adds motor-region pooling, and `DwellAttn` adds dwell-only

@@ -216,6 +216,28 @@ def _build_graph_class(name: str, doc: dict, fixed: dict, docstring: str) -> typ
         specs = resolved_node_specs(doc, fixed, kwargs)
         by_name = {spec["name"]: spec for spec in specs}
 
+        # feature_mean/feature_std (--standardize-features, #283) are declared
+        # in [params] file-wide, so a Base variant sharing a config with a
+        # Dwell variant (conv_lstm.toml, conv_lstm_attn.toml) also *accepts*
+        # them even though its own `when`-filtered nodes never wire a
+        # "features" input -- accepting silently would contradict the
+        # documented contract ("requesting standardization for a model that
+        # doesn't consume features raises") and leave a real
+        # --standardize-features run looking like it worked while the values
+        # go nowhere. Checked against THIS variant's surviving nodes, not the
+        # file's declared inputs, since that's what actually differs between
+        # Base and Dwell variants of one config.
+        if env.get("feature_mean") is not None and not any(
+            "features" in resolve(spec.get("inputs", []), env) for spec in specs
+        ):
+            raise ValueError(
+                f"{name} has no node that consumes a 'features' input, so "
+                "feature_mean/feature_std (--standardize-features) would have "
+                "no effect. Pick a model with a feature branch, or drop "
+                "--standardize-features / the feature_mean and feature_std "
+                "model-config overrides."
+            )
+
         # Layers are *constructed* in build_order (default: declaration order),
         # which is what fixes both the RNG draw order and the state_dict key
         # order.  Execution order stays declaration order.

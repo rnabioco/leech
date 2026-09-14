@@ -20,7 +20,7 @@ from leech.cli_options import (
     training_loop_options,
     validate_selection_metric,
 )
-from leech.constants import DEFAULT_DEVICE, DEFAULT_SEED
+from leech.constants import DEFAULT_DEVICE, DEFAULT_SEED, DEFAULT_STANDARDIZE_FEATURES
 from leech.logging_config import setup_logging
 
 # Apply rich-click styling
@@ -864,6 +864,16 @@ def merge(
         "low-FPR operating regime -- binary tasks only."
     ),
 )
+@click.option(
+    "--standardize-features/--no-standardize-features",
+    default=DEFAULT_STANDARDIZE_FEATURES,
+    help=(
+        "Compute per-channel feature mean/std once over the training corpus and "
+        "freeze them into the feature branch as an affine layer. Only models that "
+        "declare feature_mean/feature_std params accept this (e.g. the TCN and "
+        "ConvLSTM families); requesting it for one that doesn't raises."
+    ),
+)
 def train(
     train_data,
     val_data,
@@ -921,6 +931,7 @@ def train(
     signal_mode,
     dwell_template_table,
     checkpoint_metric,
+    standardize_features,
 ):
     """Train a model on prepared data."""
     from leech.commands.train import handle_train
@@ -997,6 +1008,7 @@ def train(
         signal_mode=signal_mode,
         dwell_template_table=dwell_template_table,
         checkpoint_metric=checkpoint_metric,
+        standardize_features=standardize_features,
     )
 
 
@@ -1072,6 +1084,20 @@ def train(
     default=10,
     help="Number of active steps captured in the torch.profiler trace",
 )
+@click.option(
+    "--model-config",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help='Optional JSON file with model hyperparameter overrides (e.g. {"causal": false})',
+)
+@click.option(
+    "--standardize-features/--no-standardize-features",
+    default=DEFAULT_STANDARDIZE_FEATURES,
+    help=(
+        "Compute per-channel feature mean/std over train-data and freeze them into "
+        "the feature branch as an affine layer, same as `model train`'s flag."
+    ),
+)
 def benchmark(
     train_data,
     model_name,
@@ -1090,6 +1116,8 @@ def benchmark(
     signal_mode,
     trace,
     trace_active_steps,
+    model_config,
+    standardize_features,
 ):
     """Benchmark one training step: per-phase timing + GPU utilization."""
     from leech.commands.benchmark import handle_benchmark
@@ -1112,6 +1140,8 @@ def benchmark(
         signal_mode=signal_mode,
         trace=trace,
         trace_active_steps=trace_active_steps,
+        model_config=model_config,
+        standardize_features=standardize_features,
     )
 
 

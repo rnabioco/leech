@@ -84,6 +84,41 @@ class TestTrainModelProvenance:
             )
 
 
+class TestStandardizeFeaturesProvenance:
+    """--standardize-features (issue #283): train_model computes per-channel
+    feature mean/std once from the training corpus and records them in
+    config.json, so predict/eval/bundle/onnx_export can rebuild the frozen
+    affine layer with no dataset-side step."""
+
+    def test_disabled_by_default(self, temp_chunks_file, tmp_path):
+        output_dir = tmp_path / "train_no_standardize"
+        train_model(
+            train_data_path=temp_chunks_file,
+            val_data_path=None,
+            output_dir=output_dir,
+            **TRAIN_DEFAULTS,
+        )
+        config = _read_config(output_dir)
+        assert config["standardize_features"] is False
+        assert config["feature_mean"] is None
+        assert config["feature_std"] is None
+
+    def test_records_feature_mean_and_std_when_enabled(self, temp_chunks_file, tmp_path):
+        output_dir = tmp_path / "train_standardize"
+        train_model(
+            train_data_path=temp_chunks_file,
+            val_data_path=None,
+            output_dir=output_dir,
+            **{**TRAIN_DEFAULTS, "standardize_features": True},
+        )
+        config = _read_config(output_dir)
+        assert config["standardize_features"] is True
+        assert config["feature_mean"] is not None
+        assert config["feature_std"] is not None
+        assert len(config["feature_mean"]) == config["num_features"]
+        assert len(config["feature_std"]) == config["num_features"]
+
+
 # ---------------------------------------------------------------------------
 # run_grid_point provenance
 # ---------------------------------------------------------------------------
@@ -268,6 +303,40 @@ class TestCLIMotif:
         )
         assert result.exit_code != 0
         assert "Missing" in result.output or "required" in result.output.lower()
+
+    def test_cli_train_passes_standardize_features(self, temp_chunks_file, tmp_path):
+        from click.testing import CliRunner
+
+        from leech.cli import cli
+
+        output_dir = tmp_path / "cli_standardize"
+        result = CliRunner().invoke(
+            cli,
+            [
+                "model",
+                "train",
+                "--train-data",
+                str(temp_chunks_file),
+                "--model",
+                "ConvLSTMDwell",
+                "--output-dir",
+                str(output_dir),
+                "--epochs",
+                "1",
+                "--batch-size",
+                "2",
+                "--device",
+                "cpu",
+                "--motif",
+                "CCAGGC",
+                "--standardize-features",
+            ],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+        config = _read_config(output_dir)
+        assert config["standardize_features"] is True
+        assert config["feature_mean"] is not None
 
     def test_cli_optimize_missing_motif_errors(self, temp_chunks_file, tmp_path):
         from click.testing import CliRunner
