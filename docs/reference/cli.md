@@ -271,8 +271,9 @@ from a fresh optimizer and logs a warning.
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--loss STR` | `bce` | Loss function: `bce`, `focal`, or `cross_entropy` |
+| `--loss STR` | `bce` | Loss function: `bce`, `focal`, `cross_entropy`, or `noise_corrected_bce` |
 | `--focal-gamma FLOAT` | `2.0` | Focal loss gamma (only with `--loss focal`) |
+| `--label-noise-rate STR` | -- | `group=rate[,group=rate,...]` per-`source_group` label-flip probability for `--loss noise_corrected_bce` (e.g. `gold=0.09,enzymatic=0.17`). Unmapped groups get rate 0. See [Label-noise-aware loss](../api/training.md#label-noise-aware-loss). |
 
 **Data augmentation:**
 

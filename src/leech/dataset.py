@@ -527,6 +527,7 @@ class LeechDataset(Dataset):
         left_context: int | None = None,
         right_context: int | None = None,
         confound_encoder: "ConfoundEncoder | None" = None,
+        label_noise_rates: dict[str, float] | None = None,
         cl_regression: bool = False,
         signal_mode: str = "both",
         time_mask_bases: int = 0,
@@ -567,6 +568,12 @@ class LeechDataset(Dataset):
                 each batch includes a ``confound_label`` tensor for adversarial
                 training. Chunks whose confound value is unknown get ``-1``
                 (ignored by the CE loss via ``ignore_index=-1``).
+            label_noise_rates: Optional ``{source_group: flip_rate}`` mapping.
+                When provided, each batch includes a ``noise_rate`` tensor
+                (shape matching ``label``) built by looking up each chunk's
+                ``source_group`` (missing/empty -> "unknown"); groups absent
+                from the mapping get rate 0. Consumed by
+                ``leech.losses.NoiseCorrectedBCEWithLogitsLoss``.
             cl_regression: When True, include ``cl_target`` in each batch
                 (cl_value / 255.0 in [0,1]; sentinel -1.0 for missing).
             time_mask_bases: Max width in bases for time masking (0 = disabled).
@@ -648,6 +655,7 @@ class LeechDataset(Dataset):
         fill_features = _TensorFill("Feature", n_chunks)
         fill_confounds = _TensorFill("Confound", n_chunks)
         fill_cl_targets = _TensorFill("CL target", n_chunks)
+        fill_noise_rates = _TensorFill("Noise rate", n_chunks)
         self._encoded_seqs: list[torch.Tensor] = []
         self._labels: list[torch.Tensor] = []
         self._signals: list[torch.Tensor] = []
@@ -657,6 +665,9 @@ class LeechDataset(Dataset):
         self._confound_labels: list[torch.Tensor] = []
         self._cl_regression = cl_regression
         self._cl_targets: list[torch.Tensor] = []
+        self._label_noise_rates = label_noise_rates or {}
+        self._has_noise_rates = bool(label_noise_rates)
+        self._noise_rates: list[torch.Tensor] = []
 
         # Determine effective encoding, from the whole corpus rather than from
         # chunk 0 (#230). A corpus carries the signal_kmer inputs for every
@@ -744,6 +755,7 @@ class LeechDataset(Dataset):
             "features": fill_features,
             "confounds": fill_confounds,
             "cl_targets": fill_cl_targets,
+            "noise_rates": fill_noise_rates,
         }
         if self._block_fill_supported():
             self._fill_from_blocks(fills)
@@ -825,6 +837,10 @@ class LeechDataset(Dataset):
         if self._cl_regression:
             self._cl_targets_tensor, self._cl_targets = fill_cl_targets.finish()
 
+        self._noise_rates_tensor: torch.Tensor | None = None
+        if self._has_noise_rates:
+            self._noise_rates_tensor, self._noise_rates = fill_noise_rates.finish()
+
         # Drop the raw numpy arrays from self.chunks now that everything has
         # been pre-tensorized. External code (samplers, label tally, feature
         # window introspection) still reads the small scalar/string fields,
@@ -873,6 +889,7 @@ class LeechDataset(Dataset):
             and (not self._needs_features or self._features_tensor is not None)
             and (not self._has_confound or self._confound_labels_tensor is not None)
             and (not self._cl_regression or self._cl_targets_tensor is not None)
+            and (not self._has_noise_rates or self._noise_rates_tensor is not None)
             and (
                 (self._seq_ints_tensor is not None and self._seq_to_sig_tensor is not None)
                 if self._effective_seq_encoding == "signal_kmer"
@@ -1029,6 +1046,14 @@ class LeechDataset(Dataset):
                 else:
                     fills["cl_targets"].append(torch.tensor(-1.0, dtype=torch.float32))
 
+            # Label-noise flip rate for noise_corrected_bce, keyed by
+            # source_group (mirrors _source_group_counts' own "unknown"
+            # fallback for an absent/empty group). Unmapped groups get 0.
+            if self._has_noise_rates:
+                group = chunk.get("source_group") or "unknown"
+                rate = self._label_noise_rates.get(group, 0.0)
+                fills["noise_rates"].append(torch.tensor([rate], dtype=torch.float32))
+
     def _block_fill_supported(self) -> bool:
         """Can this corpus and option set be tensorized a block at a time?
 
@@ -1110,6 +1135,7 @@ class LeechDataset(Dataset):
         labels = self._label_column()
         confounds = self._confound_column() if self._has_confound else None
         cl_targets = self._cl_target_column() if self._cl_regression else None
+        noise_rates = self._noise_rate_column() if self._has_noise_rates else None
 
         stored_len = stream.row_shapes["signal"][0]
         asymmetric = self.left_context is not None and self.right_context is not None
@@ -1152,6 +1178,8 @@ class LeechDataset(Dataset):
                 fills["confounds"].extend(confounds[start:stop])
             if cl_targets is not None:
                 fills["cl_targets"].extend(cl_targets[start:stop])
+            if noise_rates is not None:
+                fills["noise_rates"].extend(noise_rates[start:stop])
 
     # -- column readers: the metadata half of the block-wise filler ----------
 
@@ -1199,6 +1227,33 @@ class LeechDataset(Dataset):
             dtype=np.int64,
         )
         return torch.from_numpy(lookup[inverse.reshape(-1)])
+
+    def _noise_rate_column(self) -> torch.Tensor:
+        """Per-chunk label-noise flip probability, ``(N, 1)`` float32.
+
+        Looked up from ``source_group`` via ``label_noise_rates`` (unmapped
+        groups default to 0.0). Mirrors ``_source_group_counts``' own
+        normalization of an absent/empty ``source_group`` to ``"unknown"``, so
+        a ``--label-noise-rate`` mapping keyed on ``"unknown"`` reaches exactly
+        the chunks ``--balance-groups`` already treats as one group.
+        """
+        table = self.chunks
+        n = len(table)
+        raw = table.values("source_group")
+        if raw is None:
+            rate = self._label_noise_rates.get("unknown", 0.0)
+            return torch.full((n, 1), rate, dtype=torch.float32)
+        uniques, inverse = np.unique(raw, return_inverse=True)
+        lookup = np.array(
+            [
+                self._label_noise_rates.get(
+                    (value.decode() if isinstance(value, bytes) else str(value)) or "unknown", 0.0
+                )
+                for value in uniques
+            ],
+            dtype=np.float32,
+        )
+        return torch.from_numpy(lookup[inverse.reshape(-1)]).unsqueeze(1)
 
     def _focus_positions(self, stored_len: int) -> np.ndarray:
         """Focus signal position per chunk, or the centre when none is stored."""
@@ -1833,6 +1888,12 @@ class LeechDataset(Dataset):
             else:
                 result["cl_target"] = self._cl_targets[idx]
 
+        if self._has_noise_rates:
+            if self._noise_rates_tensor is not None:
+                result["noise_rate"] = self._noise_rates_tensor[idx]
+            else:
+                result["noise_rate"] = self._noise_rates[idx]
+
         return result
 
     def __getitems__(self, indices: Sequence[int]) -> dict[str, torch.Tensor] | list[dict]:
@@ -1895,6 +1956,8 @@ class LeechDataset(Dataset):
             result["confound_label"] = _gather_rows(self._confound_labels_tensor, rows)
         if self._cl_regression:
             result["cl_target"] = _gather_rows(self._cl_targets_tensor, rows)
+        if self._has_noise_rates:
+            result["noise_rate"] = _gather_rows(self._noise_rates_tensor, rows)
         return result
 
     def _apply_augmentation_batch(self, signal: torch.Tensor) -> torch.Tensor:
@@ -1977,6 +2040,10 @@ def collate_fn(
     # Add CL regression targets if present
     if "cl_target" in batch[0]:
         result["cl_target"] = torch.stack([item["cl_target"] for item in batch])
+
+    # Add per-sample label-noise flip rates if present (noise_corrected_bce)
+    if "noise_rate" in batch[0]:
+        result["noise_rate"] = torch.stack([item["noise_rate"] for item in batch])
 
     return result
 

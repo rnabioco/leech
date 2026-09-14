@@ -676,8 +676,18 @@ class TestBatchedFetch:
             {"cl_regression": True},
             {"signal_mode": "signal"},
             {"dwell_offset": 1},
+            {"label_noise_rates": {"unknown": 0.3}},
         ],
-        ids=["default", "no_features", "wide_features", "signal_kmer", "cl", "signal_only", "off1"],
+        ids=[
+            "default",
+            "no_features",
+            "wide_features",
+            "signal_kmer",
+            "cl",
+            "signal_only",
+            "off1",
+            "label_noise_rate",
+        ],
     )
     def test_batch_equals_per_sample(self, temp_chunks_file, overrides):
         dataset = self._dataset(temp_chunks_file, **overrides)

@@ -128,6 +128,7 @@ _TRAINING_PARAMS = {
     "adversarial_lambda",
     "adversarial_anneal_epochs",
     "confound",
+    "label_noise_rates",
     "cl_lambda",
     "checkpoint_metric",
     "signal_mode",

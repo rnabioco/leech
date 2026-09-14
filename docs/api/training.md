@@ -88,3 +88,23 @@ Two things to know before using it:
 The checkpoint a multi-GPU run writes is byte-compatible with a single-GPU one
 (same keys, no `module.` prefix), so `leech model export`, bundling and
 inference are unaffected.
+
+## Label-noise-aware loss
+
+`--loss noise_corrected_bce` is for labels that are enrichments with a known,
+measured impurity rather than per-read ground truth -- e.g. a positive block
+that is only ~90% pure because the enrichment chemistry (or an upstream
+barcode/demux step) mislabels a known fraction of reads. It applies a forward
+correction (Patrini et al. 2017) so the model is fit against the corrected
+probability of the *observed* label rather than the raw noisy target, using a
+per-sample flip rate looked up from each chunk's `source_group` via
+`--label-noise-rate group=rate[,group=rate,...]` (e.g.
+`--label-noise-rate gold=0.09,enzymatic=0.17`); groups not named get rate 0
+(plain BCE). Reach for it when a purity estimate exists for some or all of the
+training data and soft targets have already been tried and measured worse --
+soft-labeling the noisy fraction is not equivalent to this correction and
+underperforms it. Because the correction trades bias for variance in the
+noisy regime, judge it by **callable yield at a fixed precision floor**
+(e.g. AUROC-adjacent metrics can look flat or even move against it while the
+fraction of confidently-called reads at 99% precision improves) rather than by
+AUROC alone.

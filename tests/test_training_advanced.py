@@ -14,7 +14,11 @@ from torch.utils.data import DataLoader
 
 import leech.training
 from leech.dataset import LeechDataset, collate_fn
-from leech.losses import FocalBCEWithLogitsLoss
+from leech.losses import (
+    FocalBCEWithLogitsLoss,
+    NoiseCorrectedBCEWithLogitsLoss,
+    parse_label_noise_rate,
+)
 from leech.models import get_model
 from leech.training import Trainer, train_model
 
@@ -79,6 +83,242 @@ class TestFocalLoss:
         easy_ratio = focal_easy.item() / bce_easy.item()
         hard_ratio = focal_hard.item() / bce_hard.item()
         assert easy_ratio < hard_ratio
+
+
+class TestParseLabelNoiseRate:
+    """Test the ``--label-noise-rate`` token parser."""
+
+    def test_none_and_empty_return_none(self):
+        assert parse_label_noise_rate(None) is None
+        assert parse_label_noise_rate("") is None
+        assert parse_label_noise_rate("   ") is None
+
+    def test_parses_single_and_multiple_entries(self):
+        assert parse_label_noise_rate("gold=0.09") == {"gold": 0.09}
+        assert parse_label_noise_rate("gold=0.09,enzymatic=0.17") == {
+            "gold": 0.09,
+            "enzymatic": 0.17,
+        }
+
+    def test_tolerates_whitespace(self):
+        assert parse_label_noise_rate(" gold = 0.09 , enzymatic = 0.17 ") == {
+            "gold": 0.09,
+            "enzymatic": 0.17,
+        }
+
+    def test_rejects_malformed_entry(self):
+        with pytest.raises(ValueError, match="Malformed"):
+            parse_label_noise_rate("gold")
+
+    def test_rejects_empty_group_name(self):
+        with pytest.raises(ValueError, match="empty group name"):
+            parse_label_noise_rate("=0.1")
+
+    def test_rejects_out_of_range_rate(self):
+        with pytest.raises(ValueError, match=r"\[0, 1\)"):
+            parse_label_noise_rate("gold=1.0")
+        with pytest.raises(ValueError, match=r"\[0, 1\)"):
+            parse_label_noise_rate("gold=-0.1")
+
+    def test_rejects_non_float_rate(self):
+        with pytest.raises(ValueError, match="not a float"):
+            parse_label_noise_rate("gold=abc")
+
+
+class TestNoiseCorrectedBCELoss:
+    """Test NoiseCorrectedBCEWithLogitsLoss (forward correction)."""
+
+    def test_rate_omitted_matches_plain_bce_bit_for_bit(self):
+        """No ``noise_rate`` argument at all -- the common non-noise-aware call."""
+        torch.manual_seed(0)
+        logits = torch.randn(8, 1)
+        targets = torch.randint(0, 2, (8, 1)).float()
+
+        corrected = NoiseCorrectedBCEWithLogitsLoss()(logits, targets)
+        plain = torch.nn.BCEWithLogitsLoss()(logits, targets)
+        assert torch.equal(corrected, plain)
+
+    def test_all_zero_rate_tensor_matches_plain_bce_numerically(self):
+        """An explicit all-zero rate tensor -- e.g. every ``source_group`` in
+        a batch happens to be unmapped even though ``--label-noise-rate`` is
+        configured -- takes the general branch, not the bit-for-bit fast
+        path: the fast path is chosen on ``noise_rate is None`` only, never on
+        the tensor's values, so a value-dependent check can't force a
+        per-batch host/device sync on CUDA. It still agrees with plain BCE to
+        floating-point precision.
+        """
+        torch.manual_seed(1)
+        logits = torch.randn(8, 1)
+        targets = torch.randint(0, 2, (8, 1)).float()
+        zero_rate = torch.zeros(8, 1)
+
+        corrected = NoiseCorrectedBCEWithLogitsLoss()(logits, targets, noise_rate=zero_rate)
+        plain = torch.nn.BCEWithLogitsLoss()(logits, targets)
+        assert torch.allclose(corrected, plain, atol=1e-6)
+
+    def test_pos_weight_matches_bce_bit_for_bit(self):
+        torch.manual_seed(2)
+        logits = torch.randn(8, 1)
+        targets = torch.randint(0, 2, (8, 1)).float()
+        pos_weight = torch.tensor([2.0])
+
+        corrected = NoiseCorrectedBCEWithLogitsLoss(pos_weight=pos_weight)(logits, targets)
+        plain = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)(logits, targets)
+        assert torch.equal(corrected, plain)
+
+    def test_nonzero_rate_diverges_from_plain_bce(self):
+        """Sanity check that the correction actually does something."""
+        torch.manual_seed(3)
+        logits = torch.randn(8, 1)
+        targets = torch.randint(0, 2, (8, 1)).float()
+        rate = torch.full((8, 1), 0.2)
+
+        corrected = NoiseCorrectedBCEWithLogitsLoss()(logits, targets, noise_rate=rate)
+        plain = torch.nn.BCEWithLogitsLoss()(logits, targets)
+        assert not torch.allclose(corrected, plain)
+        assert corrected.item() >= 0
+        assert torch.isfinite(corrected)
+
+    def test_reduces_by_element_count(self):
+        """The whole-batch mean must equal the count-weighted mean over two
+        unequal shards -- the property DDP's gradient averaging over equal
+        shards relies on (``Trainer._weighted_ce_global`` documents the one
+        loss in this codebase where a per-shard mean is *not* the global
+        mean; this loss must not join it).
+        """
+        torch.manual_seed(4)
+        logits = torch.randn(10, 1)
+        targets = torch.randint(0, 2, (10, 1)).float()
+        noise_rate = torch.rand(10, 1) * 0.4  # mixed nonzero rates
+
+        loss_fn = NoiseCorrectedBCEWithLogitsLoss()
+        full = loss_fn(logits, targets, noise_rate=noise_rate)
+
+        shard_a = loss_fn(logits[:3], targets[:3], noise_rate=noise_rate[:3])
+        shard_b = loss_fn(logits[3:], targets[3:], noise_rate=noise_rate[3:])
+        weighted = (shard_a * 3 + shard_b * 7) / 10
+
+        assert torch.allclose(full, weighted, atol=1e-6)
+
+    def test_synthetic_noise_recovers_better_calibration_than_plain_bce(self):
+        """A 1-D logistic regression fit on symmetrically-noised labels, given
+        the true (measured) flip rate, must recover a better-calibrated
+        model than plain BCE trained on the same noisy labels -- the concrete
+        claim behind ``--loss noise_corrected_bce``. Symmetric label noise is
+        a textbook attenuation-bias case (Natarajan et al. 2013; Patrini et
+        al. 2017): plain BCE's population optimum is a flatter, less
+        confident decision boundary than the true one, while the forward
+        correction's population optimum -- with the true rate supplied -- IS
+        the true boundary, because the corrected likelihood is exactly the
+        marginal likelihood of the observed labels under the model.
+        """
+        torch.manual_seed(0)
+        n = 4000
+        true_w, true_b = 3.0, 0.0
+        x = torch.randn(n, 1)
+        true_prob = torch.sigmoid(true_w * x + true_b)
+        true_label = torch.bernoulli(true_prob)
+
+        rho = 0.3
+        flip = torch.bernoulli(torch.full((n, 1), rho)).bool()
+        noisy_label = torch.where(flip, 1.0 - true_label, true_label)
+
+        def fit(*, corrected: bool) -> tuple[float, float]:
+            w = torch.zeros(1, requires_grad=True)
+            b = torch.zeros(1, requires_grad=True)
+            opt = torch.optim.Adam([w, b], lr=0.1)
+            noise_rate = torch.full((n, 1), rho) if corrected else None
+            loss_fn = NoiseCorrectedBCEWithLogitsLoss()
+            for _ in range(300):
+                opt.zero_grad()
+                logits = w * x + b
+                loss = loss_fn(logits, noisy_label, noise_rate=noise_rate)
+                loss.backward()
+                opt.step()
+            return w.item(), b.item()
+
+        w_corrected, b_corrected = fit(corrected=True)
+        w_plain, b_plain = fit(corrected=False)
+
+        # Calibration against the TRUE (clean) probabilities on a fresh
+        # held-out sample from the same generative process.
+        x_test = torch.randn(4000, 1)
+        true_prob_test = torch.sigmoid(true_w * x_test + true_b)
+
+        def brier(w: float, b: float) -> float:
+            pred = torch.sigmoid(w * x_test + b)
+            return torch.mean((pred - true_prob_test) ** 2).item()
+
+        assert brier(w_corrected, b_corrected) < brier(w_plain, b_plain)
+        # The forward-corrected fit should recover the true slope much more
+        # closely than plain BCE, which attenuates it toward 0 under
+        # symmetric noise.
+        assert abs(w_corrected - true_w) < abs(w_plain - true_w)
+
+
+class TestNoiseCorrectedBCETrainer:
+    """Test noise_corrected_bce integration in Trainer."""
+
+    def test_noise_corrected_bce_in_trainer(self, sample_model, sample_dataloader):
+        trainer = Trainer(
+            model=sample_model,
+            model_type="ConvLSTMDwell",
+            train_loader=sample_dataloader,
+            device="cpu",
+            loss_type="noise_corrected_bce",
+        )
+        assert isinstance(trainer.criterion, NoiseCorrectedBCEWithLogitsLoss)
+
+    def test_train_with_noise_corrected_bce_runs(self, sample_model, sample_dataloader):
+        """Runs fine even though ``sample_dataloader``'s batches carry no
+        ``noise_rate`` field -- ``Trainer._batch_noise_rate`` returns None and
+        the loss's own None handling falls back to plain BCE.
+        """
+        trainer = Trainer(
+            model=sample_model,
+            model_type="ConvLSTMDwell",
+            train_loader=sample_dataloader,
+            device="cpu",
+            loss_type="noise_corrected_bce",
+        )
+        loss, acc = trainer.train_epoch()
+        assert loss >= 0
+
+    def test_batch_noise_rate_reaches_the_criterion(self, temp_chunks_file, model_config):
+        """A dataset built with ``label_noise_rates`` puts a ``noise_rate``
+        field in every batch, and the trainer must actually use it rather
+        than silently falling back to plain BCE.
+        """
+        dataset = LeechDataset(
+            chunk_path=temp_chunks_file,
+            model_type="ConvLSTMDwell",
+            signal_len=model_config["signal_len"],
+            kmer_len=model_config["kmer_len"],
+            seq_encoding="base_onehot",
+            label_noise_rates={"unknown": 0.25},
+        )
+        loader = DataLoader(dataset, batch_size=len(dataset), shuffle=False, collate_fn=collate_fn)
+        batch = next(iter(loader))
+        assert "noise_rate" in batch
+        assert torch.allclose(batch["noise_rate"], torch.full_like(batch["noise_rate"], 0.25))
+
+        model = get_model("ConvLSTMDwell", **model_config)
+        trainer = Trainer(
+            model=model,
+            model_type="ConvLSTMDwell",
+            train_loader=loader,
+            device="cpu",
+            loss_type="noise_corrected_bce",
+        )
+        logits, labels, main_loss, _loss, _adv, _cl = trainer._compute_batch_loss(batch)
+
+        expected = NoiseCorrectedBCEWithLogitsLoss()(logits, labels, noise_rate=batch["noise_rate"])
+        assert torch.equal(main_loss, expected)
+
+        # And it must differ from plain BCE on the same batch -- otherwise the
+        # noise_rate plumbing could be silently inert.
+        plain = torch.nn.BCEWithLogitsLoss()(logits, labels)
+        assert not torch.allclose(main_loss, plain)
 
 
 class TestWeightDecay:
@@ -779,6 +1019,32 @@ class TestTrainModelAdvancedParams:
         )
         assert len(history["train_loss"]) == 1
 
+    def test_train_model_noise_corrected_bce(self, temp_chunks_file, tmp_path):
+        """train_model accepts noise_corrected_bce and records the rates,
+        verbatim, in config.json -- predict never reads this back, but a
+        checkpoint that can't be audited for what it trained on is how #230
+        stayed invisible for four releases.
+        """
+        output_dir = tmp_path / "training"
+        history = train_model(
+            train_data_path=temp_chunks_file,
+            val_data_path=temp_chunks_file,
+            model_name="ConvLSTMDwell",
+            output_dir=output_dir,
+            epochs=1,
+            batch_size=2,
+            device="cpu",
+            motif="CCAGGC",
+            loss_type="noise_corrected_bce",
+            label_noise_rates={"unknown": 0.1},
+        )
+        assert len(history["train_loss"]) == 1
+
+        with open(output_dir / "config.json") as f:
+            config = json.load(f)
+        assert config["loss_type"] == "noise_corrected_bce"
+        assert config["label_noise_rates"] == {"unknown": 0.1}
+
     def test_train_model_augmentation(self, temp_chunks_file, tmp_path):
         """Test train_model with signal augmentation."""
         output_dir = tmp_path / "training"
@@ -1001,6 +1267,7 @@ class TestUtilTrainingParams:
             "adversarial_lambda": 0.5,
             "adversarial_anneal_epochs": 3,
             "confound": "flowcell",
+            "label_noise_rates": {"gold": 0.09},
             "cl_lambda": 2.0,
             "checkpoint_metric": "val_f1",
             "signal_mode": "signal_only",
@@ -1041,6 +1308,7 @@ class TestUtilTrainingParams:
             "adversarial_lambda",
             "adversarial_anneal_epochs",
             "confound",
+            "label_noise_rates",
             "cl_lambda",
             "checkpoint_metric",
             "signal_mode",
