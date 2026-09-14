@@ -152,7 +152,7 @@ def _inference_worker(
                 if config.seq_encoding == "signal_kmer":
                     seq_ctx = chunk.get("sequence_with_kmer_context")
                     seq_to_sig = chunk.get("seq_to_sig_map")
-                    if seq_ctx is not None and seq_to_sig is not None:
+                    if seq_ctx is not None and isinstance(seq_to_sig, np.ndarray):
                         pending_seq_ints = sequence_to_int(seq_ctx)
                         pending_seq_to_sig = seq_to_sig
                         enc_seq = None
@@ -565,9 +565,9 @@ def run_inference(
             # the same way). Compiling model alone left the compiled graph
             # unreferenced: every real forward pass stayed eager despite the
             # "torch.compile enabled" log line below (#264).
-            compiled_model = torch.compile(model_wrapper.model, mode="reduce-overhead")  # ty: ignore[invalid-assignment]
-            model_wrapper.model = compiled_model
-            model_wrapper.forward_module = compiled_model
+            compiled_model = torch.compile(model_wrapper.model, mode="reduce-overhead")
+            model_wrapper.model = compiled_model  # ty: ignore[invalid-assignment]
+            model_wrapper.forward_module = compiled_model  # ty: ignore[invalid-assignment]
             logger.info("torch.compile enabled (mode=reduce-overhead)")
         except Exception as e:
             logger.warning(f"torch.compile failed, using eager mode: {e}")

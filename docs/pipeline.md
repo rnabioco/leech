@@ -73,6 +73,11 @@ models_to_compare:
   - "ResNetDwell"
 ```
 
+`ConvOnly` is deprecated (`leech.models.model_tier`): it has zero references
+in escapepod-models and a known ONNX-export defect with no fix planned, so
+`get_model("ConvOnly", ...)` raises a `DeprecationWarning`. Drop it from
+`models_to_compare` rather than silencing the warning.
+
 ### Grid search
 
 `leech model optimize` searches signal context windows and dwell offset. It does

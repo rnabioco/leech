@@ -124,7 +124,7 @@ wrong without erroring.
 | Group | Commands | Purpose |
 |-------|----------|---------|
 | `leech data` | `prepare`, `merge` | Extract features, merge and split datasets |
-| `leech model` | `train`, `train-crf`, `optimize`, `bundle`, `bundle-info`, `calibrate`, `export` | Train, tune, calibrate, and package models |
+| `leech model` | `train`, `train-crf`, `optimize`, `benchmark`, `bundle`, `bundle-info`, `calibrate`, `export`, `release`, `list`, `fetch` | Train, tune, calibrate, package, and publish models |
 | `leech eval` | `test` | Evaluate models |
 | `leech predict` | | Run inference (single model or bundle) |
 
@@ -177,10 +177,14 @@ Note the emission rule: a CRF with `state_len` cannot emit the first
 
 ## Training features
 
-- **Loss functions**: BCE, focal loss (for class imbalance), and cross-entropy
+- **Loss functions**: BCE, focal loss (with an optional asymmetric negative
+  gamma), cross-entropy, and a forward-corrected BCE for known, per-group
+  label noise (`noise_corrected_bce`)
 - **Regularization**: weight decay, gradient clipping, dropout
 - **LR scheduling**: reduce-on-plateau, cosine annealing with warmup
-- **Data augmentation**: mixup (signal jitter + random scaling)
+- **Data augmentation**: signal jitter + random scaling, cross-layer time
+  masking/shift/feature noise, and time-stretch (signal + base-to-signal map +
+  dwell features resampled together for speed invariance)
 - **Mixed precision**: FP16 training on CUDA; TF32 matmul on Ampere+
 - **Performance**: `torch.compile` support, Rust-accelerated signal statistics (217x)
 - **Class balancing**: automatic class weight computation

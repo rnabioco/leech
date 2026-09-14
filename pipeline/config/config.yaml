@@ -247,14 +247,19 @@ compare_models: true
 #   - ConvLSTMBase: Baseline (signal + sequence only)
 #   - ConvLSTMDwell: Full model with dwell features
 #   - TransformerDwell: Transformer with self-attention (Priority 1)
-#   - ConvOnly: Pure CNN baseline (Priority 1)
+#   - ConvOnly: Pure CNN baseline (Priority 1) -- DEPRECATED, see below
 #   - TCNDwell: Temporal Convolutional Network (Priority 2)
 #   - ResNetDwell: Residual Network (Priority 2)
+#
+# ConvOnly is deprecated (leech.models.model_tier): zero references in
+# escapepod-models and a known ONNX-export defect with no fix planned.
+# get_model("ConvOnly", ...) raises DeprecationWarning; drop it from the list
+# below rather than silencing the warning.
 models_to_compare:
   - "ConvLSTMBase"       # Baseline without dwell
   - "ConvLSTMDwell"      # Original with dwell
   - "TransformerDwell"   # Priority 1
-  - "ConvOnly"           # Priority 1
+  - "ConvOnly"           # Priority 1 -- deprecated
   - "TCNDwell"           # Priority 2
   - "ResNetDwell"        # Priority 2
 

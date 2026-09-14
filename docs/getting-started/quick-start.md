@@ -90,7 +90,8 @@ uv run leech model train \
 
 The training process will save:
 
-- `model_best.pt`: Best model checkpoint (by validation loss)
+- `model_best.pt`: Best model checkpoint, by `--checkpoint-metric` (default
+  `auto`: val_auc for binary tasks, val_f1 for multiclass)
 - `model_last.pt`: Latest checkpoint
 - `metrics.json`: Training metrics over time
 

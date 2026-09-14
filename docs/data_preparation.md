@@ -80,8 +80,8 @@ last one -- a 12-hour cluster allocation was once lost to a backend regression
 that showed no other symptom (issue #176).
 
 Some options force the Python backend because the Rust pipeline cannot honor
-them (`--focus-map`, non-median-MAD normalization, softclip signal recovery).
-When that happens the log says so explicitly:
+them (`--focus-map`, non-median-MAD normalization, softclip signal recovery,
+`--mask-seq-side`). When that happens the log says so explicitly:
 
 ```text
 Using Python workers instead of the Rust pipeline: focus_map is set (...)
@@ -136,6 +136,20 @@ leech data prepare \
 Use `--skip-motif-indels` to discard reads with insertions or deletions in the
 motif region, where coordinate mapping is unreliable.
 
+Every chunk also records `junction_indel` (the CIGAR-measured indel length at
+the motif junction; `0` means exact) and `junction_mapped` (whether the
+junction mapped to the reference at all) automatically -- no flag needed to
+produce them. Downstream:
+
+- `leech model train --sample-weight-field junction_indel` over-samples
+  disrupted-junction chunks instead of discarding them (an alternative to
+  `--skip-motif-indels`, which drops them at prepare time).
+- `leech predict --abstain-on-junction-indel` applies `--min-margin` only to
+  reads whose junction is disrupted, leaving reads with an intact junction to
+  bypass the margin check.
+- `leech eval test` reports metrics split by `junction_indel == 0` (exact) vs.
+  `!= 0` (disrupted) automatically whenever the test corpus carries the field.
+
 ### Basecalled search
 
 Searches directly in the basecalled sequence. Use when a reference is
@@ -167,6 +181,58 @@ the focus base:
 - `center` (default) -- midpoint of the focus base's signal region
 - `start` -- first signal sample of the focus base
 - `end` -- last signal sample (useful for 3' modifications like aminoacylation)
+
+## Base-defined signal window
+
+`--signal-context` cuts a fixed number of raw *samples* on each side of the
+focus base. Because translocation speed varies read to read, that window
+covers a different number of *bases* on a fast read than a slow one -- for the
+charging assay, a fast read's fixed-sample window can miss a base at +24 (say,
+the start of the LDX barcode) that a slow read's identical window reaches.
+
+`--signal-context-bases L R` cuts the window at the base-to-signal map
+positions of offsets `-L` and `+R` around the focus base instead, so every
+read reads the same *bases* of context regardless of speed. The resolved,
+base-defined window is then padded (zero-fill) or centre-cropped to a fixed
+`--signal-len` (default: a conservative slow-read rate of 36 samples/base, so
+a typical read pads rather than crops):
+
+```bash
+leech data prepare --signal-context-bases 8 24 --signal-len 2000 ...
+```
+
+Mutually exclusive with `--signal-context`. Implemented in both prepare
+backends and held to identical output by `tests/test_backend_parity.py`; the
+Rust *inference* pipeline has no base-defined window support, so `leech
+predict` always runs a model trained this way through the Python path (with a
+warning under `--backend auto`, an error under `--backend rust`). The resolved
+window is logged and recorded in `prepare_config.json`.
+
+## Masking sequence-branch bases
+
+A feature+signal model's sequence branch (`sequence` / `sequence_with_kmer_context`)
+begins with bases well upstream of the focus base -- for a 3'-end motif like
+tRNA's CCA, those are acceptor-stem bases that identify the tRNA body outright,
+leaking information the model isn't supposed to have.
+
+`--mask-seq-side [left|right]` blanks (`N`) sequence-branch characters
+strictly to that side (5'/left or 3'/right) of the focus base, in both the
+`base_onehot` k-mer window and the `signal_kmer` context; the focus base's own
+character is never masked:
+
+```bash
+leech data prepare --mask-seq-side left --motif CCAGGC --motif-offset 2 ...
+```
+
+Masking is baked into the corpus at prepare time, recorded in
+`prepare_config.json`, carried into the trained model's `config.json` by
+`leech model train`, and reapplied automatically to live chunks by `leech
+predict` -- no flag needed at train or predict time. It forces the Python
+extraction path at both prepare and predict time (not implemented in Rust; see
+[Backends](#backends-and-checking-which-one-you-got) above). `leech data
+merge` warns if the corpora being merged disagree on `mask_seq_side`, since
+mixing a masked corpus with an unmasked one silently reintroduces the leak
+this option exists to close.
 
 ## Multi-sample datasets
 

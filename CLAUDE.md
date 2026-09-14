@@ -949,7 +949,8 @@ src/leech/           # Main package source
 │   ├── optimize.py  # Grid search optimization handler
 │   ├── predict.py   # Inference/predict handler
 │   ├── benchmark.py # Training-step benchmark handler
-│   └── release_model.py  # model release/list/fetch handlers
+│   ├── release_model.py  # model release/list/fetch handlers
+│   └── train_crf.py # CTC-CRF train-crf handler
 ├── confounds.py     # Confound mappings for adversarial training
 ├── io/              # Input/output operations
 │   ├── bam_reader.py    # BAM file reading
@@ -964,7 +965,8 @@ src/leech/           # Main package source
 │   └── encoding.py      # Sequence encoding
 ├── chunking/        # Training chunk extraction
 │   ├── extractor.py     # Chunk extraction logic
-│   └── serialization.py # Save/load chunks
+│   ├── serialization.py # Save/load chunks
+│   └── table.py         # Per-chunk metadata as columns (ChunkTable)
 ├── splitting/       # Data splitting
 │   └── splitter.py  # Train/val/test split
 ├── release/         # `leech model release/list/fetch` (GitHub Releases)
@@ -978,6 +980,11 @@ src/leech/           # Main package source
 │   ├── _triton.py       # Optional CUDA lattice kernels
 │   ├── decode.py        # Two-pass Viterbi -> sequences
 │   ├── config.py        # Architecture TOML reader
+│   ├── manifest.py      # Per-read manifest: corpus vocabulary <-> signal contract
+│   ├── corpus.py        # plan_corpus/build_corpus: which reads/split, then signal
+│   ├── training.py      # CrfTrainer: train a CTC-CRF model on a corpus
+│   ├── evaluate.py      # crf.evaluate: decode, edit-distance match, per-group recall
+│   ├── export.py        # ONNX export of the CRF encoder (decode stays off-graph)
 │   ├── _flags.py        # LEECH_* / ESCAPEPOD_* switches
 │   └── configs/         # Packaged crf_ctc.toml (the shipped geometry)
 ├── features.py      # MoveTable, dwell times, signal levels, normalization
@@ -993,6 +1000,8 @@ src/leech/           # Main package source
 ├── bundling.py      # Bundle models into one versioned .pt
 ├── model_loading.py # Checkpoint loading, seeding
 ├── model_export.py  # TorchScript / torch.export packaging
+├── onnx_export.py   # ONNX export (dynamo, opset 18) shared by classifiers and CRF
+├── seeding.py       # setup_random_seed, torch-free at import time
 ├── metrics.py       # Metric computation, printing, serialization
 ├── profiling.py     # Per-phase step timing for `model benchmark`
 ├── losses.py        # Loss function implementations (BCE, focal, cross-entropy)
@@ -1037,6 +1046,8 @@ tests/               # pytest tests
 - **Signal normalization**: Median-MAD (default) is robust to outliers; z-score, quantile, and pa_scaling (physics-aware) methods available
 - **Signal map refinement**: Optional kmer-level-table-based refinement of base boundaries (`--refine-signal-map`, `--kmer-table`)
 - **Signal orientation**: RNA signals are reversed by default (POD5 stores 3'→5', basecaller expects 5'→3'); use `--no-reverse-signal` for DNA
+- **Base-defined signal window**: `--signal-context-bases L R` cuts the window at base-to-signal map offsets rather than a fixed sample count, so reads at different translocation speeds cover the same bases of context; padded/centre-cropped to `--signal-len`. Mutually exclusive with `--signal-context`; Rust inference has no base-defined window, so predict always runs such a model through Python
+- **Sequence masking**: `--mask-seq-side left|right` blanks sequence-branch characters strictly on that side of the focus base (never the focus base itself), so a feature+signal model can't read tRNA-body identity through bases upstream of a 3'-end motif. Python-only extraction; carried into model config and reapplied automatically at predict time
 - **Sequence encoding**: `base_onehot` (default 4-channel) or `signal_kmer` (36-dimensional signal-level kmers)
 - **Feature concatenation**: Models expect 3 inputs: (signal, sequence, features) where features combines dwell and signal statistics
 
@@ -1064,8 +1075,15 @@ Training chunks are dictionaries:
     'read_id': str,
     'base_idx': int,
     'source_group': str,       # Source group label (e.g., amino acid identity)
+    'junction_indel': int,     # CIGAR-measured indel at the motif junction (0 = exact); issue #282
+    'junction_mapped': bool,   # Whether the motif junction mapped to the reference at all
 }
 ```
+`junction_indel`/`junction_mapped` are always populated (no-motif/all-bases
+mode carries the `MotifMatch` defaults `0`/`False`); serialized as the npz
+columns `junction_indels`/`junction_mappeds` (`chunking/table.py`). `sequence`
+and `sequence_with_kmer_context` have `N` in place of the real base wherever
+`--mask-seq-side` blanked it (never at `base_idx` itself).
 
 ### Snakemake Integration
 The Snakemake workflow is included in this repository under `pipeline/`. It provides production-ready pipelines for:
@@ -1104,7 +1122,7 @@ The workflow is designed to integrate with the leech CLI commands and supports b
 
 ## Current Status
 
-The codebase is feature-complete (v0.11.1):
+The codebase is feature-complete (v0.12.0):
 - ✓ Feature extraction with dwell offset tuning and signal map refinement
 - ✓ 29 model architectures: ConvLSTM (Base/Dwell × BN/GN/LN/Attn), TCN (Dwell/DwellGN/DwellLN/DwellResidual/DwellResidualGN/DwellResidualLN/DwellResidualMotor/DwellResidualDwellAttn/DwellSplitResidual/DwellSplitResidualLN), Transformer (Dwell/DwellResidual), ResNet, ConvOnly, SignalCNN
 - ✓ Config-driven model layer: bonito-style layer registry (`models/nn.py`) + TOML architecture declarations (`models/configs/`)
@@ -1164,6 +1182,35 @@ The codebase is feature-complete (v0.11.1):
 - ✓ Exported graphs load in a non-PyTorch runtime: matmul-based
   `AdaptiveAvgPool1d` (no rank-8 `GatherND`) and `strip_value_info` on every
   export — neither is visible to `verify_onnx`
+- ✓ `--signal-context-bases L R` for a base-defined (rather than
+  sample-defined) signal window, resolved and padded/centre-cropped to
+  `--signal-len`; `--mask-seq-side left|right` to blank sequence-branch
+  identity on one side of the focus base. Both are Python-only at the
+  backend boundaries where Rust doesn't implement them (predict-time
+  inference for the former, both prepare and predict for the latter)
+- ✓ `junction_indel`/`junction_mapped` recorded on every chunk (both prepare
+  backends); `--sample-weight-field` generalizes `--balance-groups` to any
+  chunk metadata field, `leech predict --abstain-on-junction-indel` applies
+  `--min-margin` only to disrupted-junction reads, and `leech eval test`
+  reports junction-stratified metrics automatically when the field is present
+- ✓ `--loss noise_corrected_bce` with `--label-noise-rate group=rate[,...]`
+  for known, per-`source_group` label noise (Patrini et al. forward
+  correction); `--focal-neg-gamma` for an asymmetric focal loss
+- ✓ `--checkpoint-metric`/`model optimize --selection-metric` accept
+  `tpr_at_fpr:<f>` and `callable_at_precision:<p>` alongside
+  `auto`/`val_acc`/`val_f1`/`val_auc`, for selecting a checkpoint in a
+  low-FPR operating regime (binary tasks only)
+- ✓ `--augment-time-stretch MIN,MAX` resamples each chunk's signal window by a
+  per-sample factor for speed invariance, scaling the base-to-signal map and
+  dwell-derived feature channels to match; `--strict-window` raises (instead
+  of the default one-warning-per-dataset) when a requested crop window
+  zero-pads past the stored chunk
+- ✓ Optional per-channel feature standardization (`--standardize-features`)
+  and symmetric (non-causal) TCN padding (`--model-config '{"causal": false}'`)
+  for training stability
+- ✓ `ReadInfo` accepts either `CL` or lowercase `cl` for the charging-level
+  BAM tag (preferring `CL` when both are present), so a renamed tag no longer
+  silently zeroes `--cl-regression` gradients
 
 All core functionality is implemented and ready for use.
 

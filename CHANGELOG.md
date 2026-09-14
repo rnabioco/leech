@@ -6,16 +6,357 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 New entries are no longer added to this file by hand — see
-[`changelog.d/README.md`](changelog.d/README.md). The `[Unreleased]` section
-below holds entries written before that migration, for changes merged but not
-yet released; fold it into the next dated section (`towncrier build` inserts
-above it, at the marker) rather than deleting it.
+[`changelog.d/README.md`](changelog.d/README.md).
 
 <!-- towncrier release notes start -->
 
-## [Unreleased]
+## [0.12.0] - 2026-09-13
+
+### Added
+
+- **`LeechDataset` warns when a signal crop reaches outside the stored chunk.**
+  `left_context`/`right_context` crop `[focus - left_context, focus +
+  right_context)`; when a corpus was prepared with a narrower
+  `signal_context` than that window, the shortfall was zero-padded with
+  nothing logged. In `2026-aa-trna-models`, production corpora stored
+  `signal_context [225, 225]` and trained with `right_context 300`, so the
+  last 75 samples of every chunk were zero for two production retrains before
+  anyone noticed. `LeechDataset` now logs one warning per dataset the first
+  time this happens, naming the requested window, the stored window, and the
+  number of padded samples; `strict_window` (`leech model train
+  --strict-window`) raises instead. The same silent zero-pad also existed in
+  the plainer symmetric case (a `--signal-len` wider than the stored chunk with
+  no `left_context`/`right_context` set at all), which now warns/raises through
+  the same path. Detection lives in one shared `_warn_or_raise_padding` used by
+  the asymmetric (`_note_crop_padding`) and symmetric (`_note_plain_pad`)
+  cases, called from both the row (`_prepare_signal`) and block
+  (`_prepare_signals_block`) fill paths, so pre-loaded and streamed corpora are
+  both covered. `strict_window` is also recorded in the saved `config.json` so
+  a checkpoint's guard setting can be audited later. ((#255))
+- **`leech data prepare --mask-seq-left-of-focus`/`--mask-seq-right-of-focus`
+  blanks sequence-branch bases on one side of the focus base.** With
+  `seq_encoding: signal_kmer` (the default), `sequence_with_kmer_context`
+  begins with acceptor-stem bases 5' of a 3'-end motif and identifies a tRNA's
+  body outright, so every model trained so far had tRNA identity leaked to it
+  through the sequence branch regardless of what the signal/feature branches
+  learned. The new flags write `N` over sequence-branch characters strictly to
+  one side of the focus base — in both `sequence` (`base_onehot`) and
+  `sequence_with_kmer_context` (`signal_kmer`) — reusing the existing
+  "non-ACGT maps to -1 and is skipped" convention (`sequence_to_int`,
+  `encode_signal_kmer`) rather than a new mechanism; the focus base's own
+  character is never masked. Masking is baked into the corpus at `data prepare`
+  time (`ChunkConfig.mask_seq_side`, applied once in `LeechRead.get_chunk` from
+  the exact local geometry, not reverse-engineered from stored arrays later),
+  recorded in `prepare_config.json`, carried into the trained model's
+  `config.json` by `model train`, and auto-applied by `predict` to live chunks
+  so inference sees the same masked geometry the model was trained on. Not
+  implemented in the Rust extraction path — `data prepare` falls back to the
+  Python workers and `predict --backend rust` raises; `--backend auto` falls
+  back with a warning, matching the existing `recover_softclip_signal` gating.
+  No `leech model train` flag: the mask is a property of the corpus, not a
+  training-time choice. Fixes #256. ((#256))
+- **`leech data prepare --signal-context-bases L,R`: a base-defined signal
+  window.** Mutually exclusive with `--signal-context`. Instead of a fixed
+  number of samples on each side of the focus base, the window is cut at the
+  base-to-signal map positions of offsets `-L` and `+R` (inclusive), so a fast
+  and a slow read cover the same *bases* of context rather than the same
+  *samples* — a sample-defined window can't reach a base at `+24` on a slow
+  read (~36 samples/base) without also reaching `+25` on a fast one
+  (~24 samples/base), which for the charging assay is where the LDX barcode
+  starts.
+
+  The resolved sample interval is padded (right-aligned zero-fill, the
+  conservative default) or centre-cropped to a fixed `--signal-len`, which
+  defaults to `(L + R + 1) * 36` samples/base (sized off a conservative
+  slow-read rate so a typical read pads rather than crops) and can be
+  overridden explicitly. A focus base near either edge of a read gets a
+  narrower window rather than a dropped chunk, matching the one existing drop
+  rule (a focus base with no signal boundaries at all).
+
+  Implemented in both `data prepare` backends (Python `LeechRead.get_chunk` and
+  the Rust training pipeline), held to identical output by
+  `tests/test_backend_parity.py`. The resolved window is logged, recorded in
+  `prepare_config.json`, and carried into the trained model's `config.json` so
+  `predict` re-derives the same window and the ONNX contract sidecar states it
+  (the Rust predict pipeline does not yet implement it and falls back to the
+  Python predict path, as it already does for a few other options only the
+  training-side Rust pipeline supports). ((#278))
+- **`--loss noise_corrected_bce`: a label-noise-aware loss for enrichments with a known, per-group impurity rate.** `losses.NoiseCorrectedBCEWithLogitsLoss` applies a forward correction (Patrini et al. 2017) using a per-sample label-flip probability looked up from each chunk's `source_group` via `--label-noise-rate group=rate[,group=rate,...]` (e.g. `--label-noise-rate gold=0.09,enzymatic=0.17`); groups not named get rate 0 and the loss reduces to plain BCE exactly. Rates are measured upstream (leech does not estimate them) and are recorded verbatim in `config.json`; `predict` is unaffected. Reduces by element count like the other losses, so it decomposes correctly under `--gpus N`. ((#279))
+- **Checkpoint selection and loss shaping for the low-FPR operating regime.**
+  `--checkpoint-metric` (and grid search's `--selection-metric`) now also
+  accept `tpr_at_fpr:<f>` (TPR at a fixed FPR) and `callable_at_precision:<p>`
+  (fraction of validation reads callable at a precision floor) alongside the
+  existing `auto`/`val_acc`/`val_f1`/`val_auc` -- binary tasks only, computed
+  once on the gathered predictions under `--gpus N` like the others, and
+  reported back in a run's `summary.json`/`eval test` output when selected, so
+  two runs using the same threshold can be compared after the fact.
+  `leech.metrics.tpr_at_fpr`/`callable_at_precision` implement the two metrics
+  directly from `(labels, probs)`. `FocalBCEWithLogitsLoss` gains an optional
+  `--focal-neg-gamma`, making the focal loss asymmetric: a higher gamma on
+  negatives than positives down-weights easy negatives harder, concentrating
+  gradient on the hard negatives that set FPR at a given threshold. Leaving it
+  unset (or set equal to `--focal-gamma`) reproduces the current loss
+  bit-for-bit. ((#280))
+- **Time-stretch augmentation for speed invariance.** `--augment-time-stretch MIN,MAX` (`leech model train`/`optimize`) resamples each training chunk's signal window by a per-sample factor drawn uniformly from `[MIN, MAX]`, about the focus position, cropped/padded back to `signal_len`. The CSR base-to-signal map is scaled by the same factor so `signal_kmer` stays aligned, and the `dwell`/`dwell_mean` feature channels scale with it (`dwell_log` shifts by `log(factor)`; `dwell_ratio`, `dwell_std` and level channels are unchanged). Implemented on the batched `LeechDataset.__getitems__` fetch path (one `(B,)` factor draw per batch, numpy gather rather than a torch `index_select`); off by default, recorded in `config.json`, and never applied to validation. Targets the ~7-point sensitivity gap the charging model shows on translocation speeds it never saw during training. ((#281))
+- **A per-chunk `junction_indel`/`junction_mapped` field, plus a predict-time
+  abstention rule that uses it.** `data prepare` now records, for every chunk
+  whose motif was found through a `ReferenceMotifSearcher`, the CIGAR-measured
+  disruption at the motif's mapped span (`junction_indel = mapped_len -
+  len(motif)`, 0 when exact) and whether that measurement was possible at all
+  (`junction_mapped`) — the value the motif searcher already computed to decide
+  whether to keep or reject a motif, previously discarded once that decision was
+  made. Both prepare backends emit it identically, since the measurement is made
+  once in Python and both backends consume the same motif search result.
+  `--sample-weight-field FIELD` generalizes `--balance-groups`'s inverse-
+  frequency sampling to any chunk metadata field (`--balance-groups` is now a
+  named instance of the same mechanism), so `--sample-weight-field
+  junction_indel` over-samples chunks whose motif junction is disrupted.
+  `leech predict --abstain-on-junction-indel` enforces `--min-margin` only on
+  calls whose junction is disrupted, writing `unc`/`BELOW_THRESHOLD_LABEL` for
+  those below threshold while an intact junction bypasses the margin check
+  entirely; `junction_indel`/`junction_mapped` are always recorded (BAM `ji`/`jm`
+  tags, or `junction_indel`/`junction_mapped` TSV columns) so the rule can be
+  re-applied offline. `eval test` reports accuracy/F1 (and, for binary models,
+  the full metric set) stratified by `junction_indel == 0` vs `!= 0` whenever the
+  test corpus carries the field. The field is not fed to any model as an input
+  channel — it is a sampling/abstention signal only. ((#282))
+- **Symmetric (non-causal) TCN padding and recorded per-channel feature standardisation, both opt-in.** `TemporalBlock`/`TCN` gain a `causal: bool = true` param (`components.py`); `causal = false` splits the same total padding evenly across both sides instead of putting it all on the left, doubling the receptive field on either side of a position for the fixed-window classifiers this project trains (parameter shapes are unchanged, so a checkpoint loads either way, but the trained values aren't a meaningful initialization for the other mode). It reaches every TCN-family TOML config (`tcn_dwell*.toml`) as a `[params]` entry, settable via `--model-config` or a future `[[variants]]` pin, same as `norm_type`.
+
+  `--standardize-features` computes per-channel feature mean/std once over the training corpus (`LeechDataset.__init__`, reusing the tensor the `feature_noise` augmentation already stacks) and freezes them into a new `AffineStandardize` buffer-only layer prepended to the feature branch's first conv — every TOML config with a `feature_branch` node (the ConvLSTM and TCN families) now accepts `feature_mean`/`feature_std` params. `config.json` records both fields, so `predict`, `eval`, bundles and ONNX export all reconstruct the same frozen transform with no dataset-side step (`model_loading._instantiate_model` already rebuilds a model purely from `config.json` + its constructor signature). Off by default in both cases; no existing default or checkpoint is affected. ((#283))
+
+### Changed
+
+- **The Rust chunk-extraction pipeline now delegates to `escapepod_signal::chunk`
+  instead of a local copy.** `rust/src/inference_pipeline/{processing,features,
+  features_stats*,numeric,refinement,types}.rs` (~850 lines duplicating
+  `escapepod_signal::chunk::{process_read,read_rows,cut_chunk}` and its
+  supporting per-read normalization, anchoring, refinement, per-base statistics
+  and sequence encoding) are gone; `inference.rs` and `training.rs` are now thin
+  adapters that call the upstream pipeline once per read and once per focus
+  position. `escapepod_signal::chunk::signal_kmer_inputs` (now `pub`, v0.26.0)
+  replaces leech's own copy for the chunk-local `seq_to_sig_map`/
+  `sequence_with_kmer_context` training always records. No array values change
+  — `tests/test_backend_parity.py`, `tests/test_rust_python_parity.py`,
+  `tests/test_rust_refinement_parity.py` and `tests/test_parallel_prep.py` all
+  pass unchanged.
+
+  (*`features_stats.rs` itself stays — it serves the standalone
+  `compute_signal_stats` pyfunction, a separate consumer from this port.) ((#258))
+- **`signal_kmer` sequence encoding is batched once per DataLoader batch,
+  instead of once per chunk.** `LeechDataset.__getitems__`, and both predict
+  worker paths (`_inference_worker`, `_extract_one_read` in
+  `inference/single.py`), now call the new Rust `encode_signal_kmer_batch`
+  (rayon-parallel, one pyo3 call and one allocation for the whole batch) rather
+  than looping the single-row `encode_signal_kmer` binding — the structural
+  reason `eval test` measured input-bound. `LeechDataset` also stores
+  `_seq_to_sig_tensor` as int32 instead of int64, halving its resident memory
+  on a multi-million-chunk corpus (values are always in `[0, signal_len]`).
+  Every row of the batched output is bit-identical to the single-row encoding
+  (`tests/test_signal_kmer.py::TestEncodeSignalKmerBatch`). `inference/bundle.py`'s
+  mega-batch predict path still encodes per-chunk — its per-read loop extracts
+  one chunk per read rather than the multi-chunk-per-read pattern this change
+  targets, and batching it would substantially overlap with #268's planned
+  rewrite of that same loop; left there as a known, deliberate gap. ((#260))
+- **Training recipe fields are now backed by one `TrainConfig` dataclass.** `train_model` and `Trainer` accept an optional `cfg: TrainConfig` (grouped into `OptimConfig`, `SchedulerConfig`, `AugmentConfig`, `AuxHeadConfig`); when omitted, one is built from the existing individual keyword arguments so every current caller keeps working unchanged. `handle_train` now builds `cfg` once instead of re-listing ~35 options. `config.json`'s contents and every default are unchanged. ((#270))
+- **Training hot-path fixes, each measured with `leech model benchmark`
+  (issue #272):**
+
+  - Batch tensor H2D copies are async: `ModelInferenceWrapper.forward_batch`
+    and the label/confound/cl-target transfers in `training.py` pass
+    `non_blocking=True` (both loaders already set `pin_memory=True`, so the
+    previous blocking copy paid a stream sync for nothing).
+  - `sequence_to_int(seq_ctx).astype(np.int8)` copied an array that is already
+    int8 (`_BASE_LOOKUP`'s own dtype); now `copy=False`. (`_seq_to_sig_tensor`'s
+    own int64->int32 move landed with #260, which touches the same tensor.)
+  - `num_features`/`signal_in_channels` no longer draw a full batch from the
+    train loader just to read `.shape` -- both come straight from
+    `LeechDataset`'s own already-computed state. Drawing a batch spawned
+    persistent DataLoader workers and, under `WeightedRandomSampler`
+    (`--oversample-minority`), one draw from the multinomial -- a 6.7M-way
+    draw on the production corpus, purely to inspect a shape.
+  - `torch.compile(model)` now passes `dynamic=False`. The validation loader
+    has no `drop_last` (dropping validation rows would corrupt every metric),
+    so its smaller tail batch used to mark the batch dimension dynamic from
+    epoch 1 on -- and every *training* step from epoch 2 on then ran the
+    slower dynamic-shape graph, despite training's own batches all being one
+    size. `dynamic=False` compiles every shape it sees statically instead;
+    verified on a GPU node that it compiles and runs correctly across a
+    training-sized batch, a smaller batch, and back.
+  - `AdaptiveAvgPool1d` caches its `[L_in, L_out]` segment-mean matrix per
+    `(length, output_size, dtype, device)` in eager mode instead of rebuilding
+    and re-copying it to the device every forward call. The cache is bypassed
+    under `torch.compiler.is_compiling()` (covers both `torch.compile` and
+    `torch.export`, per its own documented contract) so nothing traced under
+    `FakeTensorMode` is ever written to or read from it -- the exact hazard
+    the class's existing numpy-only cache already guards against for the
+    weights themselves. GPU benchmark: 53.6 us/call (uncached) -> 27.8 us/call
+    (cached), 1.9x.
+
+  ((#272))
+- **Model registry: `requires_features`/`wide_features`/vmap-compatibility are derived, not hardcoded.** `ModelInferenceWrapper.FEATURE_MODELS` and `WIDE_FEATURE_MODELS`, and `bundling._VMAP_INCOMPATIBLE_ARCHITECTURES`, were hand-maintained name sets that a new architecture had to be added to by hand or it silently trained as a two-input model or bundled as vmap-compatible when it was not. `leech.models.requires_features(name)` and `wide_features(name)` now read this structurally — from the TOML graph's resolved nodes (or a hand-written class's `forward` signature) and from a `wide_features` config flag respectively — and `leech.models.is_vmap_compatible(model)` checks the instantiated module for `nn.LSTM`/`nn.BatchNorm1d` directly. Every registered name's derived value was verified to match the old hardcoded sets exactly.
+
+  Every registry name now also carries a tier (`leech.models.model_tier`): production (`TCNDwellResidual`, `TCNDwellResidualLN`, `ConvLSTMDwell`, `ConvLSTMBase`), reference (`ConvLSTMRemora`, `ConvLSTMRemoraBase`), deprecated (`ConvOnly`), experimental (everything else). `docs/reference/cli.md`'s architecture table now lists production and experimental names only, including four TCN motor/dwell-attention variants and `SignalCNN` it had dropped.
+
+  `dwell_margin`, declared in every TOML `[params]` and hand-written `__init__` but read by no layer, is documented as accepted for constructor-signature/checkpoint compatibility rather than left to look load-bearing; the dead `self.dwell_margin` attribute write is removed from the hand-written model classes (`self.signal_len` stays — external code reads it). `predict_proba`'s sigmoid-or-softmax logic (three copies) is now one `logits_to_positive_prob`, also used by `RemoraModelWrapper`. ((#274))
+- **`data prepare` uses one dispatcher at every `--workers` value, including 1.**
+  The Python `mp.Pool` path now resolves the motif searcher and `PrepareConfig`
+  once per worker process (`mp.Pool(initializer=...)`) instead of once per
+  batch, and the read-level train/val/test split goes through the same
+  vectorised assignment `_merge_arrays_by_split` already used rather than
+  building one stand-in dict per chunk. `LeechRead.get_chunk` slices its
+  per-base feature rows as one `(F, num_bases)` matrix instead of looping over
+  each channel, and the redundant `extract_levels`/normalization-diagnostics
+  calls inside `build_leech_read` are computed once per read instead of three
+  times. ((#275))
+- **escapepod-signal Rust pin bumped to v0.26.0.** Adds
+  `seq_encoding::encode_signal_kmer_batch`/`_into` and makes
+  `chunk::signal_kmer_inputs` `pub` (escapepod-rs#380), both needed by the
+  upcoming Rust chunk-pipeline port and batched `signal_kmer` encoding work.
+  Purely additive on the upstream side — no parity change. The PyPI `escapepod`
+  floor stays at `>=0.25.0` deliberately: the matching PyPI release isn't
+  published yet, so bumping it now would require a version that doesn't exist.
+  `.github/workflows/escapepod-sync.yml` will open the matching bump once it
+  is. ((#293))
+- **CI now fails fast on a hung test run instead of burning an hour of compute.** `pytest-timeout` caps every test at 120s, using the `thread` method rather than the platform-default `signal` one — a watchdog thread dumps every stack and force-exits the process, which also catches a hang stuck in a C-level lock that a `SIGALRM` can't interrupt. `.github/workflows/ci.yml`'s test job additionally carries a 20-minute job-level `timeout-minutes` backstop for hangs outside pytest's control (test collection, the pre-test Rust build). Prompted by PR #308's "Run tests" job hanging for ~55 minutes with nothing to stop it until a human noticed and cancelled it. ((#309))
+
+- **`eval test` and `predict` now share one precision policy.** `eval test`
+  no longer autocasts unconditionally on CUDA; it takes the same
+  `--mixed-precision/--no-mixed-precision` flag as `model train`, off by
+  default to match `predict` (which never autocasts). **This flips the
+  default for any existing pipeline invoking `eval test --device cuda`
+  without the new flag** — previously always autocast on GPU, now eager
+  fp32 — so `evaluate_model`'s returned/saved metrics now record a
+  `mixed_precision` field to make the regime that produced a given
+  `metrics.json` auditable after the fact. `eval test` also gains
+  `--no-compile` and reuses `predict`'s torch.compile size threshold
+  (PR #253) — and no longer invokes torch.compile on CPU at all, where it
+  previously compiled unconditionally, `mode=None` included. (#264)
+- `constants.DEFAULT_REFINE_HALF_BANDWIDTH` was `300`; the real default (`5`)
+  was hardcoded as a literal fallback in seven places across
+  `inference/single.py`, `inference/bundle.py`, `inference/helpers.py` and
+  `training.py`, while `configs.SignalConfig` already had the correct
+  default. The constant is now `5` and is the single place all eight sites
+  read it from. `DEFAULT_LOSS_TYPE`'s comment now lists `cross_entropy`
+  alongside `bce`/`focal`, matching `losses.py`. (#277)
+- `leech model export`'s summary always printed "TorchScript export
+  complete!", including for `--format onnx` and the default `torch.export`
+  path. It now names the format actually written. (#277)
+- Rust: `TrainingChunkResult.kmer_len` was computed and stored but never read
+  by the PyO3 conversion loop that builds the returned chunk dicts; removed
+  along with the `#[allow(dead_code)]` that was hiding it. (#277)
+
+- **Rust batch extraction no longer re-marshals the k-mer refinement table or
+  move tables on every call.** `extract_training_chunks` /
+  `extract_inference_chunks` / `extract_chunks_from_preloaded` used to convert
+  the 262,144-entry 9-mer level table from a Python `dict` to a Rust
+  `HashMap<String, f64>` on *every batch call*, under the GIL and before
+  `py.detach` — measured at 51.8ms min / 71.7ms median per call (0.0ms without
+  the table), serializing the `ThreadPoolExecutor` workers `_iter_rust_batches`
+  exists to overlap. Move tables crossed as `list[int]` via `.tolist()`
+  despite `extract_move_table` already holding an int8 ndarray.
+
+  A new `KmerLevels` handle (`leech_core.KmerLevels`, built once per run via
+  `leech._rust_accel.make_kmer_levels`) now owns the table; every batch call
+  borrows it by reference instead of converting it again.
+  `preparation/parallel.py` and `inference/helpers.py` build the handle once,
+  at the start of a `data prepare` / `predict` run, and thread it through every
+  batch. Move tables now cross as zero-copy `uint8` numpy arrays
+  (`PyReadonlyArray1<u8>`) instead of Python lists.
+
+  Measured with a pre-built `KmerLevels` handle and zero reads (isolating the
+  argument-conversion cost, same methodology as the numbers above): **0.080ms
+  min / 0.091ms median per call**, down from 51.8ms / 71.7ms — roughly 650x
+  and 790x. Transport-only change: the table's contents, every chunk value,
+  and `tests/test_backend_parity.py` / `tests/test_parallel_prep.py` /
+  `tests/test_rust_python_parity.py` are unaffected. (#259)
+
+- **Snakemake pipeline rules passed CLI options `leech` does not have.**
+  `train.smk` and `compare_models.smk` passed a grid search's `best_params.json`
+  to `leech model train --config`, but that flag is `--model-config` — and even
+  the right flag name would have been wrong, since `best_params.json` holds
+  `left_context`/`right_context`/`dwell_offset` (data preparation parameters,
+  the signal-context window) rather than architecture kwargs. Both rules now
+  train on chunks re-extracted at the selected geometry via two new rules,
+  `reprepare_chunks_optimized_pairwise`/`merge_chunks_optimized_pairwise`
+  (grid_search.smk) and their `{architecture}`-wildcarded twins in
+  compare_models.smk, which re-run `leech data prepare --signal-context` from
+  the winning `left_context`/`right_context` before training.
+  `grid_search_architecture_pairwise` also passed `--max-epochs`/`--param-grid`
+  to `leech model optimize`, which has never had either flag (`optimize`
+  searches signal context and dwell offset, not learning rate / batch size /
+  layer sizes) — rewritten to mirror the working `grid_search_pairwise_aa`
+  pattern with an `{architecture}` wildcard. All four `model train`/
+  `model optimize` invocations across both files were also missing `--motif`,
+  which both commands mark `required=True` (for inference provenance) — added.
+  `test_pairwise_aa`/`test_architecture_pairwise` now evaluate against the
+  same optimized-or-base test split their matching train rule trained on,
+  instead of always the base one (a `signal_len` mismatch under
+  `use_grid_search: true`). A new `tests/test_pipeline_rules.py`
+  regex-extracts every `uv run leech ...` invocation from every `.smk` file
+  and asserts every `--flag` it passes is real and every `required=True`
+  option is actually present, so this class of drift fails a test instead of
+  a job partway through a real run. (#266)
+- **`chunk_context` config key wired to `data prepare --signal-context`.**
+  Previously read by no rule, so `prepare_chunks` always ran at the CLI's
+  `DEFAULT_SIGNAL_CONTEXT` regardless of what `config.yaml` said. The CLI help
+  string and CLAUDE.md also claimed that default was `(200, 200)`; it is
+  `(225, 225)` (`src/leech/constants.py`) — both corrected to match the code,
+  and `chunk_context` set to `[225, 225]` (was `[200, 200]`) so wiring it in
+  doesn't itself change any existing run's behavior. `kmer_len` (also unread,
+  and with no `data prepare` flag to wire it to) was removed from
+  `config.yaml` rather than left as dead documentation. (#266)
+- **Stale cluster profile entries and hard-coded partitions.**
+  `pipeline/cluster/slurm/config.yaml` named three `set-resources` rules that
+  no longer exist (`merge_chunks_charged`, `compare_architectures_charged`,
+  `summarize_charged_vs_uncharged` — the real rules are the `_pairwise`
+  versions) — removed. Per-rule `slurm_partition`/`runtime`/`cpus_per_task`
+  lambdas that switched on `use_cpu_training` (train.smk, grid_search.smk,
+  evaluate.smk, inference.smk, compare_models.smk) moved into the cluster
+  profile as static `set-resources`, split across a new CPU profile
+  (`pipeline/cluster/slurm-cpu/config.yaml`) and the existing GPU one, since
+  Snakemake's profile `set-resources` always overrides a rule's own
+  `resources:` — a single profile could never express both modes for one rule
+  name. `train_pairwise_aa`'s `mem_mb`/`gres`, which scale with the `train_gpus`
+  count rather than the CPU/GPU toggle, stay in the Snakefile. Its memory
+  formula (`18000 * train_gpus` MB) also under-provisioned against the 40.6
+  GiB/rank peak RSS CLAUDE.md documents measuring; it now derives from a new
+  `train_mem_mb_per_gpu` config key (default 45000, ~10% headroom). Stale
+  `profiles/slurm`/`profiles/lsf` path references (the real directory is
+  `pipeline/cluster/{slurm,lsf}`) corrected throughout the pipeline docs and
+  comments. (#266)
+
+### Deprecated
+
+- **`ConvOnly` is deprecated.** It has zero references anywhere in escapepod-models (checked 2026-09-13, same as most experimental-tier names), and its `AdaptiveMaxPool1d` with a non-dividing output size hits the same rank-8 `GatherND` ONNX export failure #233 fixed for `AdaptiveAvgPool1d` — so unlike every other experimental name it cannot reach the one artifact format models ship as. `get_model("ConvOnly", ...)` now issues a `DeprecationWarning`. ((#274))
 
 ### Removed
+
+- **`--feature-set` on `data prepare`, and the sequential preparation pipeline**
+  (`leech.preparation.orchestrator.prepare_training_data`,
+  `prepare_training_data_with_split`, `leech.preparation.reader.iter_bam_with_pod5`).
+  The option was threaded through but never read; `--workers 1` now routes
+  through the same parallel dispatcher every other worker count uses. ((#275))
+- **`data prepare`'s `--rough-rescale`/`--no-rough-rescale` flag, and the inert
+  `SigMapRefiner` fields it fed.** Signal-map refinement has delegated entirely
+  to escapepod-signal's `refine_signal_map` since #193; nothing in `refine()`
+  has read `do_rough_rescale`, `algo` or `sd_params` for a while; escapepod
+  always applies its own rough rescale and exposes no switch, so
+  `--no-rough-rescale` only ever logged a warning and then wrote
+  `refine_do_rough_rescale` to `prepare_config.json` and the model
+  `config.json` sidecar as a setting that had no effect. `SigMapRefiner`'s
+  remaining fields (`kmer_to_level`, `kmer_len`, `half_bandwidth`,
+  `scale_iters`, `center_idx`) are exactly what escapepod's `refine_signal_map`
+  takes; `REFINE_PRESET_DOC` is now the only statement of leech's refinement
+  settings. The banded-Viterbi DP reference implementation this used to run
+  locally (`compute_dwell_pen_array` through `refine_signal_mapping`,
+  `rough_rescale_quantile`) was reachable only from tests and moves to
+  `tests/reference_signal_refine.py` as a frozen oracle; `_theil_sen_rescale`
+  and `_compute_slopes`, which had zero callers anywhere, are deleted outright.
+  escapepod carries its own golden tests pinning the same NumPy body
+  (rnabioco/escapepod-rs#204), so nothing here changes what leech actually
+  computes. `leech_core`'s `seq_banded_dp`, `extract_levels` and
+  `rough_rescale_quantile` Rust bindings, which only ever served comparisons
+  against that reference implementation, are also removed. ((#276))
 
 - **`leech eval compare`, `leech eval importance` and `leech eval ablation`.**
   All three were wired to `src/leech/commands/analyze.py`, which imported
@@ -61,6 +402,61 @@ moved into `tests/` because only the test suite called it.
   `tests/`.
 
 ### Fixed
+
+- **BAM readers now accept the lowercase `cl` charging tag, not only uppercase
+  `CL`.** The aa-tRNA-seq pipeline renamed the classifier's charging-score tag
+  to lowercase `cl` so it would not collide with dorado's modified-base
+  `MM`/`ML` tags; `ReadInfo` (`io/bam_reader.py`) only ever looked for `CL`, so
+  every chunk from a reprocessed BAM got `cl_value = None` (written as the `-1`
+  "missing" sentinel), silently zeroing the gradient on `--cl-regression`
+  heads — observed downstream as a head that output 0.44-0.56 regardless of
+  true charge. Both spellings are now read (`CL` preferred when a BAM somehow
+  carries both), each accepting a scalar (`C`/`i`) or a one-element `B` array.
+  `iter_read_info_batches` also warns once per BAM if none of the first
+  `CL_TAG_CHECK_READS` reads carry either tag, and `data prepare` now logs the
+  fraction of chunks that ended up with a real CL value. ((#254))
+- **Bundle predict shares the single-model pipeline's chunk extraction and GPU
+  submission instead of carrying its own copies.** `chunks_for_read` is now the
+  one place the per-chunk array-building triplet (signal padding/cropping,
+  sequence encoding, feature-window narrowing) runs for the Python serial
+  extraction path, used by both `run_inference` and `run_bundle_inference` —
+  before this, only the bundle copy applied dwell templates, and only the
+  bundle copy skipped `prepare_signal_channels`'s `signal_len` padding/cropping
+  on the raw signal itself (a real, if narrow, correctness gap found while
+  unifying, not by design). `GpuBatchRunner` is the shared double-buffered,
+  single-worker async GPU submission PR #253 introduced for predict, now also
+  used by every one of `run_bundle_inference`'s three extraction paths (Rust,
+  `num_workers>0`, serial) via a new `BundleScorer`. Bundle predict on the
+  serial Python path picks up the same overlap-extraction-with-scoring
+  speedup single-model predict already had.
+
+  Fixed along the way: `run_inference`'s sequential-path GPU submission bound
+  its scoring closure's `pending` dict by value at construction, so once
+  `_finalize_mega_batch` rebound the name to a fresh dict for the next
+  mega-batch (the mechanism that lets the async BAM-write thread keep draining
+  the old one safely), every later mega-batch's predictions were computed and
+  silently dropped instead of written — caught by a new parity test, not by
+  inspection. ((#268))
+- **One `InferenceSpec` resolver replaces four copies of predict's config-resolution
+  logic.** `run_inference` and `run_bundle_inference` each carried their own
+  ~90-line block resolving motif/anchor/base_justify, signal-map refinement,
+  and the feature-window fallback chain; the two had drifted into real
+  disagreements. `is_multiclass` was `num_out > 1` in predict but `> 2` in
+  `eval test` and `model calibrate`, so a 2-output cross-entropy model got
+  multiclass BAM tags from predict but binary Platt calibration from
+  calibrate. `seq_encoding`'s missing-key fallback was `"signal_kmer"` in
+  predict/eval and `"base_onehot"` in calibration/export — `"base_onehot"` is
+  correct (it's the model classes' own default, not the CLI's), so every site
+  now agrees on it. The Rust-path `refine_scale_iters` default was hardcoded
+  `2` even for Remora models, which use `-1`. `_check_config_consistency` now
+  takes click's real parameter source, so an explicit `--motif-offset 0` that
+  disagrees with the checkpoint raises instead of silently losing to it. The
+  feature-window resolver (`chunking.feature_window_from_metadata`) reads a
+  whole corpus's column and asserts it is constant, rather than trusting chunk
+  0 — training's own `_raw_chunk = train_dataset.chunks[0]` read was exactly
+  that failure mode, generalized from issue #230. ((#269))
+- **`leech model optimize --parallel > 1` now honors `--oversample-minority`.** `_grid_point_worker` used to hand-list a subset of `run_grid_point`'s parameters and had missed this one, so every grid point trained with minority oversampling silently disabled under `--parallel`, unlike the sequential path. The worker now forwards its whole `args` dict, which also closes off this class of bug for any future grid-search option. ((#270))
+- **Bundle architecture configs no longer leak training-only fields.** `_TRAINING_PARAMS` (the denylist `_architecture_config` uses to strip training hyperparameters out of a bundle's stored config) was missing about 15 keys `config.json` now writes — `label_smoothing`, the newer augmentation and adversarial/CL-regression knobs, `checkpoint_metric`, `gpus`, and others — so those leaked into pairwise-model architecture comparisons and the config a bundle ships. `tests/test_training_advanced.py` now imports the real `_TRAINING_PARAMS`/`_architecture_config` instead of re-declaring a stale copy inline. ((#270))
 
 - **BatchNorm models under `--gpus N` now sync statistics across ranks.**
   `_wrap_ddp` converts BatchNorm to `SyncBatchNorm` before the CUDA DDP wrap,
@@ -170,114 +566,6 @@ moved into `tests/` because only the test suite called it.
   feature stays on for `release.yml`'s wheel build too until that import is
   split out, rather than shipping a wheel that silently loses Rust
   acceleration.
-
-### Changed
-
-- **`eval test` and `predict` now share one precision policy.** `eval test`
-  no longer autocasts unconditionally on CUDA; it takes the same
-  `--mixed-precision/--no-mixed-precision` flag as `model train`, off by
-  default to match `predict` (which never autocasts). **This flips the
-  default for any existing pipeline invoking `eval test --device cuda`
-  without the new flag** — previously always autocast on GPU, now eager
-  fp32 — so `evaluate_model`'s returned/saved metrics now record a
-  `mixed_precision` field to make the regime that produced a given
-  `metrics.json` auditable after the fact. `eval test` also gains
-  `--no-compile` and reuses `predict`'s torch.compile size threshold
-  (PR #253) — and no longer invokes torch.compile on CPU at all, where it
-  previously compiled unconditionally, `mode=None` included. (#264)
-- `constants.DEFAULT_REFINE_HALF_BANDWIDTH` was `300`; the real default (`5`)
-  was hardcoded as a literal fallback in seven places across
-  `inference/single.py`, `inference/bundle.py`, `inference/helpers.py` and
-  `training.py`, while `configs.SignalConfig` already had the correct
-  default. The constant is now `5` and is the single place all eight sites
-  read it from. `DEFAULT_LOSS_TYPE`'s comment now lists `cross_entropy`
-  alongside `bce`/`focal`, matching `losses.py`. (#277)
-- `leech model export`'s summary always printed "TorchScript export
-  complete!", including for `--format onnx` and the default `torch.export`
-  path. It now names the format actually written. (#277)
-- Rust: `TrainingChunkResult.kmer_len` was computed and stored but never read
-  by the PyO3 conversion loop that builds the returned chunk dicts; removed
-  along with the `#[allow(dead_code)]` that was hiding it. (#277)
-
-- **Rust batch extraction no longer re-marshals the k-mer refinement table or
-  move tables on every call.** `extract_training_chunks` /
-  `extract_inference_chunks` / `extract_chunks_from_preloaded` used to convert
-  the 262,144-entry 9-mer level table from a Python `dict` to a Rust
-  `HashMap<String, f64>` on *every batch call*, under the GIL and before
-  `py.detach` — measured at 51.8ms min / 71.7ms median per call (0.0ms without
-  the table), serializing the `ThreadPoolExecutor` workers `_iter_rust_batches`
-  exists to overlap. Move tables crossed as `list[int]` via `.tolist()`
-  despite `extract_move_table` already holding an int8 ndarray.
-
-  A new `KmerLevels` handle (`leech_core.KmerLevels`, built once per run via
-  `leech._rust_accel.make_kmer_levels`) now owns the table; every batch call
-  borrows it by reference instead of converting it again.
-  `preparation/parallel.py` and `inference/helpers.py` build the handle once,
-  at the start of a `data prepare` / `predict` run, and thread it through every
-  batch. Move tables now cross as zero-copy `uint8` numpy arrays
-  (`PyReadonlyArray1<u8>`) instead of Python lists.
-
-  Measured with a pre-built `KmerLevels` handle and zero reads (isolating the
-  argument-conversion cost, same methodology as the numbers above): **0.080ms
-  min / 0.091ms median per call**, down from 51.8ms / 71.7ms — roughly 650x
-  and 790x. Transport-only change: the table's contents, every chunk value,
-  and `tests/test_backend_parity.py` / `tests/test_parallel_prep.py` /
-  `tests/test_rust_python_parity.py` are unaffected. (#259)
-
-- **Snakemake pipeline rules passed CLI options `leech` does not have.**
-  `train.smk` and `compare_models.smk` passed a grid search's `best_params.json`
-  to `leech model train --config`, but that flag is `--model-config` — and even
-  the right flag name would have been wrong, since `best_params.json` holds
-  `left_context`/`right_context`/`dwell_offset` (data preparation parameters,
-  the signal-context window) rather than architecture kwargs. Both rules now
-  train on chunks re-extracted at the selected geometry via two new rules,
-  `reprepare_chunks_optimized_pairwise`/`merge_chunks_optimized_pairwise`
-  (grid_search.smk) and their `{architecture}`-wildcarded twins in
-  compare_models.smk, which re-run `leech data prepare --signal-context` from
-  the winning `left_context`/`right_context` before training.
-  `grid_search_architecture_pairwise` also passed `--max-epochs`/`--param-grid`
-  to `leech model optimize`, which has never had either flag (`optimize`
-  searches signal context and dwell offset, not learning rate / batch size /
-  layer sizes) — rewritten to mirror the working `grid_search_pairwise_aa`
-  pattern with an `{architecture}` wildcard. All four `model train`/
-  `model optimize` invocations across both files were also missing `--motif`,
-  which both commands mark `required=True` (for inference provenance) — added.
-  `test_pairwise_aa`/`test_architecture_pairwise` now evaluate against the
-  same optimized-or-base test split their matching train rule trained on,
-  instead of always the base one (a `signal_len` mismatch under
-  `use_grid_search: true`). A new `tests/test_pipeline_rules.py`
-  regex-extracts every `uv run leech ...` invocation from every `.smk` file
-  and asserts every `--flag` it passes is real and every `required=True`
-  option is actually present, so this class of drift fails a test instead of
-  a job partway through a real run. (#266)
-- **`chunk_context` config key wired to `data prepare --signal-context`.**
-  Previously read by no rule, so `prepare_chunks` always ran at the CLI's
-  `DEFAULT_SIGNAL_CONTEXT` regardless of what `config.yaml` said. The CLI help
-  string and CLAUDE.md also claimed that default was `(200, 200)`; it is
-  `(225, 225)` (`src/leech/constants.py`) — both corrected to match the code,
-  and `chunk_context` set to `[225, 225]` (was `[200, 200]`) so wiring it in
-  doesn't itself change any existing run's behavior. `kmer_len` (also unread,
-  and with no `data prepare` flag to wire it to) was removed from
-  `config.yaml` rather than left as dead documentation. (#266)
-- **Stale cluster profile entries and hard-coded partitions.**
-  `pipeline/cluster/slurm/config.yaml` named three `set-resources` rules that
-  no longer exist (`merge_chunks_charged`, `compare_architectures_charged`,
-  `summarize_charged_vs_uncharged` — the real rules are the `_pairwise`
-  versions) — removed. Per-rule `slurm_partition`/`runtime`/`cpus_per_task`
-  lambdas that switched on `use_cpu_training` (train.smk, grid_search.smk,
-  evaluate.smk, inference.smk, compare_models.smk) moved into the cluster
-  profile as static `set-resources`, split across a new CPU profile
-  (`pipeline/cluster/slurm-cpu/config.yaml`) and the existing GPU one, since
-  Snakemake's profile `set-resources` always overrides a rule's own
-  `resources:` — a single profile could never express both modes for one rule
-  name. `train_pairwise_aa`'s `mem_mb`/`gres`, which scale with the `train_gpus`
-  count rather than the CPU/GPU toggle, stay in the Snakefile. Its memory
-  formula (`18000 * train_gpus` MB) also under-provisioned against the 40.6
-  GiB/rank peak RSS CLAUDE.md documents measuring; it now derives from a new
-  `train_mem_mb_per_gpu` config key (default 45000, ~10% headroom). Stale
-  `profiles/slurm`/`profiles/lsf` path references (the real directory is
-  `pipeline/cluster/{slurm,lsf}`) corrected throughout the pipeline docs and
-  comments. (#266)
 
 ## [0.11.1] - 2026-09-12
 
@@ -503,7 +791,6 @@ moved into `tests/` because only the test suite called it.
   that correctly finds 8 classes in each — the pilot's code-flowcell confound,
   which is exactly why pooling would be wrong.
 
-
 - **ONNX export, for the classifier arms and the CRF encoder** (#217).
   `leech model export --format onnx` beside the existing `--format torch`
   (unchanged default), and `leech.crf.export.export_crf_onnx`. `torch.export`
@@ -543,7 +830,6 @@ moved into `tests/` because only the test suite called it.
   it prevents, and prints a second table only when the run discarded steps or
   saw non-finite gradients, since a discarded step is otherwise invisible.
 
-
 - **`leech.crf.training`: a CTC-CRF trainer.** `CrfTrainer` runs the schedule
   and writes `model.pt` plus a `model.json` sidecar. The sidecar is not optional:
   the standardisation constants live in neither the architecture config nor the
@@ -563,7 +849,6 @@ moved into `tests/` because only the test suite called it.
   train/test counts match what `plan_corpus` derives independently from the
   manifest (283,296 / 107,878). A two-epoch GPU run trains at ~40 s/epoch with
   loss falling 0.4446 -> 0.0639.
-
 
 - **`leech.crf.corpus`: cut a CRF training corpus from a manifest.**
   `plan_corpus` decides which reads and in which split, touching no POD5;
@@ -1172,7 +1457,6 @@ extension over a current build.
 Dependency and internal-consolidation release. No user-facing behaviour change;
 the only numeric movement is float32 rounding in level features, described
 below. **Requires `escapepod >= 0.15.0`.**
-
 
 ### Changed
 

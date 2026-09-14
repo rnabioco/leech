@@ -9,7 +9,7 @@ The CLI is organized into workflow-based command groups:
 | Group | Commands | Purpose |
 |-------|----------|---------|
 | `leech data` | `prepare`, `merge` | Extract features, merge and split datasets |
-| `leech model` | `train`, `optimize`, `benchmark`, `bundle`, `bundle-info`, `calibrate`, `export`, `release`, `list`, `fetch` | Train, tune, calibrate, package, and publish models |
+| `leech model` | `train`, `train-crf`, `optimize`, `benchmark`, `bundle`, `bundle-info`, `calibrate`, `export`, `release`, `list`, `fetch` | Train, tune, calibrate, package, and publish models |
 | `leech eval` | `test` | Evaluate models |
 | `leech predict` | *(top-level)* | Run inference on new data |
 
@@ -42,7 +42,9 @@ leech data prepare --pod5 FILE --bam FILE --output-dir DIR [OPTIONS]
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--signal-context LEFT RIGHT` | *(symmetric 225/225)* | Asymmetric signal window as two ints (e.g. `--signal-context 90 450`) |
+| `--signal-context LEFT RIGHT` | *(symmetric 225/225)* | Asymmetric signal window as two ints (e.g. `--signal-context 90 450`). Mutually exclusive with `--signal-context-bases` |
+| `--signal-context-bases L R` | *(disabled)* | Base-defined signal window: cuts at the base-to-signal map positions of offsets `-L`/`+R` around the focus base (e.g. `--signal-context-bases 8 24`), instead of a fixed sample count, so two reads at different translocation speeds read the same *bases* of context. Padded or centre-cropped to `--signal-len`. Mutually exclusive with `--signal-context`. Implemented in both prepare backends; the Rust *inference* pipeline has no base-defined window support, so a model trained with this always runs `predict` through the Python path |
+| `--signal-len INT` | `(L+R+1)*36` | Fixed emitted signal length for `--signal-context-bases` (default is a conservative slow-read rate, so a typical read pads rather than centre-crops). Ignored without `--signal-context-bases` |
 | `--feature-start INT` | `-5` | Feature window start offset from focus base (negative = toward tRNA body) |
 | `--feature-end INT` | `5` | Feature window end offset from focus base (positive = toward adaptor) |
 
@@ -73,12 +75,22 @@ leech data prepare --pod5 FILE --bam FILE --output-dir DIR [OPTIONS]
     config by `leech model train`, and applied again by `leech predict`, so a
     model is scored on the same read population it was trained on.
 
+Every chunk also records `junction_indel` (the CIGAR-measured indel length at
+the motif junction, `0` when exact) and `junction_mapped` (whether the
+junction mapped at all) -- automatically, with no flag to enable them. Use
+`leech model train --sample-weight-field junction_indel` to over-sample
+disrupted-junction chunks, and `leech predict --abstain-on-junction-indel` to
+apply `--min-margin` only to reads whose junction is disrupted. `leech eval
+test` reports metrics split by `junction_indel == 0` vs. `!= 0` automatically
+whenever the test corpus carries the field.
+
 **Signal handling:**
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--base-justify STR` | `center` | Where to center signal chunk within the focus base: `start`, `center`, or `end` |
 | `--no-reverse-signal` | *(off)* | Do NOT reverse raw signal. By default signal is reversed for direct RNA (POD5 stores 3'->5'). Use this flag for DNA data. |
+| `--mask-seq-side [left\|right]` | *(none)* | Blank (`N`) sequence-branch bases strictly on that side (5'/left or 3'/right) of the focus base, in both `sequence` (base_onehot) and `sequence_with_kmer_context` (signal_kmer) -- the focus base itself is never masked. Prevents a feature+signal model from reading tRNA-body identity through acceptor-stem bases upstream of a 3'-end motif. Baked into the corpus, recorded in `prepare_config.json`, carried into the trained model's config, and reapplied automatically to live chunks by `leech predict`. Forces the Python extraction path (unsupported in Rust) at both prepare and predict time. `data merge` warns if the corpora being merged disagree on it. |
 
 **Signal map refinement:**
 
@@ -197,7 +209,9 @@ leech model train --train-data FILES --val-data FILES --model MODEL --output-dir
 **Available architectures (26 total; production and experimental tiers — see
 `leech.models.model_tier`). `ConvLSTMRemora`/`ConvLSTMRemoraBase` exist for
 comparison against the Remora paper's architecture, and `ConvOnly` cannot
-reach ONNX export (`--format onnx`); neither is listed here — see
+reach ONNX export (`--format onnx`) and is deprecated (`get_model("ConvOnly",
+...)` raises `DeprecationWarning` -- zero references in escapepod-models and
+no fix planned, see `leech.models.model_tier`); neither is listed here — see
 `leech model train --help` for the full registry including those.**
 
 | Family | Models |
@@ -225,6 +239,9 @@ reach ONNX export (`--format onnx`); neither is listed here — see
 |--------|---------|-------------|
 | `--use-class-weights / --no-class-weights` | enabled | Auto-compute class weights for imbalanced data |
 | `--pos-weight FLOAT` | -- | Manual positive class weight (overrides auto) |
+| `--balance-groups / --no-balance-groups` | disabled | Balance sampling across `source_group` values so each group contributes equally per epoch |
+| `--oversample-minority / --no-oversample-minority` | disabled | Oversample minority classes so each class contributes equally per epoch (mutually exclusive with `--balance-groups`) |
+| `--sample-weight-field STR` | -- | Generalizes `--balance-groups` to any chunk metadata field: inverse-frequency weight sampling by that field's distinct values, one group per value (mutually exclusive with `--balance-groups`/`--oversample-minority`). E.g. `--sample-weight-field junction_indel` to over-sample chunks whose motif junction mapped with an indel |
 
 **Regularization and optimization:**
 
@@ -279,9 +296,15 @@ from a fresh optimizer and logs a warning.
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--augment-jitter FLOAT` | `0` | Signal jitter noise std dev (0 = disabled) |
+| `--augment-jitter FLOAT` | `0` | Signal jitter noise std dev (0 = disabled). Per-channel via `key=val,...`, e.g. `signal=0.02,signal_residual=0.001` |
 | `--augment-scale-min FLOAT` | `1.0` | Min random scale factor |
 | `--augment-scale-max FLOAT` | `1.0` | Max random scale factor |
+| `--augment-shift-max-bases FLOAT` | `0` | Max cross-layer shift in bases; float for sub-base resolution (0 = disabled) |
+| `--augment-time-mask-bases INT` | `0` | Max width in bases for time masking (0 = disabled) |
+| `--augment-time-mask-count INT` | `1` | Number of time masks to apply |
+| `--augment-feature-noise-scale FLOAT` | `0` | Per-channel Gaussian noise scale for features (0 = disabled) |
+| `--augment-time-stretch MIN,MAX` | `1,1` (disabled) | Resample each chunk's signal window by a per-sample factor drawn uniformly from `[MIN, MAX]` about the focus position, for speed invariance. Scales the base-to-signal map to match (`signal_kmer` stays aligned) and the `dwell`/`dwell_mean`/`dwell_log` feature channels (`dwell_ratio`, `dwell_std` and level channels are unchanged). Batched `__getitems__` fetch path only; never applied to validation; incompatible with `--augment-shift-max-bases` and `--augment-time-mask-bases` |
+| `--label-smoothing FLOAT` | `0` | Label smoothing factor (0 = disabled; e.g. `0.05` softens 0/1 targets) |
 | `--mixed-precision / --no-mixed-precision` | disabled | Mixed precision training (CUDA only) |
 
 **Provenance (recorded in config for inference):**
@@ -295,8 +318,8 @@ from a fresh optimizer and logs a warning.
 | `--seq-encoding STR` | `signal_kmer` | Sequence encoding: `base_onehot` or `signal_kmer` |
 | `--encoding-fallback / --no-encoding-fallback` | auto | Allow `signal_kmer` to fall back to `base_onehot` when the corpus has no base-to-signal maps. Auto = allowed only when `--seq-encoding` was left at its default |
 | `--num-workers INT` | `0` | DataLoader workers (0=auto) |
-| `--balance-groups / --no-balance-groups` | disabled | Balance sampling across source groups (e.g., per-AA) so each group contributes equally per epoch |
 | `--standardize-features / --no-standardize-features` | disabled | Compute per-channel feature mean/std once over the training corpus and freeze them into the feature branch as an affine layer. Only models with a `feature_branch` (the ConvLSTM and TCN families) accept this |
+| `--strict-window / --no-strict-window` | disabled | Raise instead of zero-padding when the signal crop window (`left_context`/`right_context`, e.g. via `--model-config`) extends outside the stored chunk. Default logs one warning per dataset the first time it happens rather than silently training on zero-padded samples |
 
 **Output files:**
 
@@ -364,7 +387,7 @@ leech model optimize --train-data FILE --output-dir DIR --context-grid VALUES [O
 | `--base-justify STR` | `center` | Signal chunk centering |
 | `--parallel INT` | `1` | Grid points to train concurrently |
 
-Training options (`--model`, `--epochs`, `--batch-size`, `--learning-rate`, `--device`, `--seed`, `--early-stopping`) work the same as in `model train`.
+Training options (`--model`, `--epochs`, `--batch-size`, `--learning-rate`, `--device`, `--seed`, `--early-stopping`) work the same as in `model train`. So do the loss and augmentation options above `--early-stopping` in that reference (`--loss`, `--label-noise-rate`, `--focal-gamma`/`--focal-neg-gamma`, `--scheduler*`, `--warmup-epochs`, `--weight-decay`, `--max-grad-norm`, every `--augment-*` flag, `--label-smoothing`, `--mixed-precision`) and `--motif`/`--motif-offset` from provenance -- both decorators (`training_hyperparams`, `model_provenance`) are shared between `train` and `optimize`. `--selection-metric` accepts the same names as `model train`'s `--checkpoint-metric` (see the "Output files" note under `model train` above: `auto`/`val_acc`/`val_f1`/`val_auc`, plus the parametric `tpr_at_fpr:<f>` and `callable_at_precision:<p>`).
 
 **Output:**
 
@@ -686,6 +709,14 @@ leech predict --pod5 FILE --bam FILE --output FILE (--model DIR | --bundle FILE 
 | `--base-justify STR` | `center` | Signal chunk centering |
 | `--no-reverse-signal` | *(off)* | Disable signal reversal (use for DNA data) |
 
+**Confidence and abstention:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--min-confidence INT` | `0` | Confidence threshold in uint8 space (0-255). Reads below threshold are called `unc` (uncharged/unclassified). `0` = all reads called |
+| `--min-margin INT` | `0` | Margin threshold in uint8 space (0-255); margin = top probability minus runner-up. Reads below threshold are called `unc`. `0` = no margin filter |
+| `--abstain-on-junction-indel / --no-abstain-on-junction-indel` | disabled | Multiclass only: enforce `--min-margin` only on reads whose motif junction is disrupted (unmapped, or a nonzero CIGAR indel), calling them `unc` when the margin is also below threshold; reads with an intact junction bypass the margin check entirely. `junction_indel`/`junction_mapped` are always recorded (BAM `ji`/`jm` tags, or a TSV column) so the rule can be re-applied offline |
+
 **Backend:**
 
 | Option | Default | Description |
@@ -695,9 +726,12 @@ leech predict --pod5 FILE --bam FILE --output FILE (--model DIR | --bundle FILE 
 !!! note "When `auto` falls back"
 
     Some options cannot be honored by the Rust pipeline -- non-median-MAD
-    `--signal-norm` and softclip signal recovery among them. Under `auto` those
-    fall back to Python with a warning; under `--backend rust` they raise rather
-    than silently producing different chunks.
+    `--signal-norm`, softclip signal recovery, a model trained with
+    `--signal-context-bases` (the Rust *inference* path has no base-defined
+    window support), and a model trained with `--mask-seq-side` (focus-relative
+    sequence masking is Python-only) among them. Under `auto` those fall back to
+    Python with a warning; under `--backend rust` they raise rather than
+    silently producing different chunks.
 
 **Examples:**
 
