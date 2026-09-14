@@ -8,10 +8,41 @@ Provides different strategies for searching motifs in nanopore reads:
 
 import logging
 from abc import ABC, abstractmethod
+from typing import NamedTuple
 
 import pysam
 
 logger = logging.getLogger("leech.io.motif_search")
+
+
+class MotifMatch(NamedTuple):
+    """One motif hit: a position plus the CIGAR-measured junction disruption.
+
+    ``position`` is in whichever coordinate frame the searcher returns
+    (reference-relative under ``anchor="reference"``, query-relative
+    otherwise) — exactly what a bare ``int`` used to mean.
+
+    ``junction_indel`` is ``mapped_len - len(motif)`` for the motif's mapped
+    query span through the CIGAR: 0 when the alignment covers the motif at
+    exactly its length, nonzero when an indel inside (or adjoining) the motif
+    changed the mapped span's length. ``junction_mapped`` says whether that
+    measurement was even possible — False when there is no alignment/CIGAR to
+    measure against (:class:`BasecalledMotifSearcher`, or no-motif/all-bases
+    mode) or the CIGAR mapping failed outright (the motif's edges do not both
+    land in a match/mismatch block).
+
+    Neither field gates whether a match is returned here — see
+    :class:`ReferenceMotifSearcher` and issue #282, which introduced this: the
+    charging classifier's honest failure mode is an uncharged read whose
+    junction basecalls badly for ordinary reasons, and both prepare (as a
+    per-chunk field for sampling/abstention) and predict (as an abstention
+    rule) need this measurement even for motifs that ``require_query_mapping``
+    keeps despite a bad mapping.
+    """
+
+    position: int
+    junction_indel: int = 0
+    junction_mapped: bool = False
 
 
 def map_reference_to_query_coords(
@@ -170,7 +201,7 @@ class MotifSearcher(ABC):
     @abstractmethod
     def find_motif_positions(
         self, read_id: str, sequence: str, alignment: pysam.AlignedSegment | None, motif: str
-    ) -> list[int]:
+    ) -> list[MotifMatch]:
         """
         Find positions of motif in read.
 
@@ -181,7 +212,9 @@ class MotifSearcher(ABC):
             motif: Motif to search for
 
         Returns:
-            List of positions in query sequence where motif starts (0-based)
+            List of :class:`MotifMatch` — position (0-based, in whichever
+            coordinate frame this searcher returns) plus the CIGAR-measured
+            junction disruption at that position, when one could be measured.
         """
         pass
 
@@ -206,7 +239,7 @@ class BasecalledMotifSearcher(MotifSearcher):
 
     def find_motif_positions(
         self, read_id: str, sequence: str, alignment: pysam.AlignedSegment | None, motif: str
-    ) -> list[int]:
+    ) -> list[MotifMatch]:
         """
         Find motif in basecalled sequence.
 
@@ -217,9 +250,11 @@ class BasecalledMotifSearcher(MotifSearcher):
             motif: Motif to search for
 
         Returns:
-            List of positions where motif starts in basecalled sequence
+            List of positions where motif starts in basecalled sequence, each
+            with ``junction_mapped=False`` -- there is no alignment/CIGAR here
+            to measure a junction indel against.
         """
-        return find_motif_in_sequence(sequence, motif)
+        return [MotifMatch(pos) for pos in find_motif_in_sequence(sequence, motif)]
 
 
 class ReferenceMotifSearcher(MotifSearcher):
@@ -311,7 +346,7 @@ class ReferenceMotifSearcher(MotifSearcher):
 
     def find_motif_positions(
         self, read_id: str, sequence: str, alignment: pysam.AlignedSegment | None, motif: str
-    ) -> list[int]:
+    ) -> list[MotifMatch]:
         """
         Find motif in reference, then map to query coordinates.
 
@@ -322,7 +357,10 @@ class ReferenceMotifSearcher(MotifSearcher):
             motif: Motif to search for
 
         Returns:
-            List of positions where motif starts in query sequence
+            List of :class:`MotifMatch` for positions where the motif starts
+            in query sequence (or reference sequence, under
+            ``anchor="reference"``) — see ``junction_indel``/``junction_mapped``
+            below for what the CIGAR measurement means.
         """
         if alignment is None:
             logger.warning(f"Reference-based search requires alignment, but got None for {read_id}")
@@ -350,41 +388,82 @@ class ReferenceMotifSearcher(MotifSearcher):
             self.stats["motifs_in_reference"] += len(motif_positions)
 
         # Map each motif position to query coordinates
-        query_positions = []
+        query_positions: list[MotifMatch] = []
         motif_len = len(motif)
 
         for ref_motif_start in motif_positions:
-            # Keep the motif without consulting the CIGAR. Legal only under
-            # anchor="reference" (enforced in __init__), because there the
-            # returned coordinate is reference-relative and LeechRead maps it to
-            # signal through `compute_ref_to_signal`, which interpolates across
-            # indels. Nothing downstream needs the query coordinates, so a read
-            # whose motif basecalled badly is still positioned correctly.
+            ref_motif_end = ref_motif_start + motif_len
+
+            # Always measure the mapped query span through the CIGAR --
+            # skip_indels=False regardless of self.skip_indels, so this walks
+            # across an indel rather than refusing to (issue #282). This is
+            # measurement, not gating: `allow_edge_indels` only affects
+            # whether has_indel_in_region trips the `skip_indels`-driven early
+            # return inside map_reference_to_query_coords, which never fires
+            # here, so its value is irrelevant to what this call returns.
+            #
+            # In the common case (self.skip_indels is False), the acceptance
+            # gate below reuses this exact call instead of re-walking the
+            # CIGAR a second time with identical arguments.
+            measured = map_reference_to_query_coords(
+                alignment, ref_motif_start, ref_motif_end, skip_indels=False
+            )
+            if measured is not None:
+                m_start, m_end = measured
+                junction_indel = (m_end - m_start) - motif_len
+                junction_mapped = True
+            else:
+                junction_indel = 0
+                junction_mapped = False
+
+            # Keep the motif without consulting the CIGAR for acceptance.
+            # Legal only under anchor="reference" (enforced in __init__),
+            # because there the returned coordinate is reference-relative and
+            # LeechRead maps it to signal through `compute_ref_to_signal`,
+            # which interpolates across indels. Nothing downstream needs the
+            # query coordinates to place the chunk, so a read whose motif
+            # basecalled badly is still positioned correctly -- but the
+            # measurement above still ran, because this is exactly the
+            # population issue #282's junction_indel/junction_mapped fields
+            # are meant to flag.
             if not self.require_query_mapping:
-                query_positions.append(ref_motif_start - alignment.reference_start)
+                query_positions.append(
+                    MotifMatch(
+                        ref_motif_start - alignment.reference_start,
+                        junction_indel,
+                        junction_mapped,
+                    )
+                )
                 if self.debug:
                     self.stats["accepted_without_query_mapping"] += 1
                     self.stats["successful"] += 1
                 continue
 
-            # Map the motif region to query
-            ref_motif_end = ref_motif_start + motif_len
-            query_coords = map_reference_to_query_coords(
-                alignment,
-                ref_motif_start,
-                ref_motif_end,
-                skip_indels=self.skip_indels,
-                allow_edge_indels=self.allow_edge_indels,
+            # Acceptance gate. skip_indels=False (the common, lenient case) is
+            # identical to `measured` above -- reuse it rather than re-walking
+            # the CIGAR. skip_indels=True is a stricter check (any indel in
+            # the region rejects the position outright, even a compensating
+            # ins+del pair whose net length matches), and needs its own call.
+            query_coords = (
+                map_reference_to_query_coords(
+                    alignment,
+                    ref_motif_start,
+                    ref_motif_end,
+                    skip_indels=True,
+                    allow_edge_indels=self.allow_edge_indels,
+                )
+                if self.skip_indels
+                else measured
             )
 
             if query_coords is None:
                 if self.debug:
-                    # Check if it failed due to indels or other reasons
-                    # Try again without skip_indels to see if indels were the issue
-                    test_coords = map_reference_to_query_coords(
-                        alignment, ref_motif_start, ref_motif_end, skip_indels=False
-                    )
-                    if test_coords is None:
+                    # `measured` is exactly the skip_indels=False re-walk this
+                    # branch used to make on demand, kept for stats purposes:
+                    # None means the CIGAR mapping itself failed, non-None
+                    # means an indel was the reason skip_indels=True rejected
+                    # this position.
+                    if measured is None:
                         self.stats["failed_cigar_mapping"] += 1
                     else:
                         self.stats["failed_indels"] += 1
@@ -409,9 +488,15 @@ class ReferenceMotifSearcher(MotifSearcher):
                     # When anchor="reference", LeechRead uses ref coords for
                     # sequence and seq_to_sig_map, so motif positions must also
                     # be in reference coords (relative to ref_start).
-                    query_positions.append(ref_motif_start - alignment.reference_start)
+                    query_positions.append(
+                        MotifMatch(
+                            ref_motif_start - alignment.reference_start,
+                            junction_indel,
+                            junction_mapped,
+                        )
+                    )
                 else:
-                    query_positions.append(query_start)
+                    query_positions.append(MotifMatch(query_start, junction_indel, junction_mapped))
                 if self.debug:
                     self.stats["successful"] += 1
             else:

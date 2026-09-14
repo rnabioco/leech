@@ -14,6 +14,7 @@ from leech.io.bam_reader import (
 )
 from leech.io.motif_search import (
     BasecalledMotifSearcher,
+    MotifMatch,
     MotifSearcher,
     ReferenceMotifSearcher,
     find_motif_in_sequence,
@@ -48,6 +49,7 @@ __all__ = [
     "load_reference_fasta",
     "get_reference_sequences",
     # Motif search
+    "MotifMatch",
     "MotifSearcher",
     "BasecalledMotifSearcher",
     "ReferenceMotifSearcher",

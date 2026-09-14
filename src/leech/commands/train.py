@@ -61,6 +61,7 @@ def handle_train(
     allow_encoding_fallback: bool = True,
     balance_groups: bool = False,
     oversample_minority: bool = False,
+    sample_weight_field: str | None = None,
     adversarial_lambda: float = 0.0,
     adversarial_anneal_epochs: int = 0,
     confound: str | None = None,
@@ -119,6 +120,10 @@ def handle_train(
         balance_groups: Balance sampling across source groups
         label_noise_rates: ``{source_group: flip_rate}`` for
             ``loss_type="noise_corrected_bce"``; unmapped groups get rate 0
+        sample_weight_field: Chunk metadata field to inverse-frequency weight
+            sampling by (mutually exclusive with balance_groups and
+            oversample_minority), e.g. "junction_indel" to over-sample the
+            disrupted-junction population
         **model_kwargs: Additional model-specific parameters
 
     Returns:
@@ -178,6 +183,7 @@ def handle_train(
         "allow_encoding_fallback",
         "balance_groups",
         "oversample_minority",
+        "sample_weight_field",
         "device",
         "seed",
         "motif",
@@ -255,6 +261,7 @@ def handle_train(
         right_context=right_context,
         balance_groups=balance_groups,
         oversample_minority=oversample_minority,
+        sample_weight_field=sample_weight_field,
         label_map=label_map,
         confound=confound,
         label_noise_rates=label_noise_rates,

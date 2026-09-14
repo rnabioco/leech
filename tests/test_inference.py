@@ -19,6 +19,7 @@ from leech.inference import _write_prediction_tags
 from leech.io.bam_reader import MockAlignment
 from leech.io.motif_search import (
     BasecalledMotifSearcher,
+    MotifMatch,
     ReferenceMotifSearcher,
     find_motif_in_sequence,
     get_motif_searcher,
@@ -145,7 +146,7 @@ class TestReferenceVsBasecalledSearch:
             anchor="reference",
         )
         positions = searcher.find_motif_positions("read_001", corrupted_sequence, aln, "CCAGGC")
-        assert positions == [20]
+        assert positions == [MotifMatch(20, 0, True)]
 
     def test_reference_search_with_mock_alignment(self):
         """ReferenceMotifSearcher works with MockAlignment (used in parallel worker)."""
@@ -162,7 +163,7 @@ class TestReferenceVsBasecalledSearch:
             anchor="reference",
         )
         positions = searcher.find_motif_positions("read_001", "X" * 40, mock_aln, "CCAGGC")
-        assert positions == [20]
+        assert positions == [MotifMatch(20, 0, True)]
 
     def test_reference_search_basecall_anchor(self):
         """With anchor='basecall', returns query coordinates instead of ref-relative."""
@@ -183,7 +184,7 @@ class TestReferenceVsBasecalledSearch:
         )
         positions = searcher.find_motif_positions("read_001", sequence, aln, "CCAGGC")
         # With perfect alignment and ref_start=0, query coords == ref coords
-        assert positions == [20]
+        assert positions == [MotifMatch(20, 0, True)]
 
     def test_reference_search_with_offset_alignment(self):
         """Alignment that starts partway into the reference."""
@@ -205,7 +206,7 @@ class TestReferenceVsBasecalledSearch:
         )
         positions = searcher.find_motif_positions("read_002", sequence, aln, "CCAGGC")
         # Motif is at ref pos 20; relative to alignment start (10) → position 10
-        assert positions == [10]
+        assert positions == [MotifMatch(10, 0, True)]
 
     def test_reference_search_skips_indel_in_motif(self):
         """Reference search skips motif when indel overlaps the motif region."""
@@ -247,7 +248,8 @@ class TestReferenceVsBasecalledSearch:
             anchor="reference",
         )
         positions = searcher.find_motif_positions("read_003", sequence, aln, "CCAGGC")
-        assert positions == [20]
+        # 1 bp insertion inside the motif: junction_indel == 1 (issue #282).
+        assert positions == [MotifMatch(20, 1, True)]
 
     def test_reference_search_no_alignment_returns_empty(self):
         """Reference search gracefully returns empty when alignment is None."""
@@ -378,7 +380,7 @@ class TestMotifSearcherSelection:
         )
         motif_offset = 2  # Focus on 'A' in CCA (the aminoacylation site)
         raw_positions = searcher.find_motif_positions("read_001", "X" * 40, aln, "CCAGGC")
-        positions = [pos + motif_offset for pos in raw_positions]
+        positions = [m.position + motif_offset for m in raw_positions]
         # CCAGGC at position 20, offset 2 → focus base at 22
         assert positions == [22]
 
@@ -746,6 +748,131 @@ class TestWritePredictionTagsMinMargin:
         assert aln.get_tag("aa") == "Met"
 
 
+class TestWritePredictionTagsJunctionIndel:
+    """Tests for ``ji``/``jm`` tags and --abstain-on-junction-indel (issue #282)."""
+
+    def test_junction_tags_written_when_measured(self):
+        aln = _make_bare_alignment()
+        _write_prediction_tags(
+            aln,
+            "Ala",
+            0.9,
+            "Ala,Gly",
+            [0.9, 0.1],
+            raw=False,
+            min_confidence=0,
+            junction_indel=1,
+            junction_mapped=True,
+        )
+        assert aln.get_tag("ji") == 1
+        assert aln.get_tag("jm") == 1
+
+    def test_junction_tags_absent_when_not_measured(self):
+        aln = _make_bare_alignment()
+        _write_prediction_tags(
+            aln,
+            "Ala",
+            0.9,
+            "Ala,Gly",
+            [0.9, 0.1],
+            raw=False,
+            min_confidence=0,
+        )
+        assert not aln.has_tag("ji")
+        assert not aln.has_tag("jm")
+
+    def test_abstain_flag_off_uses_plain_margin_gate_regardless_of_junction(self):
+        """Default (flag off): unaffected by junction_indel -- existing behavior."""
+        aln = _make_bare_alignment()
+        # margin = 0.1 uint8=26 < threshold 128, and junction is disrupted --
+        # would fail either way, but this pins that the flag isn't required
+        # for the plain --min-margin gate to keep working.
+        _write_prediction_tags(
+            aln,
+            "Ala",
+            0.55,
+            "Ala,Gly",
+            [0.55, 0.45],
+            raw=False,
+            min_confidence=0,
+            min_margin=128,
+            junction_indel=1,
+            junction_mapped=True,
+        )
+        assert aln.get_tag("aa") == "unc"
+
+    def test_abstain_flag_abstains_on_disrupted_junction_below_margin(self):
+        aln = _make_bare_alignment()
+        _write_prediction_tags(
+            aln,
+            "Ala",
+            0.55,
+            "Ala,Gly",
+            [0.55, 0.45],  # margin uint8 = 26
+            raw=False,
+            min_confidence=0,
+            min_margin=128,
+            junction_indel=1,
+            junction_mapped=True,
+            abstain_on_junction_indel=True,
+        )
+        assert aln.get_tag("aa") == "unc"
+
+    def test_abstain_flag_abstains_on_unmapped_junction_below_margin(self):
+        """junction_mapped=False (the measurement itself failed) counts as disrupted."""
+        aln = _make_bare_alignment()
+        _write_prediction_tags(
+            aln,
+            "Ala",
+            0.55,
+            "Ala,Gly",
+            [0.55, 0.45],
+            raw=False,
+            min_confidence=0,
+            min_margin=128,
+            junction_indel=0,
+            junction_mapped=False,
+            abstain_on_junction_indel=True,
+        )
+        assert aln.get_tag("aa") == "unc"
+
+    def test_abstain_flag_bypasses_margin_gate_when_junction_is_intact(self):
+        """An intact junction (indel 0, mapped) skips the margin check entirely."""
+        aln = _make_bare_alignment()
+        _write_prediction_tags(
+            aln,
+            "Ala",
+            0.55,
+            "Ala,Gly",
+            [0.55, 0.45],  # margin uint8 = 26, well below 128
+            raw=False,
+            min_confidence=0,
+            min_margin=128,
+            junction_indel=0,
+            junction_mapped=True,
+            abstain_on_junction_indel=True,
+        )
+        assert aln.get_tag("aa") == "Ala"
+
+    def test_abstain_flag_still_honors_min_confidence(self):
+        """min_confidence is independent of the junction-aware margin gate."""
+        aln = _make_bare_alignment()
+        _write_prediction_tags(
+            aln,
+            "Ala",
+            0.4,  # ac uint8 = 102, below threshold 128
+            "Ala,Gly",
+            [0.9, 0.1],  # margin well above min_margin, junction intact
+            raw=False,
+            min_confidence=128,
+            min_margin=0,
+            junction_indel=0,
+            junction_mapped=True,
+            abstain_on_junction_indel=True,
+        )
+        assert aln.get_tag("aa") == "unc"
+
+
 class TestWritePredictionTagsCombinedThresholds:
     """Tests for combined --min-confidence + --min-margin gating."""
 
@@ -1073,6 +1200,28 @@ class TestRunInferenceTagsIntegration:
             pp = sorted(read.get_tag("pp"), reverse=True)
             expected_margin = pp[0] - pp[1] if len(pp) > 1 else 1.0
             assert read.get_tag("am") == pytest.approx(expected_margin, abs=1e-5)
+
+    def test_abstain_on_junction_indel_raises_for_a_binary_model(self, tmp_path):
+        """The flag gates the multiclass 'aa' call; a binary/pairwise model's
+        MP/ML tags have no equivalent for it to plug into (issue #282)."""
+        from leech.bundling import load_model_from_bundle
+        from leech.inference import run_inference
+
+        bundle_path = _create_pairwise_bundle(tmp_path, ["Ala_Gly"])
+        model, config = load_model_from_bundle(bundle_path, "Ala_Gly", device="cpu")
+
+        with pytest.raises(RuntimeError, match="only supported for multiclass"):
+            run_inference(
+                model_and_config=(model, config),
+                pod5_path=TRNA_POD5,
+                bam_path=TRNA_BAM,
+                output_path=tmp_path / "out.bam",
+                device="cpu",
+                batch_size=64,
+                reverse_signal=True,
+                reference_fasta=TRNA_REF,
+                abstain_on_junction_indel=True,
+            )
 
 
 @pytest.mark.skipif(not TRNA_FIXTURES_AVAILABLE, reason="tRNA fixtures not available")
@@ -1422,14 +1571,14 @@ class TestRunBatchProbabilities:
         n = logits.shape[0]
         signals = [np.zeros((1, 4), dtype=np.float32) for _ in range(n)]
         seqs = [np.zeros((4, 3), dtype=np.float32) for _ in range(n)]
-        meta = [("readA", 0), ("readB", 1)]
+        meta = [("readA", 0, 0, False), ("readB", 1, 1, True)]
         pending: dict = {}
         _run_batch_multiclass(
             signals, seqs, [None, None], meta, _FixedLogitsWrapper(logits), False, "cpu", pending
         )
 
         probs = torch.softmax(logits, dim=-1).numpy()
-        for i, (read_id, base_idx) in enumerate(meta):
+        for i, (read_id, base_idx, _junction_indel, _junction_mapped) in enumerate(meta):
             stored = pending[read_id][0]
             assert stored[0] == base_idx
             assert stored[1] == int(np.argmax(probs[i]))
@@ -1730,8 +1879,8 @@ class TestChunksForReadSharedBySingleAndBundle:
                 cal_scale=pod5_metadata.get("calibration_scale"),
             )
             positions = [
-                pos + spec.motif_offset
-                for pos in motif_searcher.find_motif_positions(
+                m.position + spec.motif_offset
+                for m in motif_searcher.find_motif_positions(
                     leech_read.read_id, leech_read.sequence, aln, spec.motif
                 )
             ]

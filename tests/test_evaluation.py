@@ -18,7 +18,12 @@ import pytest
 import leech.dataset as dataset
 from leech.constants import AUTO_DATALOADER_WORKERS
 from leech.dataset import resolve_dataloader_workers, resolve_val_dataloader_workers
-from leech.evaluation import _save_scores
+from leech.evaluation import (
+    _junction_stratified_binary_metrics,
+    _junction_stratified_multiclass_metrics,
+    _read_junction_indels,
+    _save_scores,
+)
 
 READ_IDS = ["read-a", "read-b", "read-c", "read-d"]
 LABELS = np.array([0, 1, 1, 0])
@@ -87,6 +92,72 @@ class TestSaveScores:
         _save_scores(out, _test_npz(tmp_path), LABELS, PROBS)
 
         assert out.exists()
+
+
+class TestJunctionStratifiedMetrics:
+    """``eval test`` stratifies by junction_indel == 0 / != 0 (issue #282)."""
+
+    def test_missing_column_returns_none(self, tmp_path):
+        assert _read_junction_indels(_test_npz(tmp_path), len(LABELS)) is None
+
+    def test_reads_the_column_when_present(self, tmp_path):
+        path = tmp_path / "test.npz"
+        junction_indels = np.array([0, 0, 1, -2], dtype=np.int64)
+        np.savez(
+            path,
+            signals=np.zeros((len(LABELS), 4), dtype=np.float32),
+            junction_indels=junction_indels,
+        )
+        got = _read_junction_indels(path, len(LABELS))
+        np.testing.assert_array_equal(got, junction_indels)
+
+    def test_length_mismatch_degrades_to_none_rather_than_raising(self, tmp_path):
+        """Unlike `_save_scores`, a mismatch here only disables the stratified
+        breakdown -- it must not fail the whole `eval test` run."""
+        path = tmp_path / "test.npz"
+        np.savez(
+            path,
+            signals=np.zeros((len(LABELS), 4), dtype=np.float32),
+            junction_indels=np.zeros(len(LABELS) - 1, dtype=np.int64),
+        )
+        assert _read_junction_indels(path, len(LABELS)) is None
+
+    def test_binary_stratification_splits_by_zero_vs_nonzero(self):
+        junction_indels = np.array([0, 0, 1, -3])
+        labels = np.array([0, 1, 1, 0])
+        preds = np.array([0, 1, 0, 0])
+        probs = np.array([0.1, 0.8, 0.4, 0.2])
+
+        strata = _junction_stratified_binary_metrics(junction_indels, labels, preds, probs)
+
+        assert strata["exact"]["n"] == 2
+        assert strata["disrupted"]["n"] == 2
+        # Sanity: the exact stratum is the first two rows, both correct.
+        assert strata["exact"]["accuracy"] == 1.0
+
+    def test_binary_stratification_handles_an_empty_stratum(self):
+        """Every chunk exact (a clean corpus): 'disrupted' must not crash on
+        an empty slice -- compute_metrics raises on empty input."""
+        junction_indels = np.zeros(4, dtype=np.int64)
+        labels = np.array([0, 1, 1, 0])
+        preds = np.array([0, 1, 1, 0])
+        probs = np.array([0.1, 0.8, 0.9, 0.2])
+
+        strata = _junction_stratified_binary_metrics(junction_indels, labels, preds, probs)
+
+        assert strata["exact"]["n"] == 4
+        assert strata["disrupted"] == {"n": 0}
+
+    def test_multiclass_stratification_splits_by_zero_vs_nonzero(self):
+        junction_indels = np.array([0, 0, 2, -1])
+        labels = np.array([0, 1, 2, 0])
+        preds = np.array([0, 1, 1, 0])
+
+        strata = _junction_stratified_multiclass_metrics(junction_indels, labels, preds)
+
+        assert strata["exact"]["n"] == 2
+        assert strata["exact"]["accuracy"] == 1.0
+        assert strata["disrupted"]["n"] == 2
 
 
 class TestFp32ProbabilitiesUnderSimulatedAMP:

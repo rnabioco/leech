@@ -204,16 +204,38 @@ def _categorical_codes(values: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.n
     return rank[np.asarray(inverse).ravel()], uniq[order], counts[order]
 
 
-def _source_group_counts(chunks) -> tuple[np.ndarray, list[str], np.ndarray]:
-    """``(group code per chunk, group names, chunks per group)``.
+def _field_group_counts(chunks, field: str) -> tuple[np.ndarray, list[str], np.ndarray]:
+    """``(group code per chunk, group names, chunks per group)`` for any field.
 
-    Mirrors ``chunk.get("source_group") or "unknown"``: both an absent group
-    and an empty one land in ``"unknown"``, and a corpus that also carries a
-    literal ``"unknown"`` group merges into it exactly as the dict did.
+    Groups by the field's distinct raw values -- for ``field="junction_indel"``
+    that is one group per distinct indel (0, 1, -1, ...), which upweights
+    every disrupted value relative to the dominant exact-match group without
+    forcing a coarser boolean split (issue #282). A missing (``None``) or
+    empty-string value lands in ``"unknown"``, and a corpus that also carries
+    a literal ``"unknown"`` value merges into it -- but ``0`` is a real value,
+    not a missing one (``0 or "unknown"`` would wrongly swallow it, which is
+    why this is not a plain ``chunk.get(field) or "unknown"``).
     """
-    raw = chunks.values("source_group") if isinstance(chunks, ChunkTable) else None
-    if raw is None:
-        raw = np.array([(c.get("source_group") or "unknown") for c in chunks], dtype=object)
+    if isinstance(chunks, ChunkTable):
+        raw = chunks.values(field)
+        if raw is None:
+            # The column is entirely absent -- either `field` names nothing
+            # ChunkTable tracks, or it does but every chunk predates it (a
+            # `_ConstColumn(None)`, as junction_indel/junction_mapped are on
+            # a pre-#282 corpus). Every chunk is "unknown" either way; don't
+            # materialize a ChunkRow per chunk (millions, on a real corpus)
+            # just to discover that one fact.
+            n = len(chunks)
+            return np.zeros(n, dtype=np.int64), ["unknown"], np.array([n])
+    else:
+        # Stringify unconditionally: chunks is a plain list of dicts here, so
+        # `field`'s values can be a mix of types (e.g. int junction_indel
+        # alongside the "unknown" sentinel for a chunk missing it). np.unique
+        # on a mixed-type object array raises trying to sort int against str;
+        # the ChunkTable branch above never hits this because one npz column
+        # is one dtype throughout.
+        values = [c.get(field) for c in chunks]
+        raw = np.array([str(v) if v not in (None, "") else "unknown" for v in values], dtype=object)
 
     codes, uniq, counts = _categorical_codes(raw)
     names = [
@@ -226,6 +248,16 @@ def _source_group_counts(chunks) -> tuple[np.ndarray, list[str], np.ndarray]:
         counts = np.bincount(codes, minlength=len(merged))
         names = list(merged)
     return codes, names, counts
+
+
+def _source_group_counts(chunks) -> tuple[np.ndarray, list[str], np.ndarray]:
+    """``(group code per chunk, group names, chunks per group)`` for ``source_group``.
+
+    ``--balance-groups``'s own grouping -- a thin, name-stable wrapper around
+    :func:`_field_group_counts` kept so existing callers/tests that reference
+    ``_source_group_counts`` by name are unaffected.
+    """
+    return _field_group_counts(chunks, "source_group")
 
 
 class _DeviceTally:
@@ -1935,6 +1967,7 @@ def train_model(
     right_context: int | None = None,
     balance_groups: bool = False,
     oversample_minority: bool = False,
+    sample_weight_field: str | None = None,
     label_map: dict[str, int] | None = None,
     num_out: int = 1,
     adversarial_lambda: float = 0.0,
@@ -2048,6 +2081,7 @@ def train_model(
             right_context=right_context,
             balance_groups=balance_groups,
             oversample_minority=oversample_minority,
+            sample_weight_field=sample_weight_field,
             label_map=label_map,
             confound=confound,
             label_noise_rates=label_noise_rates,
@@ -2104,6 +2138,7 @@ def train_model(
     right_context = cfg.right_context
     balance_groups = cfg.balance_groups
     oversample_minority = cfg.oversample_minority
+    sample_weight_field = cfg.sample_weight_field
     label_map = cfg.label_map
     confound = cfg.confound
     label_noise_rates = cfg.label_noise_rates
@@ -2385,11 +2420,16 @@ def train_model(
         )
 
     # Validate mutually exclusive sampling strategies
-    if balance_groups and oversample_minority:
+    _n_sampling_strategies = sum(
+        [balance_groups, oversample_minority, sample_weight_field is not None]
+    )
+    if _n_sampling_strategies > 1:
         raise ValueError(
-            "--balance-groups and --oversample-minority are mutually exclusive. "
-            "Use --balance-groups to equalize source groups, or "
-            "--oversample-minority to equalize class labels."
+            "--balance-groups, --oversample-minority and --sample-weight-field "
+            "are mutually exclusive. Use --balance-groups to equalize source "
+            "groups, --oversample-minority to equalize class labels, or "
+            "--sample-weight-field FIELD to equalize any other chunk metadata "
+            "field (e.g. 'junction_indel')."
         )
 
     # Build balanced sampler if requested
@@ -2427,6 +2467,30 @@ def train_model(
         else:
             logger.warning(
                 "oversample_minority enabled but only 1 class found. Falling back to shuffle."
+            )
+    elif sample_weight_field is not None:
+        # Generic inverse-frequency weighting by any chunk metadata field --
+        # the mechanism --balance-groups is a fixed instance of. Introduced
+        # for issue #282's junction_indel: grouping by the field's exact
+        # values upweights every disrupted indel relative to the dominant
+        # exact-match ("0") group.
+        codes, group_names, group_counts = _field_group_counts(
+            train_dataset.chunks, sample_weight_field
+        )
+
+        if len(group_names) > 1:
+            sample_weights = (1.0 / group_counts)[codes]
+            logger.info(
+                f"Sample weighting enabled across {len(group_names)} values of "
+                f"'{sample_weight_field}':"
+            )
+            for rank in np.argsort(-group_counts, kind="stable"):
+                count = int(group_counts[rank])
+                logger.info(f"  {group_names[rank]}: {count} chunks, weight={1.0 / count:.6f}")
+        else:
+            logger.warning(
+                f"--sample-weight-field {sample_weight_field!r} enabled but only "
+                f"1 distinct value found ({group_names}). Falling back to shuffle."
             )
 
     # One place decides the training sampler, because the distributed case has
@@ -2706,6 +2770,7 @@ def train_model(
         "augment_shift_max_bases": augment_shift_max_bases,
         "augment_feature_noise_scale": augment_feature_noise_scale,
         "balance_groups": balance_groups,
+        "sample_weight_field": sample_weight_field,
         "label_map": label_map,
         "adversarial_lambda": adversarial_lambda,
         "adversarial_anneal_epochs": adversarial_anneal_epochs,

@@ -56,7 +56,7 @@ from leech.chunking import (
 from leech.configs import PrepareConfig
 from leech.io import ReadInfo, get_motif_searcher, iter_read_info_batches
 from leech.io.bam_reader import count_bam_reads
-from leech.io.motif_search import MotifSearcher
+from leech.io.motif_search import MotifMatch, MotifSearcher
 from leech.io.pod5_reader import read_pod5_signals_batch_cached
 from leech.preparation.reader import build_leech_read
 
@@ -355,8 +355,8 @@ def _find_motif_positions(
     read_info: ReadInfo,
     motif_searcher: MotifSearcher | None,
     config: PrepareConfig,
-) -> list[int]:
-    """Find focus base indices for a single read.
+) -> list[MotifMatch]:
+    """Find focus bases (position + junction disruption) for a single read.
 
     A thin adapter around :func:`leech.chunking.find_focus_bases`, which is
     also what the Python backend goes through — the rule itself lives in one
@@ -500,7 +500,12 @@ def _prepare_batch_rust_with_failures(
         mv_arrays.append(mt.moves.view(np.uint8))
         num_samples_list.append(mt.num_samples)
         trim_offsets.append(mt.trim_offset)
-        motif_positions.append(positions)
+        # Rust's `motif_positions` parameter is plain ints -- the junction
+        # measurement rides alongside as `read_meta[...]["junction"]`, keyed
+        # by the same position, and is stamped onto each returned chunk
+        # after the call (below) by its `base_idx`, which Rust always sets
+        # to the position that produced it.
+        motif_positions.append([m.position for m in positions])
 
         if cigar_tuples is not None:
             cigar_tuples.append(ri.cigar_tuples or [])
@@ -510,6 +515,7 @@ def _prepare_batch_rust_with_failures(
         read_meta[ri.read_id] = {
             "reference_name": ri.reference_name or "",
             "cl_value": getattr(ri, "cl_value", None),
+            "junction": {m.position: (m.junction_indel, m.junction_mapped) for m in positions},
         }
 
     n_submitted = len(read_ids)
@@ -624,6 +630,15 @@ def _prepare_batch_rust_with_failures(
         chunk_dict["cl_value"] = meta.get("cl_value")
         chunk_dict["feature_start"] = feat_start
         chunk_dict["feature_end"] = feat_end
+        # Junction disruption at this chunk's motif span (issue #282), looked
+        # up by the same position Rust used as `base_idx` for this chunk --
+        # `escapepod_signal::chunk` always sets it to the focus position it
+        # was given, so this is a plain dict lookup, not a re-measurement.
+        junction_indel, junction_mapped = meta.get("junction", {}).get(
+            int(chunk_dict["base_idx"]), (0, False)
+        )
+        chunk_dict["junction_indel"] = junction_indel
+        chunk_dict["junction_mapped"] = junction_mapped
 
         all_chunks.append(chunk_dict)
 

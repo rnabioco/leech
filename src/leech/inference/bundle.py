@@ -814,6 +814,8 @@ def run_bundle_inference(
                             sig,
                             enc_seq,
                             feat,
+                            _junction_indel,
+                            _junction_mapped,
                         ) in worker_results:
                             if read_id in seen_in_batch:
                                 continue
@@ -961,8 +963,8 @@ def run_bundle_inference(
                     assert motif is not None, "motif must not be None at inference time"
                     aln_meta = leech_read.metadata.get("alignment")
                     positions = [
-                        pos + motif_offset
-                        for pos in motif_searcher.find_motif_positions(
+                        m.position + motif_offset
+                        for m in motif_searcher.find_motif_positions(
                             leech_read.read_id, leech_read.sequence, aln_meta, motif
                         )
                     ]

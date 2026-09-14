@@ -772,6 +772,15 @@ def merge(
     "(mutually exclusive with --balance-groups)",
 )
 @click.option(
+    "--sample-weight-field",
+    type=str,
+    default=None,
+    help="Chunk metadata field to inverse-frequency weight sampling by, one group per "
+    "distinct value (mutually exclusive with --balance-groups/--oversample-minority). "
+    "E.g. 'junction_indel' to over-sample chunks whose motif junction mapped with an "
+    "indel (issue #282).",
+)
+@click.option(
     "--num-out",
     type=int,
     default=1,
@@ -900,6 +909,7 @@ def train(
     gpus,
     balance_groups,
     oversample_minority,
+    sample_weight_field,
     num_out,
     adversarial_lambda,
     adversarial_anneal_epochs,
@@ -976,6 +986,7 @@ def train(
         allow_encoding_fallback=encoding_fallback,
         balance_groups=balance_groups,
         oversample_minority=oversample_minority,
+        sample_weight_field=sample_weight_field,
         num_out=num_out,
         adversarial_lambda=adversarial_lambda,
         adversarial_anneal_epochs=adversarial_anneal_epochs,
@@ -1759,6 +1770,15 @@ def test(
     help="Margin threshold in uint8 space (0-255). Margin = max_prob - 2nd_prob. Reads below threshold are called 'unc'. Default: 0 (no margin filter).",
 )
 @click.option(
+    "--abstain-on-junction-indel/--no-abstain-on-junction-indel",
+    default=False,
+    help="Multiclass only: enforce --min-margin only on reads whose motif junction is "
+    "disrupted (unmapped, or a nonzero CIGAR indel), calling them 'unc' when the margin "
+    "is also below threshold. Reads with an intact junction bypass the margin check "
+    "entirely under this flag. junction_indel/junction_mapped are always recorded "
+    "(BAM ji/jm tags, or a TSV column) so the rule can be re-applied offline.",
+)
+@click.option(
     "--pod5",
     required=True,
     type=click.Path(exists=True, path_type=Path),
@@ -1882,6 +1902,7 @@ def predict(
     raw,
     min_confidence,
     min_margin,
+    abstain_on_junction_indel,
     pod5,
     bam,
     output,
@@ -1952,6 +1973,7 @@ def predict(
         raw=raw,
         min_confidence=min_confidence,
         min_margin=min_margin,
+        abstain_on_junction_indel=abstain_on_junction_indel,
         pod5=pod5,
         bam=bam,
         output=output,

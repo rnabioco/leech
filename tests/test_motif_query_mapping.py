@@ -17,7 +17,7 @@ selection on the label, applied before any model sees the data.
 import pysam
 import pytest
 
-from leech.io.motif_search import ReferenceMotifSearcher, get_motif_searcher
+from leech.io.motif_search import MotifMatch, ReferenceMotifSearcher, get_motif_searcher
 
 MOTIF = "CCAGGC"
 REF_NAME = "ref0"
@@ -60,8 +60,10 @@ def test_gate_off_keeps_it_and_returns_the_reference_coordinate():
     s = ReferenceMotifSearcher(REFS, skip_indels=False, debug=True, require_query_mapping=False)
     pos = s.find_motif_positions("read0", "", _aln_with_insertion_in_motif(), MOTIF)
     # 110 - 100: reference-relative, exactly what anchor="reference" returns on
-    # the clean path. The window therefore lands in the same place.
-    assert pos == [10]
+    # the clean path. The window therefore lands in the same place. The
+    # measurement still runs even though acceptance doesn't need it (issue
+    # #282): mapped_len (10) - len(MOTIF) (6) = 4, the insertion size.
+    assert pos == [MotifMatch(10, 4, True)]
     assert s.stats["accepted_without_query_mapping"] == 1
     assert s.stats["successful"] == 1
     assert s.stats["failed_length_check"] == 0
@@ -78,8 +80,8 @@ def test_gate_off_agrees_with_gate_on_when_the_motif_is_clean():
 
     strict = ReferenceMotifSearcher(REFS, skip_indels=False)
     lax = ReferenceMotifSearcher(REFS, skip_indels=False, require_query_mapping=False)
-    assert strict.find_motif_positions("clean", "", aln, MOTIF) == [10]
-    assert lax.find_motif_positions("clean", "", aln, MOTIF) == [10]
+    assert strict.find_motif_positions("clean", "", aln, MOTIF) == [MotifMatch(10, 0, True)]
+    assert lax.find_motif_positions("clean", "", aln, MOTIF) == [MotifMatch(10, 0, True)]
 
 
 def test_gate_off_is_refused_under_basecall_anchoring():

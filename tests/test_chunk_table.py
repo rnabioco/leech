@@ -36,6 +36,8 @@ def make_chunks(n: int = 8, *, labelled: bool = True) -> list[dict]:
                 "feature_end": 6,
                 "cl_value": i if i % 4 else -1,
                 "focus_signal_pos": 8 + i,
+                "junction_indel": (i % 5) - 2,
+                "junction_mapped": bool(i % 2),
                 "seq_to_sig_map": np.arange(12, dtype=np.int64),
                 "sequence_with_kmer_context": "ACGT" * 3,
             }
@@ -253,6 +255,10 @@ class TestLegacyCorpora:
         assert "feature_start" not in row
         # cl_value predates this format but callers read it unguarded.
         assert row["cl_value"] is None
+        # Same for junction_indel/junction_mapped, which predate issue #282.
+        assert "junction_indel" in row
+        assert row["junction_indel"] is None
+        assert row["junction_mapped"] is None
 
 
 class TestPickling:
