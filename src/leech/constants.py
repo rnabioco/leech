@@ -8,6 +8,14 @@ magic numbers, and configuration constants used throughout the codebase.
 # Required BAM tags for nanopore signal analysis
 REQUIRED_BAM_TAGS = ["mv", "ns"]
 
+# How many reads `iter_read_info_batches` checks before it warns that a BAM
+# carries neither the uppercase `CL` nor lowercase `cl` charging-level tag
+# (issue #254). One warning per BAM, not per read -- a corpus prepared from a
+# BAM missing the tag entirely gets `cl_value = None` (-> -1, the "missing"
+# sentinel) for every chunk, which silently zeroes the `--cl-regression`
+# gradient unless something says so.
+CL_TAG_CHECK_READS = 1000
+
 # Class value written to the prediction tag when a read falls below
 # --min-confidence or --min-margin.
 BELOW_THRESHOLD_LABEL = "unc"

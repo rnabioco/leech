@@ -777,6 +777,19 @@ class ChunkSpool:
             parts.append(joined)
         return parts[0]
 
+    def cl_values(self) -> np.ndarray | None:
+        """A read-only view of the ``cl_values`` column, or ``None`` if empty.
+
+        Used to report what fraction of chunks got a real charging-level tag
+        at the end of ``data prepare`` (issue #254): a BAM whose CL tag was
+        renamed or dropped reads back as the ``-1`` (missing) sentinel for
+        every chunk, which silently kills the gradient on a
+        ``--cl-regression`` head unless someone notices.
+        """
+        self._flush()
+        column = self._flat.get("cl_values")
+        return None if column is None else column.view()
+
     def read_ids(self) -> np.ndarray:
         """The ``read_ids`` column, for computing a read-level split."""
         return self.text_column("read_ids")

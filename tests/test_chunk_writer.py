@@ -541,6 +541,32 @@ class TestMemory:
         assert peak < payload * 0.5, f"peak {peak} of payload {payload}"
 
 
+class TestClValuesAccessor:
+    """``ChunkSpool.cl_values()`` backs the #254 CL-coverage summary in
+    `data prepare` (``commands/prepare.py``): reading it back must agree with
+    what ends up in the written corpus, without disturbing it.
+    """
+
+    def test_returns_the_flushed_column(self, tmp_path):
+        chunks = make_chunks(9)  # cl_value = None if i % 5 == 0 else i % 7
+        expected = [c["cl_value"] if c["cl_value"] is not None else -1 for c in chunks]
+
+        with ChunkSpool(tmp_path, compressed=False) as spool:
+            spool.append(chunks[:4])
+            spool.append(chunks[4:])
+            assert spool.cl_values().tolist() == expected
+
+            out = tmp_path / "all.npz"
+            spool.write_npz(out)
+
+        with np.load(out) as data:
+            assert data["cl_values"].tolist() == expected
+
+    def test_none_before_any_chunk_is_appended(self, tmp_path):
+        with ChunkSpool(tmp_path, compressed=False) as spool:
+            assert spool.cl_values() is None
+
+
 class TestOptionalTextRoundTrip:
     """`None` text fields are stored as `""`, not as the string `"None"`.
 
