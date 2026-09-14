@@ -2884,6 +2884,12 @@ def train_model(
         ),
         "refine_kmer_center_idx": prepare_metadata.get("refine_kmer_center_idx", -1),
         "recover_softclip_signal": prepare_metadata.get("recover_softclip_signal", False),
+        # Focus-relative sequence masking (leech#256), auto-carried from the
+        # prepare sidecar -- predict must apply the same mask a live chunk
+        # was extracted with, or it feeds the model real tRNA-identity bases
+        # it never saw in training. No `model train` CLI flag: it is baked
+        # into the corpus at `data prepare` time, not chosen at train time.
+        "mask_seq_side": prepare_metadata.get("mask_seq_side"),
         "kmer_table_sha256": prepare_metadata.get("kmer_table_sha256"),
         # Base-defined signal window (issue #278), carried through so
         # `predict` re-derives the same window `data prepare` cut; `None`

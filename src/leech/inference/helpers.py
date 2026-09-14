@@ -247,6 +247,7 @@ class InferenceSpec:
     skip_motif_indels: bool
     require_query_mapping: bool
     recover_softclip_signal: bool
+    mask_seq_side: str | None
 
     # Signal map refinement
     refine_signal_map: bool
@@ -446,6 +447,7 @@ class InferenceSpec:
             skip_motif_indels=bool(config.get("skip_motif_indels", False)),
             require_query_mapping=bool(config.get("require_query_mapping", True)),
             recover_softclip_signal=bool(config.get("recover_softclip_signal", False)),
+            mask_seq_side=config.get("mask_seq_side"),
             refine_signal_map=refine_signal_map,
             refine_half_bandwidth=int(
                 config.get("refine_half_bandwidth", DEFAULT_REFINE_HALF_BANDWIDTH)
@@ -1321,6 +1323,7 @@ def check_rust_extraction_available(
     norm_method: str = RUST_NORM_METHOD,
     recover_softclip_signal: bool = False,
     signal_context_bases: tuple[int, int] | None = None,
+    mask_seq_side: str | None = None,
 ) -> tuple[bool, object, object, object]:
     """Decide whether the rust monolithic extraction hot path is usable.
 
@@ -1340,6 +1343,12 @@ def check_rust_extraction_available(
             window support -- that landed only in the training/prepare path
             (``training.rs``, issue #278) -- so a model trained with
             ``--signal-context-bases`` always forces Python at predict time.
+        mask_seq_side: The model's ``mask_seq_side`` (from its config), or
+            None. Focus-relative sequence masking (``_mask_focus_side``) is
+            Python-only -- see ``rust_prepare_unsupported_reason`` for why --
+            so a non-None value also forces Python, or a live prediction
+            would feed the model real tRNA-identity bases it never saw
+            during training instead of the blanked ones it was trained on.
 
     Returns:
         (use_rust, extract_inference_chunks, preload_pod5_signals,
@@ -1367,6 +1376,7 @@ def check_rust_extraction_available(
     norm_ok = rust_supports_norm_method(norm_method)
     softclip_ok = rust_supports_softclip_recovery(recover_softclip_signal)
     bases_ok = rust_supports_signal_context_bases(signal_context_bases)
+    mask_ok = mask_seq_side is None
     if backend == "rust" and not norm_ok:
         raise RuntimeError(
             f"--backend rust requested but the Rust pipeline only implements "
@@ -1385,7 +1395,15 @@ def check_rust_extraction_available(
             "--signal-context-bases and the Rust inference pipeline does not "
             "implement a base-defined signal window. Use --backend python."
         )
-    use_rust = rust_available and backend != "python" and norm_ok and softclip_ok and bases_ok
+    if backend == "rust" and not mask_ok:
+        raise RuntimeError(
+            f"--backend rust requested but mask_seq_side={mask_seq_side!r}, "
+            "which this model's config enables, is not implemented in the "
+            "Rust extraction path. Use --backend python."
+        )
+    use_rust = (
+        rust_available and backend != "python" and norm_ok and softclip_ok and bases_ok and mask_ok
+    )
     if rust_available and backend != "python" and not norm_ok:
         logger.warning(
             f"Signal normalization '{norm_method}' is not implemented in the Rust "
@@ -1404,6 +1422,19 @@ def check_rust_extraction_available(
             "This model was trained with --signal-context-bases, which the Rust "
             "inference pipeline does not implement; falling back to the Python "
             "path so chunks match how the model was trained."
+        )
+    if (
+        rust_available
+        and backend != "python"
+        and norm_ok
+        and softclip_ok
+        and bases_ok
+        and not mask_ok
+    ):
+        logger.warning(
+            f"mask_seq_side={mask_seq_side!r} is not implemented in the Rust "
+            "extraction path; falling back to the Python path so chunks match "
+            "how the model was trained."
         )
     return (
         use_rust,
