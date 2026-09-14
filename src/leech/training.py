@@ -1955,6 +1955,7 @@ def train_model(
     augment_time_mask_count: int = 1,
     augment_shift_max_bases: float = 0.0,
     augment_feature_noise_scale: float = 0.0,
+    augment_time_stretch: tuple[float, float] = (1.0, 1.0),
     resume_from: Path | None = None,
     num_workers: int = 0,
     motif: str | None = None,
@@ -2019,6 +2020,10 @@ def train_model(
         augment_jitter: Signal jitter noise std dev (0 = disabled)
         augment_scale_min: Min random scale factor for signal augmentation
         augment_scale_max: Max random scale factor for signal augmentation
+        augment_time_stretch: (min, max) per-sample time-stretch factor range
+            for the training dataset ((1.0, 1.0) = disabled). See
+            ``LeechDataset``'s ``time_stretch_range`` for the exact per-channel
+            rule; never applied to validation.
         resume_from: Path to checkpoint to resume training from
         motif: Motif used for chunk extraction (recorded in config for provenance)
         motif_offset: Offset within motif for focus base (recorded in config)
@@ -2114,6 +2119,7 @@ def train_model(
                 time_mask_count=augment_time_mask_count,
                 shift_max_bases=augment_shift_max_bases,
                 feature_noise_scale=augment_feature_noise_scale,
+                time_stretch=augment_time_stretch,
             ),
             aux_head=AuxHeadConfig(
                 adversarial_lambda=adversarial_lambda,
@@ -2167,6 +2173,7 @@ def train_model(
     augment_time_mask_count = cfg.augment.time_mask_count
     augment_shift_max_bases = cfg.augment.shift_max_bases
     augment_feature_noise_scale = cfg.augment.feature_noise_scale
+    augment_time_stretch = cfg.augment.time_stretch
     adversarial_lambda = cfg.aux_head.adversarial_lambda
     adversarial_anneal_epochs = cfg.aux_head.adversarial_anneal_epochs
     cl_regression = cfg.aux_head.cl_regression
@@ -2330,6 +2337,7 @@ def train_model(
         time_mask_count=augment_time_mask_count,
         shift_max_bases=augment_shift_max_bases,
         feature_noise_scale=augment_feature_noise_scale,
+        time_stretch_range=augment_time_stretch,
         dwell_template_table=dwell_template_table,
         standardize_features=standardize_features,
     )
@@ -2813,6 +2821,8 @@ def train_model(
         "augment_time_mask_count": augment_time_mask_count,
         "augment_shift_max_bases": augment_shift_max_bases,
         "augment_feature_noise_scale": augment_feature_noise_scale,
+        "augment_time_stretch_min": augment_time_stretch[0],
+        "augment_time_stretch_max": augment_time_stretch[1],
         "balance_groups": balance_groups,
         "sample_weight_field": sample_weight_field,
         "label_map": label_map,

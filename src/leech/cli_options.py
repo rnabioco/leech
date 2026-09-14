@@ -14,6 +14,7 @@ from leech.constants import (
     DEFAULT_AUGMENT_SHIFT_MAX_BASES,
     DEFAULT_AUGMENT_TIME_MASK_BASES,
     DEFAULT_AUGMENT_TIME_MASK_COUNT,
+    DEFAULT_AUGMENT_TIME_STRETCH,
     DEFAULT_BATCH_SIZE,
     DEFAULT_DEVICE,
     DEFAULT_EPOCHS,
@@ -105,6 +106,37 @@ def validate_selection_metric(ctx, param, value):
     return value
 
 
+class FloatPair(click.ParamType):
+    """Click type parsing a comma-separated ``MIN,MAX`` pair of positive floats.
+
+    Examples::
+
+        1,1        -> (1.0, 1.0)
+        0.8,1.25   -> (0.8, 1.25)
+    """
+
+    name = "MIN,MAX"
+
+    def convert(self, value, param, ctx):
+        if isinstance(value, tuple):
+            return value
+        try:
+            parts = [float(p.strip()) for p in str(value).split(",")]
+        except ValueError:
+            self.fail(f"'{value}' is not MIN,MAX (e.g. '0.8,1.25')", param, ctx)
+        if len(parts) != 2:
+            self.fail(f"'{value}' must have exactly two comma-separated values", param, ctx)
+        lo, hi = parts
+        if lo <= 0 or hi <= 0:
+            self.fail(f"'{value}': both values must be positive", param, ctx)
+        if lo > hi:
+            self.fail(f"'{value}': MIN must be <= MAX", param, ctx)
+        return (lo, hi)
+
+
+FLOAT_PAIR = FloatPair()
+
+
 class LazyChoice(click.Choice):
     """A click.Choice that defers resolving its choices until first access.
 
@@ -138,6 +170,18 @@ def training_hyperparams(f):
     and data augmentation options.
     """
     # Applied in reverse order so --help display matches the original ordering.
+    f = click.option(
+        "--augment-time-stretch",
+        type=FLOAT_PAIR,
+        default=DEFAULT_AUGMENT_TIME_STRETCH,
+        help="Resample each chunk's signal window by a per-sample factor drawn "
+        "uniformly from MIN,MAX, about the focus position (default: '1,1' = "
+        "disabled). Scales the base-to-signal map to match (signal_kmer stays "
+        "aligned) and the dwell/dwell_mean/dwell_log feature channels "
+        "(dwell_ratio, dwell_std and level channels are unchanged). Batched "
+        "__getitems__ path only; incompatible with --augment-shift-max-bases "
+        "and --augment-time-mask-bases.",
+    )(f)
     f = click.option(
         "--augment-feature-noise-scale",
         type=float,

@@ -52,6 +52,7 @@ def handle_optimize(
     augment_time_mask_count: int = 1,
     augment_shift_max_bases: float = 0.0,
     augment_feature_noise_scale: float = 0.0,
+    augment_time_stretch: tuple[float, float] = (1.0, 1.0),
     balance_groups: bool = False,
     oversample_minority: bool = False,
     motif: str = "",
@@ -177,6 +178,7 @@ def handle_optimize(
             time_mask_count=augment_time_mask_count,
             shift_max_bases=augment_shift_max_bases,
             feature_noise_scale=augment_feature_noise_scale,
+            time_stretch=augment_time_stretch,
         ),
         aux_head=AuxHeadConfig(
             adversarial_lambda=adversarial_lambda,

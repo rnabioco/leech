@@ -76,6 +76,7 @@ DEFAULT_STANDARDIZE_FEATURES = False  # Per-channel feature standardization (fro
 # (dwell_ratio is close to 1 everywhere in some corpora) divides by something
 # other than ~0 instead of blowing up to +/-inf.
 FEATURE_STANDARDIZE_EPS = 1e-6
+DEFAULT_AUGMENT_TIME_STRETCH = (1.0, 1.0)  # (min, max) per-sample stretch factor (disabled)
 
 # Model defaults
 DEFAULT_SIGNAL_LEN = 400  # Default signal chunk length

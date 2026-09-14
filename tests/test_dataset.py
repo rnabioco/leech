@@ -863,5 +863,515 @@ class TestStandardizeFeatures:
         torch.testing.assert_close(plain[0]["features"], standardized[0]["features"])
 
 
+class TestTimeStretchPrimitives:
+    """The pure numpy warp functions ``__getitems__`` composes (issue #281)."""
+
+    def test_signal_identity_at_factor_one(self):
+        import numpy as np
+
+        from leech.dataset import _time_stretch_signal_rows
+
+        rng = np.random.default_rng(0)
+        signal = rng.standard_normal((3, 50)).astype(np.float32)
+        factors = np.ones(3, dtype=np.float32)
+        out = _time_stretch_signal_rows(signal, factors, focus_idx=25)
+        assert np.array_equal(out, signal)
+
+    def test_map_identity_at_factor_one(self):
+        import numpy as np
+
+        from leech.dataset import _time_stretch_seq_to_sig_rows
+
+        seq_to_sig = np.array([[0, 20, 40, 60, 80, 100]], dtype=np.int32)
+        factors = np.ones(1, dtype=np.float32)
+        out = _time_stretch_seq_to_sig_rows(seq_to_sig, factors, focus_idx=50, signal_len=100)
+        assert np.array_equal(out, seq_to_sig)
+
+    def test_map_sentinel_is_never_scaled(self):
+        """A value equal to signal_len (padding, or a row's own right-edge
+        terminator) must stay signal_len exactly -- scaling it would turn a
+        boundary marker `encode_signal_kmer_batch` relies on into a stray
+        interior position."""
+        import numpy as np
+
+        from leech.dataset import _time_stretch_seq_to_sig_rows
+
+        seq_to_sig = np.array([[10, 50, 100, 100]], dtype=np.int32)  # padded row
+        factors = np.array([1.8], dtype=np.float32)
+        out = _time_stretch_seq_to_sig_rows(seq_to_sig, factors, focus_idx=50, signal_len=100)
+        assert out[0, 2] == 100
+        assert out[0, 3] == 100
+
+    def test_map_boundary_stretching_past_the_edge_clips_to_the_sentinel(self):
+        import numpy as np
+
+        from leech.dataset import _time_stretch_seq_to_sig_rows
+
+        # focus=50, factor=3: a boundary at 90 would scale to 50+(90-50)*3=170,
+        # well past the 100-sample window -- clip to signal_len (padding).
+        seq_to_sig = np.array([[90, 100]], dtype=np.int32)
+        factors = np.array([3.0], dtype=np.float32)
+        out = _time_stretch_seq_to_sig_rows(seq_to_sig, factors, focus_idx=50, signal_len=100)
+        assert out[0, 0] == 100
+
+    def test_signal_and_map_stay_aligned(self):
+        """The scaled map, used to index the stretched signal, recovers the
+        signal value the un-stretched map pointed at -- the alignment
+        acceptance criterion, checked directly against the pure functions.
+
+        A linear ramp signal makes this exact up to the map value's rounding
+        to the nearest integer sample: interpolating a linear function at any
+        fractional position reproduces that position's value exactly, so the
+        only error is from `round(scaled_position) != scaled_position`.
+        """
+        import numpy as np
+
+        from leech.dataset import _time_stretch_seq_to_sig_rows, _time_stretch_signal_rows
+
+        signal_len = 100
+        focus_idx = 50
+        factor = 1.2
+        signal = np.arange(signal_len, dtype=np.float32).reshape(1, signal_len)
+        factors = np.array([factor], dtype=np.float32)
+        # Boundaries chosen so the scaled position stays in-window (no clip).
+        original_boundaries = np.array([30, 40, 50, 60, 70], dtype=np.int32)
+        seq_to_sig = original_boundaries.reshape(1, -1)
+
+        stretched_signal = _time_stretch_signal_rows(signal, factors, focus_idx)
+        stretched_map = _time_stretch_seq_to_sig_rows(seq_to_sig, factors, focus_idx, signal_len)
+
+        for j, p in enumerate(original_boundaries):
+            scaled = int(stretched_map[0, j])
+            assert 0 <= scaled < signal_len
+            recovered = stretched_signal[0, scaled]
+            # Rounding the scaled position to the nearest sample introduces at
+            # most 0.5 samples of source-position error, i.e. 0.5/factor here.
+            assert abs(float(recovered) - float(p)) < 1.0
+
+    def test_signal_stretch_widens_the_window_about_the_focus(self):
+        """A factor > 1 samples further from the focus per output step."""
+        import numpy as np
+
+        from leech.dataset import _time_stretch_signal_rows
+
+        signal = np.arange(100, dtype=np.float32).reshape(1, 100)
+        out = _time_stretch_signal_rows(signal, np.array([2.0]), focus_idx=50)
+        # Output sample 60 reads from source 50 + (60-50)/2 = 55.
+        assert abs(float(out[0, 60]) - 55.0) < 1e-4
+        # The focus sample itself never moves.
+        assert abs(float(out[0, 50]) - 50.0) < 1e-4
+
+
+class TestTimeStretch:
+    """``LeechDataset(time_stretch_range=...)`` (issue #281)."""
+
+    def test_disabled_by_default(self, temp_chunks_file):
+        ds = LeechDataset(
+            temp_chunks_file,
+            signal_len=400,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding="base_onehot",
+        )
+        assert ds._time_stretch_range == (1.0, 1.0)
+
+    def test_one_one_is_bitwise_identity(self, temp_chunks_file):
+        """(1.0, 1.0) must reproduce the un-augmented batch bit for bit."""
+        baseline = LeechDataset(
+            temp_chunks_file,
+            signal_len=400,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding="base_onehot",
+        )
+        stretched = LeechDataset(
+            temp_chunks_file,
+            signal_len=400,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding="base_onehot",
+            time_stretch_range=(1.0, 1.0),
+        )
+        indices = list(range(len(baseline)))
+        expected = collate_fn(baseline.__getitems__(indices))
+        actual = collate_fn(stretched.__getitems__(indices))
+        assert expected.keys() == actual.keys()
+        for key in expected:
+            assert torch.equal(expected[key], actual[key]), key
+
+    def test_one_one_is_bitwise_identity_with_signal_kmer(self, temp_chunks_file):
+        baseline = LeechDataset(
+            temp_chunks_file,
+            signal_len=400,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding="signal_kmer",
+            signal_kmer_context=(2, 2),
+        )
+        stretched = LeechDataset(
+            temp_chunks_file,
+            signal_len=400,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding="signal_kmer",
+            signal_kmer_context=(2, 2),
+            time_stretch_range=(1.0, 1.0),
+        )
+        indices = list(range(len(baseline)))
+        expected = collate_fn(baseline.__getitems__(indices))
+        actual = collate_fn(stretched.__getitems__(indices))
+        for key in expected:
+            assert torch.equal(expected[key], actual[key]), key
+
+    def test_changes_the_signal(self, temp_chunks_file):
+        ds = LeechDataset(
+            temp_chunks_file,
+            signal_len=400,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding="base_onehot",
+            time_stretch_range=(1.5, 1.5),
+        )
+        indices = list(range(len(ds)))
+        batch = collate_fn(ds.__getitems__(indices))
+        assert not torch.equal(batch["signal"], ds._signals_tensor[indices])
+
+    def test_anchors_on_focus_signal_pos_not_signal_len_over_two(self):
+        """Regression: a corpus prepared with an asymmetric ``--signal-context``
+        but trained without a train-time asymmetric crop (the common case --
+        ``leech model train`` exposes no singular ``--left-context``/
+        ``--right-context`` override) must anchor the stretch at the corpus's
+        own ``focus_signal_pos``, not ``signal_len // 2``.
+
+        E.g. ``data prepare --signal-context 100 300`` stores
+        ``focus_signal_pos=100`` in a 400-sample window; assuming the focus
+        sits at 200 (the symmetric-prepare center) silently decorrelates the
+        stretched signal, map and features from the real motif position.
+        """
+        import numpy as np
+
+        signal_len = 400
+        true_focus = 100  # e.g. --signal-context 100 300
+        wrong_focus = signal_len // 2  # the bug's assumption
+
+        chunks = [
+            {
+                "signal": np.arange(signal_len, dtype=np.float32),
+                "sequence": "A" * 11,
+                "label": "pos",
+                "label_int": i % 2,
+                "read_id": f"read_{i}",
+                "base_idx": 5,
+                "focus_signal_pos": true_focus,
+            }
+            for i in range(3)
+        ]
+
+        ds = LeechDataset(
+            chunks=chunks,
+            signal_len=signal_len,
+            kmer_len=11,
+            model_type="ConvLSTMBase",  # no features; keep the fixture minimal
+            seq_encoding="base_onehot",
+            time_stretch_range=(2.0, 2.0),
+        )
+        # The realistic case this regresses: no asymmetric train-time crop.
+        assert ds.left_context is None and ds.right_context is None
+
+        rows = np.arange(3)
+        batch = collate_fn(ds.__getitems__(list(rows)))
+        original = ds._signals_tensor[rows]
+
+        # The true focus sample must be exactly unchanged...
+        assert torch.equal(batch["signal"][:, true_focus], original[:, true_focus])
+        # ...while signal_len // 2 is NOT the invariant point: it moved, which
+        # proves this test would have failed against the old
+        # `focus_idx = signal_len // 2` assumption instead of passing vacuously.
+        assert not torch.equal(batch["signal"][:, wrong_focus], original[:, wrong_focus])
+
+    def test_anchors_on_focus_signal_pos_block_path(self, tmp_path):
+        """Same regression as above, through the npz-backed block-wise filler."""
+        import numpy as np
+
+        from leech.chunking.serialization import save_chunks
+
+        signal_len = 400
+        true_focus = 100
+        wrong_focus = signal_len // 2
+
+        chunks = [
+            {
+                "signal": np.arange(signal_len, dtype=np.float32),
+                "sequence": "A" * 11,
+                "dwell": np.ones(11, dtype=np.float32),
+                "features": np.zeros((2, 11), dtype=np.float32),
+                "label": "pos",
+                "label_int": i % 2,
+                "read_id": f"read_{i}",
+                "base_idx": 5,
+                "focus_signal_pos": true_focus,
+            }
+            for i in range(3)
+        ]
+        npz_path = tmp_path / "asymmetric.npz"
+        save_chunks(chunks, npz_path)
+
+        ds = LeechDataset(
+            npz_path,
+            signal_len=signal_len,
+            kmer_len=11,
+            model_type="ConvLSTMBase",
+            seq_encoding="base_onehot",
+            time_stretch_range=(2.0, 2.0),
+        )
+        assert ds.left_context is None and ds.right_context is None
+
+        rows = np.arange(3)
+        batch = collate_fn(ds.__getitems__(list(rows)))
+        original = ds._signals_tensor[rows]
+
+        assert torch.equal(batch["signal"][:, true_focus], original[:, true_focus])
+        assert not torch.equal(batch["signal"][:, wrong_focus], original[:, wrong_focus])
+
+    def test_shares_one_factor_and_focus_across_signal_channels(self):
+        """Regression for the ``(B, 2, L)`` branch (``signal_mode="both"`` on
+        a corpus with a residual channel): the residual channel must warp
+        with the exact same per-row factor and focus as the primary signal,
+        not independently and not left unwarped.
+
+        A constant offset between the two channels' ramps commutes exactly
+        through linear interpolation only when both are resampled at the same
+        fractional position with the same weights, so ``channel1 - channel0``
+        staying exactly the offset everywhere is what proves they share one
+        factor/focus; an independent draw, a focus mismatch, or one channel
+        skipped would all show up as a non-constant difference.
+        """
+        import numpy as np
+
+        signal_len = 400
+        offset = 1000.0
+        chunks = [
+            {
+                "signal": np.arange(signal_len, dtype=np.float32),
+                "signal_residual": np.arange(signal_len, dtype=np.float32) + offset,
+                "sequence": "A" * 11,
+                "label": "pos",
+                "label_int": i % 2,
+                "read_id": f"read_{i}",
+                "base_idx": 5,
+                "focus_signal_pos": signal_len // 2,
+            }
+            for i in range(3)
+        ]
+
+        ds = LeechDataset(
+            chunks=chunks,
+            signal_len=signal_len,
+            kmer_len=11,
+            model_type="ConvLSTMBase",
+            seq_encoding="base_onehot",
+            signal_mode="both",
+            time_stretch_range=(2.0, 2.0),
+        )
+        assert ds.signal_channels == 2
+
+        batch = collate_fn(ds.__getitems__([0, 1, 2]))
+        signal = batch["signal"]
+        assert signal.shape == (3, 2, signal_len)
+
+        # factor=2.0 about the center of a 400-sample ramp keeps every output
+        # position's source lookup within [0, L), so nothing here is
+        # zero-padded -- a clean exact check, no edge cases to special-case.
+        diff = signal[:, 1, :] - signal[:, 0, :]
+        assert torch.allclose(diff, torch.full_like(diff, offset), atol=1e-3)
+
+        # And it actually warped -- not a no-op on the raw ramp.
+        raw_ramp = torch.arange(signal_len, dtype=torch.float32).unsqueeze(0).repeat(3, 1)
+        assert not torch.equal(signal[:, 0, :], raw_ramp)
+
+    def test_feature_channel_rule(self, temp_chunks_file):
+        """dwell/dwell_mean *= factor, dwell_log += log(factor), dwell_ratio
+        and dwell_std unchanged -- exercised directly against
+        ``_apply_time_stretch`` with a hand-built 5-channel feature tensor, so
+        the assertion doesn't depend on ``temp_chunks_file``'s (deliberately
+        reduced, for other tests) feature channel semantics.
+        """
+        ds = LeechDataset(
+            temp_chunks_file,
+            signal_len=100,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding="base_onehot",
+            time_stretch_range=(1.5, 1.5),
+        )
+        import numpy as np
+
+        batch, kmer_len = 4, 11
+        dwell = torch.full((batch, kmer_len), 10.0)
+        dwell_log = torch.log(dwell)
+        dwell_mean = torch.full((batch, kmer_len), 12.0)
+        dwell_std = torch.full((batch, kmer_len), 2.0)
+        dwell_ratio = dwell / dwell_mean
+        features = torch.stack([dwell, dwell_log, dwell_mean, dwell_std, dwell_ratio], dim=1)
+        signal = torch.arange(100, dtype=torch.float32).unsqueeze(0).repeat(batch, 1)
+
+        _, _, features_out = ds._apply_time_stretch(signal, None, features, np.arange(batch))
+
+        factor = 1.5
+        assert torch.allclose(features_out[:, 0], dwell * factor)
+        assert torch.allclose(features_out[:, 2], dwell_mean * factor)
+        assert torch.allclose(
+            features_out[:, 1], dwell_log + torch.log(torch.tensor(factor)), atol=1e-6
+        )
+        assert torch.equal(features_out[:, 3], dwell_std)
+        assert torch.equal(features_out[:, 4], dwell_ratio)
+
+    def test_feature_channel_rule_indices_match_compute_dwell_features(self):
+        """``test_feature_channel_rule`` locks indices 0/1/2 to
+        dwell/dwell_log/dwell_mean against a hand-built tensor; this locks
+        that same assumption against the real producer
+        (``compute_dwell_features``, whose dict order ``merge_feature_channels``
+        places first in every chunk's feature rows -- see
+        ``chunking/extractor.py``'s ``merge_feature_channels`` docstring and
+        ``tests/test_data_prep.py::TestFeatureChannelOrder``, which locks the
+        write side). If a future edit reorders ``compute_dwell_features``'
+        dict, this is what would fail on the read side -- otherwise
+        ``_apply_time_stretch`` would silently scale the wrong channels with
+        no test catching it.
+        """
+        import numpy as np
+
+        from leech.features import compute_dwell_features
+
+        dwells = np.array([8, 10, 12, 9, 11], dtype=np.int64)
+        channel_names = list(compute_dwell_features(dwells).keys())
+        assert channel_names[:5] == [
+            "dwell",
+            "dwell_log",
+            "dwell_mean",
+            "dwell_std",
+            "dwell_ratio",
+        ]
+
+    def test_focus_clamped_when_crop_excludes_it(self, temp_chunks_file):
+        """A ``signal_len`` far smaller than the stored width can center-crop
+        the focus out of the window entirely (crop_start > focus_signal_pos);
+        the computed anchor must stay a valid index into the final tensor
+        rather than going negative (or past its end), even though no anchor
+        is really "correct" once the crop has already excluded the focus.
+        """
+        import numpy as np
+
+        ds = LeechDataset(
+            temp_chunks_file,
+            signal_len=400,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding="base_onehot",
+        )
+        # A stored width far larger than signal_len simulates
+        # `data prepare --signal-context <small> <huge>` trained without a
+        # matching asymmetric --left-context/--right-context override.
+        huge_stored_len = 10 * ds.signal_len
+        focus_idx = ds._time_stretch_focus_for_chunk(
+            focus_signal_pos=10, stored_len=huge_stored_len
+        )
+        assert 0 <= focus_idx < ds.signal_len
+
+        column = ds._time_stretch_focus_column(huge_stored_len)
+        assert np.all(column >= 0) and np.all(column < ds.signal_len)
+
+    def test_feature_scaling_skipped_below_five_channels(self, temp_chunks_file):
+        """A corpus without the standard 5-channel dwell block is left alone
+        rather than having an arbitrary column scaled as if it were dwell."""
+        ds = LeechDataset(
+            temp_chunks_file,
+            signal_len=100,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding="base_onehot",
+            time_stretch_range=(1.5, 1.5),
+        )
+        import numpy as np
+
+        batch, kmer_len = 3, 11
+        features = torch.randn(batch, 2, kmer_len)
+        signal = torch.arange(100, dtype=torch.float32).unsqueeze(0).repeat(batch, 1)
+
+        _, _, features_out = ds._apply_time_stretch(signal, None, features, np.arange(batch))
+        assert torch.equal(features_out, features)
+
+    def test_conflicts_with_shift_raises(self, temp_chunks_file):
+        with pytest.raises(ValueError, match="shift_max_bases"):
+            LeechDataset(
+                temp_chunks_file,
+                signal_len=400,
+                kmer_len=11,
+                model_type="ConvLSTMDwell",
+                seq_encoding="base_onehot",
+                time_stretch_range=(0.8, 1.25),
+                shift_max_bases=2.0,
+            )
+
+    def test_conflicts_with_time_mask_raises(self, temp_chunks_file):
+        with pytest.raises(ValueError, match="time_mask_bases"):
+            LeechDataset(
+                temp_chunks_file,
+                signal_len=400,
+                kmer_len=11,
+                model_type="ConvLSTMDwell",
+                seq_encoding="base_onehot",
+                time_stretch_range=(0.8, 1.25),
+                time_mask_bases=3,
+            )
+
+    @pytest.mark.parametrize("bad_range", [(1.2, 0.8), (0.0, 1.2), (-0.5, 1.2)])
+    def test_invalid_range_raises(self, temp_chunks_file, bad_range):
+        with pytest.raises(ValueError, match="time_stretch_range"):
+            LeechDataset(
+                temp_chunks_file,
+                signal_len=400,
+                kmer_len=11,
+                model_type="ConvLSTMDwell",
+                seq_encoding="base_onehot",
+                time_stretch_range=bad_range,
+            )
+
+    def test_requires_batched_fetch(self):
+        """A corpus that degrades to the per-chunk list fallback has no
+        batched implementation of time-stretch to run -- raise at
+        construction instead of silently skipping the augmentation."""
+        import numpy as np
+
+        chunks = []
+        for i in range(2):
+            chunk = {
+                "signal": np.zeros(50, dtype=np.float32),
+                "sequence": "A" * 11,
+                "label": "pos",
+                "label_int": i % 2,
+                "read_id": f"read_{i}",
+                "base_idx": 5,
+            }
+            if i == 0:
+                # Only the first chunk carries a residual channel, so
+                # _prepare_signal returns a (2, L) tensor for it and a plain
+                # (L,) tensor for the other -- a shape mismatch that degrades
+                # the signal field to a per-chunk list.
+                chunk["signal_residual"] = np.zeros(50, dtype=np.float32)
+            chunks.append(chunk)
+
+        with pytest.raises(ValueError, match="batched __getitems__ fetch path"):
+            LeechDataset(
+                chunks=chunks,
+                signal_len=50,
+                kmer_len=11,
+                model_type="ConvLSTMBase",
+                seq_encoding="base_onehot",
+                signal_mode="both",
+                time_stretch_range=(1.2, 1.5),
+            )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

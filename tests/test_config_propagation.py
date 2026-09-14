@@ -158,6 +158,187 @@ class TestGridPointProvenance:
 
 
 # ---------------------------------------------------------------------------
+# augment_time_stretch provenance (#281)
+# ---------------------------------------------------------------------------
+
+
+class TestAugmentTimeStretchProvenance:
+    """train_model() must persist the resolved time-stretch range, and never
+    apply it to validation."""
+
+    def test_train_model_writes_augment_time_stretch(self, temp_chunks_file, tmp_path):
+        output_dir = tmp_path / "time_stretch_prov"
+        train_model(
+            train_data_path=temp_chunks_file,
+            val_data_path=temp_chunks_file,
+            output_dir=output_dir,
+            augment_time_stretch=(0.8, 1.25),
+            **TRAIN_DEFAULTS,
+        )
+        config = _read_config(output_dir)
+        assert config["augment_time_stretch_min"] == 0.8
+        assert config["augment_time_stretch_max"] == 1.25
+
+    def test_train_model_default_augment_time_stretch_is_disabled(self, temp_chunks_file, tmp_path):
+        output_dir = tmp_path / "time_stretch_default"
+        train_model(
+            train_data_path=temp_chunks_file,
+            val_data_path=None,
+            output_dir=output_dir,
+            **TRAIN_DEFAULTS,
+        )
+        config = _read_config(output_dir)
+        assert config["augment_time_stretch_min"] == 1.0
+        assert config["augment_time_stretch_max"] == 1.0
+
+    def test_cli_train_passes_augment_time_stretch(self, temp_chunks_file, tmp_path):
+        from click.testing import CliRunner
+
+        from leech.cli import cli
+
+        output_dir = tmp_path / "cli_time_stretch"
+        result = CliRunner().invoke(
+            cli,
+            [
+                "model",
+                "train",
+                "--train-data",
+                str(temp_chunks_file),
+                "--model",
+                "ConvLSTMDwell",
+                "--output-dir",
+                str(output_dir),
+                "--epochs",
+                "1",
+                "--batch-size",
+                "2",
+                "--device",
+                "cpu",
+                "--motif",
+                "CCAGGC",
+                "--augment-time-stretch",
+                "0.8,1.25",
+            ],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+        config = _read_config(output_dir)
+        assert config["augment_time_stretch_min"] == 0.8
+        assert config["augment_time_stretch_max"] == 1.25
+
+    def test_cli_train_rejects_invalid_augment_time_stretch(self, temp_chunks_file, tmp_path):
+        from click.testing import CliRunner
+
+        from leech.cli import cli
+
+        output_dir = tmp_path / "cli_time_stretch_bad"
+        result = CliRunner().invoke(
+            cli,
+            [
+                "model",
+                "train",
+                "--train-data",
+                str(temp_chunks_file),
+                "--model",
+                "ConvLSTMDwell",
+                "--output-dir",
+                str(output_dir),
+                "--epochs",
+                "1",
+                "--batch-size",
+                "2",
+                "--device",
+                "cpu",
+                "--motif",
+                "CCAGGC",
+                "--augment-time-stretch",
+                "1.5,0.5",  # MIN > MAX
+            ],
+        )
+        assert result.exit_code != 0
+        assert not output_dir.exists()
+
+    def test_config_json_round_trips_as_model_config(self, temp_chunks_file, tmp_path):
+        """The augment_time_stretch_min/_max keys a real config.json writes
+        must not crash a later run that feeds them back via --model-config
+        (the pattern test_label_map_survives_model_config exercises: a
+        small, hand-curated JSON carrying a few config.json-shaped keys --
+        not the whole file, which pre-existingly collides on `model_name`
+        etc. regardless of time-stretch and is out of scope here).
+
+        config.json records the resolved range as two scalar keys
+        (augment_time_stretch_min/_max), not the single augment_time_stretch
+        tuple param handle_train's CLI-facing signature takes. Before
+        _explicit_keys covered both scalar keys, they survived into
+        **extra_kwargs and then into get_model(...)'s init kwargs, raising
+        TypeError on any TOML-declared architecture (#281 review).
+        """
+        from leech.commands.train import handle_train
+
+        first_dir = tmp_path / "time_stretch_first_run"
+        train_model(
+            train_data_path=temp_chunks_file,
+            val_data_path=None,
+            output_dir=first_dir,
+            augment_time_stretch=(0.8, 1.25),
+            **TRAIN_DEFAULTS,
+        )
+        written_config = _read_config(first_dir)
+        assert written_config["augment_time_stretch_min"] == 0.8
+        assert written_config["augment_time_stretch_max"] == 1.25
+
+        model_config = tmp_path / "time_stretch_model_config.json"
+        model_config.write_text(
+            json.dumps(
+                {
+                    "augment_time_stretch_min": written_config["augment_time_stretch_min"],
+                    "augment_time_stretch_max": written_config["augment_time_stretch_max"],
+                }
+            )
+        )
+
+        second_dir = tmp_path / "time_stretch_second_run"
+        handle_train(
+            train_data=temp_chunks_file,
+            val_data=None,
+            model_name="ConvLSTMDwell",
+            model_config=model_config,
+            output_dir=second_dir,
+            epochs=1,
+            batch_size=2,
+            learning_rate=0.001,
+            device="cpu",
+            seed=42,
+            early_stopping=0,
+            use_class_weights=True,
+            pos_weight=None,
+            resume=None,
+            weight_decay=0.0,
+            max_grad_norm=0.0,
+            scheduler="none",
+            scheduler_patience=5,
+            scheduler_factor=0.5,
+            warmup_epochs=0,
+            loss_type="bce",
+            focal_gamma=2.0,
+            label_smoothing=0.0,
+            mixed_precision=False,
+            augment_jitter=0.0,
+            augment_scale_min=1.0,
+            augment_scale_max=1.0,
+            augment_time_mask_bases=0,
+            augment_time_mask_count=1,
+            augment_shift_max_bases=0.0,
+            augment_feature_noise_scale=0.0,
+            num_workers=0,
+            motif="CCAGGC",
+        )
+        # No TypeError from get_model(...) is the regression check; also
+        # confirm the second run actually completed and wrote its own config.
+        assert (second_dir / "config.json").exists()
+
+
+# ---------------------------------------------------------------------------
 # handle_train's cfg must not silently revert --model-config values (#270)
 # ---------------------------------------------------------------------------
 
