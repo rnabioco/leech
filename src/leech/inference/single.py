@@ -607,6 +607,7 @@ def run_inference(
                 recover_softclip_signal=spec.recover_softclip_signal,
                 signal_context_bases=spec.signal_context_bases,
                 signal_len=signal_len,
+                mask_seq_side=spec.mask_seq_side,
             ),
             seq_encoding=seq_encoding,
             signal_kmer_context=signal_kmer_context,
@@ -781,6 +782,7 @@ def run_inference(
             recover_softclip_signal=spec.recover_softclip_signal,
             signal_context_bases=spec.signal_context_bases,
             signal_len=signal_len,
+            mask_seq_side=spec.mask_seq_side,
         )
 
         # Extraction thread count + rust setup (all three shared with
@@ -800,7 +802,8 @@ def run_inference(
             backend,
             norm_method,
             seq_chunk_config.recover_softclip_signal,
-            spec.signal_context_bases,
+            signal_context_bases=spec.signal_context_bases,
+            mask_seq_side=seq_chunk_config.mask_seq_side,
         )
         if _use_rust_extraction:
             logger.info("Using Rust monolithic extraction (escapepod-rs + leech_core)")

@@ -346,6 +346,22 @@ data.command_order = ("prepare", "merge")
         "(sequential / workers=1) prep path — the Rust path ignores this flag."
     ),
 )
+@click.option(
+    "--mask-seq-side",
+    type=click.Choice(["left", "right"]),
+    default=None,
+    help=(
+        "Blank ('N') sequence-branch bases strictly to this side (5'/left or "
+        "3'/right) of the focus base, in both the base_onehot k-mer window "
+        "and the signal_kmer context — the focus base itself is never "
+        "masked. Use so a feature+signal model cannot read tRNA-body "
+        "identity through acceptor-stem bases upstream of a 3'-end motif "
+        "(leech#256). Baked into the corpus now; predict reads "
+        "mask_seq_side back out of the model's config and applies it to "
+        "live chunks automatically. Forces the Python extraction path "
+        "(unsupported in Rust)."
+    ),
+)
 def prepare(
     pod5,
     bam,
@@ -382,6 +398,7 @@ def prepare(
     signal_len,
     focus_tsv,
     recover_softclip_signal,
+    mask_seq_side,
 ):
     """Prepare training data from POD5 and BAM files."""
     from leech.commands import handle_prepare
@@ -443,6 +460,7 @@ def prepare(
         signal_len=signal_len,
         focus_tsv=focus_tsv,
         recover_softclip_signal=recover_softclip_signal,
+        mask_seq_side=mask_seq_side,
     )
 
 

@@ -247,6 +247,62 @@ def merge_feature_channels(
     return list({**dwell_features, **signal_features}.items())
 
 
+def _mask_focus_side(
+    kmer_seq: str,
+    sequence_with_kmer_context: str,
+    *,
+    kmer_context: int,
+    core_focus_idx: int,
+    kmer_before: int,
+    side: str,
+) -> tuple[str, str]:
+    """Blank ('N') sequence characters strictly to one side of the focus base.
+
+    Applies to both sequence fields `get_chunk` builds:
+
+    - `kmer_seq` (the `sequence` field, `base_onehot`'s k-mer window):
+      always exactly `2*kmer_context+1` bases wide and centered on the focus
+      base by construction (`kmer_start = base_idx - kmer_context`), so the
+      focus is always at index `kmer_context`.
+    - `sequence_with_kmer_context` (the `signal_kmer` window): its extent is
+      `[seq_start - kmer_before, seq_end + kmer_after)`, where `seq_start`/
+      `seq_end` are the SIGNAL window's covered bases and therefore move with
+      `base_justify` and the signal context -- the focus is not at a fixed
+      offset, so the caller passes its position as `core_focus_idx +
+      kmer_before` (`core_focus_idx = base_idx - seq_start`, computed from the
+      same local variables `get_chunk` used to build the window in the first
+      place, not re-derived from the chunk dict afterwards).
+
+    The focus base's own character is never masked -- masking stops just
+    short of it on the requested side and leaves the other side untouched.
+    'N' maps to the same "not a base" sentinel (-1) that `sequence_to_int` /
+    `encode_signal_kmer` already skip (`if base < 0: continue`), so a masked
+    position contributes nothing to either encoding: the one-hot channels at
+    that k-mer position are all zero, for every signal sample the masked base
+    covers. This is the same mechanism the manual per-corpus workaround used
+    (leech#256), reused here instead of reinvented.
+
+    A focus index outside the string (only possible when the focus base's own
+    signal span reaches all the way to the edge of a very narrow window)
+    clamps into range rather than raising, so masking degrades to "mask
+    everything but the boundary base" instead of crashing a rare chunk.
+    """
+
+    def _mask(seq: str, focus_idx: int) -> str:
+        n = len(seq)
+        if n == 0:
+            return seq
+        focus_idx = max(0, min(focus_idx, n - 1))
+        if side == "left":
+            return "N" * focus_idx + seq[focus_idx:]
+        return seq[: focus_idx + 1] + "N" * (n - focus_idx - 1)
+
+    return (
+        _mask(kmer_seq, kmer_context),
+        _mask(sequence_with_kmer_context, core_focus_idx + kmer_before),
+    )
+
+
 class LeechRead:
     """
     Container for a single read's data with all features.
@@ -360,6 +416,7 @@ class LeechRead:
         recover_softclip_signal: bool = False,
         signal_context_bases: tuple[int, int] | None = None,
         signal_len: int | None = None,
+        mask_seq_side: str | None = None,
     ) -> dict[str, np.ndarray | str | int | None] | None:
         """
         Extract a training chunk centered on a specific base.
@@ -394,6 +451,11 @@ class LeechRead:
                 ``signal_context_bases`` is set. Required in that case;
                 ignored otherwise (sample mode's ``chunk_len`` is
                 ``signal_context[0] + signal_context[1]``).
+            mask_seq_side: "left", "right", or None (default). Blanks ('N')
+                sequence-branch characters strictly to that side of the focus
+                base in both ``sequence`` and ``sequence_with_kmer_context`` —
+                see :func:`_mask_focus_side` for the exact geometry and
+                leech#256 for why.
 
         Returns:
             Dictionary with 'signal', 'kmer', 'dwell', 'features' arrays,
@@ -409,6 +471,7 @@ class LeechRead:
             recover_softclip_signal = config.recover_softclip_signal
             signal_context_bases = config.signal_context_bases
             signal_len = config.signal_len
+            mask_seq_side = config.mask_seq_side
 
         # Check boundaries: base_idx must be valid for seq_to_sig_map access.
         # Bound on the map, not the sequence — they can differ (see
@@ -642,6 +705,16 @@ class LeechRead:
                 else:
                     parts.append("N")
             sequence_with_kmer_context = "".join(parts)
+
+        if mask_seq_side is not None:
+            kmer_seq, sequence_with_kmer_context = _mask_focus_side(
+                kmer_seq,
+                sequence_with_kmer_context,
+                kmer_context=kmer_context,
+                core_focus_idx=base_idx - seq_start,
+                kmer_before=kmer_before,
+                side=mask_seq_side,
+            )
 
         chunk_dict: dict[str, np.ndarray | str | int | None] = {
             "signal": signal_chunk,

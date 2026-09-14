@@ -110,6 +110,16 @@ class ChunkConfig:
     # `LeechRead.get_chunk` and `chunking.resolve_signal_context_bases`.
     signal_context_bases: tuple[int, int] | None = None
     signal_len: int | None = None
+    # Blank ('N') sequence-branch characters strictly to one side of the focus
+    # base -- "left" (5') or "right" (3') -- in both `sequence` (base_onehot)
+    # and `sequence_with_kmer_context` (signal_kmer). None (default) leaves
+    # the sequence untouched. Exists so a feature+signal model can train
+    # without the sequence branch leaking which tRNA body a chunk came from
+    # via acceptor-stem bases upstream of a 3'-end motif (leech#256). The
+    # focus base's own character is never masked. Not implemented in the Rust
+    # extraction path -- see `rust_prepare_unsupported_reason` /
+    # `check_rust_extraction_available`.
+    mask_seq_side: str | None = None
 
     def resolved_feature_window(self) -> tuple[int, int, int]:
         """``(start, end, width)`` of the feature window this config asks for.
@@ -204,6 +214,7 @@ class PrepareConfig:
             "signal_len": self.chunk.signal_len,
             "kmer_context": self.chunk.kmer_context,
             "recover_softclip_signal": self.chunk.recover_softclip_signal,
+            "mask_seq_side": self.chunk.mask_seq_side,
             "label": self.labeling.label,
             "reference_fasta": str(self.reference_fasta) if self.reference_fasta else None,
         }

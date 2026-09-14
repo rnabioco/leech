@@ -671,6 +671,14 @@ def rust_prepare_unsupported_reason(config: PrepareConfig) -> str | None:
     - ``chunk.recover_softclip_signal`` is set. Recovery reads from the full
       pre-crop signal, which the Rust ``ProcessedRead`` discards when it crops
       to the aligned region, so the flag would silently degrade to zero-padding.
+    - ``chunk.mask_seq_side`` is set. The focus-relative sequence masking in
+      ``LeechRead.get_chunk`` (``_mask_focus_side``) is Python-only -- the
+      Rust chunk pipeline builds ``sequence``/``sequence_with_kmer_context``
+      entirely inside the upstream ``escapepod_signal::chunk`` crate, so
+      honoring this here would mean either reimplementing that geometry in
+      leech's own Rust code (the thing ``defer-to-upstream-escapepod-crate``
+      exists to prevent) or silently shipping an unmasked, tRNA-identity-
+      leaking corpus.
     """
     if config.labeling.focus_map is not None:
         return "focus_map is set (no per-read label or multi-POD5 support in Rust yet)"
@@ -683,6 +691,11 @@ def rust_prepare_unsupported_reason(config: PrepareConfig) -> str | None:
         return (
             "recover_softclip_signal is not implemented in the Rust pipeline "
             "(it discards the pre-crop signal the recovery reads from)"
+        )
+    if config.chunk.mask_seq_side is not None:
+        return (
+            f"mask_seq_side={config.chunk.mask_seq_side!r} is set (sequence "
+            "masking is not implemented in the Rust pipeline)"
         )
     return None
 

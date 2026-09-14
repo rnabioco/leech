@@ -508,6 +508,7 @@ def run_bundle_inference(
         recover_softclip_signal=spec.recover_softclip_signal,
         signal_context_bases=spec.signal_context_bases,
         signal_len=signal_len,
+        mask_seq_side=spec.mask_seq_side,
     )
 
     logger.info(f"Streaming bundle inference with read_batch_size={read_batch_size}")
@@ -535,7 +536,8 @@ def run_bundle_inference(
         backend,
         bundle_signal_config.norm_method,
         bundle_chunk_config.recover_softclip_signal,
-        spec.signal_context_bases,
+        signal_context_bases=spec.signal_context_bases,
+        mask_seq_side=bundle_chunk_config.mask_seq_side,
     )
     if _use_rust_extraction:
         logger.info("Using Rust monolithic extraction (escapepod-rs + leech_core)")
@@ -598,6 +600,7 @@ def run_bundle_inference(
                 recover_softclip_signal=spec.recover_softclip_signal,
                 signal_context_bases=spec.signal_context_bases,
                 signal_len=signal_len,
+                mask_seq_side=spec.mask_seq_side,
             ),
             seq_encoding=seq_encoding,
             signal_kmer_context=signal_kmer_context,

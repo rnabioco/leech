@@ -80,6 +80,7 @@ def handle_prepare(
     signal_len: int | None = None,
     focus_tsv: Path | None = None,
     recover_softclip_signal: bool = False,
+    mask_seq_side: str | None = None,
 ) -> dict[str, Any]:
     """
     Handle the prepare command logic.
@@ -106,6 +107,11 @@ def handle_prepare(
             including 1, goes through the same parallel dispatcher -- see
             ``prepare_training_data_parallel``)
         chunk_size: Number of reads to process per worker batch
+        mask_seq_side: "left", "right", or None (default). Blanks ('N')
+            sequence-branch bases strictly to that side of the focus base in
+            both `sequence` and `sequence_with_kmer_context`, baked into the
+            corpus (leech#256). Forces the Python extraction path -- see
+            `rust_prepare_unsupported_reason`.
 
     Returns:
         Dictionary with extraction statistics
@@ -185,6 +191,13 @@ def handle_prepare(
             "path, so preparation will use the Python multiprocessing workers. "
             "Chunks are correct either way; this only costs throughput."
         )
+    if mask_seq_side is not None:
+        logger.info(
+            f"Masking sequence-branch bases {mask_seq_side} of the focus base "
+            "(--mask-seq-left-of-focus/--mask-seq-right-of-focus); this is not "
+            "implemented in the Rust extraction path, so preparation will use "
+            "the Python multiprocessing workers."
+        )
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -248,6 +261,7 @@ def handle_prepare(
                 tuple(signal_context_bases) if signal_context_bases is not None else None
             ),
             signal_len=resolved_signal_len,
+            mask_seq_side=mask_seq_side,
         ),
         labeling=LabelConfig(
             label=label,

@@ -71,6 +71,12 @@ def _propagate_prepare_config(input_paths: list[Path], output_dir: Path) -> None
         "motif_reference",
         "feature_start_resolved",
         "feature_end_resolved",
+        # Which side of the focus base (if any) has its sequence-branch
+        # characters blanked (leech#256). Merging a left-masked corpus with a
+        # right-masked or unmasked one silently reintroduces the tRNA-body
+        # identity leak this field exists to close -- not at prepare time,
+        # but here, one step later.
+        "mask_seq_side",
     ]
     first = configs[0]
     for i, cfg in enumerate(configs[1:], start=1):
