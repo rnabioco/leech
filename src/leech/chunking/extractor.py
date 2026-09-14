@@ -18,7 +18,7 @@ from leech.constants import (
     DEFAULT_SIGNAL_CONTEXT,
     DEFAULT_SIGNAL_KMER_CONTEXT,
 )
-from leech.io.motif_search import MotifSearcher
+from leech.io.motif_search import MotifMatch, MotifSearcher
 
 if TYPE_CHECKING:
     import pysam
@@ -703,7 +703,7 @@ def find_focus_bases(
     alignment: pysam.AlignedSegment | None,
     motif_config: MotifConfig,
     motif_searcher: MotifSearcher | None,
-) -> list[int]:
+) -> list[MotifMatch]:
     """Which bases of a read contribute chunks.
 
     The single definition of that rule. Both prepare backends call it: the
@@ -725,23 +725,32 @@ def find_focus_bases(
         motif_searcher: Searcher strategy; required when a motif is set.
 
     Returns:
-        Focus base indices into ``sequence``, motif offset already applied.
-        Out-of-range indices are possible and are the caller's to reject.
+        One :class:`~leech.io.motif_search.MotifMatch` per focus base, with
+        ``position`` indexing into ``sequence`` (motif offset already
+        applied) and ``junction_indel``/``junction_mapped`` carrying the
+        CIGAR-measured junction disruption at that position (issue #282).
+        Out-of-range positions are possible and are the caller's to reject.
+        No-motif (all-bases) mode has no junction to measure, so every match
+        carries the ``MotifMatch`` defaults (``junction_indel=0``,
+        ``junction_mapped=False``).
     """
     if motif_config.motif is None:
         # No motif: every base, minus the edges that cannot hold a k-mer.
-        return list(range(5, max(5, len(sequence) - 5)))
+        return [MotifMatch(pos) for pos in range(5, max(5, len(sequence) - 5))]
 
     if motif_searcher is None:
         raise ValueError("motif_searcher required when motif is provided")
 
-    positions = motif_searcher.find_motif_positions(
+    matches = motif_searcher.find_motif_positions(
         read_id=read_id,
         sequence=sequence,
         alignment=alignment,
         motif=motif_config.motif,
     )
-    return [pos + motif_config.motif_offset for pos in positions]
+    return [
+        MotifMatch(m.position + motif_config.motif_offset, m.junction_indel, m.junction_mapped)
+        for m in matches
+    ]
 
 
 def extract_training_chunks(
@@ -785,7 +794,7 @@ def extract_training_chunks(
         # Respect the same edge guard the all-bases fallback uses below so
         # chunks always have enough kmer context on both sides.
         base_idx = int(np.clip(base_idx, 5, leech_read.num_bases - 6))
-        focus_bases = [base_idx]
+        focus_bases = [MotifMatch(base_idx)]
     else:
         # Set numeric labels for all bases if provided (file-level mode).
         if labeling.label_int is not None:
@@ -806,8 +815,8 @@ def extract_training_chunks(
     # Extract chunks
     cl_value = leech_read.metadata.get("cl_value")
     reference_name = leech_read.metadata.get("reference_name", "")
-    for base_idx in focus_bases:
-        chunk = leech_read.get_chunk(base_idx, config=chunk_config)
+    for match in focus_bases:
+        chunk = leech_read.get_chunk(match.position, config=chunk_config)
         if chunk is not None:
             chunk["read_id"] = leech_read.read_id
             # Rename numeric "label" from get_chunk() to "label_int"
@@ -818,6 +827,12 @@ def extract_training_chunks(
             chunk["cl_value"] = cl_value
             # Add alignment reference name (e.g., tRNA isodecoder identity)
             chunk["reference_name"] = reference_name
+            # Junction disruption at this focus base's motif span (issue
+            # #282): mapped_len - len(motif) through the CIGAR, and whether
+            # that measurement was possible at all. A sampling/abstention
+            # field, never a model input -- see MotifMatch.
+            chunk["junction_indel"] = match.junction_indel
+            chunk["junction_mapped"] = match.junction_mapped
             chunks.append(chunk)
 
     return chunks

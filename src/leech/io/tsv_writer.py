@@ -8,7 +8,29 @@ import gzip
 import logging
 from pathlib import Path
 
+from leech.constants import BELOW_THRESHOLD_LABEL
+
 logger = logging.getLogger("leech.io.tsv_writer")
+
+
+def _unpack_pred(
+    pred: tuple,
+) -> tuple[int, int, float, list[float], float | None, int | None, bool]:
+    """Unpack one ``pending[read_id]`` entry, any historical width.
+
+    Mirrors ``leech.inference.helpers._unpack_multiclass_pred`` -- kept as its
+    own copy rather than an import from ``inference`` into ``io``, which would
+    invert this package's layering. 4-tuple (no CL head), 5-tuple (+ CL
+    prediction), 7-tuple (current, + junction_indel/junction_mapped -- issue
+    #282).
+    """
+    if len(pred) == 7:
+        return pred
+    if len(pred) == 5:
+        base_idx, cls_idx, conf, all_probs, cl_pred = pred
+        return base_idx, cls_idx, conf, all_probs, cl_pred, None, False
+    base_idx, cls_idx, conf, all_probs = pred
+    return base_idx, cls_idx, conf, all_probs, None, None, False
 
 
 class TsvPredictionWriter:
@@ -22,6 +44,17 @@ class TsvPredictionWriter:
         Ordered class labels (matching model output indices).
     has_cl : bool
         Whether a CL regression head is present.
+    min_margin : int
+        Margin threshold in 0-255 uint8 space, used only when
+        ``abstain_on_junction_indel`` is set.
+    abstain_on_junction_indel : bool
+        When True, ``predicted_aa`` is overwritten with
+        :data:`~leech.constants.BELOW_THRESHOLD_LABEL` for rows whose motif
+        junction is disrupted (unmapped, or a nonzero CIGAR indel) AND whose
+        margin is below ``min_margin`` (issue #282). ``junction_indel``/
+        ``junction_mapped`` are always written as their own columns
+        regardless of this flag, so the rule can be re-applied offline from
+        the raw TSV.
     """
 
     def __init__(
@@ -30,11 +63,15 @@ class TsvPredictionWriter:
         class_names: list[str],
         has_cl: bool,
         copy_tags: list[str] | None = None,
+        min_margin: int = 0,
+        abstain_on_junction_indel: bool = False,
     ) -> None:
         self.output_path = output_path
         self.class_names = class_names
         self.has_cl = has_cl
         self.copy_tags = copy_tags or []
+        self.min_margin = min_margin
+        self.abstain_on_junction_indel = abstain_on_junction_indel
 
         if str(output_path).endswith(".gz"):
             self._fh = gzip.open(output_path, "wt")
@@ -46,6 +83,7 @@ class TsvPredictionWriter:
         cols = ["read_name", "ref_name", *prob_cols, "predicted_aa", "confidence", "margin"]
         if has_cl:
             cols.append("predicted_cl")
+        cols.extend(["junction_indel", "junction_mapped"])
         for tag in self.copy_tags:
             cols.append(f"tag_{tag}")
         self._fh.write("\t".join(cols) + "\n")
@@ -77,13 +115,9 @@ class TsvPredictionWriter:
             preds = pending.get(aln.query_name)
             if not preds:
                 continue
-            pred = preds[0]
-            # Unpack: 4-tuple (old) or 5-tuple (with CL prediction)
-            if len(pred) == 5:
-                _, cls_idx, conf, all_probs, cl_pred = pred
-            else:
-                _, cls_idx, conf, all_probs = pred
-                cl_pred = None
+            _, cls_idx, conf, all_probs, cl_pred, junction_indel, junction_mapped = _unpack_pred(
+                preds[0]
+            )
 
             predicted_aa = int_to_label.get(cls_idx, str(cls_idx))
             ref_name = aln.reference_name or ""
@@ -91,6 +125,14 @@ class TsvPredictionWriter:
             # Margin: difference between top two probabilities
             sorted_probs = sorted(all_probs, reverse=True)
             margin = sorted_probs[0] - sorted_probs[1] if len(sorted_probs) > 1 else 1.0
+
+            if self.abstain_on_junction_indel:
+                margin_uint8 = int(min(255, max(0, round(margin * 255))))
+                disrupted = not junction_mapped or (
+                    junction_indel is not None and junction_indel != 0
+                )
+                if disrupted and margin_uint8 < self.min_margin:
+                    predicted_aa = BELOW_THRESHOLD_LABEL
 
             parts = [
                 aln.query_name,
@@ -102,6 +144,8 @@ class TsvPredictionWriter:
             ]
             if self.has_cl:
                 parts.append(f"{cl_pred:.6f}" if cl_pred is not None else "")
+            parts.append("" if junction_indel is None else str(junction_indel))
+            parts.append(str(junction_mapped))
 
             for tag in self.copy_tags:
                 if aln.has_tag(tag):

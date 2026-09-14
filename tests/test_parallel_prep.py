@@ -602,7 +602,10 @@ class TestSignalKmerFieldParity:
             mv_arrays=[mt.moves.view(np.uint8) for mt in mts],
             num_samples_list=[mt.num_samples for mt in mts],
             trim_offsets=[mt.trim_offset for mt in mts],
-            motif_positions=[_find_motif_positions(ri, motif_searcher, config) for ri in kept],
+            motif_positions=[
+                [m.position for m in _find_motif_positions(ri, motif_searcher, config)]
+                for ri in kept
+            ],
             signal_context_left=config.chunk.signal_context[0],
             signal_context_right=config.chunk.signal_context[1],
             kmer_context=config.chunk.kmer_context,

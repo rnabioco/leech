@@ -77,6 +77,8 @@ EXACT_FIELDS = {
     "sequences_with_kmer_context",
     "cl_values",
     "focus_signal_pos",
+    "junction_indels",
+    "junction_mappeds",
 }
 
 #: Absolute/relative tolerance for float fields. Comfortably above float32

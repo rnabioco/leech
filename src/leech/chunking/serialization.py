@@ -364,6 +364,8 @@ def iter_chunk_columns(chunks: list[dict]) -> Iterator[tuple[str, np.ndarray | l
     signal_residuals = []
     cl_values = []
     focus_signal_pos_list = []
+    junction_indels = []
+    junction_mappeds = []
     has_signal_residual = "signal_residual" in chunks[0]
     has_focus_signal_pos = "focus_signal_pos" in chunks[0]
 
@@ -385,6 +387,18 @@ def iter_chunk_columns(chunks: list[dict]) -> Iterator[tuple[str, np.ndarray | l
         # Charging level: sentinel -1 for missing
         cl_val = chunk.get("cl_value")
         cl_values.append(cl_val if cl_val is not None else -1)
+        # Junction disruption at this chunk's motif span (issue #282): 0/False
+        # for chunks that never had a motif measurement (no-motif mode,
+        # basecalled search, or a corpus written before this field existed).
+        # `chunk.get(field, default)` only substitutes the default when the
+        # key is *missing* -- load_chunks sets both keys to None (present,
+        # not missing) for a pre-#282 corpus, so a load-then-resave round
+        # trip needs the explicit `is not None` check the sibling cl_value
+        # field above uses, or np.array(..., dtype=np.int64) raises on None.
+        junction_indel = chunk.get("junction_indel")
+        junction_indels.append(junction_indel if junction_indel is not None else 0)
+        junction_mapped = chunk.get("junction_mapped")
+        junction_mappeds.append(bool(junction_mapped) if junction_mapped is not None else False)
         if has_signal_residual:
             signal_residuals.append(chunk["signal_residual"])
         if has_focus_signal_pos:
@@ -433,6 +447,10 @@ def iter_chunk_columns(chunks: list[dict]) -> Iterator[tuple[str, np.ndarray | l
     del sequences_with_kmer_context
     yield "cl_values", np.array(cl_values, dtype=np.int16)
     del cl_values
+    yield "junction_indels", np.array(junction_indels, dtype=np.int64)
+    del junction_indels
+    yield "junction_mappeds", np.array(junction_mappeds, dtype=bool)
+    del junction_mappeds
 
     if has_focus_signal_pos:
         yield "focus_signal_pos", np.array(focus_signal_pos_list, dtype=np.int64)
@@ -1056,6 +1074,12 @@ def load_chunks(input_path: Path, *, defer: Collection[str] = ()) -> list[dict]:
         if has_cl_values:
             cl_values_loaded = data["cl_values"]
 
+        # Junction disruption (backward compatible -- absent before issue #282)
+        has_junction = "junction_indels" in data
+        if has_junction:
+            junction_indels_loaded = data["junction_indels"]
+            junction_mappeds_loaded = data["junction_mappeds"]
+
         # Focus signal position (backward compatible — absent in old symmetric data)
         has_focus_signal_pos = "focus_signal_pos" in data
         if has_focus_signal_pos:
@@ -1110,6 +1134,12 @@ def load_chunks(input_path: Path, *, defer: Collection[str] = ()) -> list[dict]:
                 chunk["cl_value"] = cl_val if cl_val >= 0 else None
             else:
                 chunk["cl_value"] = None
+            if has_junction:
+                chunk["junction_indel"] = int(junction_indels_loaded[i])
+                chunk["junction_mapped"] = bool(junction_mappeds_loaded[i])
+            else:
+                chunk["junction_indel"] = None
+                chunk["junction_mapped"] = None
             if has_focus_signal_pos:
                 chunk["focus_signal_pos"] = int(focus_signal_pos_loaded[i])
 

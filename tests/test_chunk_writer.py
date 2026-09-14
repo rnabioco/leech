@@ -635,3 +635,106 @@ class TestOptionalTextRoundTrip:
         with np.load(listed) as a, np.load(spooled) as b:
             for member in ("labels", "source_groups", "reference_names"):
                 assert a[member].tolist() == b[member].tolist() == ["", "", ""]
+
+
+class TestJunctionIndelRoundTrip:
+    """junction_indel/junction_mapped: written, loaded, and absent-corpus safe (issue #282)."""
+
+    @staticmethod
+    def _chunk(junction_indel, junction_mapped):
+        return {
+            "signal": np.zeros(8, np.float32),
+            "sequence": "ACGTACGTACG",
+            "dwell": np.ones(5, np.float32),
+            "features": np.ones((2, 5), np.float32),
+            "label": "Ala",
+            "label_int": 1,
+            "read_id": "r0",
+            "base_idx": 10,
+            "source_group": "g",
+            "reference_name": "ref",
+            "feature_start": -2,
+            "feature_end": 2,
+            "cl_value": None,
+            "junction_indel": junction_indel,
+            "junction_mapped": junction_mapped,
+        }
+
+    def test_nonzero_indel_and_mapped_true_round_trip(self, tmp_path):
+        path = tmp_path / "chunks.npz"
+        save_chunks([self._chunk(3, True)], path, compressed=False)
+
+        with np.load(path) as data:
+            assert data["junction_indels"].tolist() == [3]
+            assert data["junction_mappeds"].tolist() == [True]
+
+        chunk = load_chunks(path)[0]
+        assert chunk["junction_indel"] == 3
+        assert chunk["junction_mapped"] is True
+
+    def test_negative_indel_is_not_a_missing_sentinel(self, tmp_path):
+        """Unlike cl_value/label_int, a negative junction_indel is real data."""
+        path = tmp_path / "chunks.npz"
+        save_chunks([self._chunk(-2, True)], path, compressed=False)
+
+        chunk = load_chunks(path)[0]
+        assert chunk["junction_indel"] == -2
+
+    def test_missing_field_defaults_to_zero_and_false_on_write(self, tmp_path):
+        """A chunk dict from before issue #282 (no junction_indel key at all)."""
+        path = tmp_path / "chunks.npz"
+        chunk = self._chunk(0, False)
+        del chunk["junction_indel"]
+        del chunk["junction_mapped"]
+        save_chunks([chunk], path, compressed=False)
+
+        with np.load(path) as data:
+            assert data["junction_indels"].tolist() == [0]
+            assert data["junction_mappeds"].tolist() == [False]
+
+    def test_a_corpus_written_before_the_field_existed_loads_as_none(self, tmp_path):
+        """An .npz with no junction_indels/junction_mappeds members at all."""
+        path = tmp_path / "old.npz"
+        np.savez(
+            path,
+            signals=np.zeros((1, 8), np.float32),
+            sequences=np.array(["ACGT"], dtype=str),
+            dwells=np.array([np.ones(5, np.float32)], dtype=object),
+            features=np.array([np.ones((2, 5), np.float32)], dtype=object),
+            labels=np.array(["Ala"], dtype=str),
+            labels_int=np.array([1], dtype=np.int64),
+            read_ids=np.array(["r0"], dtype=str),
+            base_indices=np.array([10], dtype=np.int64),
+        )
+        chunk = load_chunks(path)[0]
+        assert chunk["junction_indel"] is None
+        assert chunk["junction_mapped"] is None
+
+    def test_load_then_resave_a_pre_282_corpus_does_not_raise(self, tmp_path):
+        """save_chunks(load_chunks(old_corpus)) must not crash on None.
+
+        `load_chunks` sets junction_indel/junction_mapped to None (present,
+        not missing) for a corpus that predates issue #282. `chunk.get(field,
+        default)` only substitutes the default for a *missing* key, so a
+        naive `chunk.get("junction_indel", 0)` on the way back out would try
+        `np.array([None, ...], dtype=np.int64)` and raise -- this is the same
+        failure mode `_text()` exists to prevent for label/source_group.
+        """
+        old_path = tmp_path / "old.npz"
+        np.savez(
+            old_path,
+            signals=np.zeros((1, 8), np.float32),
+            sequences=np.array(["ACGT"], dtype=str),
+            dwells=np.array([np.ones(5, np.float32)], dtype=object),
+            features=np.array([np.ones((2, 5), np.float32)], dtype=object),
+            labels=np.array(["Ala"], dtype=str),
+            labels_int=np.array([1], dtype=np.int64),
+            read_ids=np.array(["r0"], dtype=str),
+            base_indices=np.array([10], dtype=np.int64),
+        )
+        resaved_path = tmp_path / "resaved.npz"
+        save_chunks(load_chunks(old_path), resaved_path, compressed=False)
+
+        with np.load(resaved_path) as data:
+            assert data["junction_indels"].tolist() == [0]
+            assert data["junction_mappeds"].tolist() == [False]

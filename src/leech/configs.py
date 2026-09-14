@@ -306,6 +306,11 @@ class TrainConfig:
     # Sampling strategy (mutually exclusive; enforced in train_model)
     balance_groups: bool = False
     oversample_minority: bool = False
+    #: Chunk metadata field to inverse-frequency weight sampling by, e.g.
+    #: "junction_indel" to over-sample the disrupted-junction population
+    #: (issue #282) or "source_group" (equivalent to balance_groups). Any
+    #: field ChunkTable/a chunk dict exposes is valid.
+    sample_weight_field: str | None = None
     label_map: dict[str, int] | None = None
 
     # Confound / adversarial provenance token (parsed in train_model)

@@ -27,6 +27,7 @@ from leech.inference.helpers import (
     check_rust_extraction_available,
     chunks_for_read,
     collect_bam_metadata_for_rust,
+    junction_lookup_from_rs_meta,
     load_model_auto,
     prepare_inference_features,
     prepare_signal_channels,
@@ -44,21 +45,24 @@ logger = logging.getLogger("leech.inference")
 
 def _inference_worker(
     args: tuple[list, InferenceConfig],
-) -> list[tuple[str, int, np.ndarray, np.ndarray, np.ndarray | None]]:
+) -> list[tuple[str, int, np.ndarray, np.ndarray, np.ndarray | None, int, bool]]:
     """
     Worker for parallel chunk extraction during inference.
 
     Extracts chunks from reads and optionally pre-computes signal_kmer encoding.
 
     Returns:
-        List of (read_id, base_idx, signal, encoded_sequence, features_or_none) tuples
+        List of (read_id, base_idx, signal, encoded_sequence, features_or_none,
+        junction_indel, junction_mapped) tuples -- the last two are the
+        CIGAR-measured junction disruption at this focus base's motif span
+        (issue #282), 0/False when no motif measurement applies.
     """
     from leech.io.pod5_reader import read_pod5_signals_batch_cached
     from leech.preparation.reader import build_leech_read
 
     read_infos, config = args
 
-    results: list[tuple[str, int, np.ndarray, np.ndarray, np.ndarray | None]] = []
+    results: list[tuple[str, int, np.ndarray, np.ndarray, np.ndarray | None, int, bool]] = []
     _shape_validated = False
     # signal_kmer encoding is batched once for the whole worker call rather
     # than once per chunk (issue #260): each pending entry is
@@ -111,23 +115,26 @@ def _inference_worker(
                     require_query_mapping=config.motif.require_query_mapping,
                 )
                 aln = read_info.to_mock_alignment()
-                positions = [
-                    pos + config.motif.motif_offset
-                    for pos in searcher.find_motif_positions(
-                        read_info.read_id,
-                        # The sequence chunks are cut from -- under
-                        # anchor="reference" that is the aligned reference
-                        # slice, which `leech_read.sequence` already is.
-                        # `read_info.sequence` is the basecall, a different
-                        # coordinate frame.
-                        leech_read.sequence,
-                        aln,
-                        config.motif.motif,
-                    )
-                ]
+                matches = searcher.find_motif_positions(
+                    read_info.read_id,
+                    # The sequence chunks are cut from -- under
+                    # anchor="reference" that is the aligned reference
+                    # slice, which `leech_read.sequence` already is.
+                    # `read_info.sequence` is the basecall, a different
+                    # coordinate frame.
+                    leech_read.sequence,
+                    aln,
+                    config.motif.motif,
+                )
+                positions = [m.position + config.motif.motif_offset for m in matches]
+                junction_by_base = {
+                    m.position + config.motif.motif_offset: (m.junction_indel, m.junction_mapped)
+                    for m in matches
+                }
             else:
                 kmer_context = config.chunk.kmer_context
                 positions = list(range(kmer_context, leech_read.num_bases - kmer_context))
+                junction_by_base = {}
 
             for base_idx in positions:
                 chunk = leech_read.get_chunk(base_idx, config=config.chunk)
@@ -180,7 +187,18 @@ def _inference_worker(
                     validate_inference_shapes(sig, feat, _cfg_dict)
                     _shape_validated = True
 
-                results.append((read_info.read_id, base_idx, sig, enc_seq, feat))
+                junction_indel, junction_mapped = junction_by_base.get(base_idx, (0, False))
+                results.append(
+                    (
+                        read_info.read_id,
+                        base_idx,
+                        sig,
+                        enc_seq,
+                        feat,
+                        junction_indel,
+                        junction_mapped,
+                    )
+                )
                 if pending_seq_ints is not None:
                     _pending_signal_kmer.append(
                         (len(results) - 1, pending_seq_ints, pending_seq_to_sig)
@@ -203,8 +221,8 @@ def _inference_worker(
             padded_seq_ints, padded_s2s, config.signal_len, tuple(config.signal_kmer_context)
         )
         for i, (result_idx, _, _) in enumerate(_pending_signal_kmer):
-            rid, bidx, sig, _, feat = results[result_idx]
-            results[result_idx] = (rid, bidx, sig, batch_enc[i], feat)
+            rid, bidx, sig, _, feat, ji, jm = results[result_idx]
+            results[result_idx] = (rid, bidx, sig, batch_enc[i], feat, ji, jm)
 
     return results
 
@@ -230,6 +248,7 @@ def run_inference(
     raw: bool = False,
     min_confidence: int = 0,
     min_margin: int = 0,
+    abstain_on_junction_indel: bool = False,
     read_batch_size: int = 10_000,
     backend: str = "auto",
     no_compile: bool = False,
@@ -252,6 +271,14 @@ def run_inference(
         raw: Write full float probabilities (default: compact uint8)
         min_confidence: Confidence threshold in 0-255 uint8 space
         min_margin: Margin threshold in 0-255 uint8 space
+        abstain_on_junction_indel: Multiclass only (BAM ``aa`` tag / TSV
+            ``predicted_aa``). When True, ``min_margin`` is enforced only on
+            chunks whose motif junction is disrupted (unmapped, or a nonzero
+            CIGAR indel) rather than on every chunk -- issue #282's compound
+            abstention rule. A ``junction_indel``/``junction_mapped`` value is
+            always attached to a multiclass prediction when a motif
+            measurement was made, regardless of this flag; it only changes
+            whether that value gates the call.
         device: Device for inference
         min_mapq: Minimum mapping quality
         motif: Optional motif to filter predictions (auto-read from config if None)
@@ -397,6 +424,13 @@ def run_inference(
                     logger.info(f"Using pa_scaling normalization (sm={pa_mean}, sd={pa_stdev})")
                 break
 
+    if abstain_on_junction_indel and not is_multiclass:
+        raise RuntimeError(
+            "--abstain-on-junction-indel is only supported for multiclass models: it "
+            "gates the multiclass 'aa'/predicted_aa call, which a binary/pairwise model's "
+            "MP/ML BAM tags have no equivalent of. Drop the flag for a binary model."
+        )
+
     # Create output writer (BAM or TSV)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     tsv_writer = None
@@ -418,7 +452,12 @@ def run_inference(
         else:
             _tsv_class_names = [str(i) for i in range(num_out)]
         tsv_writer = TsvPredictionWriter(
-            output_path, _tsv_class_names, _has_cl, copy_tags=copy_tags
+            output_path,
+            _tsv_class_names,
+            _has_cl,
+            copy_tags=copy_tags,
+            min_margin=min_margin,
+            abstain_on_junction_indel=abstain_on_junction_indel,
         )
         logger.info(f"TSV output: {output_path} ({len(_tsv_class_names)} classes)")
     else:
@@ -642,8 +681,8 @@ def run_inference(
                     pending: dict[str, list] = {}
                     accumulator = BatchAccumulator(batch_size, _run_worker_batch)
                     for worker_results in pool.imap_unordered(_inference_worker, worker_args):
-                        for read_id, base_idx, sig, enc_seq, feat in worker_results:
-                            accumulator.add(sig, enc_seq, feat, (read_id, base_idx))
+                        for read_id, base_idx, sig, enc_seq, feat, ji, jm in worker_results:
+                            accumulator.add(sig, enc_seq, feat, (read_id, base_idx, ji, jm))
                         # One worker's results never share a batch with the
                         # next worker's -- imap_unordered hands them back
                         # whole, and this is the batching the path has always
@@ -664,6 +703,7 @@ def run_inference(
                             raw,
                             min_confidence,
                             min_margin,
+                            abstain_on_junction_indel,
                         )
                     total_reads += len(aln_batch)
                     total_predictions += batch_preds
@@ -781,7 +821,7 @@ def run_inference(
 
         def _extract_one_read(
             aln: pysam.AlignedSegment,
-        ) -> list[tuple[np.ndarray, np.ndarray, np.ndarray | None, tuple[str, int]]]:
+        ) -> list[tuple[np.ndarray, np.ndarray, np.ndarray | None, tuple[str, int, int, bool]]]:
             """Extract ready-to-batch chunks from one alignment. Thread-safe."""
             read_id = aln.query_name
             read_seq = aln.query_sequence
@@ -823,15 +863,24 @@ def run_inference(
 
             # Find positions to predict
             assert motif is not None
-            positions = [
-                pos + motif_offset
-                for pos in motif_searcher.find_motif_positions(
-                    leech_read.read_id, leech_read.sequence, aln, motif
-                )
-            ]
+            matches = motif_searcher.find_motif_positions(
+                leech_read.read_id, leech_read.sequence, aln, motif
+            )
+            positions = [m.position + motif_offset for m in matches]
+            # Junction disruption at each position's motif span (issue #282),
+            # looked up by base_idx after chunks_for_read (which may drop
+            # some positions) rather than threaded through it.
+            junction_by_base = {
+                m.position + motif_offset: (m.junction_indel, m.junction_mapped) for m in matches
+            }
 
             return [
-                (sig, seq_arr, feat, (read_id, base_idx))
+                (
+                    sig,
+                    seq_arr,
+                    feat,
+                    (read_id, base_idx, *junction_by_base.get(base_idx, (0, False))),
+                )
                 for sig, seq_arr, feat, base_idx in chunks_for_read(
                     leech_read,
                     positions,
@@ -899,6 +948,7 @@ def run_inference(
                 rs_motifs,
                 rs_cigars,
                 rs_refs,
+                _rs_junctions,
             ) = rs_meta
             assert _rs_extract_chunks_from_preloaded is not None
             n = len(rs_rids)
@@ -925,10 +975,19 @@ def run_inference(
                 )
                 yield from sub_chunks
 
-        def _consume_rust_chunks(chunks):
-            """Iterate Rust chunks into batch buffers, flushing to GPU as needed."""
+        def _consume_rust_chunks(chunks, junction_lookup: dict[tuple[str, int], tuple[int, bool]]):
+            """Iterate Rust chunks into batch buffers, flushing to GPU as needed.
+
+            ``junction_lookup`` (from :func:`junction_lookup_from_rs_meta`) is
+            built by the caller from the same metadata that produced
+            ``chunks``' ``motif_positions`` -- Rust's own chunk tuples carry
+            no junction information (issue #282).
+            """
             nonlocal _shape_validated
             for sig, seq_arr, feat, read_id, base_idx in chunks:
+                junction_indel, junction_mapped = junction_lookup.get(
+                    (read_id, base_idx), (0, False)
+                )
                 if signal_in_channels > 1 and sig.ndim == 1:
                     sig = sig.reshape(signal_in_channels, -1)
                 # Rust returns features at the full requested window width, the
@@ -946,7 +1005,9 @@ def run_inference(
                 if not _shape_validated:
                     validate_inference_shapes(sig, feat, config)
                     _shape_validated = True
-                accumulator.add(sig, seq_arr, feat, (read_id, base_idx))
+                accumulator.add(
+                    sig, seq_arr, feat, (read_id, base_idx, junction_indel, junction_mapped)
+                )
 
         def _wait_for_bam_write():
             """Wait for any in-flight async BAM write to complete."""
@@ -991,6 +1052,7 @@ def run_inference(
                     raw,
                     min_confidence,
                     min_margin,
+                    abstain_on_junction_indel,
                 )
             total_reads += len(aln_batch_to_write)
             total_predictions += batch_preds
@@ -1064,8 +1126,17 @@ def run_inference(
                                         ):
                                             chunk_list.append(chunk)
 
-                                    # Push to queue (blocks if queue full -- backpressure)
-                                    _extraction_queue.put((p_aln, chunk_list, len(p_rids)))
+                                    # Push to queue (blocks if queue full -- backpressure).
+                                    # The junction lookup travels with the chunks: the
+                                    # consumer thread never sees p_meta itself.
+                                    _extraction_queue.put(
+                                        (
+                                            p_aln,
+                                            chunk_list,
+                                            len(p_rids),
+                                            junction_lookup_from_rs_meta(p_meta),
+                                        )
+                                    )
 
                                     # Get metadata result (should be done by now)
                                     rs_meta = _meta_future.result()
@@ -1091,7 +1162,14 @@ def run_inference(
                                 if p_rids:
                                     for chunk in _extract_chunks_from_preloaded(preloaded, p_meta):
                                         chunk_list.append(chunk)
-                                _extraction_queue.put((p_aln, chunk_list, len(p_rids)))
+                                _extraction_queue.put(
+                                    (
+                                        p_aln,
+                                        chunk_list,
+                                        len(p_rids),
+                                        junction_lookup_from_rs_meta(p_meta),
+                                    )
+                                )
 
                             _meta_exec.shutdown(wait=True)
                             _prefetch_exec.shutdown(wait=True)
@@ -1109,7 +1187,7 @@ def run_inference(
                         item = _extraction_queue.get()
                         if item is _SENTINEL:
                             break
-                        aln_batch, chunk_list, n_rids = item
+                        aln_batch, chunk_list, n_rids, chunk_junction_lookup = item
                         _t_mb_start = _time.perf_counter()
 
                         logger.info(
@@ -1117,7 +1195,7 @@ def run_inference(
                         )
 
                         if chunk_list:
-                            _consume_rust_chunks(iter(chunk_list))
+                            _consume_rust_chunks(iter(chunk_list), chunk_junction_lookup)
                         _t_consume = _time.perf_counter()
 
                         _finalize_mega_batch(aln_batch)
@@ -1174,7 +1252,7 @@ def run_inference(
                                     ),
                                     **_rs_kwargs,
                                 )
-                                _consume_rust_chunks(chunks)
+                                _consume_rust_chunks(chunks, junction_lookup_from_rs_meta(rs_meta))
                             _t_extract = _time.perf_counter()
                             logger.debug(
                                 f"  Timing: metadata={_t_meta - _t_mb_start:.2f}s "

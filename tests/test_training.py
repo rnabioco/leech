@@ -1167,6 +1167,65 @@ class TestSamplerColumnReads:
         assert dict(zip(names, counts.tolist(), strict=True)) == {"a": 2, "unknown": 3}
         assert [names[c] for c in codes] == ["a", "unknown", "unknown", "unknown", "a"]
 
+    def test_field_group_counts_treats_zero_as_a_real_value(self):
+        """0 must not fall into "unknown" the way None/"" do (issue #282):
+        junction_indel == 0 is the dominant, legitimate "exact match" value,
+        not a missing one."""
+        from leech.training import _field_group_counts
+
+        codes, names, counts = _field_group_counts(
+            [
+                {"junction_indel": 0},
+                {"junction_indel": 0},
+                {"junction_indel": 1},
+                {"junction_indel": None},  # genuinely absent -> "unknown"
+            ],
+            "junction_indel",
+        )
+
+        assert dict(zip(names, counts.tolist(), strict=True)) == {"0": 2, "1": 1, "unknown": 1}
+        assert [names[c] for c in codes] == ["0", "0", "1", "unknown"]
+
+    def test_field_group_counts_short_circuits_an_absent_chunktable_column(
+        self, grouped_chunks_file
+    ):
+        """A ChunkTable whose column is entirely absent (a pre-#282 corpus'
+        junction_indel, say) must not materialize a ChunkRow per chunk just
+        to learn every value is "unknown" -- `skip` simulates the absence
+        without needing a special hand-built .npz."""
+        from leech.chunking import ChunkTable
+        from leech.training import _field_group_counts
+
+        table = ChunkTable.from_npz(grouped_chunks_file, skip={"source_group"})
+        assert table.values("source_group") is None  # column genuinely absent
+
+        codes, names, counts = _field_group_counts(table, "source_group")
+
+        n = len(table)
+        assert names == ["unknown"]
+        assert counts.tolist() == [n]
+        assert codes.tolist() == [0] * n
+
+    def test_sample_weight_field_matches_balance_groups_on_source_group(
+        self, grouped_chunks_file, tmp_path, monkeypatch
+    ):
+        """--sample-weight-field source_group is --balance-groups, generalized."""
+        captured = self._capture_sampler(monkeypatch)
+        self._train(grouped_chunks_file, tmp_path / "a", sample_weight_field="source_group")
+        by_field = list(captured["weights"])
+
+        captured = self._capture_sampler(monkeypatch)
+        self._train(grouped_chunks_file, tmp_path / "b", balance_groups=True)
+        by_flag = list(captured["weights"])
+
+        assert by_field == by_flag
+
+    def test_sampling_strategies_are_mutually_exclusive(self, grouped_chunks_file, tmp_path):
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            self._train(
+                grouped_chunks_file, tmp_path, balance_groups=True, sample_weight_field="label_int"
+            )
+
 
 class TestConfoundNpzHandle:
     """Confound setup must not hold the corpus open for the whole run."""

@@ -71,6 +71,71 @@ def _save_scores(
     logger.info(f"Wrote {len(probs)} per-chunk scores to {path}")
 
 
+def _read_junction_indels(test_data_path: Path, n: int) -> np.ndarray | None:
+    """The test corpus's ``junction_indels`` column, or None when absent/unusable.
+
+    Same ordering assumption as :func:`_save_scores`: the evaluation loader
+    is ``shuffle=False`` with no ``drop_last``, so row i of a scored array is
+    chunk i of ``test_data_path``. Older corpora (written before issue #282)
+    have no such column, which is why this degrades to None rather than
+    raising -- ``eval test`` reports the stratified breakdown only "when the
+    field is present" (the issue's own wording).
+    """
+    try:
+        with np.load(test_data_path, allow_pickle=False) as data:
+            if "junction_indels" not in data:
+                return None
+            junction_indels = data["junction_indels"]
+    except (OSError, ValueError) as exc:  # not an npz, or unreadable
+        logger.warning(f"Could not read junction_indels from {test_data_path}: {exc}")
+        return None
+
+    if len(junction_indels) != n:
+        logger.warning(
+            f"Scored {n} chunks but {test_data_path} holds {len(junction_indels)} "
+            "junction_indels; skipping junction-stratified metrics."
+        )
+        return None
+    return junction_indels
+
+
+def _junction_stratified_binary_metrics(
+    junction_indels: np.ndarray,
+    labels: np.ndarray,
+    preds: np.ndarray,
+    probs: np.ndarray,
+) -> dict:
+    """Binary ``compute_metrics`` split by ``junction_indel == 0`` vs ``!= 0``."""
+    strata: dict = {}
+    for name, mask in (("exact", junction_indels == 0), ("disrupted", junction_indels != 0)):
+        n = int(mask.sum())
+        if n == 0:
+            strata[name] = {"n": 0}
+            continue
+        strata[name] = {"n": n, **compute_metrics(labels[mask], preds[mask], probs[mask])}
+    return strata
+
+
+def _junction_stratified_multiclass_metrics(
+    junction_indels: np.ndarray,
+    labels: np.ndarray,
+    preds: np.ndarray,
+) -> dict:
+    """Multiclass accuracy/macro-F1 split by ``junction_indel == 0`` vs ``!= 0``."""
+    strata: dict = {}
+    for name, mask in (("exact", junction_indels == 0), ("disrupted", junction_indels != 0)):
+        n = int(mask.sum())
+        if n == 0:
+            strata[name] = {"n": 0}
+            continue
+        strata[name] = {
+            "n": n,
+            "accuracy": accuracy_score(labels[mask], preds[mask]),
+            "macro_f1": sk_f1_score(labels[mask], preds[mask], average="macro", zero_division=0.0),
+        }
+    return strata
+
+
 def evaluate_model(
     model_path: Path,
     test_data_path: Path,
@@ -302,6 +367,22 @@ def evaluate_model(
         if ece_calibrated is not None:
             metrics["ece_calibrated"] = ece_calibrated
 
+        # Stratified by junction disruption (issue #282), when the test
+        # corpus carries the field. `junction_indel == 0` (exact) vs `!= 0`
+        # (disrupted) is exactly the split the charging model's honest FPR
+        # ceiling is measured on.
+        junction_indels = _read_junction_indels(test_data_path, len(all_labels_arr))
+        if junction_indels is not None:
+            metrics["junction_stratified"] = _junction_stratified_multiclass_metrics(
+                junction_indels, all_labels_arr, all_preds_arr
+            )
+            for name, stratum in metrics["junction_stratified"].items():
+                if stratum["n"]:
+                    logger.info(
+                        f"Junction {name}: n={stratum['n']}, "
+                        f"accuracy={stratum['accuracy']:.4f}, macro_f1={stratum['macro_f1']:.4f}"
+                    )
+
         # Add metadata
         metrics["model_path"] = str(model_path)
         metrics["test_data_path"] = str(test_data_path)
@@ -394,6 +475,20 @@ def evaluate_model(
     # default (#264), so this is what makes a metrics.json from before that
     # default flip distinguishable from one after it.
     metrics["mixed_precision"] = use_autocast
+
+    # Stratified by junction disruption (issue #282), when the test corpus
+    # carries the field -- see the multiclass branch's identical comment.
+    junction_indels = _read_junction_indels(test_data_path, len(all_labels_arr))
+    if junction_indels is not None:
+        metrics["junction_stratified"] = _junction_stratified_binary_metrics(
+            junction_indels, all_labels_arr, all_preds_arr, all_probs_arr
+        )
+        for name, stratum in metrics["junction_stratified"].items():
+            if stratum["n"]:
+                logger.info(
+                    f"Junction {name}: n={stratum['n']}, "
+                    f"accuracy={stratum.get('accuracy', float('nan')):.4f}"
+                )
 
     if emit_scores is not None:
         _save_scores(emit_scores, test_data_path, all_labels_arr, all_probs_arr)

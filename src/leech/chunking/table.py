@@ -32,7 +32,11 @@ _INT_FIELDS: tuple[tuple[str, str, bool], ...] = (
     ("feature_ends", "feature_end", False),
     ("cl_values", "cl_value", True),
     ("focus_signal_pos", "focus_signal_pos", False),
+    ("junction_indels", "junction_indel", False),
 )
+
+#: npz member -> chunk field, for plain boolean columns.
+_BOOL_FIELDS: tuple[tuple[str, str], ...] = (("junction_mappeds", "junction_mapped"),)
 
 #: npz member -> (chunk field, does the empty string mean None)
 _TEXT_FIELDS: tuple[tuple[str, str, bool], ...] = (
@@ -79,6 +83,23 @@ class _IntColumn(_Column):
 
     def take(self, rows: np.ndarray) -> "_IntColumn":
         return _IntColumn(self.values[rows], self.none_if_negative)
+
+    @property
+    def raw(self) -> np.ndarray:
+        return self.values
+
+
+class _BoolColumn(_Column):
+    __slots__ = ("values",)
+
+    def __init__(self, values: np.ndarray):
+        self.values = values
+
+    def value(self, index: int):
+        return bool(self.values[index])
+
+    def take(self, rows: np.ndarray) -> "_BoolColumn":
+        return _BoolColumn(self.values[rows])
 
     @property
     def raw(self) -> np.ndarray:
@@ -253,6 +274,11 @@ class ChunkTable(Sequence):
                     continue
                 columns[field] = _IntColumn(_narrow_ints(data[member]), none_if_negative)
 
+            for member, field in _BOOL_FIELDS:
+                if field in skip or member not in present:
+                    continue
+                columns[field] = _BoolColumn(data[member])
+
             # Old corpora carry dwell_margin_lefts instead of the signed window.
             if not has_feature_window and "dwell_margin_lefts" in present:
                 columns["dwell_margin_left"] = _IntColumn(
@@ -271,6 +297,14 @@ class ChunkTable(Sequence):
         # callers read it unguarded.
         if "cl_value" not in columns and "cl_value" not in skip:
             columns["cl_value"] = _ConstColumn(None)
+
+        # Same for junction_indel/junction_mapped (issue #282): load_chunks
+        # always sets both keys, to None on a corpus written before this
+        # field existed, rather than omitting them.
+        if "junction_indel" not in columns and "junction_indel" not in skip:
+            columns["junction_indel"] = _ConstColumn(None)
+        if "junction_mapped" not in columns and "junction_mapped" not in skip:
+            columns["junction_mapped"] = _ConstColumn(None)
 
         return cls(columns, n_chunks)
 

@@ -64,6 +64,9 @@ def _write_prediction_tags(
     min_confidence: int,
     min_margin: int = 0,
     predicted_cl: float | None = None,
+    junction_indel: int | None = None,
+    junction_mapped: bool = False,
+    abstain_on_junction_indel: bool = False,
 ) -> None:
     """Write prediction tags to a BAM alignment.
 
@@ -78,12 +81,30 @@ def _write_prediction_tags(
         min_confidence: threshold in 0-255 uint8 space
         min_margin: margin threshold in 0-255 uint8 space
         predicted_cl: predicted charging level in [0, 1] (None = no CL head)
+        junction_indel: CIGAR-measured indel at this call's motif junction
+            (issue #282), or ``None`` when no motif measurement was made.
+            Written to the ``ji`` tag when available.
+        junction_mapped: Whether ``junction_indel`` was actually measured
+            (False means "unknown", not "exact") -- see ``MotifMatch``.
+        abstain_on_junction_indel: When True, the margin threshold below is
+            enforced only on chunks whose junction is disrupted (an unmapped
+            junction or a nonzero indel) rather than on every chunk -- the
+            compound "badly called junction AND marginal score" abstention
+            rule this field exists for (charging-waveform-plan.md §13.12).
+            Reads with an intact junction bypass the margin check entirely
+            under this flag; ``min_confidence`` is unaffected either way.
     """
     sorted_probs = sorted(probs, reverse=True)
     margin = sorted_probs[0] - sorted_probs[1] if len(sorted_probs) > 1 else 1.0
     margin_uint8 = int(min(255, max(0, round(margin * 255))))
     ac_uint8 = int(min(255, max(0, round(conf * 255))))
-    passed_threshold = ac_uint8 >= min_confidence and margin_uint8 >= min_margin
+
+    if abstain_on_junction_indel:
+        disrupted = not junction_mapped or (junction_indel is not None and junction_indel != 0)
+        passed_margin = (margin_uint8 >= min_margin) if disrupted else True
+    else:
+        passed_margin = margin_uint8 >= min_margin
+    passed_threshold = ac_uint8 >= min_confidence and passed_margin
 
     # `ac` always carries the winning class probability, whether or not the call
     # passed. Reporting 1-conf for filtered reads only makes sense when there are
@@ -97,6 +118,13 @@ def _write_prediction_tags(
     else:
         aln.set_tag("ac", ac_uint8, value_type="C")
         aln.set_tag("am", margin_uint8, value_type="C")
+
+    # Junction disruption, so the abstention rule can be re-applied or audited
+    # offline without re-running inference (issue #282). Omitted when no motif
+    # measurement was ever attempted (no motif, or a Remora model).
+    if junction_indel is not None:
+        aln.set_tag("ji", int(junction_indel), value_type="i")
+        aln.set_tag("jm", int(junction_mapped), value_type="C")
 
     aln.set_tag("pn", class_names_str)
     if raw:
@@ -893,6 +921,25 @@ def chunks_for_read(
     return results
 
 
+def _unpack_multiclass_pred(
+    pred: tuple,
+) -> tuple[int, int, float, list[float], float | None, int | None, bool]:
+    """Unpack one ``pending[read_id]`` entry from ``_run_batch_multiclass``.
+
+    Three historical widths, oldest first: 4-tuple (no CL head), 5-tuple
+    (+ CL prediction), 7-tuple (current, + junction_indel/junction_mapped --
+    issue #282). Centralized so the BAM-tag and TSV writers -- the two
+    consumers of this shape -- decode it identically.
+    """
+    if len(pred) == 7:
+        return pred
+    if len(pred) == 5:
+        base_idx, cls_idx, conf, all_probs, cl_pred = pred
+        return base_idx, cls_idx, conf, all_probs, cl_pred, None, False
+    base_idx, cls_idx, conf, all_probs = pred
+    return base_idx, cls_idx, conf, all_probs, None, None, False
+
+
 def _write_mega_batch_predictions(
     aln_batch: list[pysam.AlignedSegment],
     pending: dict[str, list],
@@ -903,6 +950,7 @@ def _write_mega_batch_predictions(
     raw: bool,
     min_confidence: int,
     min_margin: int,
+    abstain_on_junction_indel: bool = False,
 ) -> int:
     """Write predictions for a mega-batch of alignments. Returns prediction count."""
     n_preds = 0
@@ -910,13 +958,9 @@ def _write_mega_batch_predictions(
         for aln in aln_batch:
             preds = pending.get(aln.query_name)
             if preds:
-                pred = preds[0]
-                # Unpack: 4-tuple (old) or 5-tuple (with CL prediction)
-                if len(pred) == 5:
-                    _, cls_idx, conf, all_probs, cl_pred = pred
-                else:
-                    _, cls_idx, conf, all_probs = pred
-                    cl_pred = None
+                _, cls_idx, conf, all_probs, cl_pred, junction_indel, junction_mapped = (
+                    _unpack_multiclass_pred(preds[0])
+                )
                 if int_to_label:
                     predicted_aa = int_to_label.get(cls_idx, str(cls_idx))
                 else:
@@ -931,6 +975,9 @@ def _write_mega_batch_predictions(
                     min_confidence,
                     min_margin,
                     predicted_cl=cl_pred,
+                    junction_indel=junction_indel,
+                    junction_mapped=junction_mapped,
+                    abstain_on_junction_indel=abstain_on_junction_indel,
                 )
                 n_preds += 1
             bam_out.write(aln)
@@ -1160,15 +1207,17 @@ def _run_batch_multiclass(
     signals: list[np.ndarray],
     sequences: list[np.ndarray],
     features: list[np.ndarray | None],
-    meta: list[tuple[str, int]],
+    meta: list[tuple[str, int, int, bool]],
     model_wrapper: ModelInferenceWrapper | TracedModelWrapper | RemoraModelWrapper,
     requires_features: bool,
     device: str,
-    pending: dict[str, list[tuple[int, int, float, list[float], float | None]]],
+    pending: dict[str, list[tuple[int, int, float, list[float], float | None, int, bool]]],
     calibration: dict | None = None,
     cl_regression_head: "torch.nn.Module | None" = None,
 ) -> None:
-    """Run a multi-class batch: store (base_idx, class_idx, confidence, all_probs, cl_pred) per read."""
+    """Run a multi-class batch: store (base_idx, class_idx, confidence, all_probs,
+    cl_pred, junction_indel, junction_mapped) per read. The last two pass
+    through unchanged from ``meta`` -- see issue #282."""
     signal_t = _stack_to_device(signals, device, "signal")
     seq_t = _stack_to_device(sequences, device, "sequence")
     batch = {"signal": signal_t, "sequence": seq_t}
@@ -1200,26 +1249,41 @@ def _run_batch_multiclass(
     # One `tolist()` for the whole batch, not `float(p)` per class per chunk.
     # numpy promotes float32 -> Python float identically either way.
     prob_lists = probs.tolist()
-    for i, ((read_id, base_idx), cls_idx, conf) in enumerate(
+    for i, ((read_id, base_idx, junction_indel, junction_mapped), cls_idx, conf) in enumerate(
         zip(meta, class_indices.flatten(), confidences.flatten(), strict=True)
     ):
         cl_val = float(cl_preds[i]) if cl_preds is not None else None
         if read_id not in pending:
             pending[read_id] = []
-        pending[read_id].append((base_idx, int(cls_idx), float(conf), prob_lists[i], cl_val))
+        pending[read_id].append(
+            (
+                base_idx,
+                int(cls_idx),
+                float(conf),
+                prob_lists[i],
+                cl_val,
+                junction_indel,
+                junction_mapped,
+            )
+        )
 
 
 def _run_batch(
     signals: list[np.ndarray],
     sequences: list[np.ndarray],
     features: list[np.ndarray | None],
-    meta: list[tuple[str, int]],
+    meta: list[tuple[str, int, int, bool]],
     model_wrapper: ModelInferenceWrapper | RemoraModelWrapper,
     requires_features: bool,
     device: str,
     pending: dict[str, list[tuple[int, float]]],
 ) -> None:
-    """Run a batch through the model and accumulate results into pending."""
+    """Run a batch through the model and accumulate results into pending.
+
+    ``meta``'s junction fields are unused here -- the binary (pairwise) BAM
+    tag path (``MP``/``ML``) has no BELOW_THRESHOLD_LABEL-style abstention
+    for issue #282's rule to plug into. See ``_run_batch_multiclass``.
+    """
     signal_t = _stack_to_device(signals, device, "signal")
     seq_t = _stack_to_device(sequences, device, "sequence")
     batch = {"signal": signal_t, "sequence": seq_t}
@@ -1233,7 +1297,8 @@ def _run_batch(
         logits = model_wrapper.forward_batch(batch, device)
         probs = torch.sigmoid(logits).cpu().numpy().flatten()
 
-    for (read_id, base_idx), prob in zip(meta, probs.tolist(), strict=True):
+    for meta_entry, prob in zip(meta, probs.tolist(), strict=True):
+        read_id, base_idx = meta_entry[0], meta_entry[1]
         if read_id not in pending:
             pending[read_id] = []
         pending[read_id].append((base_idx, prob))
@@ -1468,6 +1533,7 @@ def collect_bam_metadata_for_rust(
     list[list[int]],
     list[list[tuple[int, int]]],
     list[str | None],
+    list[dict[int, tuple[int, bool]]],
 ]:
     """Collect pysam alignment metadata into the parallel-list format expected
     by ``_rs_extract_inference_chunks`` / ``_rs_preload_pod5_signals``.
@@ -1487,8 +1553,14 @@ def collect_bam_metadata_for_rust(
             Bundle inference passes 1 to force one-chunk-per-read.
 
     Returns:
-        Nine parallel lists: (rids, seqs, strides, moves, num_samples,
-        trim_offsets, motif_positions, cigar_tuples, reference_sequences).
+        Ten parallel lists: (rids, seqs, strides, moves, num_samples,
+        trim_offsets, motif_positions, cigar_tuples, reference_sequences,
+        junctions). ``junctions[i]`` maps each of ``motif_positions[i]`` to
+        its ``(junction_indel, junction_mapped)`` (issue #282) -- the Rust
+        extraction call itself is unaware of it; a caller correlates it back
+        onto Rust's returned ``(sig, seq_arr, feat, read_id, base_idx)``
+        chunks by ``base_idx``, which Rust always sets to the position that
+        produced the chunk. See :func:`junction_lookup_from_rs_meta`.
     """
     from leech.features import extract_move_table
 
@@ -1501,6 +1573,7 @@ def collect_bam_metadata_for_rust(
     rs_motifs: list[list[int]] = []
     rs_cigars: list[list[tuple[int, int]]] = []
     rs_refs: list[str | None] = []
+    rs_junctions: list[dict[int, tuple[int, bool]]] = []
 
     for aln in aln_batch:
         if aln.query_name is None or aln.query_sequence is None:
@@ -1528,22 +1601,23 @@ def collect_bam_metadata_for_rust(
                     except Exception:
                         ref_seq = None
 
-            positions = [
-                pos + motif_offset
-                for pos in motif_searcher.find_motif_positions(
-                    aln.query_name,
-                    extraction_sequence(
-                        anchor=anchor,
-                        basecall=aln.query_sequence,
-                        reference_sequence=ref_seq,
-                        cigar_tuples=cigar_list or None,
-                    ),
-                    aln,
-                    motif,
-                )
-            ]
+            matches = motif_searcher.find_motif_positions(
+                aln.query_name,
+                extraction_sequence(
+                    anchor=anchor,
+                    basecall=aln.query_sequence,
+                    reference_sequence=ref_seq,
+                    cigar_tuples=cigar_list or None,
+                ),
+                aln,
+                motif,
+            )
+            positions = [m.position + motif_offset for m in matches]
             if not positions:
                 continue
+            junctions = {
+                m.position + motif_offset: (m.junction_indel, m.junction_mapped) for m in matches
+            }
             if max_positions_per_read is not None:
                 positions = positions[:max_positions_per_read]
 
@@ -1559,6 +1633,7 @@ def collect_bam_metadata_for_rust(
             rs_motifs.append(positions)
             rs_cigars.append(cigar_list)
             rs_refs.append(ref_seq)
+            rs_junctions.append(junctions)
         except Exception as e:
             logger.warning(f"Skipping read {aln.query_name}: {e}")
             continue
@@ -1573,4 +1648,22 @@ def collect_bam_metadata_for_rust(
         rs_motifs,
         rs_cigars,
         rs_refs,
+        rs_junctions,
     )
+
+
+def junction_lookup_from_rs_meta(
+    rs_meta: tuple,
+) -> dict[tuple[str, int], tuple[int, bool]]:
+    """Flatten ``collect_bam_metadata_for_rust``'s per-read junction dicts.
+
+    ``rs_meta[0]`` (read ids) and ``rs_meta[9]`` (per-read
+    ``{base_idx: (junction_indel, junction_mapped)}``) are parallel lists;
+    this builds the single ``(read_id, base_idx) -> (junction_indel,
+    junction_mapped)`` lookup a Rust chunk consumer keys into (issue #282).
+    """
+    lookup: dict[tuple[str, int], tuple[int, bool]] = {}
+    for read_id, per_base in zip(rs_meta[0], rs_meta[9], strict=True):
+        for base_idx, info in per_base.items():
+            lookup[(read_id, base_idx)] = info
+    return lookup
