@@ -1176,6 +1176,13 @@ class TestBundleExtractionPathParity:
         rust_predicted = self._predict(tmp_path, bundle_path, "rust", backend="rust")
         assert rust_predicted
 
+    # Longer than pyproject.toml's global 120s: the subprocess.run(...,
+    # timeout=120) below is this test's own hang guard for the exact #308
+    # deadlock, and must be the one to fire (raising subprocess.TimeoutExpired
+    # with a clean assertion message) rather than racing the global per-test
+    # timeout, which would instead kill the whole pytest process via
+    # os._exit() before the subprocess's own timeout could report cleanly.
+    @pytest.mark.timeout(150)
     def test_parallel_path_alone_writes_tags(self, tmp_path):
         """``num_workers > 0`` (mp.Pool, always Python extraction) --
         previously untested here (all prior bundle tests ran serial only).
@@ -1784,6 +1791,12 @@ with mp.get_context("fork").Pool(processes=2) as p:
 print("OK")
 """
 
+    # Longer than pyproject.toml's global 120s -- same reasoning as
+    # test_parallel_path_alone_writes_tags above: the subprocess.run(...,
+    # timeout=120) inside this test is the intended hang guard ("the bug
+    # under test IS a hang"), and needs room to fire before the global
+    # per-test timeout would otherwise race it and kill the whole process.
+    @pytest.mark.timeout(150)
     def test_a_fork_after_a_waited_shutdown_completes(self, tmp_path):
         """Runs in a subprocess with a hard timeout: the bug under test IS a hang."""
         import subprocess

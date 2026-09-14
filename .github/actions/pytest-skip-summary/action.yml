@@ -17,6 +17,14 @@ runs:
           echo '```'
           if [ ! -f pytest-output.log ]; then
             echo "pytest did not run -- see the failed step above"
+          elif ! grep -qE ' in [0-9]+\.[0-9]+s' pytest-output.log; then
+            # pytest always prints a final "N passed/failed... in X.XXs" line
+            # on a normal exit, pass or fail. Its absence means the process
+            # was killed mid-run (e.g. pytest-timeout's `thread` method
+            # force-exiting via os._exit()) rather than that nothing was
+            # skipped -- distinguish the two so a hung run doesn't get a
+            # falsely reassuring summary.
+            echo "pytest did not finish normally (killed, crashed, or timed out) -- see the failed step above"
           elif grep -q "short test summary info" pytest-output.log; then
             awk '/short test summary info/,0' pytest-output.log
           else

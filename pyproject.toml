@@ -76,6 +76,7 @@ onnx = [
 test = [
   "pytest>=8.0.0",
   "pytest-cov>=4.1.0",
+  "pytest-timeout>=2.4.0",
   "pytest-xdist>=3.5.0",
 ]
 # Full local dev env: test runners + lint/type/QA tooling.
@@ -104,7 +105,6 @@ notebook = [
 [dependency-groups]
 dev = [
     "maturin>=1.12.6",
-    "pytest-timeout>=2.4.0",
 ]
 docs = [
   "matplotlib>=3.10.7",

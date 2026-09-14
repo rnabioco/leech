@@ -1274,6 +1274,7 @@ dev = [
     { name = "onnxscript", marker = "sys_platform != 'emscripten'" },
     { name = "pytest", marker = "sys_platform != 'emscripten'" },
     { name = "pytest-cov", marker = "sys_platform != 'emscripten'" },
+    { name = "pytest-timeout", marker = "sys_platform != 'emscripten'" },
     { name = "pytest-xdist", marker = "sys_platform != 'emscripten'" },
     { name = "ruff", marker = "sys_platform != 'emscripten'" },
     { name = "towncrier", marker = "sys_platform != 'emscripten'" },
@@ -1303,13 +1304,13 @@ rust = [
 test = [
     { name = "pytest", marker = "sys_platform != 'emscripten'" },
     { name = "pytest-cov", marker = "sys_platform != 'emscripten'" },
+    { name = "pytest-timeout", marker = "sys_platform != 'emscripten'" },
     { name = "pytest-xdist", marker = "sys_platform != 'emscripten'" },
 ]
 
 [package.dev-dependencies]
 dev = [
     { name = "maturin", marker = "sys_platform != 'emscripten'" },
-    { name = "pytest-timeout", marker = "sys_platform != 'emscripten'" },
 ]
 docs = [
     { name = "matplotlib", marker = "sys_platform != 'emscripten'" },
@@ -1335,6 +1336,7 @@ requires-dist = [
     { name = "pysam", specifier = ">=0.22.0" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.0.0" },
     { name = "pytest-cov", marker = "extra == 'test'", specifier = ">=4.1.0" },
+    { name = "pytest-timeout", marker = "extra == 'test'", specifier = ">=2.4.0" },
     { name = "pytest-xdist", marker = "extra == 'test'", specifier = ">=3.5.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "rich", specifier = ">=13.0.0" },
@@ -1355,10 +1357,7 @@ requires-dist = [
 provides-extras = ["rust", "pod5", "onnx", "test", "dev", "pipeline", "notebook"]
 
 [package.metadata.requires-dev]
-dev = [
-    { name = "maturin", specifier = ">=1.12.6" },
-    { name = "pytest-timeout", specifier = ">=2.4.0" },
-]
+dev = [{ name = "maturin", specifier = ">=1.12.6" }]
 docs = [
     { name = "matplotlib", specifier = ">=3.10.7" },
     { name = "mkdocstrings", extras = ["python"], specifier = ">=1.0.6" },
