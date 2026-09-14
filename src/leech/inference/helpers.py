@@ -222,7 +222,6 @@ class InferenceSpec:
     # Signal map refinement
     refine_signal_map: bool
     refine_half_bandwidth: int
-    refine_do_rough_rescale: bool
     refine_scale_iters: int
     refine_kmer_center_idx: int
 
@@ -414,7 +413,6 @@ class InferenceSpec:
             refine_half_bandwidth=int(
                 config.get("refine_half_bandwidth", DEFAULT_REFINE_HALF_BANDWIDTH)
             ),
-            refine_do_rough_rescale=bool(config.get("refine_do_rough_rescale", True)),
             refine_scale_iters=refine_scale_iters,
             refine_kmer_center_idx=int(config.get("refine_kmer_center_idx", -1)),
             is_multiclass=num_out > 1,
@@ -601,7 +599,6 @@ def _extract_remora_metadata(model_path: Path) -> dict:
     if "refine_half_bandwidth" in raw:
         raw["refine_signal_map"] = True
         raw["refine_half_bandwidth"] = int(raw["refine_half_bandwidth"])
-        raw["refine_do_rough_rescale"] = raw.get("refine_do_rough_rescale", True)
         raw["refine_scale_iters"] = int(raw.get("refine_scale_iters", 2))
         raw["refine_kmer_center_idx"] = int(raw.get("refine_kmer_center_idx", -1))
 
@@ -715,7 +712,6 @@ def load_model_auto(
             config["refine_half_bandwidth"] = remora_meta.get(
                 "refine_half_bandwidth", DEFAULT_REFINE_HALF_BANDWIDTH
             )
-            config["refine_do_rough_rescale"] = remora_meta.get("refine_do_rough_rescale", True)
             config["refine_scale_iters"] = remora_meta.get("refine_scale_iters", -1)
             config["refine_kmer_center_idx"] = remora_meta.get("refine_kmer_center_idx", -1)
 

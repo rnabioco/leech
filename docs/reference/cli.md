@@ -87,7 +87,6 @@ leech data prepare --pod5 FILE --bam FILE --output-dir DIR [OPTIONS]
 | `--refine-signal-map / --no-refine-signal-map` | enabled | Refine move-table base boundaries against expected k-mer levels. Use `--no-refine-signal-map` for DNA. |
 | `--kmer-table FILE` | *(bundled)* | K-mer level table; defaults to the table shipped with leech |
 | `--scale-iters INT` | `2` | `-1` = no refinement; `0` = one banded-DP pass without rescaling; `N` = N passes with Theil-Sen rescaling between them |
-| `--rough-rescale / --no-rough-rescale` | enabled | **Not honored.** Refinement is delegated to escapepod, whose `refine_signal_map` always applies its own least-squares rough rescale and exposes no switch. Passing `--no-rough-rescale` logs a warning. |
 
 !!! note "Refinement changes chunk contents"
 

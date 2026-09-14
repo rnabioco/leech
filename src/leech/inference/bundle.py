@@ -223,10 +223,6 @@ def run_bundle_inference(
         reference_fasta: Path to reference FASTA (for reference-anchored mode)
     """
     logger.info(f"Extraction backend: {backend}")
-    if backend == "python":
-        import leech.signal_refine as _sr
-
-        _sr.HAS_RUST = False
 
     bundle = torch.load(bundle_path, map_location="cpu", weights_only=False)
     metadata = bundle["metadata"]
@@ -401,7 +397,6 @@ def run_bundle_inference(
         bundle_refiner = SigMapRefiner.from_table(
             kmer_table_path,
             half_bandwidth=spec.refine_half_bandwidth,
-            do_rough_rescale=spec.refine_do_rough_rescale,
             scale_iters=spec.refine_scale_iters,
             center_idx=spec.refine_kmer_center_idx,
         )

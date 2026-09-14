@@ -1,25 +1,18 @@
 """
 Tests for signal map refinement.
 
-Tests the banded DP, kmer level extraction, band computation, and SigMapRefiner.
+Tests kmer level extraction and ``SigMapRefiner`` (both production, in
+``leech.signal_refine``), plus the frozen banded-DP reference oracle that
+used to live there (``tests/reference_signal_refine.py`` -- see its
+docstring for why it moved: issue #276 found it was reachable only from
+tests, since ``SigMapRefiner.refine()`` delegates entirely to escapepod).
 """
 
 import numpy as np
 import pytest
+import reference_signal_refine as refsr
 
-from leech.signal_refine import (
-    DEFAULT_SHORT_DWELL_PEN,
-    SigMapRefiner,
-    adjust_seq_band,
-    compute_dwell_pen_array,
-    compute_sig_band,
-    convert_to_seq_band,
-    extract_levels,
-    refine_signal_mapping,
-    rough_rescale_quantile,
-    seq_banded_dp,
-    validate_band,
-)
+from leech.signal_refine import SigMapRefiner, extract_levels
 
 
 class TestExtractLevels:
@@ -62,7 +55,7 @@ class TestExtractLevels:
 
 
 class TestRoughRescaleQuantile:
-    """Test quantile-based rough signal rescaling."""
+    """Test the frozen reference quantile-based rough signal rescaling."""
 
     def test_basic_rescale(self):
         """Test that rescaling produces output of same length."""
@@ -71,16 +64,16 @@ class TestRoughRescaleQuantile:
         expected = np.random.randn(10).astype(np.float32)
         seq_to_sig = np.linspace(0, 100, 11).astype(np.int64)
 
-        rescaled = rough_rescale_quantile(signal, expected, seq_to_sig, clip_bases=0)
+        rescaled = refsr.rough_rescale_quantile(signal, expected, seq_to_sig, clip_bases=0)
         assert len(rescaled) == len(signal)
 
 
 class TestComputeDwellPenArray:
-    """Test dwell penalty array computation."""
+    """Test the frozen reference dwell penalty array computation."""
 
     def test_default_params(self):
         """Test default (4, 3, 0.5) penalty."""
-        pen = compute_dwell_pen_array(target=4, limit=3, weight=0.5)
+        pen = refsr.compute_dwell_pen_array(target=4, limit=3, weight=0.5)
         assert len(pen) == 3
         # dwell 0: 0.5 * (0-4)^2 = 8.0
         np.testing.assert_allclose(pen[0], 8.0)
@@ -91,18 +84,18 @@ class TestComputeDwellPenArray:
 
     def test_limit_clamped(self):
         """Test that limit > target is clamped."""
-        pen = compute_dwell_pen_array(target=3, limit=5, weight=1.0)
+        pen = refsr.compute_dwell_pen_array(target=3, limit=5, weight=1.0)
         assert len(pen) == 3  # Clamped to target
 
 
 class TestBandComputation:
-    """Test sig_band -> seq_band pipeline."""
+    """Test the frozen reference sig_band -> seq_band pipeline."""
 
     def test_compute_sig_band_basic(self):
         """Test that sig_band has correct shape and bounds."""
         bps = np.array([0, 5, 10, 15])
         levels = np.array([1.0, 2.0, 3.0], dtype=np.float32)
-        band = compute_sig_band(bps, levels, bhw=2)
+        band = refsr.compute_sig_band(bps, levels, bhw=2)
         assert band.shape == (2, 15)  # sig_len = 15
         assert band[0, 0] == 0  # Start at 0
         assert band[1, -1] == 3  # seq_len = 3
@@ -111,8 +104,8 @@ class TestBandComputation:
         """Test sig_band -> seq_band conversion."""
         bps = np.array([0, 5, 10, 15])
         levels = np.array([1.0, 2.0, 3.0], dtype=np.float32)
-        sig_band = compute_sig_band(bps, levels, bhw=2)
-        seq_band = convert_to_seq_band(sig_band)
+        sig_band = refsr.compute_sig_band(bps, levels, bhw=2)
+        seq_band = refsr.convert_to_seq_band(sig_band)
         assert seq_band.shape[0] == 2
         assert seq_band.shape[1] == 3  # seq_len
         assert seq_band[0, 0] == 0  # First band starts at signal 0
@@ -121,7 +114,7 @@ class TestBandComputation:
     def test_adjust_seq_band_monotonicity(self):
         """Test that adjust_seq_band enforces min_step."""
         seq_band = np.array([[0, 2, 4], [5, 7, 10]], dtype=np.int32)
-        adjust_seq_band(seq_band, min_step=2)
+        refsr.adjust_seq_band(seq_band, min_step=2)
         # Starts should be at least 2 apart
         for i in range(seq_band.shape[1] - 1):
             assert seq_band[0, i + 1] >= seq_band[0, i] + 1
@@ -133,20 +126,20 @@ class TestBandComputation:
         """Test validation passes for a valid band."""
         bps = np.array([0, 10, 20, 30])
         levels = np.array([1.0, 2.0, 3.0], dtype=np.float32)
-        sig_band = compute_sig_band(bps, levels, bhw=3)
-        seq_band = convert_to_seq_band(sig_band)
-        adjust_seq_band(seq_band, min_step=2)
-        validate_band(seq_band, sig_len=30, seq_len=3)
+        sig_band = refsr.compute_sig_band(bps, levels, bhw=3)
+        seq_band = refsr.convert_to_seq_band(sig_band)
+        refsr.adjust_seq_band(seq_band, min_step=2)
+        refsr.validate_band(seq_band, sig_len=30, seq_len=3)
 
     def test_validate_band_invalid_start(self):
         """Test validation fails when band doesn't start at 0."""
         band = np.array([[1, 2], [5, 10]], dtype=np.int32)
         with pytest.raises(ValueError, match="does not start with 0"):
-            validate_band(band)
+            refsr.validate_band(band)
 
 
 class TestSeqBandedDP:
-    """Test banded Viterbi dynamic programming."""
+    """Test the frozen reference banded Viterbi dynamic programming."""
 
     def test_trivial_case(self):
         """Test DP with signal that perfectly matches expected levels."""
@@ -161,11 +154,11 @@ class TestSeqBandedDP:
         levels = np.array([1.0, 2.0, 3.0], dtype=np.float32)
         seq_to_sig = np.array([0, 10, 20, 30], dtype=np.int64)
 
-        sig_band = compute_sig_band(seq_to_sig, levels, bhw=5)
-        seq_band = convert_to_seq_band(sig_band)
-        adjust_seq_band(seq_band, min_step=2)
+        sig_band = refsr.compute_sig_band(seq_to_sig, levels, bhw=5)
+        seq_band = refsr.convert_to_seq_band(sig_band)
+        refsr.adjust_seq_band(seq_band, min_step=2)
 
-        path = seq_banded_dp(signal, levels, seq_band, DEFAULT_SHORT_DWELL_PEN)
+        path = refsr.seq_banded_dp(signal, levels, seq_band, refsr.DEFAULT_SHORT_DWELL_PEN)
 
         assert len(path) == 4  # 3 bases + 1
         assert path[0] == 0
@@ -181,11 +174,11 @@ class TestSeqBandedDP:
         levels = np.array([0.0, 1.0, -1.0, 0.5, -0.5], dtype=np.float32)
         seq_to_sig = np.array([0, 20, 40, 60, 80, 100], dtype=np.int64)
 
-        sig_band = compute_sig_band(seq_to_sig, levels, bhw=5)
-        seq_band = convert_to_seq_band(sig_band)
-        adjust_seq_band(seq_band, min_step=2)
+        sig_band = refsr.compute_sig_band(seq_to_sig, levels, bhw=5)
+        seq_band = refsr.convert_to_seq_band(sig_band)
+        refsr.adjust_seq_band(seq_band, min_step=2)
 
-        path = seq_banded_dp(signal, levels, seq_band, DEFAULT_SHORT_DWELL_PEN)
+        path = refsr.seq_banded_dp(signal, levels, seq_band, refsr.DEFAULT_SHORT_DWELL_PEN)
 
         for i in range(1, len(path)):
             assert path[i] > path[i - 1], (
@@ -203,12 +196,12 @@ class TestSeqBandedDP:
         levels = np.array([1.0, 2.0], dtype=np.float32)
         seq_to_sig = np.array([0, 10, 20], dtype=np.int64)
 
-        sig_band = compute_sig_band(seq_to_sig, levels, bhw=5)
-        seq_band = convert_to_seq_band(sig_band)
-        adjust_seq_band(seq_band, min_step=2)
+        sig_band = refsr.compute_sig_band(seq_to_sig, levels, bhw=5)
+        seq_band = refsr.convert_to_seq_band(sig_band)
+        refsr.adjust_seq_band(seq_band, min_step=2)
         sd_pen = np.zeros(0, dtype=np.float32)
 
-        path = seq_banded_dp(signal, levels, seq_band, sd_pen, algo="Viterbi")
+        path = refsr.seq_banded_dp(signal, levels, seq_band, sd_pen, algo="Viterbi")
 
         assert path[0] == 0
         assert path[2] == 20
@@ -216,7 +209,7 @@ class TestSeqBandedDP:
 
 
 class TestRefineSignalMapping:
-    """Test the full refinement pipeline."""
+    """Test the frozen reference full refinement pipeline."""
 
     def test_basic_refinement(self):
         """Test that refine_signal_mapping returns valid path."""
@@ -230,7 +223,7 @@ class TestRefineSignalMapping:
         levels = np.array([1.0, 2.0, 3.0], dtype=np.float32)
         seq_to_sig = np.array([0, 10, 20, 30], dtype=np.int64)
 
-        path = refine_signal_mapping(signal, seq_to_sig, levels)
+        path = refsr.refine_signal_mapping(signal, seq_to_sig, levels)
 
         assert len(path) == 4
         assert path[0] == 0
@@ -251,7 +244,6 @@ class TestSigMapRefiner:
         defaults = {
             "kmer_to_level": kmer_to_level,
             "kmer_len": 3,
-            "do_rough_rescale": False,
             "scale_iters": 0,
         }
         defaults.update(kwargs)
@@ -276,7 +268,7 @@ class TestSigMapRefiner:
 
     def test_refine_rescale_only(self):
         """Test scale_iters=-1 only rescales, doesn't change mapping."""
-        refiner = self._make_refiner(scale_iters=-1, do_rough_rescale=True)
+        refiner = self._make_refiner(scale_iters=-1)
 
         np.random.seed(42)
         sequence = "ACGTACGTAC"
@@ -306,7 +298,6 @@ class TestSigMapRefiner:
         refiner = SigMapRefiner(
             kmer_to_level=kmer_to_level,
             kmer_len=3,
-            do_rough_rescale=False,
             scale_iters=0,
         )
 
