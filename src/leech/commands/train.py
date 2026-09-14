@@ -50,6 +50,7 @@ def handle_train(
     augment_shift_max_bases: float,
     augment_feature_noise_scale: float,
     num_workers: int,
+    augment_time_stretch: tuple[float, float] = (1.0, 1.0),
     gpus: int = 1,
     quantile_grad_clip: bool = False,
     grad_accum_split: int = 1,
@@ -108,6 +109,8 @@ def handle_train(
         augment_jitter: Signal jitter noise std dev
         augment_scale_min: Min random scale factor
         augment_scale_max: Max random scale factor
+        augment_time_stretch: (min, max) per-sample time-stretch factor range
+            ((1.0, 1.0) = disabled)
         num_workers: DataLoader workers
         gpus: Data-parallel ranks (1 = single device); batch_size is the global
             batch and is split across them
@@ -182,6 +185,16 @@ def handle_train(
         "augment_time_mask_count",
         "augment_shift_max_bases",
         "augment_feature_noise_scale",
+        "augment_time_stretch",
+        # config.json (train_model's output) records the resolved range as
+        # two scalar keys, not the single "augment_time_stretch" tuple param
+        # above -- reusing a prior run's config.json via --model-config
+        # (test_label_map_survives_model_config's pattern) would otherwise
+        # leave these two unpopped, flowing through **extra_kwargs into
+        # get_model(...)'s init kwargs and raising TypeError on every
+        # TOML-declared architecture that doesn't accept them.
+        "augment_time_stretch_min",
+        "augment_time_stretch_max",
         "num_workers",
         "seq_encoding",
         "allow_encoding_fallback",
@@ -293,6 +306,7 @@ def handle_train(
             time_mask_count=augment_time_mask_count,
             shift_max_bases=augment_shift_max_bases,
             feature_noise_scale=augment_feature_noise_scale,
+            time_stretch=augment_time_stretch,
         ),
         aux_head=AuxHeadConfig(
             adversarial_lambda=adversarial_lambda,

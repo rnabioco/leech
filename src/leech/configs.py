@@ -242,6 +242,7 @@ class AugmentConfig:
     time_mask_count: int = 1
     shift_max_bases: float = 0.0
     feature_noise_scale: float = 0.0
+    time_stretch: tuple[float, float] = (1.0, 1.0)
 
 
 @dataclass

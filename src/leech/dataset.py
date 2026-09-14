@@ -505,6 +505,102 @@ def _expand_seq_to_sig_csr(
     return padded
 
 
+# Number of dwell-derived feature channels time-stretch knows how to scale --
+# `compute_dwell_features`'s fixed output order (dwell, dwell_log, dwell_mean,
+# dwell_std, dwell_ratio), which `merge_feature_channels` places first in
+# every chunk's feature rows. A corpus with fewer channels than this wasn't
+# extracted with the standard dwell feature set, so time-stretch leaves the
+# feature tensor alone rather than guessing at what its columns mean.
+_DWELL_FEATURE_COUNT = 5
+
+
+def _time_stretch_signal_rows(
+    signal: np.ndarray, factors: np.ndarray, focus_idx: int | np.ndarray
+) -> np.ndarray:
+    """Linearly resample each row of ``(rows, L)`` ``signal`` by its own factor.
+
+    ``focus_idx`` is a scalar (one focus for every row) or a ``(rows, 1)``
+    array (one focus per row -- broadcasts against ``t`` below); it need not
+    be constant because it is not always ``signal_len // 2`` or a single
+    dataset-wide crop offset, see :meth:`LeechDataset._time_stretch_focus_for_chunk`.
+
+    Output sample ``t`` reads from source position
+    ``focus_idx + (t - focus_idx) / factor`` (linear interpolation, zero
+    outside ``[0, L)``), so the sample at ``focus_idx`` never moves, a factor
+    > 1 stretches the window about it (slower translocation) and a factor < 1
+    compresses it. The output is always exactly ``L`` samples wide -- out-of-
+    range source positions contribute zero, which is the "cropped or padded
+    back to signal_len" behaviour the caller wants.
+
+    Uses plain numpy fancy indexing -- the same gather idiom
+    :meth:`LeechDataset._prepare_signals_block` already uses for the
+    asymmetric-crop case -- rather than a torch ``index_select`` or a single
+    ``torch.nn.functional.interpolate`` call. A per-row factor rules out the
+    latter (one ``scale_factor`` applies to a whole batch); the former hands
+    the copy to ``at::parallel_for``, which is exactly what :func:`_gather_rows`
+    exists to avoid.
+
+    At ``factor == 1.0`` this is the identity, bit for bit: the source
+    position for every output sample is then an exact integer (no rounding),
+    so the interpolation weight for the "ceil" neighbour is always zero and
+    the "floor" neighbour is the sample itself.
+    """
+    rows, length = signal.shape
+    if rows == 0 or length == 0:
+        return signal.astype(np.float32, copy=False)
+
+    t = np.arange(length, dtype=np.float64)
+    f = factors.astype(np.float64).reshape(rows, 1)
+    src = focus_idx + (t.reshape(1, length) - focus_idx) / f
+
+    floor_pos = np.floor(src)
+    frac = (src - floor_pos).astype(np.float32)
+    floor_idx = floor_pos.astype(np.int64)
+    ceil_idx = floor_idx + 1
+
+    floor_ok = (floor_idx >= 0) & (floor_idx < length)
+    ceil_ok = (ceil_idx >= 0) & (ceil_idx < length)
+    floor_clip = np.clip(floor_idx, 0, length - 1)
+    ceil_clip = np.clip(ceil_idx, 0, length - 1)
+
+    row_idx = np.arange(rows)[:, None]
+    out = signal[row_idx, floor_clip] * (floor_ok.astype(np.float32) * (1.0 - frac))
+    out += signal[row_idx, ceil_clip] * (ceil_ok.astype(np.float32) * frac)
+    return out.astype(np.float32, copy=False)
+
+
+def _time_stretch_seq_to_sig_rows(
+    seq_to_sig: np.ndarray, factors: np.ndarray, focus_idx: int | np.ndarray, signal_len: int
+) -> np.ndarray:
+    """Scale a base-to-signal map by the same per-row factor as the signal.
+
+    ``focus_idx`` is a scalar or a ``(rows, 1)`` array, exactly as in
+    :func:`_time_stretch_signal_rows` -- the two must be called with the same
+    per-row focus or the map stops matching the signal it is supposed to index.
+
+    A value is the forward transform of :func:`_time_stretch_signal_rows`'s
+    source mapping: a boundary originally at sample ``p`` lands at
+    ``focus_idx + (p - focus_idx) * factor`` in the stretched signal, rounded
+    to the nearest sample -- so indexing the stretched signal at the scaled
+    boundary recovers the original signal value at ``p`` (up to rounding and
+    interpolation error), keeping ``signal_kmer`` aligned to the stretched
+    window.
+
+    Values equal to ``signal_len`` are left untouched: that is the padding
+    sentinel *and* the legitimate right-edge terminator every real row ends
+    with (``encode_signal_kmer_batch``'s "real row's own last element is
+    always signal_len" convention) -- scaling it would turn an exact
+    boundary marker into an off-by-something one. A boundary that stretches
+    past the window edge is clamped to ``signal_len``, i.e. becomes
+    indistinguishable from padding, which is the intended crop behaviour.
+    """
+    valid = seq_to_sig < signal_len
+    f = factors.astype(np.float64).reshape(-1, 1)
+    scaled = focus_idx + (seq_to_sig.astype(np.float64) - focus_idx) * f
+    scaled = np.clip(np.rint(scaled), 0, signal_len)
+    return np.where(valid, scaled, seq_to_sig).astype(np.int32)
+
+
 class LeechDataset(Dataset):
     """
     PyTorch Dataset for leech training chunks.
@@ -534,6 +630,7 @@ class LeechDataset(Dataset):
         time_mask_count: int = 1,
         shift_max_bases: float = 0.0,
         feature_noise_scale: float = 0.0,
+        time_stretch_range: tuple[float, float] | None = None,
         dwell_template_table: str | Path | None = None,
         standardize_features: bool = False,
     ):
@@ -584,6 +681,19 @@ class LeechDataset(Dataset):
                 Simulates motif anchor offset, applied consistently to all branches.
             feature_noise_scale: Per-channel Gaussian noise multiplier (0 = disabled).
                 Noise std = feature_noise_scale * per-channel empirical std.
+            time_stretch_range: ``(min, max)`` per-sample time-stretch factor,
+                drawn uniformly per chunk ``(1.0, 1.0)`` = disabled). Resamples
+                the signal window about the focus position (cropped/padded back
+                to ``signal_len``), scales the CSR base-to-signal map by the
+                same factor (so ``signal_kmer`` stays aligned), and scales the
+                dwell-derived feature channels -- see
+                :meth:`_apply_time_stretch` for the exact per-channel rule.
+                Level channels are unchanged. Implemented only on the batched
+                ``__getitems__`` fetch path: incompatible with
+                ``shift_max_bases``/``time_mask_bases`` (which force the
+                per-sample fallback) and with a corpus that degrades to a
+                per-chunk list -- both raise at construction rather than
+                silently skipping the augmentation.
             dwell_template_table: Path to TSV with per-AA per-position expected
                 dwell times. When provided, 20 dwell ratio channels are appended
                 to features: ``dwell / expected_dwell[AA_i, pos]`` for each of
@@ -614,6 +724,23 @@ class LeechDataset(Dataset):
         self._shift_max_bases = shift_max_bases
         self._feature_noise_scale = feature_noise_scale
         self._standardize_features = standardize_features
+        self._time_stretch_range = (
+            tuple(time_stretch_range) if time_stretch_range is not None else (1.0, 1.0)
+        )
+        if self._time_stretch_range != (1.0, 1.0):
+            lo, hi = self._time_stretch_range
+            if lo <= 0 or hi <= 0 or lo > hi:
+                raise ValueError(
+                    f"time_stretch_range must be a positive (min, max) with min <= max, "
+                    f"got {self._time_stretch_range}"
+                )
+            if self._forces_per_sample_fetch():
+                raise ValueError(
+                    "time_stretch_range is only implemented on the batched __getitems__ "
+                    "fetch path, which shift_max_bases and time_mask_bases both bypass "
+                    "(they draw one offset per sample and fall back to the per-sample "
+                    "__getitem__ path). Disable one or the other."
+                )
 
         # Load dwell template table for 20-channel AA template features
         self._dwell_templates: np.ndarray | None = None
@@ -667,6 +794,7 @@ class LeechDataset(Dataset):
         fill_confounds = _TensorFill("Confound", n_chunks)
         fill_cl_targets = _TensorFill("CL target", n_chunks)
         fill_noise_rates = _TensorFill("Noise rate", n_chunks)
+        fill_focus_idx = _TensorFill("Focus-idx", n_chunks)
         self._encoded_seqs: list[torch.Tensor] = []
         self._labels: list[torch.Tensor] = []
         self._signals: list[torch.Tensor] = []
@@ -768,6 +896,12 @@ class LeechDataset(Dataset):
             "cl_targets": fill_cl_targets,
             "noise_rates": fill_noise_rates,
         }
+        # Per-chunk focus index within the final signal_len tensor, needed only
+        # by time-stretch. Computed here (not re-derived later) because the raw,
+        # pre-pad/crop signal length is only available during this fill pass --
+        # self.chunks' array fields are nulled out once tensorization finishes.
+        if self._time_stretch_range != (1.0, 1.0):
+            fills["focus_idx"] = fill_focus_idx
         if self._block_fill_supported():
             self._fill_from_blocks(fills)
         else:
@@ -852,6 +986,19 @@ class LeechDataset(Dataset):
         if self._has_noise_rates:
             self._noise_rates_tensor, self._noise_rates = fill_noise_rates.finish()
 
+        self._focus_idx_tensor: torch.Tensor | None = None
+        if self._time_stretch_range != (1.0, 1.0):
+            self._focus_idx_tensor, _leftover_focus_idx = fill_focus_idx.finish()
+            if _leftover_focus_idx:
+                # A per-chunk scalar column never disagrees in shape, so this
+                # should be unreachable -- but if it ever is, time-stretch has
+                # no per-row focus to anchor on, and _apply_time_stretch would
+                # silently fall back to a wrong constant. Fail loudly instead.
+                raise ValueError(
+                    "time_stretch_range: could not build a per-chunk focus-index "
+                    "column (unexpected shape mismatch in _TensorFill)"
+                )
+
         # Drop the raw numpy arrays from self.chunks now that everything has
         # been pre-tensorized. External code (samplers, label tally, feature
         # window introspection) still reads the small scalar/string fields,
@@ -921,12 +1068,20 @@ class LeechDataset(Dataset):
             and (not self._has_confound or self._confound_labels_tensor is not None)
             and (not self._cl_regression or self._cl_targets_tensor is not None)
             and (not self._has_noise_rates or self._noise_rates_tensor is not None)
+            and (self._time_stretch_range == (1.0, 1.0) or self._focus_idx_tensor is not None)
             and (
                 (self._seq_ints_tensor is not None and self._seq_to_sig_tensor is not None)
                 if self._effective_seq_encoding == "signal_kmer"
                 else self._encoded_seqs_tensor is not None
             )
         )
+        if self._time_stretch_range != (1.0, 1.0) and not self._batched_fetch:
+            raise ValueError(
+                "time_stretch_range requires the dataset to support the batched "
+                "__getitems__ fetch path (contiguous per-field tensors); this corpus "
+                "degraded to a per-chunk list (see the 'shapes differ' warning above "
+                "if logged), which has no per-sample implementation of time-stretch."
+            )
 
         _n_encoded = (
             self._encoded_seqs_tensor.shape[0]
@@ -1048,11 +1203,21 @@ class LeechDataset(Dataset):
             signal_residual = arrays.get("signal_residual")
             if signal_residual is not None and signal_residual.dtype != np.float32:
                 signal_residual = signal_residual.astype(np.float32)
+            focus_signal_pos = chunk.get("focus_signal_pos")
             fills["signals"].append(
-                self._prepare_signal(
-                    signal, signal_residual, focus_signal_pos=chunk.get("focus_signal_pos")
-                )
+                self._prepare_signal(signal, signal_residual, focus_signal_pos=focus_signal_pos)
             )
+
+            if "focus_idx" in fills:
+                stored_len_i = signal.shape[0]
+                if focus_signal_pos is None:
+                    focus_signal_pos = stored_len_i // 2
+                fills["focus_idx"].append(
+                    torch.tensor(
+                        self._time_stretch_focus_for_chunk(focus_signal_pos, stored_len_i),
+                        dtype=torch.int64,
+                    )
+                )
 
             # Pre-tensorize features: apply dwell_offset slicing once
             if self._needs_features:
@@ -1176,6 +1341,9 @@ class LeechDataset(Dataset):
             if self._needs_features and stream.dwell_width is not None
             else None
         )
+        focus_idx_col = (
+            self._time_stretch_focus_column(stored_len) if "focus_idx" in fills else None
+        )
 
         for start, arrays in stream.blocks():
             stop = start + len(arrays["signal"])
@@ -1211,6 +1379,8 @@ class LeechDataset(Dataset):
                 fills["cl_targets"].extend(cl_targets[start:stop])
             if noise_rates is not None:
                 fills["noise_rates"].extend(noise_rates[start:stop])
+            if focus_idx_col is not None:
+                fills["focus_idx"].extend(torch.from_numpy(focus_idx_col[start:stop]))
 
     # -- column readers: the metadata half of the block-wise filler ----------
 
@@ -1292,6 +1462,69 @@ class LeechDataset(Dataset):
         if column is None:
             return np.full(len(self.chunks), stored_len // 2, dtype=np.int64)
         return column.astype(np.int64)
+
+    @staticmethod
+    def _center_crop_start(stored_len: int, signal_len: int) -> int:
+        """The start :meth:`_prepare_signal`/:meth:`_prepare_signals_block`'s
+        symmetric center-crop uses when ``stored_len > signal_len`` (0
+        otherwise -- a right-pad or an exact-width match never shifts
+        anything). One definition, shared by the crop itself and by
+        time-stretch's focus-position tracking
+        (:meth:`_time_stretch_focus_for_chunk`/:meth:`_time_stretch_focus_column`),
+        so the two cannot drift the way #281's review caught: the crop and
+        the "where did the crop leave the focus" bookkeeping used to be two
+        independent copies of the same arithmetic.
+        """
+        return (stored_len - signal_len) // 2 if stored_len > signal_len else 0
+
+    def _time_stretch_focus_for_chunk(self, focus_signal_pos: int, stored_len: int) -> int:
+        """Index of the focus base within the final ``signal_len`` tensor, for one chunk.
+
+        Mirrors what :meth:`_prepare_signal` actually does to the signal, so
+        time-stretch anchors on the same sample it never moves:
+
+        - asymmetric crop (``left_context``/``right_context`` both set):
+          always ``left_context`` -- every row's crop starts at
+          ``focus - left_context``, so the focus lands at that fixed offset
+          regardless of the chunk's own ``focus_signal_pos``.
+        - otherwise: ``focus_signal_pos`` unchanged -- a right-pad (stored
+          signal no longer than ``signal_len``) or an exact-width match never
+          moves an earlier sample -- unless the stored signal is *longer*
+          than ``signal_len``, in which case ``_prepare_signal``'s
+          symmetric center-crop start (:meth:`_center_crop_start`) is
+          subtracted. This is the branch a plain ``leech model train`` run
+          takes: it exposes no singular ``--left-context``/``--right-context``
+          override, so a corpus prepared with an asymmetric
+          ``--signal-context`` reaches this method with its true, off-centre
+          ``focus_signal_pos`` -- assuming ``signal_len // 2`` here silently
+          decorrelates the stretched signal, map and features from the real
+          focus (#281 review).
+
+        Clamped to ``[0, signal_len)``: a ``signal_len`` far smaller than the
+        stored width can center-crop the focus out of the window entirely
+        (``crop_start`` bigger than ``focus_signal_pos``), a pre-existing
+        degenerate config this method does not invent -- ``_prepare_signal``
+        already hands back a window that does not contain the focus base at
+        all, so no anchor is "correct" here. The clamp only keeps the warp's
+        anchor a valid index instead of an arbitrary out-of-window one.
+        """
+        if self.left_context is not None and self.right_context is not None:
+            return self.left_context
+        focus_idx = focus_signal_pos - self._center_crop_start(stored_len, self.signal_len)
+        return int(np.clip(focus_idx, 0, self.signal_len - 1))
+
+    def _time_stretch_focus_column(self, stored_len: int) -> np.ndarray:
+        """:meth:`_time_stretch_focus_for_chunk` for every chunk at once.
+
+        ``stored_len`` is the corpus-wide stored signal width -- constant
+        across a flat/rectangular npz corpus, the same assumption
+        :meth:`_focus_positions` and the asymmetric-crop path already make.
+        """
+        if self.left_context is not None and self.right_context is not None:
+            return np.full(len(self.chunks), self.left_context, dtype=np.int64)
+        crop_start = self._center_crop_start(stored_len, self.signal_len)
+        focus_idx = self._focus_positions(stored_len) - crop_start
+        return np.clip(focus_idx, 0, self.signal_len - 1)
 
     def _feature_slice_starts(self, dwell_width: int) -> np.ndarray:
         """Per-chunk k-mer-aligned start into the feature array.
@@ -1387,7 +1620,7 @@ class LeechDataset(Dataset):
                     signal_residual, ((0, 0), (0, self.signal_len - stored_len)), mode="constant"
                 )
         elif stored_len > self.signal_len:
-            start = (stored_len - self.signal_len) // 2
+            start = self._center_crop_start(stored_len, self.signal_len)
             signal = signal[:, start : start + self.signal_len]
             if signal_residual is not None:
                 signal_residual = signal_residual[:, start : start + self.signal_len]
@@ -1536,7 +1769,7 @@ class LeechDataset(Dataset):
                     signal_residual, (0, self.signal_len - len(signal_residual)), mode="constant"
                 )
         elif len(signal) > self.signal_len:
-            start = (len(signal) - self.signal_len) // 2
+            start = self._center_crop_start(len(signal), self.signal_len)
             signal = signal[start : start + self.signal_len]
             if signal_residual is not None:
                 signal_residual = signal_residual[start : start + self.signal_len]
@@ -1927,6 +2160,20 @@ class LeechDataset(Dataset):
 
         return result
 
+    def _forces_per_sample_fetch(self) -> bool:
+        """Whether an active augmentation draws one offset per sample and
+        rolls by it, so ``__getitems__`` cannot gather a batch straight out
+        of the contiguous tensors and falls back to the per-sample
+        ``__getitem__`` path (shift, time mask).
+
+        One definition, read both by ``__init__``'s time-stretch
+        compatibility check and by ``__getitems__``'s own dispatch below, so
+        a future augmentation that forces the same fallback is covered by
+        both automatically instead of needing to be added to two
+        independently-maintained conditions.
+        """
+        return self._shift_max_bases > 0 or self._time_mask_bases > 0
+
     def __getitems__(self, indices: Sequence[int]) -> dict[str, torch.Tensor] | list[dict]:
         """Fetch a whole batch at once, already collated.
 
@@ -1943,13 +2190,29 @@ class LeechDataset(Dataset):
         when cross-layer shift/masking is on, since those draw one offset per
         sample and roll by it.
         """
-        if not self._batched_fetch or self._shift_max_bases > 0 or self._time_mask_bases > 0:
+        if not self._batched_fetch or self._forces_per_sample_fetch():
             return [self[int(i)] for i in indices]
 
         rows = np.asarray(indices, dtype=np.int64)
         # A gather copies, so nothing below aliases the stored tensors and
         # augmentation needs no clone.
         signal = _gather_rows(self._signals_tensor, rows)
+
+        seq_to_sig = (
+            self._seq_to_sig_tensor.numpy()[rows] if self._seq_to_sig_tensor is not None else None
+        )
+        features = (
+            _gather_rows(self._features_tensor, rows) if self._needs_features else torch.empty(0)
+        )
+
+        # 1. Time-stretch (geometric): resamples signal, rescales the
+        # base-to-signal map, and scales dwell-derived feature channels
+        # together, before anything downstream reads a signal position out of
+        # the map or an amplitude out of the signal/features.
+        if self._time_stretch_range != (1.0, 1.0):
+            signal, seq_to_sig, features = self._apply_time_stretch(
+                signal, seq_to_sig, features, rows
+            )
 
         if self._effective_seq_encoding == "signal_kmer":
             # One rayon-parallel Rust call for the whole batch (issue #260),
@@ -1958,7 +2221,6 @@ class LeechDataset(Dataset):
             # input-bound. Row i of the output is bit-identical to calling
             # `encode_signal_kmer` on row i alone (`tests/test_signal_kmer.py`).
             seq_ints = self._seq_ints_tensor.numpy()[rows]
-            seq_to_sig = self._seq_to_sig_tensor.numpy()[rows]
             sequence = torch.from_numpy(
                 encode_signal_kmer_batch(
                     seq_ints, seq_to_sig, self.signal_len, self.signal_kmer_context
@@ -1967,12 +2229,10 @@ class LeechDataset(Dataset):
         else:
             sequence = _gather_rows(self._encoded_seqs_tensor, rows)
 
-        features = (
-            _gather_rows(self._features_tensor, rows) if self._needs_features else torch.empty(0)
-        )
-
+        # 2. Signal jitter + scale (amplitude).
         if self.augmentation is not None:
             signal = self._apply_augmentation_batch(signal)
+        # 3. Feature noise (amplitude).
         if self._feature_noise_scale > 0 and self._needs_features:
             features = self._apply_feature_noise(features)
 
@@ -1990,6 +2250,82 @@ class LeechDataset(Dataset):
         if self._has_noise_rates:
             result["noise_rate"] = _gather_rows(self._noise_rates_tensor, rows)
         return result
+
+    def _apply_time_stretch(
+        self,
+        signal: torch.Tensor,
+        seq_to_sig: np.ndarray | None,
+        features: torch.Tensor,
+        rows: np.ndarray,
+    ) -> tuple[torch.Tensor, np.ndarray | None, torch.Tensor]:
+        """Batched time-stretch: one ``(B,)`` factor draw applied consistently
+        to the signal, the CSR base-to-signal map, and the dwell feature
+        channels, anchored at each chunk's own focus position.
+
+        ``rows`` are the corpus row indices for this batch (as passed to
+        ``__getitems__``), used to gather each chunk's own focus index from
+        ``self._focus_idx_tensor`` -- see :meth:`_time_stretch_focus_for_chunk`
+        for why this cannot be a single dataset-wide constant: it is
+        ``left_context`` only when an asymmetric crop is actually applied at
+        train time, and a plain ``leech model train`` run never sets that, so
+        a corpus prepared with an asymmetric ``--signal-context`` reaches here
+        with its true, per-chunk (but typically corpus-uniform)
+        ``focus_signal_pos`` instead of ``signal_len // 2``.
+
+        Per-channel rule for the first 5 feature rows -- the fixed order
+        ``compute_dwell_features`` writes and ``merge_feature_channels``
+        places first (dwell, dwell_log, dwell_mean, dwell_std, dwell_ratio):
+
+        - ``dwell`` and ``dwell_mean`` scale *with* the factor: a slower
+          (stretched) translocation makes every dwell longer in proportion.
+        - ``dwell_log`` shifts by ``log(factor)``, since
+          ``log(dwell * factor) == log(dwell) + log(factor)``.
+        - ``dwell_ratio`` (``dwell / dwell_mean``) is left unchanged -- both
+          its numerator and denominator scale by the same factor, so the
+          ratio is invariant by construction.
+        - ``dwell_std`` is left unchanged -- it is not recomputed from a
+          resampled window here, only the raw/mean/log channels are rescaled.
+
+        Level (signal-statistic) channels and everything past the first 5 rows
+        (e.g. k-mer residual features, dwell-template channels) are untouched:
+        they describe pA values or ratios, not elapsed time. A corpus with
+        fewer than 5 feature channels wasn't extracted with the standard dwell
+        feature set, so the feature tensor is left alone entirely rather than
+        guessing at what its columns mean.
+
+        ``seq_to_sig`` may be ``None`` (base_onehot encoding never reads it).
+        """
+        batch = signal.shape[0]
+        lo, hi = self._time_stretch_range
+        factors = torch.empty(batch).uniform_(lo, hi)
+        factors_np = factors.numpy()
+        assert self._focus_idx_tensor is not None  # guaranteed by _batched_fetch's own check
+        focus_idx_np = self._focus_idx_tensor.numpy()[rows].reshape(batch, 1)
+
+        signal_np = signal.numpy()
+        if signal_np.ndim == 3:
+            b, c, length = signal_np.shape
+            flat = signal_np.reshape(b * c, length)
+            warped = _time_stretch_signal_rows(
+                flat, np.repeat(factors_np, c), np.repeat(focus_idx_np, c).reshape(b * c, 1)
+            )
+            signal = torch.from_numpy(np.ascontiguousarray(warped.reshape(b, c, length)))
+        else:
+            warped = _time_stretch_signal_rows(signal_np, factors_np, focus_idx_np)
+            signal = torch.from_numpy(np.ascontiguousarray(warped))
+
+        if seq_to_sig is not None:
+            seq_to_sig = _time_stretch_seq_to_sig_rows(
+                seq_to_sig, factors_np, focus_idx_np, self.signal_len
+            )
+
+        if self._needs_features and features.shape[1] >= _DWELL_FEATURE_COUNT:
+            scale = factors.view(batch, 1)
+            features[:, 0, :] *= scale
+            features[:, 2, :] *= scale
+            features[:, 1, :] += torch.log(factors).view(batch, 1)
+
+        return signal, seq_to_sig, features
 
     def _apply_augmentation_batch(self, signal: torch.Tensor) -> torch.Tensor:
         """:meth:`_apply_augmentation` over a leading batch dimension.

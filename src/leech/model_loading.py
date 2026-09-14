@@ -124,6 +124,8 @@ _TRAINING_PARAMS = {
     "augment_time_mask_count",
     "augment_shift_max_bases",
     "augment_feature_noise_scale",
+    "augment_time_stretch_min",
+    "augment_time_stretch_max",
     "balance_groups",
     "oversample_minority",
     "adversarial_lambda",
