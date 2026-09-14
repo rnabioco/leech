@@ -45,7 +45,7 @@ DEFAULT_SCHEDULER = "none"  # "none", "reduce_on_plateau", or "cosine"
 DEFAULT_SCHEDULER_PATIENCE = 5
 DEFAULT_SCHEDULER_FACTOR = 0.5
 DEFAULT_WARMUP_EPOCHS = 0
-DEFAULT_LOSS_TYPE = "bce"  # "bce", "focal", or "cross_entropy"
+DEFAULT_LOSS_TYPE = "bce"  # "bce", "focal", "cross_entropy", or "noise_corrected_bce"
 DEFAULT_FOCAL_GAMMA = 2.0
 DEFAULT_LABEL_SMOOTHING = 0.0  # 0 = disabled; e.g., 0.05 softens 0/1 targets
 DEFAULT_MIXED_PRECISION = False

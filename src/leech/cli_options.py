@@ -173,9 +173,10 @@ def training_hyperparams(f):
     f = click.option(
         "--loss",
         "loss_type",
-        type=click.Choice(["bce", "focal", "cross_entropy"]),
+        type=click.Choice(["bce", "focal", "cross_entropy", "noise_corrected_bce"]),
         default=DEFAULT_LOSS_TYPE,
-        help="Loss function type",
+        help="Loss function type. 'noise_corrected_bce' applies a forward "
+        "correction for known, per-source_group label noise; see --label-noise-rate.",
     )(f)
     f = click.option(
         "--warmup-epochs",

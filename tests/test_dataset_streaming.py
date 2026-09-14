@@ -169,6 +169,11 @@ FILL_MATRIX = [
     ("signal_kmer_asymmetric", {}, {**KMER_OPTIONS, **ASYM_OPTIONS, "seq_encoding": "signal_kmer"}),
     ("signal_kmer_without_maps", {"with_maps": False}, KMER_OPTIONS),
     ("cl_regression", {}, {**BASE_OPTIONS, "cl_regression": True}),
+    (
+        "label_noise_rates",
+        {},
+        {**BASE_OPTIONS, "label_noise_rates": {"Ala": 0.2, "Gly": 0.05}},
+    ),
     ("multiclass", {"classes": 4}, BASE_OPTIONS),
     ("unlabeled_rows", {"unlabeled": (0, 1, 6, 11)}, BASE_OPTIONS),
     ("varying_feature_start", {"varying_feature_start": True}, BASE_OPTIONS),
@@ -201,6 +206,7 @@ def assert_datasets_equal(streamed: LeechDataset, eager: LeechDataset) -> None:
         "_seq_to_sig_tensor",
         "_confound_labels_tensor",
         "_cl_targets_tensor",
+        "_noise_rates_tensor",
     ):
         a, b = getattr(streamed, name), getattr(eager, name)
         assert (a is None) == (b is None), f"{name}: one path produced a tensor, the other did not"

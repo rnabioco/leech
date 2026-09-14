@@ -64,6 +64,7 @@ def handle_train(
     adversarial_lambda: float = 0.0,
     adversarial_anneal_epochs: int = 0,
     confound: str | None = None,
+    label_noise_rates: dict[str, float] | None = None,
     cl_regression: bool = False,
     cl_lambda: float = 1.0,
     signal_mode: str = "both",
@@ -115,6 +116,8 @@ def handle_train(
             when the corpus carries no base-to-signal maps (False raises
             instead; a partially covered corpus raises either way)
         balance_groups: Balance sampling across source groups
+        label_noise_rates: ``{source_group: flip_rate}`` for
+            ``loss_type="noise_corrected_bce"``; unmapped groups get rate 0
         **model_kwargs: Additional model-specific parameters
 
     Returns:
@@ -182,6 +185,7 @@ def handle_train(
         "adversarial_lambda",
         "adversarial_anneal_epochs",
         "confound",
+        "label_noise_rates",
         "cl_regression",
         "cl_lambda",
         "signal_mode",
@@ -250,6 +254,7 @@ def handle_train(
         oversample_minority=oversample_minority,
         label_map=label_map,
         confound=confound,
+        label_noise_rates=label_noise_rates,
         optim=OptimConfig(
             learning_rate=learning_rate,
             weight_decay=weight_decay,

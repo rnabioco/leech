@@ -769,6 +769,17 @@ def merge(
     help="Path to a JSON/YAML confound config (single confound). Takes precedence over --confound.",
 )
 @click.option(
+    "--label-noise-rate",
+    type=str,
+    default=None,
+    help=(
+        "Per-source_group label-flip probability for --loss noise_corrected_bce, "
+        "as 'group=rate[,group=rate,...]' (e.g. 'gold=0.09,enzymatic=0.17'). Rates "
+        "are measured upstream, not estimated by leech; unmapped source_group "
+        "values get rate 0 (no correction)."
+    ),
+)
+@click.option(
     "--cl-regression/--no-cl-regression",
     default=False,
     help="Enable continuous charging-level (CL) regression head. Uses CL tag from BAM as regression target.",
@@ -850,6 +861,7 @@ def train(
     adversarial_anneal_epochs,
     confound,
     confound_config,
+    label_noise_rate,
     cl_regression,
     cl_lambda,
     signal_mode,
@@ -858,8 +870,14 @@ def train(
 ):
     """Train a model on prepared data."""
     from leech.commands.train import handle_train
+    from leech.losses import parse_label_noise_rate
 
     confound = _resolve_confound_token(confound, confound_config)
+
+    try:
+        label_noise_rates = parse_label_noise_rate(label_noise_rate)
+    except ValueError as exc:
+        raise click.BadParameter(str(exc), param_hint="--label-noise-rate") from exc
 
     # An encoding the user named is not a preference to be overruled: a corpus
     # that cannot supply signal_kmer should stop the run, not quietly train a
@@ -917,6 +935,7 @@ def train(
         adversarial_lambda=adversarial_lambda,
         adversarial_anneal_epochs=adversarial_anneal_epochs,
         confound=confound,
+        label_noise_rates=label_noise_rates,
         cl_regression=cl_regression,
         cl_lambda=cl_lambda,
         signal_mode=signal_mode,
@@ -1391,6 +1410,17 @@ def fetch(name, model_version, tag, output_dir, repo):
     help="Path to a JSON/YAML confound config (single confound). Takes precedence over --confound.",
 )
 @click.option(
+    "--label-noise-rate",
+    type=str,
+    default=None,
+    help=(
+        "Per-source_group label-flip probability for --loss noise_corrected_bce, "
+        "as 'group=rate[,group=rate,...]' (e.g. 'gold=0.09,enzymatic=0.17'). Rates "
+        "are measured upstream, not estimated by leech; unmapped source_group "
+        "values get rate 0 (no correction)."
+    ),
+)
+@click.option(
     "--cl-regression/--no-cl-regression",
     default=False,
     help="Enable continuous charging-level (CL) regression head.",
@@ -1461,6 +1491,7 @@ def optimize(
     adversarial_anneal_epochs,
     confound,
     confound_config,
+    label_noise_rate,
     cl_regression,
     cl_lambda,
     signal_mode,
@@ -1468,8 +1499,14 @@ def optimize(
 ):
     """Optimize model hyperparameters using grid search over chunk contexts."""
     from leech.commands.optimize import handle_optimize
+    from leech.losses import parse_label_noise_rate
 
     confound = _resolve_confound_token(confound, confound_config)
+
+    try:
+        label_noise_rates = parse_label_noise_rate(label_noise_rate)
+    except ValueError as exc:
+        raise click.BadParameter(str(exc), param_hint="--label-noise-rate") from exc
 
     handle_optimize(
         train_data=train_data,
@@ -1514,6 +1551,7 @@ def optimize(
         adversarial_lambda=adversarial_lambda,
         adversarial_anneal_epochs=adversarial_anneal_epochs,
         confound=confound,
+        label_noise_rates=label_noise_rates,
         cl_regression=cl_regression,
         cl_lambda=cl_lambda,
         signal_mode=signal_mode,

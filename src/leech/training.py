@@ -53,7 +53,12 @@ from leech.distributed import (
     spawn,
     validate_request,
 )
-from leech.losses import AdversarialHead, FocalBCEWithLogitsLoss, RegressionHead
+from leech.losses import (
+    AdversarialHead,
+    FocalBCEWithLogitsLoss,
+    NoiseCorrectedBCEWithLogitsLoss,
+    RegressionHead,
+)
 from leech.models import get_model
 from leech.models.inference_wrapper import ModelInferenceWrapper
 
@@ -668,6 +673,12 @@ class Trainer:
                 )
             else:
                 logger.info(f"Using focal loss (gamma={focal_gamma})")
+        elif loss_type == "noise_corrected_bce":
+            self.criterion = NoiseCorrectedBCEWithLogitsLoss(pos_weight=pw)
+            logger.info(
+                "Using noise-corrected BCE (forward correction); per-sample rates "
+                "come from each batch's 'noise_rate' field (0 where unmapped)"
+            )
         else:
             if pw is not None:
                 self.criterion = nn.BCEWithLogitsLoss(pos_weight=pw)
@@ -963,6 +974,10 @@ class Trainer:
                 main_loss = self._weighted_ce_global(logits, ce_targets)
             else:
                 main_loss = self.criterion(logits, ce_targets)
+        elif self.loss_type == "noise_corrected_bce":
+            main_loss = self.criterion(
+                logits, loss_targets, noise_rate=self._batch_noise_rate(batch)
+            )
         else:
             main_loss = self.criterion(logits, loss_targets)
 
@@ -981,6 +996,18 @@ class Trainer:
             loss = loss + self.cl_lambda * cl_loss
 
         return logits, labels, main_loss, loss, adv, cl_loss
+
+    def _batch_noise_rate(self, batch: dict[str, Any]) -> torch.Tensor | None:
+        """The per-sample label-flip rate for ``noise_corrected_bce``, or None.
+
+        Absent whenever the dataset was built without ``label_noise_rates``
+        (``NoiseCorrectedBCEWithLogitsLoss`` treats that identically to an
+        all-zero rate: plain BCE).
+        """
+        noise_rate = batch.get("noise_rate")
+        if noise_rate is None:
+            return None
+        return noise_rate.to(self.device, non_blocking=True)
 
     def _weighted_ce_global(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         """Weighted cross-entropy normalized by the GLOBAL summed weight.
@@ -1210,12 +1237,20 @@ class Trainer:
                         logits = self.model_wrapper.forward_batch(batch, self.device)
                         if ce_labels is not None:
                             loss = self.criterion(logits, ce_labels)
+                        elif self.loss_type == "noise_corrected_bce":
+                            loss = self.criterion(
+                                logits, labels, noise_rate=self._batch_noise_rate(batch)
+                            )
                         else:
                             loss = self.criterion(logits, labels)
                 else:
                     logits = self.model_wrapper.forward_batch(batch, self.device)
                     if ce_labels is not None:
                         loss = self.criterion(logits, ce_labels)
+                    elif self.loss_type == "noise_corrected_bce":
+                        loss = self.criterion(
+                            logits, labels, noise_rate=self._batch_noise_rate(batch)
+                        )
                     else:
                         loss = self.criterion(logits, labels)
 
@@ -1733,6 +1768,7 @@ def train_model(
     adversarial_lambda: float = 0.0,
     adversarial_anneal_epochs: int = 0,
     confound: str | None = None,
+    label_noise_rates: dict[str, float] | None = None,
     cl_regression: bool = False,
     cl_lambda: float = 1.0,
     signal_mode: str = "both",
@@ -1841,6 +1877,7 @@ def train_model(
             oversample_minority=oversample_minority,
             label_map=label_map,
             confound=confound,
+            label_noise_rates=label_noise_rates,
             optim=OptimConfig(
                 learning_rate=learning_rate,
                 weight_decay=weight_decay,
@@ -1895,6 +1932,7 @@ def train_model(
     oversample_minority = cfg.oversample_minority
     label_map = cfg.label_map
     confound = cfg.confound
+    label_noise_rates = cfg.label_noise_rates
     learning_rate = cfg.optim.learning_rate
     weight_decay = cfg.optim.weight_decay
     max_grad_norm = cfg.optim.max_grad_norm
@@ -2068,6 +2106,7 @@ def train_model(
         left_context=left_context,
         right_context=right_context,
         confound_encoder=confound_encoder,
+        label_noise_rates=label_noise_rates,
         cl_regression=cl_regression,
         signal_mode=signal_mode,
         time_mask_bases=augment_time_mask_bases,
@@ -2092,6 +2131,7 @@ def train_model(
             left_context=left_context,
             right_context=right_context,
             confound_encoder=confound_encoder,
+            label_noise_rates=label_noise_rates,
             cl_regression=cl_regression,
             signal_mode=signal_mode,
             dwell_template_table=dwell_template_table,
@@ -2495,6 +2535,9 @@ def train_model(
         "adversarial_lambda": adversarial_lambda,
         "adversarial_anneal_epochs": adversarial_anneal_epochs,
         "confound": confound,
+        # Recorded verbatim (not resolved against the corpus) -- predict never
+        # reads this back; it is provenance for what the training run applied.
+        "label_noise_rates": label_noise_rates,
         "cl_regression": cl_regression,
         "cl_lambda": cl_lambda,
         "signal_mode": signal_mode,

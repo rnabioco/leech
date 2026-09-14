@@ -266,6 +266,10 @@ class TrainConfig:
     pos_weight: float | None = None
     loss_type: str = "bce"
     focal_gamma: float = 2.0
+    #: ``{source_group: flip_rate}`` for ``loss_type="noise_corrected_bce"``,
+    #: parsed from ``--label-noise-rate`` by ``leech.losses.parse_label_noise_rate``.
+    #: Unmapped groups get rate 0. Recorded verbatim in config.json.
+    label_noise_rates: dict[str, float] | None = None
     label_smoothing: float = 0.0
     mixed_precision: bool = False
     checkpoint_metric: str = "auto"
