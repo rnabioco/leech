@@ -36,7 +36,6 @@ class SignalConfig:
     refine_signal_map: bool = True
     refine_scale_iters: int = 2
     refine_half_bandwidth: int = DEFAULT_REFINE_HALF_BANDWIDTH
-    refine_do_rough_rescale: bool = True
     refine_kmer_center_idx: int = -1
     signal_refiner: SigMapRefiner | None = None
     # Path of the kmer level table the refiner was loaded from. Captured
@@ -171,7 +170,6 @@ class PrepareConfig:
             "refine_signal_map": self.signal.refine_signal_map,
             "refine_scale_iters": self.signal.refine_scale_iters,
             "refine_half_bandwidth": self.signal.refine_half_bandwidth,
-            "refine_do_rough_rescale": self.signal.refine_do_rough_rescale,
             "refine_kmer_center_idx": self.signal.refine_kmer_center_idx,
             "kmer_table_sha256": kmer_table_sha256,
             "pa_mean": self.signal.pa_mean,

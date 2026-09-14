@@ -46,7 +46,7 @@ def build_config(pod5_path: Path, *, refine: bool = True) -> PrepareConfig:
         from leech.signal_refine import SigMapRefiner
 
         kmer_table = get_kmer_table()
-        signal_refiner = SigMapRefiner.from_table(kmer_table, scale_iters=2, do_rough_rescale=True)
+        signal_refiner = SigMapRefiner.from_table(kmer_table, scale_iters=2)
 
     return PrepareConfig(
         pod5_path=pod5_path,

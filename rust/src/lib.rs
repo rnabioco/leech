@@ -5,7 +5,6 @@ mod inference_pipeline;
 mod kmer_levels;
 mod pod5_cache;
 mod pod5_io;
-mod signal_refine;
 mod signal_stats;
 
 #[pymodule]
@@ -16,9 +15,6 @@ fn leech_core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // another; without a version to compare, that pairing is invisible until it
     // produces wrong numbers.
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
-    m.add_function(wrap_pyfunction!(signal_refine::seq_banded_dp, m)?)?;
-    m.add_function(wrap_pyfunction!(signal_refine::extract_levels, m)?)?;
-    m.add_function(wrap_pyfunction!(signal_refine::rough_rescale_quantile, m)?)?;
     m.add_function(wrap_pyfunction!(encoding::encode_signal_kmer, m)?)?;
     m.add_function(wrap_pyfunction!(encoding::encode_signal_kmer_batch, m)?)?;
     m.add_function(wrap_pyfunction!(signal_stats::compute_signal_stats, m)?)?;

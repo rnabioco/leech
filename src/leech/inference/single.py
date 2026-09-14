@@ -280,17 +280,7 @@ def run_inference(
             rather than assumed to be "not passed" (see
             ``InferenceSpec.from_config``).
     """
-    # Apply backend override to signal_refine module
     logger.info(f"Extraction backend: {backend}")
-    if backend == "python":
-        import leech.signal_refine as _sr
-
-        _sr.HAS_RUST = False
-    elif backend == "rust":
-        import leech.signal_refine as _sr
-
-        if not _sr.HAS_RUST:
-            logger.warning("Backend rust requested but signal_refine Rust not available")
 
     # Load model
     if model_and_config is not None:
@@ -361,7 +351,6 @@ def run_inference(
         signal_refiner = SigMapRefiner.from_table(
             kmer_table_path,
             half_bandwidth=spec.refine_half_bandwidth,
-            do_rough_rescale=spec.refine_do_rough_rescale,
             scale_iters=spec.refine_scale_iters,
             center_idx=spec.refine_kmer_center_idx,
         )

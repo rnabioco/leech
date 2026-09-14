@@ -75,7 +75,6 @@ def handle_prepare(
     refine_signal_map: bool = True,
     kmer_table: Path | None = None,
     scale_iters: int = 2,
-    rough_rescale: bool = True,
     signal_context: tuple[int, int] | None = None,
     focus_tsv: Path | None = None,
     recover_softclip_signal: bool = False,
@@ -129,25 +128,12 @@ def handle_prepare(
             from leech.data import get_kmer_table
 
             kmer_table = get_kmer_table()
-        signal_refiner = SigMapRefiner.from_table(
-            kmer_table, scale_iters=scale_iters, do_rough_rescale=rough_rescale
-        )
+        signal_refiner = SigMapRefiner.from_table(kmer_table, scale_iters=scale_iters)
         logger.info(
             f"Signal map refinement enabled with kmer table: {kmer_table} "
             f"(scale_iters={scale_iters}, half_bandwidth={signal_refiner.half_bandwidth}, "
             f"kmer_len={signal_refiner.kmer_len}, center_idx={signal_refiner.center_idx})"
         )
-        if not rough_rescale:
-            # escapepod's refine_signal_map always runs its rough rescale and
-            # does not expose a switch, so neither backend can honor this. Say
-            # so rather than recording a setting that had no effect.
-            logger.warning(
-                "--no-rough-rescale is not honored: signal-map refinement is "
-                "delegated to escapepod, whose refine_signal_map always applies "
-                "its least-squares rough rescale internally. The fitted rescale "
-                "is discarded either way (#168), so this only affects the DP's "
-                "level matching, which cannot currently be switched off."
-            )
     # `workers` sets the number of batches in flight on the parallel
     # dispatcher, at every value including 1 (issue #275) -- clamp a
     # nonpositive value rather than handing mp.Pool/ThreadPoolExecutor a
@@ -198,9 +184,6 @@ def handle_prepare(
             refine_scale_iters=scale_iters,
             refine_half_bandwidth=(
                 signal_refiner.half_bandwidth if signal_refiner is not None else 5
-            ),
-            refine_do_rough_rescale=(
-                signal_refiner.do_rough_rescale if signal_refiner is not None else True
             ),
             refine_kmer_center_idx=(
                 signal_refiner.center_idx if signal_refiner is not None else -1

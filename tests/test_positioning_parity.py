@@ -38,7 +38,6 @@ def _make_prep_config() -> PrepareConfig:
             refine_signal_map=False,
             refine_scale_iters=3,
             refine_half_bandwidth=7,
-            refine_do_rough_rescale=False,
             refine_kmer_center_idx=2,
             pa_mean=120.5,
             pa_stdev=14.0,
@@ -73,7 +72,6 @@ def test_prepare_config_persists_all_positioning_fields():
     assert d["refine_signal_map"] is False
     assert d["refine_scale_iters"] == 3
     assert d["refine_half_bandwidth"] == 7
-    assert d["refine_do_rough_rescale"] is False
     assert d["refine_kmer_center_idx"] == 2
     assert d["pa_mean"] == 120.5
     assert d["pa_stdev"] == 14.0

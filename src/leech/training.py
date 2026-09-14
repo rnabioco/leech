@@ -2520,7 +2520,6 @@ def train_model(
         "refine_half_bandwidth": prepare_metadata.get(
             "refine_half_bandwidth", DEFAULT_REFINE_HALF_BANDWIDTH
         ),
-        "refine_do_rough_rescale": prepare_metadata.get("refine_do_rough_rescale", True),
         "refine_kmer_center_idx": prepare_metadata.get("refine_kmer_center_idx", -1),
         "recover_softclip_signal": prepare_metadata.get("recover_softclip_signal", False),
         "kmer_table_sha256": prepare_metadata.get("kmer_table_sha256"),

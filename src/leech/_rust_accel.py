@@ -32,11 +32,8 @@ try:
     from leech_core import encode_signal_kmer_batch as _rs_encode_signal_kmer_batch
     from leech_core import extract_chunks_from_preloaded as _rs_extract_chunks_from_preloaded
     from leech_core import extract_inference_chunks as _rs_extract_inference_chunks
-    from leech_core import extract_levels as _rs_extract_levels
     from leech_core import extract_training_chunks as _rs_extract_training_chunks
     from leech_core import preload_pod5_signals as _rs_preload_pod5_signals
-    from leech_core import rough_rescale_quantile as _rs_rough_rescale_quantile
-    from leech_core import seq_banded_dp as _rs_seq_banded_dp
 
     HAS_RUST = True
     logger.debug("Rust acceleration available (leech_core)")
@@ -50,10 +47,7 @@ except ImportError:
     _rs_extract_chunks_from_preloaded = None
     _rs_extract_inference_chunks = None
     _rs_extract_training_chunks = None
-    _rs_extract_levels = None
     _rs_preload_pod5_signals = None
-    _rs_rough_rescale_quantile = None
-    _rs_seq_banded_dp = None
     logger.debug("Rust acceleration not available, using pure Python fallbacks")
 
 
@@ -210,12 +204,9 @@ def check_rust() -> None:
             "encode_signal_kmer_batch",
             "extract_chunks_from_preloaded",
             "extract_inference_chunks",
-            "extract_levels",
             "extract_training_chunks",
             "preload_pod5_signals",
             "read_pod5_batch",
-            "rough_rescale_quantile",
-            "seq_banded_dp",
             "KmerLevels",
         ]
         for f in funcs:

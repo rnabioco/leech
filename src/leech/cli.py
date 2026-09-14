@@ -291,12 +291,6 @@ data.command_order = ("prepare", "merge")
     help="Signal map refinement iterations: -1=no refinement, 0=one round of banded DP, >0=N rounds with rescaling",
 )
 @click.option(
-    "--rough-rescale/--no-rough-rescale",
-    default=True,
-    help="Rough-rescale signal to match kmer table before refinement. "
-    "Disable when using an experiment-specific table already in native scale.",
-)
-@click.option(
     "--signal-context",
     nargs=2,
     type=int,
@@ -357,7 +351,6 @@ def prepare(
     refine_signal_map,
     kmer_table,
     scale_iters,
-    rough_rescale,
     signal_context,
     focus_tsv,
     recover_softclip_signal,
@@ -408,7 +401,6 @@ def prepare(
         refine_signal_map=refine_signal_map,
         kmer_table=kmer_table,
         scale_iters=scale_iters,
-        rough_rescale=rough_rescale,
         signal_context=signal_context,
         focus_tsv=focus_tsv,
         recover_softclip_signal=recover_softclip_signal,
