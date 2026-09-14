@@ -68,6 +68,7 @@ def handle_train(
     adversarial_anneal_epochs: int = 0,
     confound: str | None = None,
     label_noise_rates: dict[str, float] | None = None,
+    noise_sink_class: str | None = None,
     cl_regression: bool = False,
     cl_lambda: float = 1.0,
     signal_mode: str = "both",
@@ -128,7 +129,12 @@ def handle_train(
             dataset the first time it happens.
         balance_groups: Balance sampling across source groups
         label_noise_rates: ``{source_group: flip_rate}`` for
-            ``loss_type="noise_corrected_bce"``; unmapped groups get rate 0
+            ``loss_type="noise_corrected_bce"``; unmapped groups get rate 0.
+            At ``num_out > 1`` keys are class labels instead -- see
+            ``leech.losses.build_class_noise_rates``.
+        noise_sink_class: Sink class name/index for
+            ``loss_type="noise_corrected_bce"`` at ``num_out > 1``; unused
+            for binary
         sample_weight_field: Chunk metadata field to inverse-frequency weight
             sampling by (mutually exclusive with balance_groups and
             oversample_minority), e.g. "junction_indel" to over-sample the
@@ -217,6 +223,7 @@ def handle_train(
         "adversarial_anneal_epochs",
         "confound",
         "label_noise_rates",
+        "noise_sink_class",
         "cl_regression",
         "cl_lambda",
         "signal_mode",
@@ -291,6 +298,7 @@ def handle_train(
         label_map=label_map,
         confound=confound,
         label_noise_rates=label_noise_rates,
+        noise_sink_class=noise_sink_class,
         optim=OptimConfig(
             learning_rate=learning_rate,
             weight_decay=weight_decay,

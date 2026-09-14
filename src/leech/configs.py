@@ -292,8 +292,16 @@ class TrainConfig:
     focal_gamma: float = 2.0
     #: ``{source_group: flip_rate}`` for ``loss_type="noise_corrected_bce"``,
     #: parsed from ``--label-noise-rate`` by ``leech.losses.parse_label_noise_rate``.
-    #: Unmapped groups get rate 0. Recorded verbatim in config.json.
+    #: Unmapped groups get rate 0. Recorded verbatim in config.json. At
+    #: ``num_out > 1`` keys are resolved as class labels (via ``label_map``),
+    #: not per-sample source_group lookups -- see
+    #: ``leech.losses.build_class_noise_rates``.
     label_noise_rates: dict[str, float] | None = None
+    #: Sink class name/index for ``loss_type="noise_corrected_bce"`` at
+    #: ``num_out > 1`` -- the class every other class's noise mass flows to
+    #: (issue #321). Resolved by ``leech.losses.resolve_noise_sink_index``.
+    #: Unused (and not required) for the binary loss.
+    noise_sink_class: str | None = None
     # Asymmetric focal loss (--focal-neg-gamma, issue #280): None keeps the
     # symmetric loss bit-for-bit; see FocalBCEWithLogitsLoss for why.
     focal_neg_gamma: float | None = None

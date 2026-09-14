@@ -289,7 +289,8 @@ from a fresh optimizer and logs a warning.
 |--------|---------|-------------|
 | `--loss STR` | `bce` | Loss function: `bce`, `focal`, `cross_entropy`, or `noise_corrected_bce` |
 | `--focal-gamma FLOAT` | `2.0` | Focal loss gamma (only with `--loss focal`) |
-| `--label-noise-rate STR` | -- | `group=rate[,group=rate,...]` per-`source_group` label-flip probability for `--loss noise_corrected_bce` (e.g. `gold=0.09,enzymatic=0.17`). Unmapped groups get rate 0. See [Label-noise-aware loss](../api/training.md#label-noise-aware-loss). |
+| `--label-noise-rate STR` | -- | `group=rate[,group=rate,...]` label-flip probability for `--loss noise_corrected_bce` (e.g. `gold=0.09,enzymatic=0.17`). At `--num-out 1`, keys are per-`source_group`; at `--num-out > 1`, keys are class labels (see `--noise-sink-class`). Unmapped values get rate 0. See [Label-noise-aware loss](../api/training.md#label-noise-aware-loss). |
+| `--noise-sink-class STR` | -- | Class label (resolved via `label_map`) or raw index that `--loss noise_corrected_bce` treats as the sink every other class's label noise flows to. Required by that loss at `--num-out > 1`; unused for binary. |
 | `--focal-neg-gamma FLOAT` | none (symmetric) | Separate gamma for negative-labeled examples, making the focal loss asymmetric (only with `--loss focal`). Larger than `--focal-gamma` down-weights easy negatives harder, shaping the loss for a low-FPR operating regime |
 
 **Data augmentation:**
@@ -387,7 +388,7 @@ leech model optimize --train-data FILE --output-dir DIR --context-grid VALUES [O
 | `--base-justify STR` | `center` | Signal chunk centering |
 | `--parallel INT` | `1` | Grid points to train concurrently |
 
-Training options (`--model`, `--epochs`, `--batch-size`, `--learning-rate`, `--device`, `--seed`, `--early-stopping`) work the same as in `model train`. So do the loss and augmentation options above `--early-stopping` in that reference (`--loss`, `--label-noise-rate`, `--focal-gamma`/`--focal-neg-gamma`, `--scheduler*`, `--warmup-epochs`, `--weight-decay`, `--max-grad-norm`, every `--augment-*` flag, `--label-smoothing`, `--mixed-precision`) and `--motif`/`--motif-offset` from provenance -- both decorators (`training_hyperparams`, `model_provenance`) are shared between `train` and `optimize`. `--selection-metric` accepts the same names as `model train`'s `--checkpoint-metric` (see the "Output files" note under `model train` above: `auto`/`val_acc`/`val_f1`/`val_auc`, plus the parametric `tpr_at_fpr:<f>` and `callable_at_precision:<p>`).
+Training options (`--model`, `--epochs`, `--batch-size`, `--learning-rate`, `--device`, `--seed`, `--early-stopping`) work the same as in `model train`. So do the loss and augmentation options above `--early-stopping` in that reference (`--loss`, `--label-noise-rate`, `--noise-sink-class`, `--focal-gamma`/`--focal-neg-gamma`, `--scheduler*`, `--warmup-epochs`, `--weight-decay`, `--max-grad-norm`, every `--augment-*` flag, `--label-smoothing`, `--mixed-precision`) and `--motif`/`--motif-offset` from provenance -- both decorators (`training_hyperparams`, `model_provenance`) are shared between `train` and `optimize`. `--selection-metric` accepts the same names as `model train`'s `--checkpoint-metric` (see the "Output files" note under `model train` above: `auto`/`val_acc`/`val_f1`/`val_auc`, plus the parametric `tpr_at_fpr:<f>` and `callable_at_precision:<p>`).
 
 **Output:**
 

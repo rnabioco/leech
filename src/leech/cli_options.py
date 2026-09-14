@@ -260,7 +260,9 @@ def training_hyperparams(f):
         type=click.Choice(["bce", "focal", "cross_entropy", "noise_corrected_bce"]),
         default=DEFAULT_LOSS_TYPE,
         help="Loss function type. 'noise_corrected_bce' applies a forward "
-        "correction for known, per-source_group label noise; see --label-noise-rate.",
+        "correction for known label noise; see --label-noise-rate. At "
+        "--num-out > 1 this trains a multiclass forward correction with a "
+        "single sink class (see --noise-sink-class) instead of the binary one.",
     )(f)
     f = click.option(
         "--warmup-epochs",

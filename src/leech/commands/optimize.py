@@ -61,6 +61,7 @@ def handle_optimize(
     adversarial_anneal_epochs: int = 0,
     confound: str | None = None,
     label_noise_rates: dict[str, float] | None = None,
+    noise_sink_class: str | None = None,
     cl_regression: bool = False,
     cl_lambda: float = 1.0,
     signal_mode: str = "both",
@@ -103,7 +104,12 @@ def handle_optimize(
         num_workers: DataLoader workers
         balance_groups: Balance sampling across source groups
         label_noise_rates: ``{source_group: flip_rate}`` for
-            ``loss_type="noise_corrected_bce"``; unmapped groups get rate 0
+            ``loss_type="noise_corrected_bce"``; unmapped groups get rate 0.
+            At ``num_out > 1`` keys are class labels instead -- see
+            ``leech.losses.build_class_noise_rates``.
+        noise_sink_class: Sink class name/index for
+            ``loss_type="noise_corrected_bce"`` at ``num_out > 1``; unused
+            for binary
 
     Returns:
         Path to grid search summary file
@@ -158,6 +164,7 @@ def handle_optimize(
         oversample_minority=oversample_minority,
         confound=confound,
         label_noise_rates=label_noise_rates,
+        noise_sink_class=noise_sink_class,
         signal_mode=signal_mode,
         optim=OptimConfig(
             learning_rate=learning_rate,
