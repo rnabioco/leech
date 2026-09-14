@@ -1030,6 +1030,118 @@ class TestTCNConfigDrivenParity:
             )
 
 
+class TestCausalAndStandardizeFeatures:
+    """``causal`` (TCN padding) and ``feature_mean``/``feature_std``
+    (per-channel standardization), issue #283. Both are opt-in
+    ``[params]`` overrides on the TOML-declared architectures, reachable
+    exactly like ``norm_type`` -- via ``get_model()`` kwargs (what
+    ``--model-config`` feeds) or a ``[[variants]].params`` pin."""
+
+    BASE = {
+        "signal_len": 100,
+        "kmer_len": 11,
+        "num_features": 5,
+        "hidden_channels": 16,
+        "num_layers": 2,
+    }
+
+    def test_causal_false_is_a_model_config_override(self):
+        model = get_model("TCNDwellResidualLN", **self.BASE, causal=False)
+        assert model.signal_tcn.network[0].causal is False
+
+    def test_causal_defaults_true(self):
+        model = get_model("TCNDwellResidualLN", **self.BASE)
+        assert model.signal_tcn.network[0].causal is True
+
+    def test_causal_reaches_every_temporal_block(self):
+        """Split-residual has three independent TCN branches -- all three
+        must receive the override, not just the first one wired up."""
+        model = get_model("TCNDwellSplitResidualLN", **self.BASE, causal=False)
+        for tcn_attr in ("signal_tcn", "residual_tcn", "seq_tcn"):
+            for block in getattr(model, tcn_attr).network:
+                assert block.causal is False
+
+    @pytest.mark.parametrize(
+        "name", ["TCNDwellResidualLN", "TCNDwellResidualMotor", "TCNDwellResidualDwellAttn"]
+    )
+    def test_causal_does_not_disturb_state_dict_keys(self, name):
+        causal_model = get_model(name, **self.BASE)
+        noncausal_model = get_model(name, **self.BASE, causal=False)
+        assert list(causal_model.state_dict()) == list(noncausal_model.state_dict())
+        for key, value in causal_model.state_dict().items():
+            assert value.shape == noncausal_model.state_dict()[key].shape
+
+    def test_feature_mean_std_default_to_no_standardization(self):
+        from leech.models.components import AffineStandardize
+
+        model = get_model("ConvLSTMDwell", signal_len=100, kmer_len=11, num_features=5)
+        assert not isinstance(model.feature_branch.conv_layers[0], AffineStandardize)
+
+    def test_feature_mean_std_reach_the_feature_branch(self):
+        from leech.models.components import AffineStandardize
+
+        mean = [1.0, 2.0, 3.0, 4.0, 5.0]
+        std = [0.5, 1.5, 2.5, 3.5, 4.5]
+        model = get_model("TCNDwellResidualLN", **self.BASE, feature_mean=mean, feature_std=std)
+        layer = model.feature_branch.conv_layers[0]
+        assert isinstance(layer, AffineStandardize)
+        torch.testing.assert_close(layer.mean.flatten(), torch.tensor(mean))
+        torch.testing.assert_close(layer.std.flatten(), torch.tensor(std))
+
+    def test_feature_mean_std_sliced_for_the_dwell_only_branch(self):
+        """TCNDwellResidualDwellAttn's dwell_branch sees only the first
+        num_dwell_features channels, so its standardization stats must be
+        the same PREFIX of feature_mean/feature_std, not the full vector.
+
+        num_features=8 > num_dwell_features (default 5) here specifically so
+        that "sliced" and "the whole vector" are distinguishable -- at
+        num_features == num_dwell_features the slice is a no-op and would
+        pass even if dwell_branch wrongly got the full-length stats.
+        """
+        from leech.models.components import AffineStandardize
+
+        mean = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]
+        std = [0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5]
+        kwargs = {**self.BASE, "num_features": 8}
+        model = get_model("TCNDwellResidualDwellAttn", **kwargs, feature_mean=mean, feature_std=std)
+
+        feature_layer = model.feature_branch.conv_layers[0]
+        assert isinstance(feature_layer, AffineStandardize)
+        torch.testing.assert_close(feature_layer.mean.flatten(), torch.tensor(mean))
+
+        dwell_layer = model.dwell_branch.conv_layers[0]
+        assert isinstance(dwell_layer, AffineStandardize)
+        assert dwell_layer.mean.numel() == 5  # num_dwell_features default
+        torch.testing.assert_close(dwell_layer.mean.flatten(), torch.tensor(mean[:5]))
+        torch.testing.assert_close(dwell_layer.std.flatten(), torch.tensor(std[:5]))
+
+    def test_config_json_round_trip_reconstructs_standardization(self, tmp_path):
+        """The mechanism the acceptance criteria call out: config.json is the
+        only thing predict/eval/bundle/onnx_export read to rebuild the
+        model, with no dataset-side step."""
+        import json
+
+        from leech.model_loading import load_model_from_checkpoint
+
+        mean = [0.1, 0.2, 0.3, 0.4, 0.5]
+        std = [1.0, 2.0, 3.0, 4.0, 5.0]
+        kwargs = {**self.BASE, "feature_mean": mean, "feature_std": std}
+        built = get_model("TCNDwellResidualLN", **kwargs)
+        torch.save({"model_state_dict": built.state_dict()}, tmp_path / "model_best.pt")
+        (tmp_path / "config.json").write_text(
+            json.dumps({"model_name": "TCNDwellResidualLN", **kwargs})
+        )
+
+        loaded, config = load_model_from_checkpoint(tmp_path, device="cpu")
+        assert config["feature_mean"] == mean
+        assert config["feature_std"] == std
+        from leech.models.components import AffineStandardize
+
+        layer = loaded.feature_branch.conv_layers[0]
+        assert isinstance(layer, AffineStandardize)
+        torch.testing.assert_close(layer.mean.flatten(), torch.tensor(mean))
+
+
 class TestRegistryCompleteness:
     """Every registered name must be constructible and exported."""
 

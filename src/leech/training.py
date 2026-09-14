@@ -1978,6 +1978,7 @@ def train_model(
     cl_lambda: float = 1.0,
     signal_mode: str = "both",
     checkpoint_metric: str = "auto",
+    standardize_features: bool = False,
     gpus: int = 1,
     _dist: DistContext | None = None,
     cfg: TrainConfig | None = None,
@@ -2032,6 +2033,11 @@ def train_model(
             raises instead; a corpus that carries them for only some chunks
             raises either way. However it resolves, the config records what was
             used, not what was asked for.
+        standardize_features: Compute per-channel feature mean/std once over
+            the training corpus and freeze them into the feature branch's
+            first layer as an affine transform (off by default). Only models
+            that declare ``feature_mean``/``feature_std`` params accept this;
+            requesting it for one that doesn't raises from ``get_model()``.
         **model_kwargs: Additional model parameters (passed to model constructor)
 
     Returns:
@@ -2071,6 +2077,7 @@ def train_model(
             checkpoint_metric=checkpoint_metric,
             num_out=num_out,
             signal_mode=signal_mode,
+            standardize_features=standardize_features,
             motif=motif,
             motif_offset=motif_offset,
             base_justify=base_justify,
@@ -2128,6 +2135,7 @@ def train_model(
     checkpoint_metric = cfg.checkpoint_metric
     num_out = cfg.num_out
     signal_mode = cfg.signal_mode
+    standardize_features = cfg.standardize_features
     motif = cfg.motif
     motif_offset = cfg.motif_offset
     base_justify = cfg.base_justify
@@ -2323,6 +2331,7 @@ def train_model(
         shift_max_bases=augment_shift_max_bases,
         feature_noise_scale=augment_feature_noise_scale,
         dwell_template_table=dwell_template_table,
+        standardize_features=standardize_features,
     )
 
     val_dataset = None
@@ -2594,6 +2603,33 @@ def train_model(
         num_features = 1
     signal_in_channels = train_dataset.signal_channels
 
+    # Per-channel feature standardization (#283): the dataset already
+    # computed the corpus-wide mean/std (or disabled itself and warned if it
+    # couldn't); read the result back rather than recomputing it. Lists, not
+    # tensors, since these flow into get_model() kwargs and config.json --
+    # both need JSON-serializable values.
+    feature_mean_list: list[float] | None = None
+    feature_std_list: list[float] | None = None
+    if standardize_features and train_dataset.feature_mean is not None:
+        feature_mean_list = train_dataset.feature_mean.tolist()
+        feature_std_list = train_dataset.feature_std.tolist()
+    elif standardize_features and train_dataset._needs_features:
+        # The dataset already logged why (a shape mismatch across chunks) and
+        # disabled itself; this just makes sure the run-level log says so too,
+        # since config.json below will now (correctly) record False instead
+        # of the request.
+        logger.warning(
+            "standardize_features was requested but the dataset could not compute "
+            "feature_mean/feature_std (see its own warning above for why); "
+            "config.json will record standardize_features=False, matching what "
+            "actually happened rather than what was asked for."
+        )
+    # What actually got applied, not what was requested -- same reasoning as
+    # effective_seq_encoding: a config.json that claims standardization was
+    # used while feature_mean/feature_std are null is a checkpoint nobody can
+    # audit afterwards (#283).
+    effective_standardize_features = feature_mean_list is not None
+
     # Auto-detect num_out from training data when not explicitly set
     if num_out <= 1:
         max_label = int(train_labels.max())
@@ -2636,6 +2672,14 @@ def train_model(
     model_init_kwargs["signal_in_channels"] = signal_in_channels
 
     model_init_kwargs["num_out"] = num_out
+
+    # Only added when requested: a model that hasn't declared feature_mean/
+    # feature_std params raises from get_model() below, same as any other
+    # unsupported --model-config override -- fail loud rather than silently
+    # training unstandardized.
+    if feature_mean_list is not None:
+        model_init_kwargs["feature_mean"] = feature_mean_list
+        model_init_kwargs["feature_std"] = feature_std_list
 
     model = get_model(model_name, **model_init_kwargs)
 
@@ -2782,6 +2826,15 @@ def train_model(
         "cl_lambda": cl_lambda,
         "signal_mode": signal_mode,
         "checkpoint_metric": checkpoint_metric,
+        "standardize_features": effective_standardize_features,
+        # Only present when standardize_features actually computed them --
+        # _instantiate_model (predict/eval/bundle/onnx_export) reconstructs
+        # the model from these two fields with no extra code: any TOML
+        # config that declares feature_mean/feature_std params picks them
+        # straight up from config.json (see model_loading._instantiate_model
+        # and config_loader.resolve_params).
+        "feature_mean": feature_mean_list,
+        "feature_std": feature_std_list,
         "dwell_template_table": str(dwell_template_table) if dwell_template_table else None,
         # Preparation metadata (from prepare_config.json sidecar)
         "reference_fasta": prepare_metadata.get("reference_fasta"),

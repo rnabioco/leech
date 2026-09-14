@@ -242,3 +242,45 @@ def test_load_calibration_none_when_missing():
     """No calibration files → return None."""
     with tempfile.TemporaryDirectory() as tmpdir:
         assert load_calibration(Path(tmpdir)) is None
+
+
+class TestCalibrateModelReconstructsFullConfig:
+    """calibrate_model()/calibrate_model_multiclass() must build the SAME
+    model predict/eval/bundle would, via model_loading._instantiate_model --
+    not a hand-picked model_kwargs dict that silently drops new constructor
+    params such as --standardize-features' feature_mean/feature_std or
+    --model-config's causal (issue #283 code review finding: this function
+    used to reimplement the constructor-kwargs resolution and fell out of
+    sync the moment those two params were added elsewhere)."""
+
+    def test_standardized_model_calibrates_without_a_state_dict_mismatch(
+        self, temp_chunks_file, tmp_path
+    ):
+        from leech.calibration import calibrate_model
+        from leech.models import get_model
+
+        model_dir = tmp_path / "model"
+        model_dir.mkdir()
+        kwargs = {
+            "signal_len": 400,
+            "kmer_len": 11,
+            "num_features": 5,
+            "conv_channels": [4, 8, 16],
+            "lstm_hidden": 8,
+            "seq_encoding": "base_onehot",
+            "feature_mean": [0.0] * 5,
+            "feature_std": [1.0] * 5,
+        }
+        model = get_model("ConvLSTMDwell", **kwargs)
+        torch.save({"model_state_dict": model.state_dict()}, model_dir / "model_best.pt")
+        (model_dir / "config.json").write_text(
+            json.dumps({"model_name": "ConvLSTMDwell", **kwargs})
+        )
+
+        # Before the fix: calibrate_model rebuilt the model from a hand-picked
+        # kwargs dict that dropped feature_mean/feature_std, so the freshly
+        # built model had no AffineStandardize buffers and the checkpoint's
+        # state_dict (which has them) failed to load under strict=True.
+        a, b = calibrate_model(model_dir, temp_chunks_file, device="cpu", batch_size=4)
+        assert isinstance(a, float)
+        assert isinstance(b, float)

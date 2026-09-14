@@ -72,6 +72,7 @@ def handle_train(
     dwell_template_table: str | None = None,
     checkpoint_metric: str = "auto",
     focal_neg_gamma: float | None = None,
+    standardize_features: bool = False,
     **model_kwargs: Any,
 ) -> dict[str, Any]:
     """
@@ -124,6 +125,9 @@ def handle_train(
             sampling by (mutually exclusive with balance_groups and
             oversample_minority), e.g. "junction_indel" to over-sample the
             disrupted-junction population
+        standardize_features: Compute per-channel feature mean/std once over
+            the training corpus and freeze them into the feature branch as
+            an affine layer (off by default).
         **model_kwargs: Additional model-specific parameters
 
     Returns:
@@ -199,6 +203,7 @@ def handle_train(
         "signal_mode",
         "dwell_template_table",
         "checkpoint_metric",
+        "standardize_features",
         "signal_kmer_context",
         "left_context",
         "right_context",
@@ -250,6 +255,7 @@ def handle_train(
         label_smoothing=label_smoothing,
         mixed_precision=mixed_precision,
         checkpoint_metric=checkpoint_metric,
+        standardize_features=standardize_features,
         signal_mode=signal_mode,
         motif=motif,
         motif_offset=motif_offset,

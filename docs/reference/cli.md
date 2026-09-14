@@ -291,11 +291,12 @@ from a fresh optimizer and logs a warning.
 | `--motif STR` | -- | Motif used for chunk extraction |
 | `--motif-offset INT` | `0` | Focus base within motif (0-indexed) |
 | `--base-justify STR` | `center` | Signal justification |
-| `--model-config FILE` | -- | JSON file with model architecture overrides |
+| `--model-config FILE` | -- | JSON file with model architecture overrides (e.g. `{"causal": false}` for a TCN family's padding, or precomputed `feature_mean`/`feature_std`) |
 | `--seq-encoding STR` | `signal_kmer` | Sequence encoding: `base_onehot` or `signal_kmer` |
 | `--encoding-fallback / --no-encoding-fallback` | auto | Allow `signal_kmer` to fall back to `base_onehot` when the corpus has no base-to-signal maps. Auto = allowed only when `--seq-encoding` was left at its default |
 | `--num-workers INT` | `0` | DataLoader workers (0=auto) |
 | `--balance-groups / --no-balance-groups` | disabled | Balance sampling across source groups (e.g., per-AA) so each group contributes equally per epoch |
+| `--standardize-features / --no-standardize-features` | disabled | Compute per-channel feature mean/std once over the training corpus and freeze them into the feature branch as an affine layer. Only models with a `feature_branch` (the ConvLSTM and TCN families) accept this |
 
 **Output files:**
 
@@ -424,6 +425,8 @@ leech model benchmark --train-data FILE --output-dir DIR [OPTIONS]
 | `--signal-mode STR` | `both` | `both`, `residual`, or `signal` |
 | `--trace / --no-trace` | off | Also collect a `torch.profiler` Chrome trace |
 | `--trace-active-steps INT` | `10` | Active steps captured in the trace |
+| `--model-config FILE` | -- | JSON file with model architecture overrides, same as `model train` |
+| `--standardize-features / --no-standardize-features` | disabled | Compute per-channel feature mean/std over `--train-data` and freeze them into the feature branch, same as `model train`'s flag |
 
 **Example:**
 

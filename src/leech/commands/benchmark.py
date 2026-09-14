@@ -37,6 +37,8 @@ def _build_loader_and_model(
     kmer_len: int,
     seq_encoding: str,
     signal_mode: str,
+    standardize_features: bool = False,
+    extra_model_kwargs: dict[str, Any] | None = None,
 ) -> tuple[DataLoader, torch.nn.Module, ModelInferenceWrapper, int]:
     """Minimal mirror of ``train_model`` construction — loader, model, wrapper."""
     dataset = LeechDataset(
@@ -46,6 +48,7 @@ def _build_loader_and_model(
         model_type=model_name,
         seq_encoding=seq_encoding,
         signal_mode=signal_mode,
+        standardize_features=standardize_features,
     )
     logger.info(f"Loaded {len(dataset)} chunks from {train_data}")
 
@@ -72,19 +75,31 @@ def _build_loader_and_model(
     max_label = max(int(c["label_int"]) for c in dataset.chunks)
     num_out = max_label + 1 if max_label > 1 else 1
 
-    model = get_model(
-        model_name,
-        signal_len=signal_len,
-        kmer_len=kmer_len,
+    model_kwargs: dict[str, Any] = {
+        "signal_len": signal_len,
+        "kmer_len": kmer_len,
         # What the dataset yields, not what was asked for — a signal_kmer
         # request over a corpus with no base-to-signal maps degrades, and the
         # sequence branch has to be built for the input it will actually get
         # rather than die on a channel count at the first step (#230).
-        seq_encoding=dataset.effective_seq_encoding,
-        num_features=num_features,
-        signal_in_channels=signal_in_channels,
-        num_out=num_out,
-    )
+        "seq_encoding": dataset.effective_seq_encoding,
+        "num_features": num_features,
+        "signal_in_channels": signal_in_channels,
+        "num_out": num_out,
+    }
+    if extra_model_kwargs:
+        model_kwargs.update(extra_model_kwargs)
+    # Applied AFTER --model-config, same precedence as train_model: when
+    # --standardize-features is set, the stats it just computed from
+    # --train-data are authoritative and win over any feature_mean/feature_std
+    # a --model-config file happens to also carry (e.g. one saved from a
+    # different corpus) -- the two commands must not silently disagree on
+    # which value applies to the same pair of flags.
+    if standardize_features and dataset.feature_mean is not None:
+        model_kwargs["feature_mean"] = dataset.feature_mean.tolist()
+        model_kwargs["feature_std"] = dataset.feature_std.tolist()
+
+    model = get_model(model_name, **model_kwargs)
     model.to(device)
 
     if device != "cpu":
@@ -152,9 +167,16 @@ def handle_benchmark(
     signal_mode: str,
     trace: bool,
     trace_active_steps: int,
+    model_config: Path | None = None,
+    standardize_features: bool = False,
 ) -> dict[str, Any]:
     set_nvidia_smi_env_if_missing()
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    extra_model_kwargs: dict[str, Any] = {}
+    if model_config is not None:
+        with open(model_config) as f:
+            extra_model_kwargs.update(json.load(f))
 
     loader, model, wrapper, num_out = _build_loader_and_model(
         train_data=train_data,
@@ -167,6 +189,8 @@ def handle_benchmark(
         kmer_len=kmer_len,
         seq_encoding=seq_encoding,
         signal_mode=signal_mode,
+        standardize_features=standardize_features,
+        extra_model_kwargs=extra_model_kwargs,
     )
 
     report = benchmark_training(

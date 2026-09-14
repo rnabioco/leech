@@ -249,6 +249,36 @@ def test_classifier_export_records_the_opset(tmp_path, model_dir):
     assert json.loads(out.with_suffix(".json").read_text())["opset"] == OPSET
 
 
+def test_standardized_features_survive_onnx_export(tmp_path):
+    """issue #283: --standardize-features' frozen affine layer is buffers,
+    not parameters, and the dynamo exporter must trace it as the plain
+    Sub/Div it is rather than choking on it or silently dropping it."""
+    feature_mean = [0.1, 0.2, 0.3, 0.4, 0.5]
+    feature_std = [1.0, 2.0, 3.0, 4.0, 5.0]
+    kwargs = {
+        "signal_len": 100,
+        "kmer_len": 11,
+        "num_features": 5,
+        "hidden_channels": 16,
+        "num_layers": 2,
+        "signal_in_channels": 2,
+        "feature_mean": feature_mean,
+        "feature_std": feature_std,
+    }
+    directory = tmp_path / "model"
+    directory.mkdir()
+    config = {"model_name": "TCNDwellResidualLN", **kwargs}
+    (directory / "config.json").write_text(json.dumps(config))
+    model = get_model("TCNDwellResidualLN", **kwargs)
+    torch.save({"model_state_dict": model.state_dict()}, directory / "model_best.pt")
+
+    out = directory / "model.onnx"
+    export_single_model_onnx(directory, out)
+    meta = json.loads(out.with_suffix(".json").read_text())
+    diff = meta["verification"]["onnxruntime_vs_torch_max_abs_diff"]
+    assert diff < 1e-4, f"max abs diff {diff:.3e}"
+
+
 def test_signal_kmer_contract_names_the_encoder_the_graph_does_not_contain():
     """The 36-channel sequence input is built in the dataset, so a non-Python
     runtime must produce it — and reimplementing it creates a second definition

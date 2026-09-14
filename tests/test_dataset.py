@@ -790,5 +790,78 @@ class TestBatchedFetch:
         assert not torch.equal(noise[0], noise[1])
 
 
+class TestStandardizeFeatures:
+    """Corpus-wide per-channel feature mean/std for --standardize-features
+    (issue #283). The dataset only ever computes these; it never applies
+    them to its own output -- see the module docstring on
+    ``LeechDataset.__init__``'s ``standardize_features`` argument."""
+
+    def test_disabled_by_default(self, temp_chunks_file):
+        ds = LeechDataset(
+            temp_chunks_file,
+            signal_len=400,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding="base_onehot",
+        )
+        assert ds.feature_mean is None
+        assert ds.feature_std is None
+
+    def test_computes_per_channel_mean_and_std(self, temp_chunks_file):
+        ds = LeechDataset(
+            temp_chunks_file,
+            signal_len=400,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding="base_onehot",
+            standardize_features=True,
+        )
+        assert ds.feature_mean is not None
+        assert ds.feature_std is not None
+        num_features = ds._features_tensor.shape[1]
+        assert ds.feature_mean.shape == (num_features,)
+        assert ds.feature_std.shape == (num_features,)
+        # Collapsed over BOTH the chunk axis and the window axis -- one
+        # number per channel, not one per (channel, position) the way the
+        # feature-noise std is.
+        expected_mean = ds._features_tensor.mean(dim=(0, 2))
+        expected_std = ds._features_tensor.std(dim=(0, 2))
+        torch.testing.assert_close(ds.feature_mean, expected_mean)
+        torch.testing.assert_close(ds.feature_std, expected_std)
+
+    def test_not_computed_for_a_model_that_ignores_features(self, temp_chunks_file):
+        ds = LeechDataset(
+            temp_chunks_file,
+            signal_len=400,
+            kmer_len=11,
+            model_type="SignalCNN",
+            seq_encoding="base_onehot",
+            standardize_features=True,
+        )
+        assert ds.feature_mean is None
+        assert ds.feature_std is None
+
+    def test_dataset_output_is_unaffected(self, temp_chunks_file):
+        """The transform lives in the model, not the dataset -- __getitem__
+        must return the same raw features whether or not stats were
+        computed."""
+        plain = LeechDataset(
+            temp_chunks_file,
+            signal_len=400,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding="base_onehot",
+        )
+        standardized = LeechDataset(
+            temp_chunks_file,
+            signal_len=400,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding="base_onehot",
+            standardize_features=True,
+        )
+        torch.testing.assert_close(plain[0]["features"], standardized[0]["features"])
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

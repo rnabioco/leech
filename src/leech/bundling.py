@@ -19,6 +19,35 @@ from leech.model_loading import (
 
 logger = logging.getLogger("leech.bundling")
 
+# Corpus-derived stats (--standardize-features, #283) legitimately differ in
+# VALUE between pairwise/one-vs-all bundle members even when every other
+# architecture hyperparameter is identical: each pair trains on a different
+# label-pair subset of the corpus, so its frozen feature_mean/feature_std are
+# computed from different rows. _validate_arch_match below compares by length
+# (present/absent + shape) instead of by value for exactly these two fields --
+# that still catches a real mismatch (one model standardized, the other not,
+# or a different num_features) without rejecting two models that only
+# disagree on which numbers a shared layer was frozen at. The VALUES used to
+# construct each model still come from ref_arch_config (needed only to get
+# AffineStandardize's buffer shape right); load_state_dict always overwrites
+# those buffers with the pair's own trained numbers afterward, so which
+# config supplied the construction-time numbers never matters.
+_CORPUS_DERIVED_ARCH_FIELDS = ("feature_mean", "feature_std")
+
+
+def _arch_config_for_comparison(arch_config: dict) -> dict:
+    """``arch_config`` with corpus-derived stat fields reduced to a length.
+
+    Never used to instantiate a model -- only to compare two configs for
+    architecture equality without rejecting legitimate per-corpus value
+    differences. See ``_CORPUS_DERIVED_ARCH_FIELDS``.
+    """
+    normalized = dict(arch_config)
+    for field in _CORPUS_DERIVED_ARCH_FIELDS:
+        value = normalized.get(field)
+        normalized[field] = len(value) if value is not None else None
+    return normalized
+
 
 def _load_config(model_dir: Path) -> tuple[dict, dict]:
     """Load ``config.json`` and return ``(full_config, arch_config)``."""
@@ -68,7 +97,9 @@ def _reference_arch_config(
 def _validate_arch_match(model_dir: Path, pair: str, ref_arch_config: dict) -> dict:
     """Load pair's config and verify its arch config matches the reference."""
     pair_full_config, pair_arch_config = _load_config(model_dir)
-    if pair_arch_config != ref_arch_config:
+    if _arch_config_for_comparison(pair_arch_config) != _arch_config_for_comparison(
+        ref_arch_config
+    ):
         raise ValueError(
             f"Architecture config mismatch for {pair}. "
             f"Expected {ref_arch_config}, got {pair_arch_config}"
