@@ -57,12 +57,78 @@ fn window_over_bases(
     out
 }
 
+/// Resolve `(L, R)` base offsets around `base_idx` to a sample interval via
+/// the read's own base-to-signal map (`--signal-context-bases`, issue #278).
+///
+/// `chunking.resolve_signal_context_bases` (Python) is the canonical
+/// definition; this mirrors it exactly and the two are held equal by
+/// `tests/test_backend_parity.py`'s bases-context matrix row. `sample_start`
+/// is the first sample of base `base_idx - L` and `sample_end` is the first
+/// sample past base `base_idx + R`, both clamped to the read's own mapped
+/// span (base 0 through `n_bases - 1`) -- clamping, not dropping, is the
+/// guard `--signal-context-bases` promises at either edge of a read (the one
+/// allowed drop rule, CLAUDE.md, is unaffected: only `base_idx` itself being
+/// unmapped drops a chunk, checked by the caller before this runs).
+///
+/// `left_bases`/`right_bases` are meant to be `>= 0` -- the CLI and
+/// `handle_prepare` both refuse a negative value before any read is touched
+/// -- but `lo_base`/`hi_base` are independently clamped to
+/// `[0, n_bases - 1]` regardless of sign, matching
+/// `chunking.resolve_signal_context_bases` (Python) exactly. Without this a
+/// large-magnitude negative `left_bases` pushes `lo_base` past `n_bases`,
+/// and indexing `seq_to_sig` with it is a hard **panic** here (unlike
+/// Python's `IndexError`) -- one that, per issue #265's zero-tolerance
+/// policy, aborts the whole in-flight batch and discards every chunk
+/// `ChunkSpool` has already spooled to disk.
+fn resolve_signal_context_bases(
+    seq_to_sig: &[i64],
+    base_idx: i64,
+    left_bases: i64,
+    right_bases: i64,
+    n_bases: usize,
+) -> (i64, i64) {
+    let last_base = (n_bases - 1) as i64;
+    let lo_base = (base_idx - left_bases).clamp(0, last_base) as usize;
+    let hi_base = (base_idx + right_bases).clamp(0, last_base) as usize;
+    (seq_to_sig[lo_base], seq_to_sig[hi_base + 1])
+}
+
+/// The anchor's offset within the emitted `signal_len`-wide array.
+///
+/// A constant (`fixed_signal_context_left`) in sample mode: `left + right ==
+/// signal_len` always there, so `cut_chunk`'s internal `place_window` never
+/// crops. In base-defined mode the number of samples spanning `L..R` bases
+/// varies read to read and chunk to chunk, landing on either side of
+/// `signal_len`, so the offset is resolved per chunk here -- replicating
+/// `place_window`'s own pad (left-aligned, zero-fill right) / centre-crop
+/// split (`escapepod_signal::chunk`) rather than the array contents
+/// themselves, which `cut_chunk` already cut.
+fn resolve_chunk_focus_signal_pos(
+    win_left: i64,
+    win_right: i64,
+    signal_len: usize,
+    bases_mode: bool,
+    fixed_signal_context_left: i64,
+) -> i64 {
+    if !bases_mode {
+        return fixed_signal_context_left;
+    }
+    let requested = win_left + win_right;
+    if requested <= signal_len as i64 {
+        win_left
+    } else {
+        let crop = (requested - signal_len as i64) / 2;
+        win_left - crop
+    }
+}
+
 /// Extract training-format chunks from a processed read.
 fn extract_training_chunks_from_read(
     processed: &chunk::ProcessedRead,
     rid: &str,
     positions: &[i64],
     cfg: &PipelineConfig<'_>,
+    signal_context_bases: Option<(i64, i64)>,
 ) -> Vec<TrainingChunkResult> {
     let rows = chunk::read_rows(processed, &cfg.spec);
     let n_bases = processed.n_bases();
@@ -74,19 +140,45 @@ fn extract_training_chunks_from_read(
         before: cfg.skmer_ctx.0,
         after: cfg.skmer_ctx.1,
     };
-    let (left, right) = cfg.spec.signal_context;
 
     positions
         .iter()
         .filter_map(|&base_idx| {
-            // `cfg.training_spec`, not `cfg.spec`: cut with `seq_encoding:
-            // None` so `cut_chunk` cannot drop this chunk over a failed
-            // internal `signal_kmer_inputs` call -- training builds its own
-            // `sequence`/`seq_to_sig_map` below and never reads `c.sequence`.
-            // Only a focus base with no signal boundaries is skipped here
-            // (issue #185); `rows` was built from `cfg.spec`, which is fine
-            // since `read_rows` doesn't consult `seq_encoding` at all.
-            let c = chunk::cut_chunk(processed, &rows, &cfg.training_spec, base_idx)?;
+            if base_idx < 0 || base_idx as usize >= n_bases {
+                return None;
+            }
+
+            // Base-defined window (issue #278): a per-chunk ChunkSpec clone
+            // carrying the resolved SAMPLE window for this base, so a fast
+            // and a slow read read the same BASES of context. `cut_chunk`
+            // (escapepod_signal::chunk) still does the actual pad/centre-crop
+            // into the fixed `signal_len` -- no local reimplementation of
+            // that rule.
+            let mut per_base_spec;
+            let spec_for_cut: &chunk::ChunkSpec = if let Some((lb, rb)) = signal_context_bases {
+                let bi = base_idx as usize;
+                let (sample_start, sample_end) =
+                    resolve_signal_context_bases(&processed.seq_to_sig, base_idx, lb, rb, n_bases);
+                let focus = cfg
+                    .training_spec
+                    .base_justify
+                    .focus(processed.seq_to_sig[bi], processed.seq_to_sig[bi + 1]);
+                per_base_spec = cfg.training_spec.clone();
+                per_base_spec.signal_context = (focus - sample_start, sample_end - focus);
+                &per_base_spec
+            } else {
+                &cfg.training_spec
+            };
+
+            // `spec_for_cut` cuts with `seq_encoding: None` (inherited from
+            // `cfg.training_spec`) so `cut_chunk` cannot drop this chunk over
+            // a failed internal `signal_kmer_inputs` call -- training builds
+            // its own `sequence`/`seq_to_sig_map` below and never reads
+            // `c.sequence`. Only a focus base with no signal boundaries is
+            // skipped, already guarded above (issue #185); `rows` was built
+            // from `cfg.spec`, which is fine since `read_rows` doesn't
+            // consult `seq_encoding` or `signal_context` at all.
+            let c = chunk::cut_chunk(processed, &rows, spec_for_cut, base_idx)?;
 
             let (signal, signal_residual) = if n_signal_channels > 1 {
                 let (sig, res) = c.signal.split_at(cfg.spec.signal_len);
@@ -96,10 +188,13 @@ fn extract_training_chunks_from_read(
             };
 
             // Always computed regardless of `spec.seq_encoding`, keyed off the
-            // SIGNAL window (`c.focus_signal_pos` +/- left/right) -- the same
-            // window `cut_chunk` cut, not the k-mer window (issue #186).
-            let sig_start = c.focus_signal_pos - left;
-            let sig_end = c.focus_signal_pos + right;
+            // REQUESTED (pre-crop) SIGNAL window -- the same pair
+            // `cut_chunk`'s own SignalKmer branch would hand
+            // `signal_kmer_inputs` internally, not the post-crop window
+            // `place_window` actually placed (issue #186).
+            let (win_left, win_right) = spec_for_cut.signal_context;
+            let sig_start = c.focus_signal_pos - win_left;
+            let sig_end = c.focus_signal_pos + win_right;
             let (seq_to_sig_map, ctx_bytes) =
                 chunk::signal_kmer_inputs(processed, sig_start, sig_end, cfg.spec.signal_len, ctx)
                     .unwrap_or_default();
@@ -113,6 +208,14 @@ fn extract_training_chunks_from_read(
                 n_bases,
             );
 
+            let focus_signal_pos = resolve_chunk_focus_signal_pos(
+                win_left,
+                win_right,
+                cfg.spec.signal_len,
+                signal_context_bases.is_some(),
+                cfg.signal_context_left,
+            );
+
             Some(TrainingChunkResult {
                 signal,
                 sequence: kmer_seq(processed, base_idx, cfg.kmer_context),
@@ -121,11 +224,7 @@ fn extract_training_chunks_from_read(
                 num_features,
                 read_id: rid.to_string(),
                 base_idx,
-                // A constant, not `c.focus_signal_pos`: downstream code relies
-                // on a fixed offset regardless of edge padding (seam 2 of
-                // #258 -- the absolute per-read focus sample is exactly what
-                // this field must NOT be).
-                focus_signal_pos: cfg.signal_context_left,
+                focus_signal_pos,
                 seq_to_sig_map,
                 sequence_with_kmer_context,
                 signal_residual,
@@ -169,6 +268,7 @@ fn process_one_read_training(
     cfg: &PipelineConfig<'_>,
     cigar_ops: Option<&[(u32, u32)]>,
     ref_seq: Option<&str>,
+    signal_context_bases: Option<(i64, i64)>,
 ) -> Vec<TrainingChunkResult> {
     let inputs = chunk::ReadInputs {
         raw: raw_i16,
@@ -181,7 +281,9 @@ fn process_one_read_training(
     let anchor = build_anchor(cfg, sequence, cigar_ops, ref_seq, &mut cigar_buf);
 
     match chunk::process_read(inputs, anchor, &cfg.process) {
-        Some(processed) => extract_training_chunks_from_read(&processed, rid, positions, cfg),
+        Some(processed) => {
+            extract_training_chunks_from_read(&processed, rid, positions, cfg, signal_context_bases)
+        }
         None => vec![],
     }
 }
@@ -202,6 +304,7 @@ fn _process_and_convert_training<'py>(
     cfg: &PipelineConfig<'_>,
     cigar_tuples: &Option<Vec<Vec<(u32, u32)>>>,
     reference_sequences: &Option<Vec<Option<String>>>,
+    signal_context_bases: Option<(i64, i64)>,
 ) -> PyResult<Vec<Py<PyAny>>> {
     let n_reads = read_ids.len();
 
@@ -236,6 +339,7 @@ fn _process_and_convert_training<'py>(
                     cfg,
                     cigar,
                     rseq,
+                    signal_context_bases,
                 )
             })
             .collect()
@@ -332,6 +436,8 @@ fn _process_and_convert_training<'py>(
     refine_scale_iters = 2,
     signal_in_channels = 1,
     base_justify = "center",
+    signal_context_bases_left = None,
+    signal_context_bases_right = None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn extract_training_chunks<'py>(
@@ -365,7 +471,13 @@ pub fn extract_training_chunks<'py>(
     refine_scale_iters: i32,
     signal_in_channels: usize,
     base_justify: &str,
+    signal_context_bases_left: Option<i64>,
+    signal_context_bases_right: Option<i64>,
 ) -> PyResult<Vec<Py<PyAny>>> {
+    let signal_context_bases = match (signal_context_bases_left, signal_context_bases_right) {
+        (Some(l), Some(r)) => Some((l, r)),
+        _ => None,
+    };
     let n_reads = read_ids.len();
     if sequences.len() != n_reads
         || mv_strides.len() != n_reads
@@ -442,5 +554,6 @@ pub fn extract_training_chunks<'py>(
         &cfg,
         &cigar_tuples,
         &reference_sequences,
+        signal_context_bases,
     )
 }

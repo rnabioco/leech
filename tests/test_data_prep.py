@@ -1337,5 +1337,90 @@ class TestHandlePrepareZeroChunks:
             )
 
 
+class TestSignalContextBasesValidation:
+    """``--signal-context-bases`` (issue #278): mutual exclusivity with
+    ``--signal-context``, and rejecting a negative ``L``/``R`` before any
+    read is touched.
+
+    A negative value indexes past either end of a read's base-to-signal
+    map -- an ``IndexError`` in the Python backend, but a hard **panic** in
+    the Rust one (``resolve_signal_context_bases``, training.rs), which per
+    issue #265's zero-tolerance policy aborts the whole in-flight batch and
+    discards every chunk ``ChunkSpool`` already spooled to disk. Both checks
+    must fire immediately, before ``handle_prepare`` does anything with
+    ``pod5``/``bam`` -- hence the fake, nonexistent paths below.
+    """
+
+    def test_mutually_exclusive_with_signal_context(self, tmp_path):
+        from leech.commands.prepare import handle_prepare
+
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            handle_prepare(
+                pod5=tmp_path / "fake.pod5",
+                bam=tmp_path / "fake.bam",
+                output_dir=tmp_path / "out",
+                motif="CCAGGC",
+                signal_context=(200, 200),
+                signal_context_bases=(8, 24),
+            )
+
+    @pytest.mark.parametrize("signal_context_bases", [(-1, 24), (8, -1), (-5, -5)])
+    def test_negative_bases_raises(self, tmp_path, signal_context_bases):
+        from leech.commands.prepare import handle_prepare
+
+        with pytest.raises(ValueError, match=">= 0"):
+            handle_prepare(
+                pod5=tmp_path / "fake.pod5",
+                bam=tmp_path / "fake.bam",
+                output_dir=tmp_path / "out",
+                motif="CCAGGC",
+                signal_context_bases=signal_context_bases,
+            )
+
+    def test_cli_rejects_mutually_exclusive_options(self, tmp_path):
+        """The click.UsageError fires at CLI-layer validation time (mirroring
+        ``handle_prepare``'s own check), before ``prepare()``'s body does
+        anything with the POD5/BAM contents -- but ``--pod5``/``--bam`` are
+        ``click.Path(exists=True)``, so the files must exist on disk (empty
+        placeholders suffice) or click's own path-existence check fires
+        first and this test would be checking that instead. A negative-value
+        equivalent of this test is not practical: click's own option parser
+        treats a leading ``-1`` as an unrecognized flag before ``prepare()``
+        ever runs, independent of this feature -- covered instead by
+        ``test_negative_bases_raises`` above, which exercises the same
+        validation logic directly."""
+        from click.testing import CliRunner
+
+        from leech.cli import cli
+
+        fake_pod5 = tmp_path / "fake.pod5"
+        fake_bam = tmp_path / "fake.bam"
+        fake_pod5.touch()
+        fake_bam.touch()
+        result = CliRunner().invoke(
+            cli,
+            [
+                "data",
+                "prepare",
+                "--pod5",
+                str(fake_pod5),
+                "--bam",
+                str(fake_bam),
+                "--output-dir",
+                str(tmp_path / "out"),
+                "--motif",
+                "CCAGGC",
+                "--signal-context",
+                "200",
+                "200",
+                "--signal-context-bases",
+                "8",
+                "24",
+            ],
+        )
+        assert result.exit_code != 0
+        assert "mutually exclusive" in str(result.output)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

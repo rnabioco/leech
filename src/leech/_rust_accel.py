@@ -113,6 +113,30 @@ def rust_supports_softclip_recovery(recover_softclip_signal: bool) -> bool:
     return not recover_softclip_signal or RUST_SUPPORTS_SOFTCLIP_RECOVERY
 
 
+#: Whether the Rust *inference* pipeline (``inference.rs``) implements a
+#: base-defined signal window (``--signal-context-bases``, issue #278).
+#:
+#: The *training/prepare* pipeline (``training.rs``) does -- both `data
+#: prepare` backends produce identical chunks for it, held to that by
+#: ``tests/test_backend_parity.py``. Predict's Rust path is a separate glue
+#: module (`inference.rs`) built around a single, per-read fixed
+#: ``ChunkSpec.signal_context``; extending it to resolve a per-chunk window
+#: the way ``training.rs`` does is future work, not implemented here. A model
+#: trained with ``--signal-context-bases`` always falls back to the Python
+#: predict path, which shares ``LeechRead.get_chunk`` with `data prepare` and
+#: so already re-derives the same window. Flip this to ``True`` if that changes.
+RUST_SUPPORTS_SIGNAL_CONTEXT_BASES = False
+
+
+def rust_supports_signal_context_bases(signal_context_bases: tuple[int, int] | None) -> bool:
+    """Whether the Rust inference path can honor ``signal_context_bases``.
+
+    Always ``True`` when unset (a sample-context model), since there is then
+    nothing to honor.
+    """
+    return signal_context_bases is None or RUST_SUPPORTS_SIGNAL_CONTEXT_BASES
+
+
 #: Separators PEP 440 drops from a pre-release segment. Cargo keeps them.
 _VERSION_SEP = re.compile(r"[-_.]")
 

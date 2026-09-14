@@ -2741,6 +2741,12 @@ def train_model(
         "refine_kmer_center_idx": prepare_metadata.get("refine_kmer_center_idx", -1),
         "recover_softclip_signal": prepare_metadata.get("recover_softclip_signal", False),
         "kmer_table_sha256": prepare_metadata.get("kmer_table_sha256"),
+        # Base-defined signal window (issue #278), carried through so
+        # `predict` re-derives the same window `data prepare` cut; `None`
+        # for a sample-context corpus. `signal_len` above already reflects
+        # the corpus's actual stored width (introspected, not read from this
+        # sidecar), which is the fixed emitted width in either mode.
+        "signal_context_bases": prepare_metadata.get("signal_context_bases"),
         # Provenance
         "leech_version": leech.__version__,
         "git_commit": leech._get_git_revision(),

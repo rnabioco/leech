@@ -11,7 +11,13 @@ Tests the feature window and motor-sensor offset compensation:
 import numpy as np
 import pytest
 
-from leech.chunking import LeechRead, resolve_feature_window, save_chunks
+from leech.chunking import (
+    LeechRead,
+    default_signal_len_for_bases_context,
+    resolve_feature_window,
+    resolve_signal_context_bases,
+    save_chunks,
+)
 from leech.dataset import LeechDataset
 
 
@@ -207,6 +213,119 @@ class TestGetChunkFeatureWindow:
         assert chunk is not None
         # First element should be zero (padded), rest are real values
         assert chunk["dwell"][0] == 0.0
+
+
+class TestResolveSignalContextBases:
+    """A base-defined signal window (``--signal-context-bases``, issue #278).
+
+    ``read_with_known_dwells`` maps base ``i`` to samples
+    ``[100 + 30*i, 100 + 30*(i + 1))`` exactly, so every resolved sample
+    position below is an exact, hand-checkable number rather than an
+    approximation.
+    """
+
+    def test_in_range_window(self, read_with_known_dwells):
+        m = read_with_known_dwells.seq_to_sig_map
+        # base 15, L=5, R=5: bases [10, 20] inclusive -> samples [400, 730).
+        start, end = resolve_signal_context_bases(
+            m, base_idx=15, left_bases=5, right_bases=5, num_mapped_bases=50
+        )
+        assert (start, end) == (400, 730)
+
+    def test_left_edge_clamps_not_drops(self, read_with_known_dwells):
+        m = read_with_known_dwells.seq_to_sig_map
+        # base 2, L=5 (2-5=-3 clamps to base 0), R=5: bases [0, 7] inclusive
+        # (8 bases) -> samples [100, 340).
+        start, end = resolve_signal_context_bases(
+            m, base_idx=2, left_bases=5, right_bases=5, num_mapped_bases=50
+        )
+        assert (start, end) == (100, 340)
+
+    def test_right_edge_clamps_not_drops(self, read_with_known_dwells):
+        m = read_with_known_dwells.seq_to_sig_map
+        # base 47, R=5 (47+5=52 clamps to base 49, the last), L=5: bases [42, 49] -> samples
+        # [1360, 1600) -- 1600 is seq_to_sig_map[50], the read's own final boundary.
+        start, end = resolve_signal_context_bases(
+            m, base_idx=47, left_bases=5, right_bases=5, num_mapped_bases=50
+        )
+        assert (start, end) == (1360, 1600)
+        assert end == int(m[-1])
+
+    def test_default_signal_len_scales_with_window(self):
+        # (L + R + 1) bases * 36 samples/base.
+        assert default_signal_len_for_bases_context(8, 24) == 33 * 36
+        assert default_signal_len_for_bases_context(0, 0) == 36
+
+
+class TestGetChunkSignalContextBases:
+    """``LeechRead.get_chunk(signal_context_bases=...)``, the emitted chunk."""
+
+    def test_exact_fit_no_pad_or_crop(self, read_with_known_dwells):
+        read = read_with_known_dwells
+        # base 15, L=5, R=5 -> samples [400, 730), width 330 == signal_len.
+        chunk = read.get_chunk(
+            base_idx=15, signal_context_bases=(5, 5), signal_len=330, kmer_context=5
+        )
+        assert chunk is not None
+        assert chunk["signal"].shape == (330,)
+        np.testing.assert_array_equal(chunk["signal"], read.signal[400:730])
+        # focus_sig_pos (base_justify="center") is the midpoint of base 15's
+        # own span: (550 + 580) // 2 = 565; offset from window start (400) is 165.
+        assert chunk["focus_signal_pos"] == 165
+
+    def test_narrower_than_signal_len_pads_right_with_zeros(self, read_with_known_dwells):
+        read = read_with_known_dwells
+        chunk = read.get_chunk(
+            base_idx=15, signal_context_bases=(5, 5), signal_len=400, kmer_context=5
+        )
+        assert chunk is not None
+        assert chunk["signal"].shape == (400,)
+        np.testing.assert_array_equal(chunk["signal"][:330], read.signal[400:730])
+        np.testing.assert_array_equal(chunk["signal"][330:], np.zeros(70, dtype=np.float32))
+        assert chunk["focus_signal_pos"] == 165
+
+    def test_wider_than_signal_len_centre_crops(self, read_with_known_dwells):
+        read = read_with_known_dwells
+        # Requested width 330 samples (base 15, L=R=5); crop to 300 -> crop=15
+        # off each side, matching escapepod_signal::chunk::place_window.
+        chunk = read.get_chunk(
+            base_idx=15, signal_context_bases=(5, 5), signal_len=300, kmer_context=5
+        )
+        assert chunk is not None
+        assert chunk["signal"].shape == (300,)
+        np.testing.assert_array_equal(chunk["signal"], read.signal[415:715])
+        assert chunk["focus_signal_pos"] == 565 - 415
+
+    def test_read_edge_clamp_pads_rather_than_drops(self, read_with_known_dwells):
+        """A window near the read's edge is narrower, not a dropped chunk --
+        the one allowed drop rule (CLAUDE.md) is unaffected. Also pins the
+        bug this class exists to catch: the padded region must be the
+        REQUESTED window's shortfall (zeros), not real signal copied past
+        `sample_end` up to `win_start + signal_len` -- `place_window`
+        (escapepod_signal::chunk) bounds the copy by the requested end."""
+        read = read_with_known_dwells
+        chunk = read.get_chunk(
+            base_idx=2, signal_context_bases=(5, 5), signal_len=400, kmer_context=5
+        )
+        assert chunk is not None
+        assert chunk["signal"].shape == (400,)
+        np.testing.assert_array_equal(chunk["signal"][:240], read.signal[100:340])
+        np.testing.assert_array_equal(chunk["signal"][240:], np.zeros(160, dtype=np.float32))
+
+    def test_mutually_exclusive_with_signal_context_in_practice(self, read_with_known_dwells):
+        """signal_context_bases, when set, takes the window entirely --
+        signal_context (still whatever default was passed) has no effect."""
+        read = read_with_known_dwells
+        chunk = read.get_chunk(
+            base_idx=15,
+            signal_context=(1, 1),
+            signal_context_bases=(5, 5),
+            signal_len=330,
+            kmer_context=5,
+        )
+        assert chunk is not None
+        assert chunk["signal"].shape == (330,)
+        np.testing.assert_array_equal(chunk["signal"], read.signal[400:730])
 
 
 class TestDatasetDwellOffset:

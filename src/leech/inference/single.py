@@ -362,7 +362,13 @@ def run_inference(
     logger.info(f"Signal length: {signal_len}, K-mer length: {kmer_len}")
     if is_multiclass:
         logger.info(f"Multi-class model: num_out={num_out}")
-    logger.info(f"Signal context: {signal_context}")
+    if spec.signal_context_bases is not None:
+        logger.info(
+            f"Base-defined signal window: {spec.signal_context_bases} "
+            f"(padded/centre-cropped to signal_len={signal_len})"
+        )
+    else:
+        logger.info(f"Signal context: {signal_context}")
     logger.info(f"Sequence encoding: {seq_encoding}, base_justify: {base_justify}")
     if _feature_start is not None or _feature_end is not None:
         _fs = _feature_start if _feature_start is not None else -kmer_context
@@ -560,6 +566,8 @@ def run_inference(
                 signal_context=signal_context,
                 kmer_context=kmer_context,
                 recover_softclip_signal=spec.recover_softclip_signal,
+                signal_context_bases=spec.signal_context_bases,
+                signal_len=signal_len,
             ),
             seq_encoding=seq_encoding,
             signal_kmer_context=signal_kmer_context,
@@ -731,6 +739,8 @@ def run_inference(
             signal_context=signal_context,
             kmer_context=kmer_context,
             recover_softclip_signal=spec.recover_softclip_signal,
+            signal_context_bases=spec.signal_context_bases,
+            signal_len=signal_len,
         )
 
         # Extraction thread count + rust setup (all three shared with
@@ -747,7 +757,10 @@ def run_inference(
             _rs_preload_pod5_signals,
             _rs_extract_chunks_from_preloaded,
         ) = check_rust_extraction_available(
-            backend, norm_method, seq_chunk_config.recover_softclip_signal
+            backend,
+            norm_method,
+            seq_chunk_config.recover_softclip_signal,
+            spec.signal_context_bases,
         )
         if _use_rust_extraction:
             logger.info("Using Rust monolithic extraction (escapepod-rs + leech_core)")

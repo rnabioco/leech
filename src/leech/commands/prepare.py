@@ -76,6 +76,8 @@ def handle_prepare(
     kmer_table: Path | None = None,
     scale_iters: int = 2,
     signal_context: tuple[int, int] | None = None,
+    signal_context_bases: tuple[int, int] | None = None,
+    signal_len: int | None = None,
     focus_tsv: Path | None = None,
     recover_softclip_signal: bool = False,
 ) -> dict[str, Any]:
@@ -108,12 +110,49 @@ def handle_prepare(
     Returns:
         Dictionary with extraction statistics
     """
-    from leech.chunking import ChunkSpool
+    from leech.chunking import ChunkSpool, default_signal_len_for_bases_context
     from leech.configs import ChunkConfig, LabelConfig, MotifConfig, PrepareConfig, SignalConfig
     from leech.constants import DEFAULT_SIGNAL_CONTEXT
     from leech.io import get_reference_sequences
     from leech.preparation import prepare_training_data_parallel, write_splits
     from leech.seeding import setup_random_seed
+
+    if signal_context_bases is not None and signal_context is not None:
+        raise ValueError("--signal-context and --signal-context-bases are mutually exclusive")
+
+    resolved_signal_len: int | None = None
+    if signal_context_bases is not None:
+        left_bases, right_bases = signal_context_bases
+        if left_bases < 0 or right_bases < 0:
+            # Caught at the CLI layer too (click.UsageError, same message) --
+            # this guard is for callers that build PrepareConfig/call
+            # handle_prepare directly (Snakemake rules, tests, notebooks) and
+            # so bypass that check. A negative L or R indexes past either end
+            # of a read's base-to-signal map: an IndexError in
+            # `LeechRead.get_chunk`, but a hard Rust *panic* in
+            # `resolve_signal_context_bases` (training.rs) that -- per
+            # issue #265's zero-tolerance policy -- aborts the whole batch
+            # and discards every chunk `ChunkSpool` has already spooled to
+            # disk. Failing here, before any read is touched, is cheap;
+            # failing mid-run is not.
+            raise ValueError(
+                f"signal_context_bases (L, R) must both be >= 0, got {signal_context_bases}"
+            )
+        resolved_signal_len = (
+            signal_len
+            if signal_len is not None
+            else default_signal_len_for_bases_context(left_bases, right_bases)
+        )
+        logger.info(
+            f"Base-defined signal window: [-{left_bases}, +{right_bases}] bases "
+            f"relative to the focus base, padded/centre-cropped to a fixed "
+            f"signal_len={resolved_signal_len}"
+            + (
+                " (auto: (L+R+1) * DEFAULT_MAX_SAMPLES_PER_BASE)"
+                if signal_len is None
+                else " (explicit --signal-len)"
+            )
+        )
 
     logger.info(f"Preparing data from {pod5} and {bam}")
     logger.info(f"Motif reference mode: {motif_reference}")
@@ -205,6 +244,10 @@ def handle_prepare(
             feature_end=feature_end,
             signal_context=tuple(signal_context) if signal_context else DEFAULT_SIGNAL_CONTEXT,
             recover_softclip_signal=recover_softclip_signal,
+            signal_context_bases=(
+                tuple(signal_context_bases) if signal_context_bases is not None else None
+            ),
+            signal_len=resolved_signal_len,
         ),
         labeling=LabelConfig(
             label=label,
