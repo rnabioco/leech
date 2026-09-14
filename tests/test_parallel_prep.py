@@ -806,6 +806,13 @@ class TestPrepareTrainingDataParallel:
         assert all(c["label"] == "Ala" for c in chunks)
         assert all(int(c["label_int"]) == 1 for c in chunks)
 
+    # Longer than pyproject.toml's global 120s: this test's own
+    # subprocess.run(..., timeout=120) below IS the hang guard (a real fork
+    # deadlock must raise subprocess.TimeoutExpired with a clean assertion
+    # message, not have the whole pytest process killed out from under it by
+    # the global timeout firing at the same 120s mark). See CLAUDE.md's "A
+    # test that exercises the real mp.Pool" note.
+    @pytest.mark.timeout(150)
     def test_python_backend_real_pool_matches_rust_chunk_set(self):
         """``backend_choice="python", num_workers=2`` -- the real mp.Pool path.
 

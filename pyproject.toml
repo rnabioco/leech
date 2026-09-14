@@ -76,6 +76,7 @@ onnx = [
 test = [
   "pytest>=8.0.0",
   "pytest-cov>=4.1.0",
+  "pytest-timeout>=2.4.0",
   "pytest-xdist>=3.5.0",
 ]
 # Full local dev env: test runners + lint/type/QA tooling.
@@ -127,6 +128,27 @@ addopts = "-v"
 python_files = "test_*.py"
 python_functions = "test_*"
 testpaths = ["tests"]
+# Per-test hard cap so a hung test fails loudly instead of running out the
+# clock -- see .github/workflows/ci.yml's job-level `timeout-minutes: 20` for
+# the backstop behind collection-time and pre-test hangs this can't catch.
+# The full suite's slowest test currently runs in ~22s
+# (test_distributed_training.py's two-rank checkpoint/gradient-parity tests,
+# which spin up a real 2-process DDP group); 120s leaves >5x headroom for a
+# slower or more contended CI runner while still failing well inside the
+# job-level backstop. Measured via `srun -p rna -c 8 --mem 32G -t 45 --
+# uv run pytest --durations=10` against the extras CI installs
+# (test,rust,onnx): 1707 passed, 45 skipped in 322.89s.
+timeout = 120
+# pytest-timeout's own platform default is "signal" (SIGALRM) wherever
+# available, which is Linux/CI here -- but a SIGALRM only interrupts the
+# interpreter at the next bytecode boundary, which is exactly what a hang
+# stuck in a C-level lock (a forked multiprocessing.Pool deadlocking against
+# libtorch's already-initialized thread pool, as in rnabioco/leech#308) will
+# never reach. "thread" runs a separate watchdog thread that dumps every
+# thread's stack and force-exits the whole process via os._exit() regardless
+# of what the main thread is blocked on, so it is set explicitly here rather
+# than left to the per-platform default.
+timeout_method = "thread"
 markers = ["slow: slow tests (torch.export, bundles) — run with --slow"]
 
 [tool.uv]

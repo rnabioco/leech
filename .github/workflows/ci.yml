@@ -94,6 +94,13 @@ jobs:
   test:
     name: Test - Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
+    # Hard backstop behind pytest-timeout's per-test enforcement (pyproject.toml's
+    # [tool.pytest.ini_options] `timeout`): a hang during collection, before any
+    # test has started, or inside the Rust/maturin build in the install step
+    # below is outside pytest's control entirely. PR #308 hung here for ~55
+    # minutes (a fork-safety deadlock) with nothing to stop it until a human
+    # noticed and cancelled the run.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
