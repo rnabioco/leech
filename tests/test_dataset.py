@@ -638,6 +638,117 @@ class TestAsymmetricFocusPosition:
         assert chunk_sym["focus_signal_pos"] == 200
 
 
+class TestCropWindowPaddingWarning:
+    """#255: a crop wider than the stored chunk zero-pads silently -- warn.
+
+    Reproduces the production shape exactly: a corpus stored with
+    signal_context (225, 225) (a 450-wide chunk, focus at 225) trained with
+    right_context=300, which crops [225-225 : 225+300) = [0:525) -- 75 samples
+    past the end of every stored chunk, zero-padded with nothing logged before
+    this fix.
+    """
+
+    def test_warns_once_when_crop_exceeds_stored_chunk(self, caplog):
+        chunks = TestAsymmetricFocusPosition._make_chunks(signal_len=450, focus_signal_pos=225, n=4)
+        with caplog.at_level("WARNING", logger="leech.dataset"):
+            ds = LeechDataset(
+                chunks=chunks,
+                signal_len=525,
+                kmer_len=11,
+                model_type="ConvLSTMDwell",
+                seq_encoding="base_onehot",
+                left_context=225,
+                right_context=300,
+            )
+
+        pad_records = [r for r in caplog.records if "zero-padded" in r.getMessage()]
+        # Once per dataset, not once per chunk -- 4 chunks all overrun here.
+        assert len(pad_records) == 1
+        msg = pad_records[0].getMessage()
+        assert "left_context=225" in msg
+        assert "right_context=300" in msg
+        assert "stored left=225" in msg
+        assert "stored right=225" in msg
+        assert "75 sample" in msg
+
+        sig = ds[0]["signal"]
+        assert sig.shape[-1] == 525
+        # The last 75 samples are the zero-padded shortfall; documents the
+        # pre-existing pad behaviour, not just the new warning.
+        assert torch.all(sig[-75:] == 0)
+        assert sig[-76].item() == 449.0  # last real (in-bounds) sample
+
+    def test_strict_window_raises_instead_of_padding(self):
+        chunks = TestAsymmetricFocusPosition._make_chunks(signal_len=450, focus_signal_pos=225, n=2)
+        with pytest.raises(ValueError, match="strict_window"):
+            LeechDataset(
+                chunks=chunks,
+                signal_len=525,
+                kmer_len=11,
+                model_type="ConvLSTMDwell",
+                seq_encoding="base_onehot",
+                left_context=225,
+                right_context=300,
+                strict_window=True,
+            )
+
+    def test_no_warning_when_window_fits_stored_chunk(self, caplog):
+        chunks = TestAsymmetricFocusPosition._make_chunks(signal_len=450, focus_signal_pos=225, n=4)
+        with caplog.at_level("WARNING", logger="leech.dataset"):
+            LeechDataset(
+                chunks=chunks,
+                signal_len=450,
+                kmer_len=11,
+                model_type="ConvLSTMDwell",
+                seq_encoding="base_onehot",
+                left_context=225,
+                right_context=225,
+            )
+        assert not any("zero-padded" in r.getMessage() for r in caplog.records)
+
+    def test_plain_signal_len_pad_warns_once(self, caplog):
+        """The symmetric case (no left_context/right_context) has the same gap:
+        a plain --signal-len wider than the stored chunk zero-pads silently.
+        """
+        chunks = TestAsymmetricFocusPosition._make_chunks(
+            signal_len=400, focus_signal_pos=None, n=3
+        )
+        with caplog.at_level("WARNING", logger="leech.dataset"):
+            ds = LeechDataset(
+                chunks=chunks,
+                signal_len=1000,
+                kmer_len=11,
+                model_type="ConvLSTMDwell",
+                seq_encoding="base_onehot",
+            )
+
+        pad_records = [r for r in caplog.records if "zero-padded" in r.getMessage()]
+        assert len(pad_records) == 1
+        msg = pad_records[0].getMessage()
+        assert "signal_len=1000" in msg
+        assert "stored length=400" in msg
+        assert "600 sample" in msg
+
+        sig = ds[0]["signal"]
+        assert sig.shape[-1] == 1000
+        assert torch.all(sig[-600:] == 0)
+        assert sig[399].item() == 399.0
+
+    def test_strict_window_raises_on_plain_signal_len_pad(self):
+        chunks = TestAsymmetricFocusPosition._make_chunks(
+            signal_len=400, focus_signal_pos=None, n=2
+        )
+        with pytest.raises(ValueError, match="strict_window"):
+            LeechDataset(
+                chunks=chunks,
+                signal_len=1000,
+                kmer_len=11,
+                model_type="ConvLSTMDwell",
+                seq_encoding="base_onehot",
+                strict_window=True,
+            )
+
+
 class TestBatchedFetch:
     """``__getitems__`` gathers a whole batch instead of one row at a time.
 

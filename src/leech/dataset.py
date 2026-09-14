@@ -622,6 +622,7 @@ class LeechDataset(Dataset):
         allow_encoding_fallback: bool = True,
         left_context: int | None = None,
         right_context: int | None = None,
+        strict_window: bool = False,
         confound_encoder: "ConfoundEncoder | None" = None,
         label_noise_rates: dict[str, float] | None = None,
         cl_regression: bool = False,
@@ -661,6 +662,15 @@ class LeechDataset(Dataset):
                 When both left_context and right_context are provided, crop
                 asymmetrically around the focus base instead of center-cropping.
             right_context: Right signal context (samples after focus base).
+            strict_window: When the asymmetric crop (``left_context``/
+                ``right_context``) reaches outside the stored chunk -- the
+                corpus was prepared with a narrower ``signal_context`` than
+                this window -- the shortfall is zero-padded either way; the
+                default (False) logs one warning for the whole dataset the
+                first time it happens, ``True`` raises immediately instead.
+                A silently zero-padded tail is exactly what went undetected
+                in two production retrains that trained with a wider
+                ``right_context`` than the corpus was prepared with (#255).
             confound_encoder: Optional :class:`~leech.confounds.ConfoundEncoder`
                 that maps each chunk to an integer confound class. When provided,
                 each batch includes a ``confound_label`` tensor for adversarial
@@ -719,6 +729,8 @@ class LeechDataset(Dataset):
         self.signal_kmer_context = signal_kmer_context
         self.left_context = left_context
         self.right_context = right_context
+        self._strict_window = strict_window
+        self._crop_pad_warned = False
         self._time_mask_bases = time_mask_bases
         self._time_mask_count = time_mask_count
         self._shift_max_bases = shift_max_bases
@@ -1568,6 +1580,73 @@ class LeechDataset(Dataset):
             width = int(lengths.max()) if len(lengths) else 0
         return torch.from_numpy(np.ascontiguousarray(_BASE_INT_MAP[flat[:, :width]]))
 
+    def _note_crop_padding(self, available_left: int, available_right: int, n_padded: int) -> None:
+        """Report an asymmetric crop that ran outside the stored chunk.
+
+        The one place this is detected for both :meth:`_prepare_signal` (the
+        row path) and :meth:`_prepare_signals_block` (the block path), so a
+        corpus prepared with a narrower ``signal_context`` than
+        ``left_context``/``right_context`` request cannot silently zero-pad a
+        production run the way it did for two retrains before #255: nothing
+        raised, and nothing logged, so the last 75 samples of every chunk were
+        zero for a `right_context` 75 samples wider than the stored corpus.
+        """
+        if n_padded <= 0:
+            return
+        left, right = self.left_context, self.right_context
+        self._warn_or_raise_padding(
+            f"asymmetric crop window (left_context={left}, right_context={right}) "
+            f"reaches outside the stored chunk (stored left={available_left}, "
+            f"stored right={available_right} samples around the focus base)",
+            n_padded,
+        )
+
+    def _note_plain_pad(self, stored_len: int, n_padded: int) -> None:
+        """Report the symmetric case: ``signal_len`` wider than the stored chunk.
+
+        Reached when ``left_context``/``right_context`` are not set at all, so
+        :meth:`_prepare_signal`/:meth:`_prepare_signals_block` just centre-pad
+        the whole stored chunk out to ``signal_len`` -- the same silent
+        zero-pad-on-mismatch failure mode as the asymmetric crop
+        (:meth:`_note_crop_padding`), reachable from the plainer, more common
+        ``--signal-len`` invocation that has no ``left_context``/
+        ``right_context`` to name.
+        """
+        if n_padded <= 0:
+            return
+        self._warn_or_raise_padding(
+            f"requested signal_len={self.signal_len} exceeds the stored chunk "
+            f"(stored length={stored_len} samples)",
+            n_padded,
+        )
+
+    def _warn_or_raise_padding(self, detail: str, n_padded: int) -> None:
+        """Shared warn-once-or-raise mechanics for :meth:`_note_crop_padding` and
+        :meth:`_note_plain_pad`.
+
+        Raises immediately when ``strict_window`` was requested; otherwise
+        warns once per dataset (subsequent calls are no-ops) rather than once
+        per chunk, since a corpus/window mismatch is constant for the whole
+        run and a Python warning per row would be the majority of __init__.
+        """
+        if self._strict_window:
+            raise ValueError(
+                f"Signal crop: {detail}; {n_padded} sample(s) would be zero-padded. "
+                "Re-prepare the corpus with a matching window, request a narrower "
+                "one, or drop strict_window to allow the pad."
+            )
+        if not self._crop_pad_warned:
+            logger.warning(
+                "Signal crop: %s; %s sample(s) zero-padded on at least one chunk "
+                "in %s. Every affected chunk trains/predicts on zeros for the "
+                "missing samples. Pass strict_window=True (--strict-window) to "
+                "raise instead.",
+                detail,
+                n_padded,
+                self.chunk_path or "<pre-loaded chunks>",
+            )
+            self._crop_pad_warned = True
+
     # -- array preparers: the block twins of _prepare_signal/_prepare_features
 
     @staticmethod
@@ -1613,7 +1692,22 @@ class LeechDataset(Dataset):
             if signal_residual is not None:
                 signal_residual = signal_residual[gather, columns]
                 signal_residual[~inside] = 0.0
+            # Once a non-strict warning has fired, further blocks need no
+            # more checking -- the corpus/window mismatch is constant for the
+            # whole dataset. Under strict_window every block still has to be
+            # checked, since any one of them can raise.
+            if self._strict_window or not self._crop_pad_warned:
+                outside = ~inside
+                if outside.any():
+                    pad_per_row = outside.sum(axis=1)
+                    worst = int(pad_per_row.argmax())
+                    self._note_crop_padding(
+                        int(focus[worst]),
+                        stored_len - int(focus[worst]),
+                        int(pad_per_row[worst]),
+                    )
         elif stored_len < self.signal_len:
+            self._note_plain_pad(stored_len, self.signal_len - stored_len)
             signal = np.pad(signal, ((0, 0), (0, self.signal_len - stored_len)), mode="constant")
             if signal_residual is not None:
                 signal_residual = np.pad(
@@ -1751,6 +1845,11 @@ class LeechDataset(Dataset):
                 src_start, src_end = max(0, start), min(len(signal), end)
                 dst_start = max(0, -start)
                 cropped[dst_start : dst_start + (src_end - src_start)] = signal[src_start:src_end]
+                self._note_crop_padding(
+                    focus_pos,
+                    len(signal) - focus_pos,
+                    self.signal_len - (src_end - src_start),
+                )
                 signal = cropped
                 if signal_residual is not None:
                     cropped_r = np.zeros(self.signal_len, dtype=np.float32)
@@ -1763,6 +1862,7 @@ class LeechDataset(Dataset):
                 if signal_residual is not None:
                     signal_residual = signal_residual[start:end]
         elif len(signal) < self.signal_len:
+            self._note_plain_pad(len(signal), self.signal_len - len(signal))
             signal = np.pad(signal, (0, self.signal_len - len(signal)), mode="constant")
             if signal_residual is not None:
                 signal_residual = np.pad(

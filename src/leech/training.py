@@ -1966,6 +1966,7 @@ def train_model(
     allow_encoding_fallback: bool = True,
     left_context: int | None = None,
     right_context: int | None = None,
+    strict_window: bool = False,
     balance_groups: bool = False,
     oversample_minority: bool = False,
     sample_weight_field: str | None = None,
@@ -2043,6 +2044,10 @@ def train_model(
             first layer as an affine transform (off by default). Only models
             that declare ``feature_mean``/``feature_std`` params accept this;
             requesting it for one that doesn't raises from ``get_model()``.
+        strict_window: Raise instead of zero-padding when left_context/
+            right_context reach outside the stored chunk (a corpus prepared
+            with a narrower signal_context than this crop). Default False
+            logs one warning for the whole dataset the first time it happens.
         **model_kwargs: Additional model parameters (passed to model constructor)
 
     Returns:
@@ -2091,6 +2096,7 @@ def train_model(
             allow_encoding_fallback=allow_encoding_fallback,
             left_context=left_context,
             right_context=right_context,
+            strict_window=strict_window,
             balance_groups=balance_groups,
             oversample_minority=oversample_minority,
             sample_weight_field=sample_weight_field,
@@ -2150,6 +2156,7 @@ def train_model(
     allow_encoding_fallback = cfg.allow_encoding_fallback
     left_context = cfg.left_context
     right_context = cfg.right_context
+    strict_window = cfg.strict_window
     balance_groups = cfg.balance_groups
     oversample_minority = cfg.oversample_minority
     sample_weight_field = cfg.sample_weight_field
@@ -2329,6 +2336,7 @@ def train_model(
         allow_encoding_fallback=allow_encoding_fallback,
         left_context=left_context,
         right_context=right_context,
+        strict_window=strict_window,
         confound_encoder=confound_encoder,
         label_noise_rates=label_noise_rates,
         cl_regression=cl_regression,
@@ -2356,6 +2364,7 @@ def train_model(
             allow_encoding_fallback=allow_encoding_fallback,
             left_context=left_context,
             right_context=right_context,
+            strict_window=strict_window,
             confound_encoder=confound_encoder,
             label_noise_rates=label_noise_rates,
             cl_regression=cl_regression,
@@ -2784,6 +2793,13 @@ def train_model(
         "base_justify": base_justify,
         "left_context": left_context,
         "right_context": right_context,
+        # Whether this run was guarded against silently zero-padding a crop
+        # that overran the stored corpus (#255) -- without this, two
+        # checkpoints with identical left_context/right_context but different
+        # strict_window are indistinguishable in config.json, so nothing
+        # downstream can tell whether a run was actually protected or merely
+        # happened not to trigger the mismatch.
+        "strict_window": strict_window,
         # The effective encoding, not the requested one: a checkpoint that does
         # not record what it trained on cannot be audited after the fact (#230).
         "seq_encoding": effective_seq_encoding,

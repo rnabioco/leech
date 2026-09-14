@@ -306,6 +306,7 @@ class TrainConfig:
     allow_encoding_fallback: bool = True
     left_context: int | None = None
     right_context: int | None = None
+    strict_window: bool = False
 
     # Sampling strategy (mutually exclusive; enforced in train_model)
     balance_groups: bool = False

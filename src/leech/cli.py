@@ -742,6 +742,13 @@ def merge(
     "default, so an encoding you asked for by name is never substituted silently.",
 )
 @click.option(
+    "--strict-window/--no-strict-window",
+    default=False,
+    help="Raise instead of zero-padding when the signal crop window (left_context/"
+    "right_context, e.g. via --model-config) extends outside the stored chunk. "
+    "Default: log one warning per dataset the first time it happens.",
+)
+@click.option(
     "--num-workers",
     type=int,
     default=0,
@@ -916,6 +923,7 @@ def train(
     base_justify,
     seq_encoding,
     encoding_fallback,
+    strict_window,
     num_workers,
     gpus,
     balance_groups,
@@ -997,6 +1005,7 @@ def train(
         base_justify=base_justify,
         seq_encoding=seq_encoding,
         allow_encoding_fallback=encoding_fallback,
+        strict_window=strict_window,
         balance_groups=balance_groups,
         oversample_minority=oversample_minority,
         sample_weight_field=sample_weight_field,
