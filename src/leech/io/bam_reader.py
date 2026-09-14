@@ -11,10 +11,32 @@ from pathlib import Path
 
 import pysam
 
-from leech.constants import REQUIRED_BAM_TAGS
+from leech.constants import CL_TAG_CHECK_READS, REQUIRED_BAM_TAGS
 from leech.features import MoveTable
 
 logger = logging.getLogger("leech.io.bam_reader")
+
+
+def _read_cl_tag(aln: pysam.AlignedSegment) -> int | None:
+    """Read the charging-level tag, preferring uppercase ``CL``.
+
+    The aa-tRNA-seq pipeline renamed the classifier's charging score to
+    lowercase ``cl`` so it would not collide with dorado's modified-base
+    ``MM``/``ML`` tags (issue #254); older BAMs may still carry uppercase
+    ``CL``. Accepts either spelling and either a scalar (``C``/``i``) or a
+    one-element ``B`` array; returns ``None`` when neither tag is present or
+    the value cannot be read as an int.
+    """
+    for tag_name in ("CL", "cl"):
+        try:
+            cl_tag = aln.get_tag(tag_name)
+        except KeyError:
+            continue
+        try:
+            return int(cl_tag[0]) if hasattr(cl_tag, "__getitem__") else int(cl_tag)
+        except (TypeError, ValueError, IndexError):
+            continue
+    return None
 
 
 def count_bam_reads(bam_path: Path) -> int:
@@ -156,14 +178,8 @@ class ReadInfo:
         self.num_samples = int(aln.get_tag("ns"))
         self.trim_offset = int(aln.get_tag("ts")) if aln.has_tag("ts") else 0
 
-        # Optional charging level tag (CL)
-        try:
-            cl_tag = aln.get_tag("CL")
-            self.cl_value: int | None = (
-                int(cl_tag[0]) if hasattr(cl_tag, "__getitem__") else int(cl_tag)
-            )
-        except (KeyError, TypeError):
-            self.cl_value = None
+        # Optional charging level tag: uppercase CL, or lowercase cl (#254)
+        self.cl_value: int | None = _read_cl_tag(aln)
 
     @property
     def reference_sequence(self) -> str | None:
@@ -277,6 +293,12 @@ def iter_read_info_batches(
     a few MB, and a run that never asks for the reference sequence
     (``anchor="basecall"``) never pays to rebuild it.
 
+    Also watches the first :data:`~leech.constants.CL_TAG_CHECK_READS` reads
+    for a charging-level tag (``CL``/``cl``) and warns once, at most, if none
+    of them carry one -- see :func:`_read_cl_tag` and issue #254. A BAM
+    missing the tag entirely still prepares cleanly (every chunk gets the
+    ``-1`` "missing" sentinel), so nothing else would ever say so.
+
     Args:
         bam_path: Path to BAM file
         batch_size: Number of reads per batch
@@ -290,14 +312,39 @@ def iter_read_info_batches(
         require_tags = REQUIRED_BAM_TAGS
 
     batch: list[ReadInfo] = []
+    cl_reads_checked = 0
+    cl_tag_found = False
+    cl_warned = False
     for aln in iter_bam_alignments(bam_path, min_mapq=min_mapq, require_tags=require_tags):
         try:
-            batch.append(ReadInfo(aln))
+            read_info = ReadInfo(aln)
         except Exception as e:
             logger.warning(f"Skipping read {aln.query_name}: {e}")
             continue
+
+        if not cl_warned and not cl_tag_found:
+            cl_reads_checked += 1
+            if read_info.cl_value is not None:
+                cl_tag_found = True
+            elif cl_reads_checked >= CL_TAG_CHECK_READS:
+                logger.warning(
+                    f"No 'CL' or 'cl' tag found on the first {cl_reads_checked} reads "
+                    f"of {bam_path}; charging-level (cl_value) will be the -1 "
+                    f"'missing' sentinel for every chunk from this BAM unless a "
+                    f"later read carries the tag."
+                )
+                cl_warned = True
+
+        batch.append(read_info)
         if len(batch) >= batch_size:
             yield batch
             batch = []
     if batch:
         yield batch
+
+    if not cl_warned and not cl_tag_found and cl_reads_checked > 0:
+        logger.warning(
+            f"No 'CL' or 'cl' tag found on any of the {cl_reads_checked} reads read "
+            f"from {bam_path}; charging-level (cl_value) will be the -1 'missing' "
+            f"sentinel for every chunk from this BAM."
+        )

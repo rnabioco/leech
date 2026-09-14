@@ -116,6 +116,8 @@ def handle_prepare(
     Returns:
         Dictionary with extraction statistics
     """
+    import numpy as np
+
     from leech.chunking import ChunkSpool, default_signal_len_for_bases_context
     from leech.configs import ChunkConfig, LabelConfig, MotifConfig, PrepareConfig, SignalConfig
     from leech.constants import DEFAULT_SIGNAL_CONTEXT
@@ -336,6 +338,21 @@ def handle_prepare(
                 f"MAPQ filtering (--min-mapq={min_mapq}). Stats: {stats}"
             )
 
+        # Charging-level (CL) tag coverage: a corpus whose BAM carried
+        # neither `CL` nor `cl` (issue #254) still "prepares" cleanly -- every
+        # chunk gets the -1 "missing" sentinel written by
+        # `chunking.serialization.iter_chunk_columns` -- so this is the one
+        # place left that can say how much of the corpus actually got a
+        # value, in time to notice before a `--cl-regression` run trains on
+        # a headless target.
+        cl_col = spool.cl_values()
+        n_with_cl = int(np.count_nonzero(cl_col >= 0)) if cl_col is not None else 0
+        cl_fraction = n_with_cl / n_chunks
+        logger.info(
+            f"Charging-level (CL/cl) tag: {n_with_cl}/{n_chunks} chunks "
+            f"({cl_fraction:.1%}) carry a value; the rest use the -1 'missing' sentinel."
+        )
+
         resolved_seed = setup_random_seed(seed, output_dir)
 
         if no_split:
@@ -347,6 +364,7 @@ def handle_prepare(
                 "n_train": 0,
                 "n_val": 0,
                 "n_test": 0,
+                "cl_fraction": cl_fraction,
             }
         else:
             written = write_splits(spool, output_dir, train_split, val_split, resolved_seed)
@@ -355,6 +373,7 @@ def handle_prepare(
                 "n_train": len(written.get("train", ())),
                 "n_val": len(written.get("val", ())),
                 "n_test": len(written.get("test", ())),
+                "cl_fraction": cl_fraction,
             }
 
     # Zero chunks fails the run rather than warning and returning (issue
@@ -380,6 +399,16 @@ def handle_prepare(
 def _display_prepare_results(result: dict[str, Any], no_split: bool) -> None:
     """Display results of the prepare command."""
     console.print(f"[green]Extracted {result['n_chunks']} training chunks[/green]")
+
+    cl_fraction = result.get("cl_fraction")
+    if cl_fraction is not None:
+        # 0% is the signature of issue #254: a BAM whose CL tag was renamed
+        # or dropped still "prepares" cleanly, with every chunk's cl_value
+        # silently defaulted to the -1 sentinel.
+        style = "yellow" if cl_fraction == 0 else "cyan"
+        console.print(
+            f"[{style}]Charging-level (CL/cl) tag coverage: {cl_fraction:.1%} of chunks[/{style}]"
+        )
 
     if no_split:
         console.print(

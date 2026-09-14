@@ -1298,6 +1298,132 @@ class TestReadInfoReferenceSequence:
         assert all(info.reference_sequence for info in infos)
 
 
+class _FakeAlignmentWithCl(_FakeAlignment):
+    """``_FakeAlignment`` plus a controllable CL/cl tag.
+
+    ``get_tag("CL")``/``get_tag("cl")`` raise ``KeyError`` (matching real
+    pysam behavior for an absent tag) unless configured otherwise.
+    """
+
+    def __init__(self, *, cl_tag_name=None, cl_value=None, as_array=False, both=False):
+        super().__init__()
+        self._cl_tag_name = cl_tag_name
+        self._cl_value = cl_value
+        self._as_array = as_array
+        self._both = both
+
+    def get_tag(self, tag):
+        if self._both and tag == "CL":
+            return 5
+        if self._both and tag == "cl":
+            return 250
+        if self._cl_tag_name is not None and tag == self._cl_tag_name:
+            return [self._cl_value] if self._as_array else self._cl_value
+        return super().get_tag(tag)
+
+
+class TestReadInfoChargingTag:
+    """Issue #254: accept lowercase ``cl``, not only uppercase ``CL``.
+
+    The aa-tRNA-seq pipeline renamed the classifier's charging-level output
+    tag to lowercase ``cl`` so it would not collide with dorado's
+    modified-base ``MM``/``ML`` tags. Before this fix, ``ReadInfo`` only ever
+    looked for uppercase ``CL``, so every chunk from a reprocessed BAM got
+    ``cl_value = None`` (-> the ``-1`` sentinel), silently killing the
+    gradient on ``--cl-regression`` heads.
+    """
+
+    def test_lowercase_cl_scalar_tag(self):
+        from leech.io.bam_reader import ReadInfo
+
+        aln = _FakeAlignmentWithCl(cl_tag_name="cl", cl_value=73)
+        assert ReadInfo(aln).cl_value == 73
+
+    def test_uppercase_cl_scalar_tag_still_works(self):
+        from leech.io.bam_reader import ReadInfo
+
+        aln = _FakeAlignmentWithCl(cl_tag_name="CL", cl_value=200)
+        assert ReadInfo(aln).cl_value == 200
+
+    def test_lowercase_cl_one_element_b_array(self):
+        from leech.io.bam_reader import ReadInfo
+
+        aln = _FakeAlignmentWithCl(cl_tag_name="cl", cl_value=42, as_array=True)
+        assert ReadInfo(aln).cl_value == 42
+
+    def test_uppercase_one_element_b_array(self):
+        from leech.io.bam_reader import ReadInfo
+
+        aln = _FakeAlignmentWithCl(cl_tag_name="CL", cl_value=17, as_array=True)
+        assert ReadInfo(aln).cl_value == 17
+
+    def test_uppercase_preferred_when_both_present(self):
+        from leech.io.bam_reader import ReadInfo
+
+        assert ReadInfo(_FakeAlignmentWithCl(both=True)).cl_value == 5
+
+    def test_neither_tag_present_yields_none(self):
+        from leech.io.bam_reader import ReadInfo
+
+        assert ReadInfo(_FakeAlignment()).cl_value is None
+
+
+class TestClTagMissingWarning:
+    """Issue #254: warn once per BAM when no read carries CL or cl.
+
+    ``iter_bam_alignments`` is monkeypatched out entirely so these exercise
+    ``iter_read_info_batches``'s own bookkeeping, independent of real BAM
+    I/O (already covered by ``TestReadInfoReferenceSequence``).
+    """
+
+    def test_no_warning_once_a_read_has_a_cl_value(self, monkeypatch, caplog):
+        from leech.io import bam_reader
+
+        alns = [_FakeAlignment() for _ in range(5)]
+        alns[-1] = _FakeAlignmentWithCl(cl_tag_name="cl", cl_value=10)
+        monkeypatch.setattr(bam_reader, "iter_bam_alignments", lambda *a, **k: iter(alns))
+
+        with caplog.at_level("WARNING", logger="leech.io.bam_reader"):
+            batches = list(bam_reader.iter_read_info_batches(Path("unused.bam"), batch_size=10))
+
+        infos = [info for batch in batches for info in batch]
+        assert len(infos) == 5
+        assert infos[-1].cl_value == 10
+        assert not any("cl' tag" in r.message.lower() for r in caplog.records)
+
+    def test_warns_once_when_no_read_has_a_cl_value(self, monkeypatch, caplog):
+        from leech.io import bam_reader
+
+        alns = [_FakeAlignment() for _ in range(5)]
+        monkeypatch.setattr(bam_reader, "iter_bam_alignments", lambda *a, **k: iter(alns))
+
+        with caplog.at_level("WARNING", logger="leech.io.bam_reader"):
+            batches = list(bam_reader.iter_read_info_batches(Path("unused.bam"), batch_size=10))
+
+        infos = [info for batch in batches for info in batch]
+        assert len(infos) == 5
+        assert all(info.cl_value is None for info in infos)
+        cl_warnings = [r for r in caplog.records if "cl' tag" in r.message.lower()]
+        assert len(cl_warnings) == 1
+
+    def test_warning_trips_at_the_threshold_and_does_not_repeat(self, monkeypatch, caplog):
+        """A mid-stream trip must not re-warn on every read after it."""
+        from leech.io import bam_reader
+
+        monkeypatch.setattr(bam_reader, "CL_TAG_CHECK_READS", 3)
+        alns = [_FakeAlignment() for _ in range(10)]
+        monkeypatch.setattr(bam_reader, "iter_bam_alignments", lambda *a, **k: iter(alns))
+
+        with caplog.at_level("WARNING", logger="leech.io.bam_reader"):
+            batches = list(bam_reader.iter_read_info_batches(Path("unused.bam"), batch_size=4))
+
+        infos = [info for batch in batches for info in batch]
+        assert len(infos) == 10
+        cl_warnings = [r for r in caplog.records if "cl' tag" in r.message.lower()]
+        assert len(cl_warnings) == 1
+        assert "first 3 reads" in cl_warnings[0].message
+
+
 class TestHandlePrepareZeroChunks:
     """Issue #265: ``handle_prepare`` must fail the run (non-zero exit) when
     zero chunks were extracted, instead of warning and returning a
@@ -1420,6 +1546,83 @@ class TestSignalContextBasesValidation:
         )
         assert result.exit_code != 0
         assert "mutually exclusive" in str(result.output)
+
+
+class TestHandlePrepareClCoverage:
+    """Issue #254: `data prepare` reports what fraction of chunks got a CL
+    value, so a corpus prepared from a BAM whose tag was renamed or dropped
+    is caught here rather than downstream as a headless ``--cl-regression``
+    head.
+    """
+
+    @staticmethod
+    def _fake_dispatch(chunks):
+        def _fake(**kwargs):
+            kwargs["chunk_sink"](chunks)
+            return [], {"total_reads": len(chunks), "total_chunks": len(chunks)}
+
+        return _fake
+
+    def test_cl_fraction_reported_in_result_and_summary(
+        self, tmp_path, monkeypatch, sample_chunks, caplog
+    ):
+        from leech.commands.prepare import handle_prepare
+
+        assert len(sample_chunks) >= 4, "fixture must produce enough chunks to split"
+        n = len(sample_chunks)
+        half = n // 2
+        chunks = [dict(c) for c in sample_chunks]
+        for i, chunk in enumerate(chunks):
+            chunk["cl_value"] = 100 + i if i < half else None
+
+        monkeypatch.setattr(
+            "leech.preparation.prepare_training_data_parallel", self._fake_dispatch(chunks)
+        )
+
+        with caplog.at_level("INFO", logger="leech.commands.prepare"):
+            result = handle_prepare(
+                pod5=tmp_path / "fake.pod5",
+                bam=tmp_path / "fake.bam",
+                output_dir=tmp_path / "out",
+                motif="CCAGGC",
+                motif_reference="bam",
+                refine_signal_map=False,
+                workers=2,
+                no_split=True,
+            )
+
+        expected_fraction = half / n
+        assert result["cl_fraction"] == pytest.approx(expected_fraction)
+        assert any(
+            "charging-level" in r.message.lower() and f"{half}/{n}" in r.message
+            for r in caplog.records
+        )
+
+    def test_cl_fraction_is_zero_when_no_chunk_has_a_value(
+        self, tmp_path, monkeypatch, sample_chunks
+    ):
+        from leech.commands.prepare import handle_prepare
+
+        chunks = [dict(c) for c in sample_chunks]
+        for chunk in chunks:
+            chunk.pop("cl_value", None)
+
+        monkeypatch.setattr(
+            "leech.preparation.prepare_training_data_parallel", self._fake_dispatch(chunks)
+        )
+
+        result = handle_prepare(
+            pod5=tmp_path / "fake.pod5",
+            bam=tmp_path / "fake.bam",
+            output_dir=tmp_path / "out",
+            motif="CCAGGC",
+            motif_reference="bam",
+            refine_signal_map=False,
+            workers=2,
+            no_split=True,
+        )
+
+        assert result["cl_fraction"] == 0.0
 
 
 if __name__ == "__main__":
