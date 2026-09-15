@@ -2,6 +2,7 @@
 
 import csv
 import inspect
+import json
 
 import numpy as np
 import pytest
@@ -461,3 +462,113 @@ class TestParametricSelectionMetric:
         assert rows[0]["selection_metric"] == "tpr_at_fpr:0.5"
         assert float(rows[0]["best_val_selection"]) == pytest.approx(0.7)
         assert int(rows[0]["best_epoch"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# best_params.json must feed straight back into `leech model train
+# --model-config` (#324) -- it is the documented optimize -> train pipeline,
+# and "selection_metric" is pure grid-search provenance with no model
+# constructor to land in.
+# ---------------------------------------------------------------------------
+
+
+class TestBestParamsJsonRoundTrip:
+    def test_best_params_json_records_selection_metric(self, grid_corpus, tmp_path, monkeypatch):
+        """best_params.json must still carry selection_metric for provenance.
+
+        This is the write side of #324: `run_grid_search` writes
+        left_context/right_context/dwell_offset/selection_metric to
+        best_params.json once any grid point succeeds. Fixing #324 must not
+        regress this -- the metric stays recorded, it's only stripped later,
+        on the *read* side (`leech.commands.train._explicit_keys`).
+        """
+        train, val = grid_corpus
+
+        monkeypatch.setattr(leech.gridsearch, "train_model", lambda **kwargs: _fake_history())
+        run_grid_search(_config(train, val, tmp_path / "grid"))
+
+        best_params_path = tmp_path / "grid" / "best_params.json"
+        assert best_params_path.exists()
+        with open(best_params_path) as f:
+            best_params = json.load(f)
+
+        assert best_params["selection_metric"] == "val_auc"
+        assert "left_context" in best_params
+        assert "right_context" in best_params
+        assert "dwell_offset" in best_params
+
+    def test_best_params_json_does_not_crash_train(self, temp_chunks_file, tmp_path):
+        """Feeding best_params.json straight to `--model-config` must not
+        raise TypeError from get_model()/resolve_params (#324).
+
+        Before the fix, `selection_metric` fell through
+        `leech.commands.train.handle_train`'s `extra_kwargs` (nothing pops
+        it, unlike `left_context`/`right_context`/`dwell_offset`) and into
+        `get_model(**extra_kwargs)`, which raised
+        ``TypeError: model got unexpected keyword argument(s): selection_metric``
+        -- the exact crash the documented `optimize` -> `train
+        --model-config best_params.json` workflow hits. This is a
+        best_params.json-shaped model-config, mirroring
+        test_label_map_survives_model_config's pattern (a small,
+        hand-curated JSON, not a real grid-search run) for speed; the write
+        side is covered by test_best_params_json_records_selection_metric
+        above.
+        """
+        from leech.commands.train import handle_train
+
+        output_dir = tmp_path / "model_config_from_optimize"
+        best_params = tmp_path / "best_params.json"
+        best_params.write_text(
+            json.dumps(
+                {
+                    "left_context": 200,
+                    "right_context": 200,
+                    "dwell_offset": 0,
+                    "selection_metric": "val_auc",
+                }
+            )
+        )
+
+        # No TypeError from get_model(...) is the regression check.
+        handle_train(
+            train_data=temp_chunks_file,
+            val_data=None,
+            model_name="ConvLSTMDwell",
+            model_config=best_params,
+            output_dir=output_dir,
+            epochs=1,
+            batch_size=2,
+            learning_rate=0.001,
+            device="cpu",
+            seed=42,
+            early_stopping=0,
+            use_class_weights=True,
+            pos_weight=None,
+            resume=None,
+            weight_decay=0.0,
+            max_grad_norm=0.0,
+            scheduler="none",
+            scheduler_patience=5,
+            scheduler_factor=0.5,
+            warmup_epochs=0,
+            loss_type="bce",
+            focal_gamma=2.0,
+            label_smoothing=0.0,
+            mixed_precision=False,
+            augment_jitter=0.0,
+            augment_scale_min=1.0,
+            augment_scale_max=1.0,
+            augment_time_mask_bases=0,
+            augment_time_mask_count=1,
+            augment_shift_max_bases=0.0,
+            augment_feature_noise_scale=0.0,
+            num_workers=0,
+            motif="CCAGGC",
+        )
+
+        assert (output_dir / "config.json").exists()
+        with open(output_dir / "config.json") as f:
+            config = json.load(f)
+        # selection_metric is stripped before get_model(), not persisted as
+        # a training/model config field.
+        assert "selection_metric" not in config
