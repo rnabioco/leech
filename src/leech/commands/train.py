@@ -222,6 +222,11 @@ def handle_train(
         "signal_mode",
         "dwell_template_table",
         "checkpoint_metric",
+        # gridsearch's best_params.json (leech model optimize) records this
+        # for provenance -- it's pure selection bookkeeping, not a model
+        # constructor arg, so it must be stripped the same way
+        # checkpoint_metric is (#324).
+        "selection_metric",
         "standardize_features",
         "signal_kmer_context",
         "left_context",
