@@ -57,7 +57,10 @@ from leech.losses import (
     AdversarialHead,
     FocalBCEWithLogitsLoss,
     NoiseCorrectedBCEWithLogitsLoss,
+    NoiseCorrectedCrossEntropyLoss,
     RegressionHead,
+    build_class_noise_rates,
+    resolve_noise_sink_index,
 )
 from leech.metrics import (
     PARAMETRIC_SELECTION_METRICS,
@@ -487,6 +490,8 @@ class Trainer:
         checkpoint_metric: str = "auto",
         dist: DistContext | None = None,
         cfg: TrainConfig | None = None,
+        noise_class_rates: torch.Tensor | None = None,
+        noise_sink_index: int | None = None,
     ):
         # The recipe as one object (#270). Every caller above still passes
         # loose kwargs (43 test call sites plus train_model's own kwarg path)
@@ -561,6 +566,17 @@ class Trainer:
         # below already keys off, and cfg.num_out always has a concrete int
         # (defaulted to 1), so unpacking it would turn "not yet known" into
         # "1" for every caller that passes num_out=None.
+        #
+        # noise_class_rates/noise_sink_index are ALSO not resolved from
+        # cfg.label_noise_rates/cfg.noise_sink_class here, for the same
+        # reason num_out isn't: resolving a class name against label_map
+        # needs the corpus's label_map, which (like num_out) may only be
+        # known to the caller (train_model loads it from a label_map.json
+        # sidecar, possibly after auto-detecting num_out itself) and not yet
+        # written back into cfg by the time Trainer is constructed. The
+        # caller resolves both and passes them in already-built, the same
+        # way pos_weight arrives as a Tensor rather than a class-frequency
+        # dict for Trainer to compute itself.
         #
         # self.cfg is currently write-only: nothing in this class reads it
         # back, and it does not enter a checkpoint payload. It is also not
@@ -689,22 +705,28 @@ class Trainer:
         self._num_out = num_out if num_out is not None else 1
         self.label_smoothing = label_smoothing
         pw = pos_weight.to(device) if pos_weight is not None else None
+
+        def _resolve_ce_weight(pw: torch.Tensor | None) -> torch.Tensor | None:
+            """``pos_weight`` -> a CrossEntropyLoss-style per-class weight.
+
+            Binary (num_out<=2): a single positive-class weight becomes the
+            2-entry [1.0, pw] CE convention. Multiclass (num_out>2): pw is
+            already the per-class weight tensor. Shared by the
+            'cross_entropy' and multiclass 'noise_corrected_bce' branches so
+            the two stay identical rather than drifting.
+            """
+            if pw is None:
+                return None
+            if self._num_out <= 2:
+                return torch.tensor([1.0, pw.item()], dtype=torch.float32).to(device)
+            return pw.to(device)
+
         if loss_type == "cross_entropy":
             # CrossEntropyLoss expects (B, num_classes) logits and (B,) integer labels
-            if pw is not None and self._num_out <= 2:
-                # Convert pos_weight to per-class weights for CE (binary case)
-                ce_weights = torch.tensor([1.0, pw.item()], dtype=torch.float32).to(device)
-                self.criterion = nn.CrossEntropyLoss(
-                    weight=ce_weights, label_smoothing=label_smoothing
-                )
-            elif pw is not None and self._num_out > 2:
-                # Multiclass: pw is already a per-class weight tensor
-                self.criterion = nn.CrossEntropyLoss(
-                    weight=pw.to(device), label_smoothing=label_smoothing
-                )
+            ce_weight = _resolve_ce_weight(pw)
+            self.criterion = nn.CrossEntropyLoss(weight=ce_weight, label_smoothing=label_smoothing)
+            if ce_weight is not None and self._num_out > 2:
                 logger.info(f"Using class weights for {self._num_out}-class CE")
-            else:
-                self.criterion = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
             logger.info(f"Using CrossEntropyLoss ({self._num_out}-class)")
         elif loss_type == "focal":
             self.criterion = FocalBCEWithLogitsLoss(
@@ -718,6 +740,33 @@ class Trainer:
                 )
             else:
                 logger.info(f"Using focal loss (gamma={focal_gamma}{neg_gamma_note})")
+        elif loss_type == "noise_corrected_bce" and self._num_out > 1:
+            # Multiclass forward correction (issue #321): a fixed, per-class
+            # rate vector baked in at construction, resolved by the caller
+            # (see the comment above self.cfg) -- not the per-sample
+            # 'noise_rate' batch field the binary branch below reads, which
+            # this loss has no use for (NoiseCorrectedCrossEntropyLoss's own
+            # docstring explains why a per-class vector is required instead).
+            if label_smoothing > 0:
+                raise ValueError(
+                    "label_smoothing is not supported with loss_type='noise_corrected_bce' "
+                    "at num_out>1; pass --label-smoothing 0 (the default) or use "
+                    "--loss cross_entropy instead."
+                )
+            if noise_sink_index is None:
+                raise ValueError(
+                    "loss_type='noise_corrected_bce' with num_out>1 requires a resolved "
+                    "sink class -- pass --noise-sink-class on the CLI."
+                )
+            self.criterion = NoiseCorrectedCrossEntropyLoss(
+                sink_index=noise_sink_index,
+                class_rates=noise_class_rates.to(device) if noise_class_rates is not None else None,
+                weight=_resolve_ce_weight(pw),
+            )
+            logger.info(
+                f"Using noise-corrected cross-entropy ({self._num_out}-class, forward "
+                f"correction); sink_index={noise_sink_index}"
+            )
         elif loss_type == "noise_corrected_bce":
             self.criterion = NoiseCorrectedBCEWithLogitsLoss(pos_weight=pw)
             logger.info(
@@ -731,12 +780,14 @@ class Trainer:
                 self.criterion = nn.BCEWithLogitsLoss()
                 logger.info("Training without class weighting")
         # Weighted CE normalizes by the summed weight of the samples it sees,
-        # not by their count, so it is the one loss here that does not
-        # decompose over shards. See _weighted_ce_global.
+        # not by their count, so it is the one loss family here that does not
+        # decompose over shards. See _weighted_ce_global. NoiseCorrectedCrossEntropyLoss
+        # shares this exactly: its forward ends in F.nll_loss(..., weight=...),
+        # the same weighted-mean reduction as nn.CrossEntropyLoss(weight=...).
         self._ce_needs_global_norm = (
             self.dist.enabled
-            and loss_type == "cross_entropy"
-            and getattr(self.criterion, "weight", None) is not None
+            and isinstance(self.criterion, (nn.CrossEntropyLoss, NoiseCorrectedCrossEntropyLoss))
+            and self.criterion.weight is not None
         )
         if label_smoothing > 0 and loss_type != "cross_entropy":
             logger.info(f"Label smoothing={label_smoothing} (applied to binary targets)")
@@ -1116,8 +1167,13 @@ class Trainer:
 
         # Forward pass (wrapper handles moving tensors and calling model correctly)
         logits = self.model_wrapper.forward_batch(batch, self.device)
-        if self.loss_type == "cross_entropy":
-            # CrossEntropyLoss wants (B,) integer class labels
+        is_multiclass_noise_corrected = (
+            self.loss_type == "noise_corrected_bce" and self._num_out > 1
+        )
+        if self.loss_type == "cross_entropy" or is_multiclass_noise_corrected:
+            # Both want (B,) integer class labels; the multiclass correction
+            # bakes its per-class rates in at construction (self.criterion),
+            # so unlike the binary branch below it reads nothing from batch.
             ce_targets = labels.squeeze(-1).long()
             if self._ce_needs_global_norm:
                 main_loss = self._weighted_ce_global(logits, ce_targets)
@@ -1159,7 +1215,8 @@ class Trainer:
         return noise_rate.to(self.device, non_blocking=True)
 
     def _weighted_ce_global(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-        """Weighted cross-entropy normalized by the GLOBAL summed weight.
+        """Weighted cross-entropy (or its noise-corrected multiclass sibling)
+        normalized by the GLOBAL summed weight.
 
         Every other loss in this trainer reduces by element count, which equal
         shards make exact: DDP's gradient average over N shards of n/N samples
@@ -1169,7 +1226,14 @@ class Trainer:
         one only when the shards happen to draw the same classes. On a fixture
         whose shards differ that is an 8% error in the loss, and nothing
         raises: the run converges to a slightly different recipe than the same
-        command line asked for at ``--gpus 1``.
+        command line asked for at ``--gpus 1``. ``NoiseCorrectedCrossEntropyLoss``
+        shares this exactly (its own ``forward`` ends in the same
+        ``F.nll_loss(..., weight=...)`` reduction), which is why this method
+        takes the log-probabilities from ``self.criterion.log_probs`` when
+        available rather than assuming plain ``nn.CrossEntropyLoss`` --
+        label_smoothing is the one thing that diverges between the two, and
+        the noise-corrected branch refuses a nonzero one at construction, so
+        reusing plain ``F.nll_loss`` here (no smoothing term) is exact for it.
 
         Each rank instead forms ``world_size * (its weighted sum) / (the global
         weighted sum)``, whose average over ranks telescopes back to exactly
@@ -1178,13 +1242,19 @@ class Trainer:
         on this path.
         """
         weight = self.criterion.weight
-        numerator = nn.functional.cross_entropy(
-            logits,
-            targets,
-            weight=weight,
-            label_smoothing=self.label_smoothing,
-            reduction="sum",
-        )
+        log_probs_fn = getattr(self.criterion, "log_probs", None)
+        if log_probs_fn is not None:
+            numerator = nn.functional.nll_loss(
+                log_probs_fn(logits), targets, weight=weight, reduction="sum"
+            )
+        else:
+            numerator = nn.functional.cross_entropy(
+                logits,
+                targets,
+                weight=weight,
+                label_smoothing=self.label_smoothing,
+                reduction="sum",
+            )
         denominator = all_reduce_tensor_sum(weight.detach()[targets].sum(), self.dist)
         return self.dist.world_size * numerator / denominator
 
@@ -1259,7 +1329,9 @@ class Trainer:
                         tally.add("cl_loss", cl_loss, num_splits)
 
                     labels_flat = labels.detach().flatten()
-                    if self.loss_type == "cross_entropy":
+                    if self.loss_type == "cross_entropy" or (
+                        self.loss_type == "noise_corrected_bce" and self._num_out > 1
+                    ):
                         # argmax(logits) is exactly the softmax > 0.5 threshold
                         # (softmax is monotonic per-row in the logits), for
                         # both binary and multi-class CE -- so this reads the
@@ -1374,8 +1446,12 @@ class Trainer:
                 # Move labels to device
                 labels = batch["label"].to(self.device, non_blocking=True)
 
-                # Adapt labels for CrossEntropyLoss
-                if self.loss_type == "cross_entropy":
+                # Adapt labels for CrossEntropyLoss (and its multiclass
+                # noise-corrected sibling, which takes the same integer
+                # targets and reads nothing from the batch itself).
+                if self.loss_type == "cross_entropy" or (
+                    self.loss_type == "noise_corrected_bce" and self._num_out > 1
+                ):
                     ce_labels = labels.squeeze(-1).long()
                 else:
                     ce_labels = None
@@ -1436,11 +1512,16 @@ class Trainer:
                 tally.add("loss", loss)
                 tally.add("loss_sum", loss * labels.shape[0])
                 val_seen += int(labels.shape[0])
-                if self.loss_type == "cross_entropy" and self._num_out > 2:
+                # A softmax head either way -- plain cross_entropy or its
+                # multiclass noise-corrected sibling (ce_labels is not None
+                # is exactly that pair, see above) -- reads probabilities the
+                # same way; only the sigmoid (num_out=1) losses differ.
+                uses_softmax_head = ce_labels is not None
+                if uses_softmax_head and self._num_out > 2:
                     probs_mc = torch.softmax(logits, dim=-1).cpu().numpy()
                     all_probs_mc.append(probs_mc)
                     all_preds.append(probs_mc.argmax(axis=-1).ravel())
-                elif self.loss_type == "cross_entropy":
+                elif uses_softmax_head:
                     all_preds.append(torch.softmax(logits, dim=-1)[:, 1].cpu().numpy().ravel())
                 else:
                     all_preds.append(torch.sigmoid(logits).cpu().numpy().ravel())
@@ -1976,6 +2057,7 @@ def train_model(
     adversarial_anneal_epochs: int = 0,
     confound: str | None = None,
     label_noise_rates: dict[str, float] | None = None,
+    noise_sink_class: str | None = None,
     cl_regression: bool = False,
     cl_lambda: float = 1.0,
     signal_mode: str = "both",
@@ -2103,6 +2185,7 @@ def train_model(
             label_map=label_map,
             confound=confound,
             label_noise_rates=label_noise_rates,
+            noise_sink_class=noise_sink_class,
             optim=OptimConfig(
                 learning_rate=learning_rate,
                 weight_decay=weight_decay,
@@ -2163,6 +2246,7 @@ def train_model(
     label_map = cfg.label_map
     confound = cfg.confound
     label_noise_rates = cfg.label_noise_rates
+    noise_sink_class = cfg.noise_sink_class
     learning_rate = cfg.optim.learning_rate
     weight_decay = cfg.optim.weight_decay
     max_grad_norm = cfg.optim.max_grad_norm
@@ -2727,10 +2811,39 @@ def train_model(
         except Exception as e:
             logger.warning(f"torch.compile failed, falling back to eager mode: {e}")
 
-    # Auto-detect cross-entropy models (num_out > 1)
-    if num_out > 1 and loss_type != "cross_entropy":
+    # Auto-detect cross-entropy models (num_out > 1). noise_corrected_bce is
+    # its own multiclass-capable family (issue #321, dispatched on num_out
+    # inside Trainer) and must not be clobbered here -- doing so silently
+    # discarded an explicit `--loss noise_corrected_bce --num-out N` request.
+    if num_out > 1 and loss_type not in ("cross_entropy", "noise_corrected_bce"):
         loss_type = "cross_entropy"
         logger.info(f"Model {model_name} has num_out={num_out}, switching to cross_entropy loss")
+
+    # Resolve the multiclass noise-corrected sink/rates now that num_out and
+    # loss_type are both final (issue #321). label_map may still be None here
+    # even at num_out > 1: the sidecar load above only runs when num_out was
+    # auto-detected from the data, not when the caller passed --num-out
+    # explicitly, so this repeats that lookup rather than trusting it ran.
+    noise_class_rates = None
+    noise_sink_index = None
+    if loss_type == "noise_corrected_bce" and num_out > 1:
+        if label_map is None and train_data_path is not None:
+            _sink_lm_path = train_data_path.parent / "label_map.json"
+            if not _sink_lm_path.exists():
+                _sink_lm_path = train_data_path.parent.parent / "label_map.json"
+            if _sink_lm_path.exists():
+                with open(_sink_lm_path) as f:
+                    label_map = json.load(f)
+                logger.info(f"Loaded label_map from {_sink_lm_path}: {label_map}")
+        if noise_sink_class is None:
+            raise ValueError(
+                "--loss noise_corrected_bce with num_out>1 requires --noise-sink-class "
+                "to name the class the noise mass flows to."
+            )
+        noise_sink_index = resolve_noise_sink_index(noise_sink_class, label_map, num_out)
+        noise_class_rates = build_class_noise_rates(
+            label_noise_rates, label_map, noise_sink_index, num_out
+        )
 
     # Introspect feature_start/feature_end from the training corpus.
     #
@@ -2848,6 +2961,12 @@ def train_model(
         # Recorded verbatim (not resolved against the corpus) -- predict never
         # reads this back; it is provenance for what the training run applied.
         "label_noise_rates": label_noise_rates,
+        # noise_sink_class as given on the CLI, plus the index it resolved to
+        # (None unless loss_type="noise_corrected_bce" at num_out>1) -- so a
+        # checkpoint is auditable after the fact without re-resolving it
+        # against a label_map that may since have changed (issue #321).
+        "noise_sink_class": noise_sink_class,
+        "noise_sink_index": noise_sink_index,
         "cl_regression": cl_regression,
         "cl_lambda": cl_lambda,
         "signal_mode": signal_mode,
@@ -2910,7 +3029,9 @@ def train_model(
     # Create trainer. cfg carries the recipe (learning_rate, scheduler,
     # augmentation, aux-head lambdas, ...); the rest are runtime objects cfg
     # doesn't describe, plus num_out, which may have been auto-detected from
-    # the data above and so can differ from cfg.num_out.
+    # the data above and so can differ from cfg.num_out -- noise_class_rates/
+    # noise_sink_index bypass cfg for the same reason (see the comment in
+    # Trainer.__init__).
     trainer = Trainer(
         model=model,
         model_type=model_name,
@@ -2924,6 +3045,8 @@ def train_model(
         adversarial_num_classes=adversarial_num_classes,
         dist=dist_ctx,
         cfg=cfg,
+        noise_class_rates=noise_class_rates,
+        noise_sink_index=noise_sink_index,
     )
 
     # Train

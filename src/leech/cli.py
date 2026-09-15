@@ -846,10 +846,24 @@ def merge(
     type=str,
     default=None,
     help=(
-        "Per-source_group label-flip probability for --loss noise_corrected_bce, "
-        "as 'group=rate[,group=rate,...]' (e.g. 'gold=0.09,enzymatic=0.17'). Rates "
-        "are measured upstream, not estimated by leech; unmapped source_group "
-        "values get rate 0 (no correction)."
+        "Label-flip probability for --loss noise_corrected_bce, as "
+        "'group=rate[,group=rate,...]' (e.g. 'gold=0.09,enzymatic=0.17'). At "
+        "--num-out 1, keys are per-source_group. At --num-out > 1, keys are "
+        "class labels (resolved via label_map, or a raw class index) naming "
+        "each class's own noise-flip rate into --noise-sink-class. Rates are "
+        "measured upstream, not estimated by leech; unmapped values get rate 0 "
+        "(no correction)."
+    ),
+)
+@click.option(
+    "--noise-sink-class",
+    type=str,
+    default=None,
+    help=(
+        "Class label (resolved via label_map) or raw index that "
+        "--loss noise_corrected_bce treats as the sink every other class's "
+        "label noise flows to (issue #321). Required by that loss at "
+        "--num-out > 1; unused for binary (--num-out 1)."
     ),
 )
 @click.option(
@@ -953,6 +967,7 @@ def train(
     confound,
     confound_config,
     label_noise_rate,
+    noise_sink_class,
     cl_regression,
     cl_lambda,
     signal_mode,
@@ -1032,6 +1047,7 @@ def train(
         adversarial_anneal_epochs=adversarial_anneal_epochs,
         confound=confound,
         label_noise_rates=label_noise_rates,
+        noise_sink_class=noise_sink_class,
         cl_regression=cl_regression,
         cl_lambda=cl_lambda,
         signal_mode=signal_mode,
@@ -1529,10 +1545,24 @@ def fetch(name, model_version, tag, output_dir, repo):
     type=str,
     default=None,
     help=(
-        "Per-source_group label-flip probability for --loss noise_corrected_bce, "
-        "as 'group=rate[,group=rate,...]' (e.g. 'gold=0.09,enzymatic=0.17'). Rates "
-        "are measured upstream, not estimated by leech; unmapped source_group "
-        "values get rate 0 (no correction)."
+        "Label-flip probability for --loss noise_corrected_bce, as "
+        "'group=rate[,group=rate,...]' (e.g. 'gold=0.09,enzymatic=0.17'). At "
+        "--num-out 1, keys are per-source_group. At --num-out > 1, keys are "
+        "class labels (resolved via label_map, or a raw class index) naming "
+        "each class's own noise-flip rate into --noise-sink-class. Rates are "
+        "measured upstream, not estimated by leech; unmapped values get rate 0 "
+        "(no correction)."
+    ),
+)
+@click.option(
+    "--noise-sink-class",
+    type=str,
+    default=None,
+    help=(
+        "Class label (resolved via label_map) or raw index that "
+        "--loss noise_corrected_bce treats as the sink every other class's "
+        "label noise flows to (issue #321). Required by that loss at "
+        "--num-out > 1; unused for binary (--num-out 1)."
     ),
 )
 @click.option(
@@ -1611,6 +1641,7 @@ def optimize(
     confound,
     confound_config,
     label_noise_rate,
+    noise_sink_class,
     cl_regression,
     cl_lambda,
     signal_mode,
@@ -1673,6 +1704,7 @@ def optimize(
         adversarial_anneal_epochs=adversarial_anneal_epochs,
         confound=confound,
         label_noise_rates=label_noise_rates,
+        noise_sink_class=noise_sink_class,
         cl_regression=cl_regression,
         cl_lambda=cl_lambda,
         signal_mode=signal_mode,

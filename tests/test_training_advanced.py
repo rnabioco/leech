@@ -13,11 +13,15 @@ import torch
 from torch.utils.data import DataLoader
 
 import leech.training
+from leech.chunking import save_chunks
 from leech.dataset import LeechDataset, collate_fn
 from leech.losses import (
     FocalBCEWithLogitsLoss,
     NoiseCorrectedBCEWithLogitsLoss,
+    NoiseCorrectedCrossEntropyLoss,
+    build_class_noise_rates,
     parse_label_noise_rate,
+    resolve_noise_sink_index,
 )
 from leech.models import get_model
 from leech.training import Trainer, train_model
@@ -319,6 +323,431 @@ class TestNoiseCorrectedBCETrainer:
         # noise_rate plumbing could be silently inert.
         plain = torch.nn.BCEWithLogitsLoss()(logits, labels)
         assert not torch.allclose(main_loss, plain)
+
+
+class TestNoiseSinkResolution:
+    """Test resolve_noise_sink_index / build_class_noise_rates (issue #321)."""
+
+    LABEL_MAP = {"Gln": 0, "Thr": 1, "uncharged": 2}
+
+    def test_resolves_by_name(self):
+        assert resolve_noise_sink_index("uncharged", self.LABEL_MAP, 3) == 2
+
+    def test_resolves_by_raw_index(self):
+        assert resolve_noise_sink_index("2", None, 3) == 2
+        assert resolve_noise_sink_index("2", self.LABEL_MAP, 3) == 2
+
+    def test_unknown_name_without_label_map_raises(self):
+        with pytest.raises(ValueError, match="no label_map"):
+            resolve_noise_sink_index("uncharged", None, 3)
+
+    def test_unknown_name_not_in_label_map_raises(self):
+        with pytest.raises(ValueError, match="not found in label_map"):
+            resolve_noise_sink_index("nonexistent", self.LABEL_MAP, 3)
+
+    def test_out_of_range_index_raises(self):
+        with pytest.raises(ValueError, match="out of range"):
+            resolve_noise_sink_index("5", self.LABEL_MAP, 3)
+
+    def test_build_class_noise_rates_none_when_empty(self):
+        assert build_class_noise_rates(None, self.LABEL_MAP, 2, 3) is None
+        assert build_class_noise_rates({}, self.LABEL_MAP, 2, 3) is None
+
+    def test_build_class_noise_rates_resolves_by_name(self):
+        rates = build_class_noise_rates({"Gln": 0.1, "Thr": 0.3}, self.LABEL_MAP, 2, 3)
+        assert torch.equal(rates, torch.tensor([0.1, 0.3, 0.0]))
+
+    def test_build_class_noise_rates_resolves_by_index(self):
+        rates = build_class_noise_rates({"0": 0.1, "1": 0.3}, self.LABEL_MAP, 2, 3)
+        assert torch.equal(rates, torch.tensor([0.1, 0.3, 0.0]))
+
+    def test_sink_own_rate_always_forced_to_zero(self):
+        """Even if the caller's ``--label-noise-rate`` names the sink class,
+        its own rate is ignored -- T[sink, sink] = 1 by construction."""
+        rates = build_class_noise_rates({"Gln": 0.1, "uncharged": 0.9}, self.LABEL_MAP, 2, 3)
+        assert rates[2].item() == 0.0
+
+    def test_unmapped_group_dropped_not_raised(self):
+        """Same lenient contract as the binary loss's per-sample lookup:
+        an unresolvable key is ignored (rate 0), not fatal."""
+        rates = build_class_noise_rates({"Gln": 0.1, "Nonexistent": 0.5}, self.LABEL_MAP, 2, 3)
+        assert torch.equal(rates, torch.tensor([0.1, 0.0, 0.0]))
+
+
+class TestNoiseCorrectedCrossEntropyLoss:
+    """Test NoiseCorrectedCrossEntropyLoss, the multiclass generalization of
+    NoiseCorrectedBCEWithLogitsLoss (issue #321)."""
+
+    def test_no_rates_matches_plain_ce_bit_for_bit(self):
+        torch.manual_seed(0)
+        logits = torch.randn(8, 4)
+        targets = torch.randint(0, 4, (8,))
+
+        corrected = NoiseCorrectedCrossEntropyLoss(sink_index=3)(logits, targets)
+        plain = torch.nn.functional.cross_entropy(logits, targets)
+        assert torch.equal(corrected, plain)
+
+    def test_all_zero_rates_matches_plain_ce_bit_for_bit(self):
+        """An explicit all-zero rate vector also takes the fast path (checked
+        once at construction, not per forward call -- see the class
+        docstring)."""
+        torch.manual_seed(1)
+        logits = torch.randn(8, 4)
+        targets = torch.randint(0, 4, (8,))
+        zero_rates = torch.zeros(4)
+
+        corrected = NoiseCorrectedCrossEntropyLoss(sink_index=3, class_rates=zero_rates)(
+            logits, targets
+        )
+        plain = torch.nn.functional.cross_entropy(logits, targets)
+        assert torch.equal(corrected, plain)
+
+    def test_sink_own_rate_ignored(self):
+        """A nonzero rate at the sink's own index must not change anything --
+        build_class_noise_rates forces it to 0 before it ever reaches here,
+        but the loss itself must also not rely on that (T[sink,sink]=1 is
+        asserted by construction: log_pi is 0 wherever rate<=0, and the
+        forward pass never reads class_rates[sink] for anything but the
+        (masked-out) leak term)."""
+        torch.manual_seed(2)
+        logits = torch.randn(8, 4)
+        targets = torch.randint(0, 4, (8,))
+        rates_clean_sink = torch.tensor([0.2, 0.3, 0.1, 0.0])
+
+        loss = NoiseCorrectedCrossEntropyLoss(sink_index=3, class_rates=rates_clean_sink)(
+            logits, targets
+        )
+        assert torch.isfinite(loss)
+
+    def test_nonzero_rates_diverge_from_plain_ce(self):
+        torch.manual_seed(3)
+        logits = torch.randn(16, 4)
+        targets = torch.randint(0, 4, (16,))
+        rates = torch.tensor([0.2, 0.3, 0.1, 0.0])
+
+        corrected = NoiseCorrectedCrossEntropyLoss(sink_index=3, class_rates=rates)(logits, targets)
+        plain = torch.nn.functional.cross_entropy(logits, targets)
+        assert not torch.allclose(corrected, plain)
+        assert corrected.item() >= 0
+        assert torch.isfinite(corrected)
+
+    def test_gradient_is_finite(self):
+        torch.manual_seed(4)
+        logits = torch.randn(16, 4, requires_grad=True)
+        targets = torch.randint(0, 4, (16,))
+        rates = torch.tensor([0.2, 0.3, 0.1, 0.0])
+
+        loss = NoiseCorrectedCrossEntropyLoss(sink_index=3, class_rates=rates)(logits, targets)
+        loss.backward()
+        assert torch.isfinite(logits.grad).all()
+
+    def test_non_sink_gradient_matches_plain_ce(self):
+        """The single-sink structure has no cross-leakage between non-sink
+        classes: every non-sink observed column has exactly one nonzero T
+        entry (its own diagonal), so log(pi_y) is a per-class *constant*
+        that drops out of the gradient. All of the correction's effect is on
+        samples observed as the sink -- see the class docstring."""
+        torch.manual_seed(5)
+        logits = torch.randn(16, 4, requires_grad=True)
+        targets = torch.randint(0, 3, (16,))  # never the sink (index 3)
+        rates = torch.tensor([0.2, 0.3, 0.1, 0.0])
+
+        logits_a = logits.detach().clone().requires_grad_()
+        logits_b = logits.detach().clone().requires_grad_()
+        NoiseCorrectedCrossEntropyLoss(sink_index=3, class_rates=rates)(
+            logits_a, targets
+        ).backward()
+        torch.nn.functional.cross_entropy(logits_b, targets).backward()
+        assert torch.allclose(logits_a.grad, logits_b.grad, atol=1e-6)
+
+    def test_weighted_reduces_like_cross_entropy_loss(self):
+        """weight= must reduce the same way nn.CrossEntropyLoss(weight=...)
+        does (normalized by the weighted sum, not element count) -- this is
+        the property Trainer._weighted_ce_global relies on to stay correct
+        under DDP for this loss too."""
+        torch.manual_seed(6)
+        logits = torch.randn(10, 3)
+        targets = torch.randint(0, 3, (10,))
+        weight = torch.tensor([1.0, 2.0, 0.5])
+        rates = torch.tensor([0.3, 0.0, 0.0])
+
+        corrected = NoiseCorrectedCrossEntropyLoss(sink_index=1, class_rates=rates, weight=weight)(
+            logits, targets
+        )
+        log_q = NoiseCorrectedCrossEntropyLoss(
+            sink_index=1, class_rates=rates, weight=weight
+        ).log_probs(logits)
+        expected = torch.nn.functional.nll_loss(log_q, targets, weight=weight)
+        assert torch.allclose(corrected, expected)
+
+    def test_synthetic_class_conditional_noise_recovers_better_than_plain_ce(self):
+        """A multiclass softmax classifier fit on labels where a known
+        fraction of each non-sink class's examples were relabeled to a sink
+        class, given the true (measured) per-class rates, must recover
+        better held-out accuracy against the TRUE (clean) labels than plain
+        cross-entropy trained on the same noisy labels -- the concrete claim
+        behind the multiclass generalization of --loss noise_corrected_bce
+        (issue #321)."""
+        torch.manual_seed(0)
+        n = 6000
+        n_classes = 3
+        sink = 2
+        means = torch.tensor([[2.0, 0.0], [-2.0, 0.0], [0.0, -2.0]])
+        true_y = torch.randint(0, n_classes, (n,))
+        x = means[true_y] + 0.7 * torch.randn(n, 2)
+
+        rho = torch.tensor([0.4, 0.6, 0.0])
+        flip = torch.bernoulli(rho[true_y]).bool()
+        obs_y = torch.where(flip, torch.full_like(true_y, sink), true_y)
+
+        def fit(*, corrected: bool) -> tuple[torch.Tensor, torch.Tensor]:
+            w = torch.zeros(2, n_classes, requires_grad=True)
+            b = torch.zeros(n_classes, requires_grad=True)
+            opt = torch.optim.Adam([w, b], lr=0.05)
+            loss_fn = NoiseCorrectedCrossEntropyLoss(
+                sink_index=sink, class_rates=rho if corrected else None
+            )
+            for _ in range(400):
+                opt.zero_grad()
+                loss = loss_fn(x @ w + b, obs_y)
+                loss.backward()
+                opt.step()
+            return w.detach(), b.detach()
+
+        w_c, b_c = fit(corrected=True)
+        w_p, b_p = fit(corrected=False)
+
+        x_test = means.repeat_interleave(2000, dim=0) + 0.7 * torch.randn(6000, 2)
+        y_test = torch.arange(n_classes).repeat_interleave(2000)
+
+        def acc(w: torch.Tensor, b: torch.Tensor) -> float:
+            preds = (x_test @ w + b).argmax(-1)
+            return (preds == y_test).float().mean().item()
+
+        assert acc(w_c, b_c) > acc(w_p, b_p)
+        # Not just marginally better -- plain CE is badly attenuated toward
+        # the sink class here (rho up to 0.6), so the gap should be large.
+        assert acc(w_c, b_c) - acc(w_p, b_p) > 0.1
+
+
+class TestNoiseCorrectedCrossEntropyLossTrainer:
+    """Test the multiclass noise_corrected_bce dispatch in Trainer (issue #321)."""
+
+    def _multiclass_model_and_loader(self, model_config, temp_chunks_file):
+        """A tiny 3-class ConvLSTMDwell + a matching 1-batch DataLoader,
+        reusing the binary fixtures' chunks file (label values don't matter
+        for these tests -- they only exercise loss dispatch, not correctness
+        of the corpus)."""
+        model = get_model("ConvLSTMDwell", **{**model_config, "num_out": 3})
+        dataset = LeechDataset(
+            chunk_path=temp_chunks_file,
+            model_type="ConvLSTMDwell",
+            signal_len=model_config["signal_len"],
+            kmer_len=model_config["kmer_len"],
+            seq_encoding="base_onehot",
+        )
+        loader = DataLoader(dataset, batch_size=len(dataset), shuffle=False, collate_fn=collate_fn)
+        return model, loader
+
+    def test_missing_sink_index_raises(self, model_config, temp_chunks_file):
+        model, loader = self._multiclass_model_and_loader(model_config, temp_chunks_file)
+        with pytest.raises(ValueError, match="noise-sink-class"):
+            Trainer(
+                model=model,
+                model_type="ConvLSTMDwell",
+                train_loader=loader,
+                device="cpu",
+                loss_type="noise_corrected_bce",
+                num_out=3,
+            )
+
+    def test_label_smoothing_raises(self, model_config, temp_chunks_file):
+        model, loader = self._multiclass_model_and_loader(model_config, temp_chunks_file)
+        with pytest.raises(ValueError, match="label_smoothing"):
+            Trainer(
+                model=model,
+                model_type="ConvLSTMDwell",
+                train_loader=loader,
+                device="cpu",
+                loss_type="noise_corrected_bce",
+                num_out=3,
+                label_smoothing=0.1,
+                noise_sink_index=2,
+            )
+
+    def test_criterion_is_multiclass_noise_corrected(self, model_config, temp_chunks_file):
+        model, loader = self._multiclass_model_and_loader(model_config, temp_chunks_file)
+        trainer = Trainer(
+            model=model,
+            model_type="ConvLSTMDwell",
+            train_loader=loader,
+            device="cpu",
+            loss_type="noise_corrected_bce",
+            num_out=3,
+            noise_sink_index=2,
+            noise_class_rates=torch.tensor([0.2, 0.3, 0.0]),
+        )
+        assert isinstance(trainer.criterion, NoiseCorrectedCrossEntropyLoss)
+        assert trainer.criterion.sink_index == 2
+
+    def test_no_rates_still_builds_the_multiclass_criterion(self, model_config, temp_chunks_file):
+        """A sink index alone (no --label-noise-rate at all) is valid -- the
+        criterion just takes its own no-correction fast path, exactly the
+        binary loss's precedent."""
+        model, loader = self._multiclass_model_and_loader(model_config, temp_chunks_file)
+        trainer = Trainer(
+            model=model,
+            model_type="ConvLSTMDwell",
+            train_loader=loader,
+            device="cpu",
+            loss_type="noise_corrected_bce",
+            num_out=3,
+            noise_sink_index=2,
+        )
+        assert isinstance(trainer.criterion, NoiseCorrectedCrossEntropyLoss)
+
+    def test_train_epoch_runs(self, model_config, temp_chunks_file):
+        model, loader = self._multiclass_model_and_loader(model_config, temp_chunks_file)
+        trainer = Trainer(
+            model=model,
+            model_type="ConvLSTMDwell",
+            train_loader=loader,
+            device="cpu",
+            loss_type="noise_corrected_bce",
+            num_out=3,
+            noise_sink_index=2,
+            noise_class_rates=torch.tensor([0.2, 0.3, 0.0]),
+        )
+        loss, acc = trainer.train_epoch()
+        assert loss >= 0
+
+    def test_binary_loss_unaffected_by_num_out_default(self, sample_model, sample_dataloader):
+        """num_out=1 (the default) must still build the original binary loss
+        -- the new branch is keyed on num_out>1, not on loss_type alone."""
+        trainer = Trainer(
+            model=sample_model,
+            model_type="ConvLSTMDwell",
+            train_loader=sample_dataloader,
+            device="cpu",
+            loss_type="noise_corrected_bce",
+        )
+        assert isinstance(trainer.criterion, NoiseCorrectedBCEWithLogitsLoss)
+
+
+def _multiclass_chunks(sample_leech_read, class_names=("classA", "classB", "sink")):
+    """Chunks cycling through len(class_names) labels/source_groups, for
+    exercising the multiclass noise_corrected_bce path end-to-end."""
+    chunks = []
+    num_bases = len(sample_leech_read.dwells)
+    kmer_context = 5
+    start_idx = kmer_context
+    end_idx = min(15, num_bases - kmer_context)
+
+    for i, base_idx in enumerate(range(start_idx, end_idx)):
+        chunk = sample_leech_read.get_chunk(
+            base_idx, signal_context=(200, 200), kmer_context=kmer_context
+        )
+        if chunk is not None:
+            label = i % len(class_names)
+            chunk["read_id"] = sample_leech_read.read_id
+            chunk["label_int"] = label
+            chunk["label"] = class_names[label]
+            chunk["source_group"] = class_names[label]
+            chunks.append(chunk)
+    return chunks
+
+
+class TestMulticlassNoiseCorrectedTrainModel:
+    """train_model end-to-end with --loss noise_corrected_bce at num_out>1
+    (issue #321 acceptance criteria)."""
+
+    @pytest.fixture
+    def multiclass_data(self, sample_leech_read, tmp_path):
+        class_names = ("classA", "classB", "sink")
+        chunks = _multiclass_chunks(sample_leech_read, class_names)
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        chunks_file = data_dir / "chunks.npz"
+        save_chunks(chunks, chunks_file)
+        label_map = {name: i for i, name in enumerate(class_names)}
+        with open(data_dir / "label_map.json", "w") as f:
+            json.dump(label_map, f)
+        return chunks_file, label_map
+
+    def test_trains_without_error_and_records_config(self, multiclass_data, tmp_path):
+        chunks_file, label_map = multiclass_data
+        output_dir = tmp_path / "training"
+        history = train_model(
+            train_data_path=chunks_file,
+            val_data_path=chunks_file,
+            model_name="ConvLSTMDwell",
+            output_dir=output_dir,
+            epochs=1,
+            batch_size=2,
+            device="cpu",
+            motif="CCAGGC",
+            num_out=3,
+            loss_type="noise_corrected_bce",
+            label_noise_rates={"classA": 0.2, "classB": 0.3},
+            noise_sink_class="sink",
+        )
+        assert len(history["train_loss"]) == 1
+
+        with open(output_dir / "config.json") as f:
+            config = json.load(f)
+        # Not silently clobbered to cross_entropy by the num_out>1 auto-detect.
+        assert config["loss_type"] == "noise_corrected_bce"
+        assert config["num_out"] == 3
+        assert config["noise_sink_class"] == "sink"
+        assert config["noise_sink_index"] == label_map["sink"]
+        assert config["label_noise_rates"] == {"classA": 0.2, "classB": 0.3}
+
+    def test_missing_sink_class_raises(self, multiclass_data, tmp_path):
+        chunks_file, _label_map = multiclass_data
+        with pytest.raises(ValueError, match="noise-sink-class"):
+            train_model(
+                train_data_path=chunks_file,
+                val_data_path=chunks_file,
+                model_name="ConvLSTMDwell",
+                output_dir=tmp_path / "training",
+                epochs=1,
+                batch_size=2,
+                device="cpu",
+                motif="CCAGGC",
+                num_out=3,
+                loss_type="noise_corrected_bce",
+            )
+
+    def test_zero_rates_matches_plain_cross_entropy_checkpoint(self, multiclass_data, tmp_path):
+        """No --label-noise-rate at all (rates all default to 0) must train
+        an identical run to --loss cross_entropy -- the end-to-end version of
+        NoiseCorrectedCrossEntropyLoss's own bit-for-bit fast-path guarantee."""
+        chunks_file, _label_map = multiclass_data
+
+        def run(loss_type, output_dir, **extra):
+            torch.manual_seed(0)
+            return train_model(
+                train_data_path=chunks_file,
+                val_data_path=chunks_file,
+                model_name="ConvLSTMDwell",
+                output_dir=output_dir,
+                epochs=1,
+                batch_size=2,
+                device="cpu",
+                motif="CCAGGC",
+                num_out=3,
+                loss_type=loss_type,
+                seed=0,
+                **extra,
+            )
+
+        history_nc = run(
+            "noise_corrected_bce",
+            tmp_path / "nc",
+            noise_sink_class="sink",
+        )
+        history_ce = run("cross_entropy", tmp_path / "ce")
+        assert history_nc["train_loss"] == pytest.approx(history_ce["train_loss"])
 
 
 class TestAsymmetricFocalLoss:

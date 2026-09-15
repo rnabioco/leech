@@ -4,10 +4,22 @@ Custom loss functions for leech models.
 
 from __future__ import annotations
 
+import logging
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Function
+
+logger = logging.getLogger("leech.losses")
+
+#: Stand-in for log(0) in the multiclass noise correction below. Real -inf
+#: differentiates logsumexp to nan whenever every summand in a row is masked
+#: out (-inf - (-inf) = nan in the max-subtraction); a large finite floor
+#: keeps the same masking effect (exp(-1e30) underflows to exactly 0) while
+#: staying differentiable. leech.crf's CTC-CRF loss hits the identical
+#: landmine -- see its own ``_UNREACHABLE``.
+_NEG_INF = -1e30
 
 
 class GradientReversalFunction(Function):
@@ -130,6 +142,216 @@ def parse_label_noise_rate(token: str | None) -> dict[str, float] | None:
             raise ValueError(f"--label-noise-rate rate for '{group}' must be in [0, 1), got {rate}")
         rates[group] = rate
     return rates or None
+
+
+def resolve_noise_sink_index(
+    noise_sink_class: str, label_map: dict[str, int] | None, num_out: int
+) -> int:
+    """Resolve ``--noise-sink-class`` to a class index.
+
+    Accepts either a raw integer index (as a string) or a class name looked
+    up in ``label_map`` (``{class_name: index}``, the same mapping
+    ``leech.confounds`` uses for label-keyed confounds -- normally loaded
+    from a corpus's ``label_map.json`` sidecar). Raises rather than silently
+    training with an unresolved sink: a wrong sink index corrupts the
+    corrected loss on every sink-observed sample with no shape error to
+    catch it (see :class:`NoiseCorrectedCrossEntropyLoss`).
+    """
+    try:
+        index = int(noise_sink_class)
+    except (TypeError, ValueError):
+        if label_map is None:
+            raise ValueError(
+                f"--noise-sink-class {noise_sink_class!r} is not an integer index "
+                "and no label_map is available to resolve it by name (expected a "
+                "label_map.json sidecar next to the training data)."
+            ) from None
+        if noise_sink_class not in label_map:
+            raise ValueError(
+                f"--noise-sink-class {noise_sink_class!r} not found in label_map "
+                f"(known classes: {sorted(label_map)})"
+            ) from None
+        index = label_map[noise_sink_class]
+    if not (0 <= index < num_out):
+        raise ValueError(
+            f"--noise-sink-class {noise_sink_class!r} resolves to index {index}, "
+            f"out of range for num_out={num_out}"
+        )
+    return index
+
+
+def build_class_noise_rates(
+    label_noise_rates: dict[str, float] | None,
+    label_map: dict[str, int] | None,
+    sink_index: int,
+    num_out: int,
+) -> torch.Tensor | None:
+    """Build the per-class flip-rate vector for :class:`NoiseCorrectedCrossEntropyLoss`.
+
+    Unlike the binary loss's per-*sample* ``noise_rate`` (looked up per chunk
+    from its own ``source_group``), the multiclass correction needs a
+    per-*class* rate: computing the corrected probability of an
+    observed-as-sink sample requires knowing every OTHER class's leak rate,
+    not just the rate of whichever group this one sample happens to belong
+    to -- see the class docstring. ``label_noise_rates`` keys (from
+    ``--label-noise-rate``, :func:`parse_label_noise_rate`) are therefore
+    resolved as class labels here, the same way :func:`resolve_noise_sink_index`
+    resolves ``--noise-sink-class``: an integer index, or a name via
+    ``label_map``.
+
+    An unresolvable key (no ``label_map``, or a name it does not contain) is
+    dropped with a warning rather than raising -- the same lenient "unmapped
+    defaults to 0 (no correction)" contract the binary loss's per-sample
+    lookup already has. The sink class's own rate is always forced to 0
+    (``T[sink, sink] = 1``, clean by construction), regardless of what
+    ``label_noise_rates`` says about it.
+
+    Returns ``None`` when ``label_noise_rates`` is empty/``None`` -- the
+    short-circuit that keeps :class:`NoiseCorrectedCrossEntropyLoss`
+    bit-for-bit equal to plain cross-entropy for the common no-correction
+    case.
+    """
+    if not label_noise_rates:
+        return None
+    rates = torch.zeros(num_out, dtype=torch.float32)
+    for key, rate in label_noise_rates.items():
+        try:
+            index = int(key)
+        except ValueError:
+            if label_map is None or key not in label_map:
+                logger.warning(
+                    "--label-noise-rate group '%s' does not match a class name in "
+                    "label_map; ignoring (no correction applied for it)",
+                    key,
+                )
+                continue
+            index = label_map[key]
+        if not (0 <= index < num_out):
+            logger.warning(
+                "--label-noise-rate group '%s' resolves to index %d, out of range "
+                "for num_out=%d; ignoring",
+                key,
+                index,
+                num_out,
+            )
+            continue
+        if index == sink_index:
+            if rate != 0:
+                logger.warning(
+                    "--label-noise-rate gives the sink class ('%s') a nonzero rate "
+                    "(%.4g); ignoring -- the sink class is always treated as clean "
+                    "(T[sink, sink] = 1)",
+                    key,
+                    rate,
+                )
+            continue
+        rates[index] = rate
+    return rates
+
+
+class NoiseCorrectedCrossEntropyLoss(nn.Module):
+    """Multiclass forward-corrected cross-entropy for known, class-conditional
+    label noise flowing to a single sink class (Patrini et al. 2017) -- the
+    C-class generalization of :class:`NoiseCorrectedBCEWithLogitsLoss`
+    (issue #321).
+
+    Each non-sink class ``i`` has a measured purity ``pi_i = 1 - rho_i``
+    (``rho_i`` from ``--label-noise-rate``, resolved to class indices by
+    :func:`build_class_noise_rates`); the noise transition matrix is
+
+        T[i, i]       = pi_i    # true=i (i != sink) -> observed i
+        T[i, sink]    = rho_i   # true=i (i != sink) -> observed sink
+        T[sink, sink] = 1       # true=sink -> observed sink, always (clean)
+
+    every other entry 0: a class only ever leaks into the sink, never into
+    another class, and the sink never leaks at all. The model's softmax
+    output ``p`` estimates the *true*-label posterior; the loss is NLL of the
+    *observed* label ``y`` under the corrected distribution ``q = T^T p``:
+
+        q_j    = p_j * pi_j                        for j != sink
+        q_sink = p_sink + sum_{i != sink} p_i * rho_i
+
+    Because every non-sink column of ``T`` has exactly one nonzero entry (its
+    own diagonal), ``q_y = p_y * pi_y`` for an observed non-sink label -- a
+    single term, not a mixture. ``log(pi_y)`` does not depend on the model,
+    so for a sample observed as a non-sink class this loss has *the same
+    gradient* as plain cross-entropy (a per-class constant shift in the loss
+    value only, invisible to the optimizer). All of the correction's effect
+    is on samples observed as the sink: there, ``q_sink`` mixes in every
+    other class's leaked mass, weighted by the model's own current belief in
+    that class -- crediting the model for recognizing contamination instead
+    of forcing it to explain that signal as "sink" (issue #321's motivating
+    case: sink-labeled chunks a known fraction of which are secretly some
+    other, contaminating class).
+
+    ``class_rates=None`` (no ``--label-noise-rate`` at all) short-circuits to
+    plain ``F.cross_entropy``, bit-for-bit -- exactly mirroring
+    ``NoiseCorrectedBCEWithLogitsLoss``'s ``noise_rate is None`` fast path,
+    but checked once at construction rather than per forward call:
+    ``class_rates`` is a fixed vector here, not a per-batch tensor, so there
+    is no per-step CUDA host-sync to avoid by deferring the check.
+
+    Args:
+        sink_index: Class index the noise mass flows to (resolved from
+            ``--noise-sink-class`` by :func:`resolve_noise_sink_index`).
+        class_rates: ``(num_out,)`` per-class flip rate; entry
+            ``sink_index`` is always 0 (:func:`build_class_noise_rates`
+            enforces this when building it from ``--label-noise-rate``).
+            ``None`` or all-zero takes the plain cross-entropy fast path.
+        weight: Optional per-class weight, same convention as
+            ``nn.CrossEntropyLoss(weight=...)``.
+    """
+
+    def __init__(
+        self,
+        sink_index: int,
+        class_rates: torch.Tensor | None = None,
+        weight: torch.Tensor | None = None,
+    ) -> None:
+        super().__init__()
+        self.sink_index = sink_index
+        self.weight = weight
+        self._has_noise = class_rates is not None and bool(torch.any(class_rates > 0).item())
+        self._log_rho: torch.Tensor | None = None
+        self._log_pi: torch.Tensor | None = None
+        if self._has_noise:
+            assert class_rates is not None
+            self._log_rho = torch.where(
+                class_rates > 0,
+                torch.log(class_rates.clamp_min(1e-38)),
+                torch.full_like(class_rates, _NEG_INF),
+            )
+            # log(pi) = log(1 - rho); 0 (pi=1, clean) wherever rate is 0,
+            # including at sink_index (build_class_noise_rates forces that).
+            self._log_pi = torch.where(
+                class_rates > 0, torch.log1p(-class_rates), torch.zeros_like(class_rates)
+            )
+
+    def log_probs(self, logits: torch.Tensor) -> torch.Tensor:
+        """``log(T^T softmax(logits))``, i.e. the corrected log-probabilities
+        ``forward`` takes NLL of. Exposed separately so a caller normalizing
+        by something other than element count (``Trainer._weighted_ce_global``,
+        for the DDP weighted-mean case) can build its own reduction over the
+        same corrected distribution instead of reimplementing it.
+        """
+        if not self._has_noise:
+            return F.log_softmax(logits, dim=-1)
+
+        assert self._log_rho is not None and self._log_pi is not None
+        log_p = F.log_softmax(logits, dim=-1)
+        log_rho = self._log_rho.to(dtype=log_p.dtype, device=log_p.device)
+        log_pi = self._log_pi.to(dtype=log_p.dtype, device=log_p.device)
+
+        log_q = log_p + log_pi.unsqueeze(0)
+        leak = torch.logsumexp(log_p + log_rho.unsqueeze(0), dim=-1)
+        sink_col = torch.logsumexp(torch.stack([log_p[:, self.sink_index], leak]), dim=0)
+        log_q[:, self.sink_index] = sink_col
+        return log_q
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        if not self._has_noise:
+            return F.cross_entropy(logits, targets, weight=self.weight)
+        return F.nll_loss(self.log_probs(logits), targets, weight=self.weight)
 
 
 class NoiseCorrectedBCEWithLogitsLoss(nn.Module):

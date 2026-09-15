@@ -108,3 +108,29 @@ noisy regime, judge it by **callable yield at a fixed precision floor**
 (e.g. AUROC-adjacent metrics can look flat or even move against it while the
 fraction of confidently-called reads at 99% precision improves) rather than by
 AUROC alone.
+
+### Multiclass (`--num-out > 1`)
+
+The same `--loss noise_corrected_bce` value trains a multiclass forward
+correction at `--num-out N` for `N > 1`, for a corpus where every class's
+label noise flows to one designated **sink** class -- e.g. a 20+1-class
+charge-aware classifier (20 amino acids + `uncharged`) where a known fraction
+of each amino acid's labeled chunks are secretly `uncharged`. Name the sink
+with `--noise-sink-class uncharged` (a class label resolved against the
+corpus's `label_map.json`, or a raw index); `--label-noise-rate` keys are then
+class labels rather than arbitrary `source_group` values (e.g.
+`--label-noise-rate Gln=0.041,Thr=0.948`), one purity per non-sink class. As
+in the binary case, a class not named gets rate 0 and an all-zero
+`--label-noise-rate` (or none at all) reproduces `--loss cross_entropy`
+bit-for-bit.
+
+The two losses differ in what the correction needs: the binary loss looks up
+one flip rate per *sample* from its `source_group`, but the multiclass sink
+structure needs the *global* per-class rate vector to correctly weigh how
+much of a sink-labeled chunk's evidence should be credited to each other
+class -- so rates are resolved once from `label_map`, not read per chunk.
+Only samples observed as the sink actually get a different gradient from
+plain cross-entropy; a non-sink-observed sample's correction is a per-class
+constant that does not move the gradient at all, since the sink is the only
+class more than one other class can leak into. See
+`leech.losses.NoiseCorrectedCrossEntropyLoss` for the full derivation.
