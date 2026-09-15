@@ -10,6 +10,26 @@ New entries are no longer added to this file by hand — see
 
 <!-- towncrier release notes start -->
 
+## [0.12.1] - 2026-09-15
+
+### Fixed
+
+- **`data prepare` against a POD5 pre-filtered to a subset of the BAM's reads
+  no longer aborts the whole run.** A read the POD5 does not carry was counted
+  as a per-read failure on both backends, so the expected BAM/POD5 mismatch
+  produced by `escpod bam-filter` (and the pipeline's own Filter stage) crossed
+  `MAX_FAILED_READ_FRACTION` and raised, discarding a corpus whose every present
+  read had extracted correctly. Absent reads are now their own expected-exclusion
+  bucket, reported as `reads_missing_from_pod5` in the stats and in the "Read
+  yield" log line, and the failed fraction is measured over the reads actually
+  attempted. Issue #265's zero-tolerance policy is unchanged for genuine
+  failures: `leech_core.extract_training_chunks` now returns
+  `(chunks, n_missing_from_pod5)` so the Rust dispatcher's "reads went in, no
+  chunks came out" check can still fire on reads that *were* found in the POD5. ((#325))
+- **`leech model train --model-config best_params.json` no longer crashes on `leech model optimize`'s own output.** `best_params.json` always records `selection_metric` for provenance, but `train`'s model-config loader passed it straight through to the model constructor, raising `TypeError: model got unexpected keyword argument(s): selection_metric` on the very first run of the documented optimize-then-train workflow. `selection_metric` is now dropped before model construction, the same way `checkpoint_metric` already was. ((#326))
+- **`leech data merge` no longer silently collapses a same-body contrast to one class.** Pairwise relabeling matched chunks against each input file's *original* `labels` values rather than which `-i` argument supplied the file, so two files sharing an internal label (e.g. two preparations of the same tRNA body, contrasted by attached ligand rather than body identity) resolved every chunk to the same class — with the log still printing a correct-looking `0`/`1` assignment. `_parse_and_validate_inputs` and `merge_and_split_chunks`/`merge_and_kfold_split_chunks` now track group membership by file provenance (`relabel_by_file`) instead of re-deriving it from label values; the remaining value-based path (`process_comparison_spec`'s TSV workflow) now raises if the two groups' label sets overlap instead of collapsing silently. ((#327))
+
+
 ## [0.12.0] - 2026-09-13
 
 ### Added
