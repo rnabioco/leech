@@ -9,6 +9,9 @@ Covers:
 - ``prepare_training_data_parallel`` round-trips on the tRNA fixtures with
   both a single worker (serial-in-parallel) and the Rust backend when
   available.
+- Both backends treat a read the POD5 does not carry as an expected
+  exclusion rather than a failure (issue #325), against a POD5 written here
+  with most of the fixture's reads filtered out.
 """
 
 from __future__ import annotations
@@ -33,6 +36,7 @@ from leech.io.pod5_reader import (
     _get_cached_entry,
     read_pod5_signals_batch_cached,
 )
+from leech.preparation.parallel import MAX_FAILED_READ_FRACTION
 
 pytestmark = pytest.mark.skipif(not TRNA_FIXTURES_AVAILABLE, reason="tRNA fixtures not available")
 
@@ -305,7 +309,9 @@ class TestRefinerSettingsReachRust:
 
         def _fake_extract(**kwargs):
             captured.update(kwargs)
-            return []
+            # `(chunks, n_missing_from_pod5)` -- the shape leech_core returns
+            # since #325.
+            return [], 0
 
         monkeypatch.setattr(parallel_mod, "_rs_extract_training_chunks", _fake_extract)
 
@@ -788,6 +794,255 @@ class TestPoolInitializerFailsLoud:
 
         with pytest.raises(RuntimeError, match="mp.Pool worker failed to initialize"):
             pp._process_pooled_batch((0, []))
+
+
+def _write_filtered_pod5(dst: Path, keep_ids: set[str]) -> Path:
+    """Write a POD5 holding only ``keep_ids`` of the tRNA fixture's reads.
+
+    Stands in for ``escpod bam-filter``: the pipeline's Filter stage pairs a
+    BAM covering the full reference set with a POD5 cut down to the reads
+    aligning to one cognate region, so most of the BAM has no signal in the
+    POD5 it is run against (issue #325).
+    """
+    import escapepod
+
+    with escapepod.Reader(TRNA_POD5) as reader:
+        keep = [rd for rd in reader.reads() if str(rd.read_id) in keep_ids]
+        assert len(keep) == len(keep_ids), "asked to keep a read the fixture POD5 lacks"
+        signals = dict(reader.get_signals(keep))
+        with escapepod.Writer(str(dst)) as writer:
+            # Added in order so each read's stored `run_info_index` still
+            # resolves in the new file.
+            for i, run_info in enumerate(reader.run_infos):
+                assert writer.add_run_info(run_info) == i
+            for read_data in keep:
+                writer.add_read_data(read_data, signals[read_data.read_id])
+    return dst
+
+
+class TestPreFilteredPod5:
+    """A BAM whose reads are mostly absent from the POD5 still prepares.
+
+    Issue #325. Both backends counted "no POD5 signal for this read" as a
+    per-read *failure*, so the deliberate BAM/POD5 mismatch that ``escpod
+    bam-filter`` produces crossed ``MAX_FAILED_READ_FRACTION`` and aborted
+    the run with no output at all -- although every read that *was* in the
+    POD5 extracted correctly. The absent reads are an expected exclusion,
+    like a read with no motif match; a read that was found and still
+    produced nothing remains a failure (#265/#267).
+    """
+
+    @staticmethod
+    def _config():
+        """Reference-anchored, as production runs and as the Filter stage feeds.
+
+        Not a detail: under ``anchor="basecall"`` only 9 of the fixture's 20
+        reads have a motif match, so the Rust backend -- which only ever sees
+        reads that matched -- could never report more than 45% of the BAM as
+        absent, and the run-level threshold this regression is about would
+        not be reachable from the fixture at all. Reference anchoring submits
+        18 of 20.
+        """
+        return _trna_config("reference")
+
+    @pytest.fixture
+    def read_infos(self):
+        return collect_read_infos(TRNA_BAM, min_mapq=0)
+
+    @pytest.fixture
+    def kept_ids(self, read_infos):
+        """Two reads that produce chunks against the unfiltered POD5.
+
+        Picked from a real extraction rather than the head of the BAM, so
+        "chunks came back" below cannot pass by picking reads that would
+        have yielded nothing anyway.
+        """
+        from leech.preparation.parallel import _process_read_chunk_worker
+
+        chunks = _process_read_chunk_worker((read_infos, self._config()))
+        productive = sorted({str(c["read_id"]) for c in chunks})
+        assert len(productive) > 4, "fixture should have reads to spare"
+        return set(productive[:2])
+
+    @pytest.fixture
+    def filtered_pod5(self, tmp_path, kept_ids):
+        return _write_filtered_pod5(tmp_path / "filtered.pod5", kept_ids)
+
+    def test_python_worker_counts_absent_reads_as_an_exclusion(
+        self, read_infos, kept_ids, filtered_pod5
+    ):
+        from leech.preparation.parallel import (
+            _process_read_chunk_worker,
+            _process_read_chunk_worker_with_failures,
+        )
+
+        config = self._config()
+        config.pod5_path = filtered_pod5
+        chunks, n_failed, n_missing = _process_read_chunk_worker_with_failures((read_infos, config))
+
+        assert n_failed == 0, "a read the POD5 simply lacks is not a failure"
+        assert n_missing == len(read_infos) - len(kept_ids)
+        # ... and it is the great majority of the batch, which is the point:
+        # anything counted per-read here trips MAX_FAILED_READ_FRACTION.
+        assert n_missing / len(read_infos) > MAX_FAILED_READ_FRACTION
+
+        # The reads that ARE present extract exactly as they would have from
+        # the unfiltered POD5 -- filtering removes rows, it does not perturb
+        # the ones left.
+        assert {str(c["read_id"]) for c in chunks} == kept_ids
+        full = _chunks_by_key(_process_read_chunk_worker((read_infos, self._config())))
+        got = _chunks_by_key(chunks)
+        assert set(got) == {k for k in full if k[0] in kept_ids}
+        for key in got:
+            np.testing.assert_array_equal(
+                np.asarray(got[key]["signal"]), np.asarray(full[key]["signal"]), err_msg=str(key)
+            )
+
+    def test_python_worker_still_counts_a_real_per_read_exception(
+        self, read_infos, kept_ids, filtered_pod5, monkeypatch
+    ):
+        """The #265 guard is intact behind a filtered POD5.
+
+        Both buckets fill at once here: 18 reads absent (benign) and both
+        present reads raising (a real failure, 2 of the 2 attempted). The
+        run-level check that turns the second into a ``RuntimeError`` is
+        ``test_prepare_dispatch.py``'s -- what this pins is that the two
+        counts do not get mixed up on the way there.
+        """
+        from leech.preparation import parallel as parallel_mod
+
+        real = parallel_mod.build_leech_read
+
+        def _boom(*args, **kwargs):
+            raise ValueError("corrupt move table")
+
+        monkeypatch.setattr(parallel_mod, "build_leech_read", _boom)
+        assert parallel_mod.build_leech_read is not real
+
+        config = self._config()
+        config.pod5_path = filtered_pod5
+        chunks, n_failed, n_missing = parallel_mod._process_read_chunk_worker_with_failures(
+            (read_infos, config)
+        )
+
+        assert chunks == []
+        assert n_failed == len(kept_ids)
+        assert n_missing == len(read_infos) - len(kept_ids)
+
+    def test_rust_worker_reports_absent_reads_separately(self, read_infos, kept_ids, filtered_pod5):
+        pytest.importorskip("leech_core")
+        from leech._rust_accel import HAS_RUST, _rs_extract_training_chunks
+
+        if not HAS_RUST or _rs_extract_training_chunks is None:
+            pytest.skip("leech_core Rust acceleration not available")
+
+        from leech.io import get_motif_searcher
+        from leech.preparation.parallel import _prepare_batch_rust_with_failures
+
+        config = self._config()
+        config.pod5_path = filtered_pod5
+        searcher = get_motif_searcher(
+            mode=config.motif.motif_reference,
+            reference_sequences=config.motif.reference_sequences,
+            skip_indels=config.motif.skip_motif_indels,
+            anchor=config.signal.anchor,
+        )
+        chunks, n_failed, n_submitted, n_missing = _prepare_batch_rust_with_failures(
+            read_infos, config, searcher
+        )
+
+        assert n_failed == 0
+        assert n_submitted > len(kept_ids)
+        # Every submitted read but the kept ones was absent. Rust has to
+        # report this per call: dropping such a read to zero chunks is
+        # indistinguishable from the pipeline breaking on it.
+        assert n_missing == n_submitted - len(kept_ids)
+        assert {str(c["read_id"]) for c in chunks} == kept_ids
+
+    def test_rust_backend_end_to_end_on_a_filtered_pod5(self, kept_ids, filtered_pod5):
+        """The whole run, including batches with no present read at all."""
+        pytest.importorskip("leech_core")
+        import leech.preparation.parallel as pp
+
+        if not pp.HAS_RUST or pp._rs_extract_training_chunks is None:
+            pytest.skip("leech_core Rust acceleration not available")
+
+        config = self._config()
+        config.pod5_path = filtered_pod5
+        # chunk_size=2 over a 20-read BAM puts at least 14 of the 18 submitted
+        # reads in batches holding no present read at all -- the case the
+        # zero-yield heuristic used to call a Rust failure, and enough of the
+        # BAM to cross MAX_FAILED_READ_FRACTION when it did. The other two
+        # batches mix a present read with an absent one.
+        chunks, stats = pp.prepare_training_data_parallel(
+            TRNA_BAM, config, num_workers=2, chunk_size=2, backend_choice="rust"
+        )
+
+        assert stats["failed_reads"] == 0
+        assert stats["failed_batches"] == 0
+        assert stats["total_chunks"] > 0
+        assert stats["reads_missing_from_pod5"] > MAX_FAILED_READ_FRACTION * stats["total_reads"]
+        assert {str(c["read_id"]) for c in chunks} == kept_ids
+
+    @pytest.mark.timeout(150)
+    def test_python_backend_end_to_end_on_a_filtered_pod5(self, kept_ids, filtered_pod5):
+        """Same run through the real ``mp.Pool``, in a fresh interpreter.
+
+        Subprocess for the reason spelled out on
+        ``TestPrepareTrainingDataParallel::test_python_backend_real_pool_...``:
+        by now this process has touched Rust/rayon, and forking it deadlocks
+        the pool workers.
+        """
+        script = f"""
+import json
+from pathlib import Path
+from leech.configs import ChunkConfig, LabelConfig, MotifConfig, PrepareConfig, SignalConfig
+from leech.io import get_reference_sequences
+from leech.preparation.parallel import prepare_training_data_parallel
+
+bam = Path({str(TRNA_BAM)!r})
+config = PrepareConfig(
+    pod5_path=Path({str(filtered_pod5)!r}),
+    signal=SignalConfig(
+        reverse_signal=True, anchor="reference", norm_method="median_mad",
+        refine_signal_map=False,
+    ),
+    motif=MotifConfig(
+        motif="CCAGGC", motif_offset=2, motif_reference="fasta",
+        reference_sequences=get_reference_sequences(bam, Path({str(TRNA_REF)!r})),
+        skip_motif_indels=False,
+    ),
+    chunk=ChunkConfig(base_justify="center", signal_context=(200, 200)),
+    labeling=LabelConfig(label="Ala", label_int=1),
+)
+chunks, stats = prepare_training_data_parallel(
+    bam, config, num_workers=2, chunk_size=2,
+    backend_choice="python",
+)
+print(json.dumps({{
+    "stats": stats,
+    "read_ids": sorted({{str(c["read_id"]) for c in chunks}}),
+}}))
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            cwd=Path(__file__).parent.parent,
+        )
+        assert result.returncode == 0, (
+            f"subprocess failed (rc={result.returncode}):\nstdout={result.stdout}\n"
+            f"stderr={result.stderr}"
+        )
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        stats = payload["stats"]
+        assert stats["failed_reads"] == 0
+        assert stats["failed_batches"] == 0
+        assert stats["total_chunks"] > 0
+        assert stats["reads_missing_from_pod5"] == stats["total_reads"] - len(kept_ids)
+        assert stats["reads_missing_from_pod5"] > MAX_FAILED_READ_FRACTION * stats["total_reads"]
+        assert set(payload["read_ids"]) == kept_ids
 
 
 class TestPrepareTrainingDataParallel:
