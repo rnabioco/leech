@@ -10,7 +10,6 @@ import logging
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 from rich.table import Table
 
 from leech.cli_config import make_console
@@ -24,7 +23,7 @@ console = make_console()
 type _ParsedMulticlass = tuple[list[Path], list[str]]
 type _ParsedPairwise = tuple[
     list[Path],
-    tuple[str | list[str], str | list[str]],
+    dict[Path, tuple[int, str]],
     tuple[str, str],
 ]
 type _ParsedInputs = _ParsedMulticlass | _ParsedPairwise
@@ -174,20 +173,23 @@ def handle_merge_and_split(
         console.print("[bold green]Multi-class merge and split complete![/bold green]")
         return result
 
-    all_files, relabel_tuple, meta_labels = parsed
+    all_files, relabel_by_file, meta_labels = parsed
 
     logger.info(
         f"Relabeling for comparison: {meta_labels[0]} = label_int 0, {meta_labels[1]} = label_int 1"
     )
 
-    # Merge and split at read level
+    # Merge and split at read level. relabel_by_file assigns each chunk's
+    # class by which -i argument its source file was passed under -- not by
+    # matching the file's own stored `labels` value -- so two files whose
+    # internal labels happen to coincide still separate correctly (#323).
     split_result = merge_and_split_chunks(
         input_paths=all_files,
         output_dir=output_dir,
         train_frac=train_split,
         val_frac=val_split,
         seed=seed,
-        relabel_pairwise=relabel_tuple,
+        relabel_by_file=relabel_by_file,
     )
 
     # Type narrowing: result is always a dict when output_dir is provided
@@ -212,9 +214,14 @@ def _parse_and_validate_inputs(
         input_chunks: Tuple of label=file.npz specifications
 
     Returns:
-        Tuple of (all_files, relabel_tuple, meta_labels)
+        Tuple of (all_files, relabel_by_file, meta_labels)
         - all_files: List of file paths in order
-        - relabel_tuple: Tuple of (group1_labels, group2_labels) for relabeling
+        - relabel_by_file: ``{path: (label_int, label_str)}``, keyed by input
+          file. Group membership is decided by which ``-i`` argument the file
+          was passed under -- never by the file's own stored ``labels``
+          value -- so two files that were internally prepared with the same
+          label (e.g. both ``"Thr"``) but represent different classes of this
+          comparison still separate into label_int 0 and 1 (issue #323).
         - meta_labels: Tuple of (meta_label1, meta_label2)
 
     Raises:
@@ -222,7 +229,6 @@ def _parse_and_validate_inputs(
         FileNotFoundError: If any input file doesn't exist
     """
     meta_to_files: dict[str, list[Path]] = {}
-    meta_to_chunk_labels: dict[str, set[Any]] = {}
     meta_order = []  # Track order for label_int assignment
 
     for chunk_spec in input_chunks:
@@ -242,21 +248,9 @@ def _parse_and_validate_inputs(
         # Track meta-label order (first appearance)
         if meta_label not in meta_to_files:
             meta_to_files[meta_label] = []
-            meta_to_chunk_labels[meta_label] = set()
             meta_order.append(meta_label)
 
         meta_to_files[meta_label].append(file_path)
-
-        # Extract actual chunk labels from file (peek at first chunk)
-        with np.load(file_path, allow_pickle=True) as data:
-            # Get unique labels from this file
-            if "labels" in data:
-                chunk_labels = set(data["labels"])
-                # Filter out None values
-                chunk_labels = {
-                    label for label in chunk_labels if label is not None and label != ""
-                }
-                meta_to_chunk_labels[meta_label].update(chunk_labels)
 
     # Validate we have at least 2 groups
     if len(meta_to_files) < 2:
@@ -275,21 +269,20 @@ def _parse_and_validate_inputs(
                 all_labels.append(meta_label)
         return all_files, all_labels
 
-    # Build relabel_pairwise tuple: (group1_chunk_labels, group2_chunk_labels)
-    # First seen meta-label = 0, second = 1
+    # Build relabel_by_file: first seen meta-label = 0, second = 1, keyed by
+    # the actual file each chunk came from (provenance), not by matching a
+    # label value stored inside the file.
     meta1, meta2 = meta_order[0], meta_order[1]
-    group1_labels = sorted(meta_to_chunk_labels[meta1])
-    group2_labels = sorted(meta_to_chunk_labels[meta2])
+    relabel_by_file: dict[Path, tuple[int, str]] = {}
+    for f in meta_to_files[meta1]:
+        relabel_by_file[f] = (0, meta1)
+    for f in meta_to_files[meta2]:
+        relabel_by_file[f] = (1, meta2)
 
     # Collect all file paths in order
     all_files = meta_to_files[meta1] + meta_to_files[meta2]
 
-    # Build relabel tuple: use list for multi-label groups, string for single
-    relabel_group1 = group1_labels[0] if len(group1_labels) == 1 else group1_labels
-    relabel_group2 = group2_labels[0] if len(group2_labels) == 1 else group2_labels
-    relabel_tuple = (relabel_group1, relabel_group2)
-
-    return all_files, relabel_tuple, (meta1, meta2)
+    return all_files, relabel_by_file, (meta1, meta2)
 
 
 def handle_merge_and_split_kfold(
@@ -343,19 +336,20 @@ def handle_merge_and_split_kfold(
         console.print("[bold green]Multi-class k-fold merge and split complete![/bold green]")
         return result
 
-    all_files, relabel_tuple, meta_labels = parsed
+    all_files, relabel_by_file, meta_labels = parsed
 
     logger.info(
         f"Relabeling for comparison: {meta_labels[0]} = label_int 0, {meta_labels[1]} = label_int 1"
     )
 
-    # Merge and k-fold split at read level
+    # Merge and k-fold split at read level. See handle_merge_and_split for why
+    # this is provenance-based (relabel_by_file) rather than value-based.
     result = merge_and_kfold_split_chunks(
         input_paths=all_files,
         output_dir=output_dir,
         k_fold=k_fold,
         seed=seed,
-        relabel_pairwise=relabel_tuple,
+        relabel_by_file=relabel_by_file,
     )
 
     # Display per-fold statistics

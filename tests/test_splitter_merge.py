@@ -94,6 +94,19 @@ def two_inputs(tmp_path):
     return ala, gly
 
 
+@pytest.fixture
+def two_inputs_same_internal_label(tmp_path):
+    """Two corpora that share an internal ``labels`` value ("Thr") but must
+    represent different classes of the actual comparison -- the exact leech#323
+    scenario (e.g. two tRNA-body preparations, both internally labeled "Thr",
+    contrasted on something else like attached ligand and passed as
+    ``-i Ser=... -i Thr=...``).
+    """
+    ser = write_corpus(tmp_path, "Ser", n_reads=12, prefix="ser", label="Thr", seed=3)
+    thr = write_corpus(tmp_path, "Thr", n_reads=12, prefix="thr", label="Thr", seed=4)
+    return ser, thr
+
+
 def index_by_chunk(chunks: list[dict]) -> dict[tuple[str, int], dict]:
     """Chunks keyed by (read_id, base_idx), which is unique within a corpus."""
     return {(c["read_id"], c["base_idx"]): c for c in chunks}
@@ -192,6 +205,60 @@ class TestMergeAndSplit:
         assert_round_trip(
             two_inputs, result["output_files"], expect_labels_int={"Ala": 0, "Gly": 1}
         )
+
+    def test_relabel_pairwise_overlapping_groups_raises(self, two_inputs, tmp_path):
+        """A caller-supplied group1/group2 that share a label value must raise,
+        not silently collapse every chunk into one class (leech#323)."""
+        out = tmp_path / "merged"
+        with pytest.raises(ValueError, match="overlap"):
+            merge_and_split_chunks(
+                list(two_inputs),
+                output_dir=out,
+                seed=42,
+                relabel_pairwise=(["Ala", "Gly"], ["Gly"]),
+            )
+
+    def test_relabel_pairwise_and_relabel_by_file_are_mutually_exclusive(
+        self, two_inputs, tmp_path
+    ):
+        ala, gly = two_inputs
+        out = tmp_path / "merged"
+        with pytest.raises(ValueError, match="at most one"):
+            merge_and_split_chunks(
+                list(two_inputs),
+                output_dir=out,
+                seed=42,
+                relabel_pairwise=("Ala", "Gly"),
+                relabel_by_file={ala: (0, "Ala"), gly: (1, "Gly")},
+            )
+
+    def test_relabel_by_file_separates_chunks_sharing_an_internal_label(
+        self, two_inputs_same_internal_label, tmp_path
+    ):
+        """The provenance-based relabeling leech#323 fixes: two files whose
+        internal ``labels`` value is identical ("Thr") must still separate
+        into two classes when relabel_by_file assigns them by which file they
+        came from, rather than by matching that shared label value.
+        """
+        ser, thr = two_inputs_same_internal_label
+        out = tmp_path / "merged"
+        result = merge_and_split_chunks(
+            [ser, thr],
+            output_dir=out,
+            seed=42,
+            relabel_by_file={ser: (0, "Ser"), thr: (1, "Thr")},
+        )
+        assert isinstance(result, dict)
+
+        labels_int_seen: set[int] = set()
+        for path in result["output_files"].values():
+            if path.exists():
+                with np.load(path, allow_pickle=True) as data:
+                    labels_int_seen.update(int(v) for v in data["labels_int"])
+        # The bug collapsed both groups to the same label_int (both files'
+        # stored "labels" value is "Thr"); provenance-based relabeling must
+        # not.
+        assert labels_int_seen == {0, 1}
 
     def test_an_input_with_no_selected_reads_contributes_nothing(self, two_inputs, tmp_path):
         """Not even its dtypes: a wider column there must not widen the output."""
@@ -559,3 +626,63 @@ class TestMergeMemory:
             f"({peak / payload:.2f}x); the accumulate-then-concatenate shape this "
             f"replaced could not get below ~1.8x"
         )
+
+
+class TestMergeSplitCLIProvenance:
+    """``leech data merge -i A=file1.npz -i B=file2.npz`` (leech.commands.merge_split).
+
+    Regression coverage for leech#323: group membership must come from which
+    ``-i`` argument a file was passed under, not from matching that file's own
+    stored ``labels`` value against the other group's. Before the fix, two
+    files whose internal ``labels`` happened to share a value collapsed to a
+    single class with no error and a log line that still looked correct.
+    """
+
+    def test_parse_and_validate_inputs_keyed_by_file_not_label_value(
+        self, two_inputs_same_internal_label
+    ):
+        from leech.commands.merge_split import _parse_and_validate_inputs
+
+        ser, thr = two_inputs_same_internal_label
+        all_files, relabel_by_file, meta_labels = _parse_and_validate_inputs(
+            (f"Ser={ser}", f"Thr={thr}")
+        )
+
+        assert all_files == [ser, thr]
+        assert meta_labels == ("Ser", "Thr")
+        # Both files' internal `labels` array is "Thr" -- provenance, not
+        # label value, must decide the group.
+        assert relabel_by_file == {ser: (0, "Ser"), thr: (1, "Thr")}
+
+    def test_merge_separates_classes_despite_shared_internal_label(
+        self, two_inputs_same_internal_label, tmp_path
+    ):
+        from leech.commands.merge_split import handle_merge_and_split
+
+        ser, thr = two_inputs_same_internal_label
+        out = tmp_path / "merged"
+
+        handle_merge_and_split(
+            input_chunks=(f"Ser={ser}", f"Thr={thr}"),
+            output_dir=out,
+            train_split=0.7,
+            val_split=0.15,
+            seed=42,
+        )
+
+        prefix_to_label_ints: dict[str, set[int]] = {"ser": set(), "thr": set()}
+        for sname in ("train", "val", "test"):
+            path = out / f"{sname}.npz"
+            if not path.exists():
+                continue
+            with np.load(path, allow_pickle=True) as data:
+                for read_id, label_int in zip(data["read_ids"], data["labels_int"], strict=True):
+                    prefix = str(read_id).split("_")[0]
+                    prefix_to_label_ints[prefix].add(int(label_int))
+
+        # The bug: both groups' chunks resolved to the same label_int because
+        # both files store "Thr" as their own label. Every "ser"-prefixed read
+        # came from the file passed as -i Ser=..., every "thr"-prefixed read
+        # from -i Thr=...; they must land in different classes.
+        assert prefix_to_label_ints["ser"] == {0}
+        assert prefix_to_label_ints["thr"] == {1}

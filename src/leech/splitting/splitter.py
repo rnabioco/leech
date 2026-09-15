@@ -660,6 +660,15 @@ def _build_label_overrides(
 
     A file's group is decided by its first stored label, so every chunk in a
     file must share one label — which is how ``data prepare`` writes them.
+
+    This is a **value-based** match: a file lands in group1 or group2 by
+    whether its own stored label text is in that group's label set. That is
+    the right rule for :func:`process_comparison_spec`, where a TSV names
+    label *values* (``Lys,Arg`` vs ``Asp,Glu``) drawn from an arbitrary set of
+    input files. It is the wrong rule when group membership is instead
+    decided by which CLI argument a file was passed under (``leech data merge
+    -i A=file1.npz -i B=file2.npz``) — see :func:`_build_label_overrides_by_file`
+    for that case, which two files sharing an internal label value need.
     """
     if relabel_pairwise is None:
         return None
@@ -667,6 +676,15 @@ def _build_label_overrides(
     group1, group2 = relabel_pairwise
     group1_labels = [group1] if isinstance(group1, str) else group1
     group2_labels = [group2] if isinstance(group2, str) else group2
+
+    overlap = sorted(set(group1_labels) & set(group2_labels))
+    if overlap:
+        raise ValueError(
+            f"relabel_pairwise groups overlap on label(s) {overlap}: "
+            f"group1={group1_labels}, group2={group2_labels}. A file whose "
+            "stored label is in both sets cannot be assigned to a single "
+            "class; make the two label sets disjoint."
+        )
 
     overrides: dict[Path, tuple[int, str]] = {}
     for chunk_path in input_paths:
@@ -871,6 +889,7 @@ def merge_and_split_chunks(
     val_frac: float = 0.15,
     seed: int | None = None,
     relabel_pairwise: tuple[str | list[str], str | list[str]] | None = None,
+    relabel_by_file: dict[Path, tuple[int, str]] | None = None,
 ) -> tuple[list[dict], list[dict], list[dict]] | dict[str, Any]:
     """
     Merge multiple chunk files and split at read level to prevent data leakage.
@@ -897,9 +916,21 @@ def merge_and_split_chunks(
         relabel_pairwise: Optional tuple of (group1, group2) for pairwise comparison.
             Each group can be a single label (str) or multiple labels (list[str]).
             Chunks matching group1 get label_int=0, chunks matching group2 get label_int=1.
+            This is a **value-based** match against each file's own stored
+            ``labels`` column -- the right choice when group membership comes
+            from label text drawn from an arbitrary set of files (as in
+            :func:`process_comparison_spec`). Mutually exclusive with
+            ``relabel_by_file``.
             Examples:
                 ("Ala", "Gly") - Single label per group
                 (["Lys", "Arg"], ["Glu", "Asp"]) - Multiple labels per group (basic vs acidic)
+        relabel_by_file: Optional ``{path: (label_int, label_str)}`` override,
+            keyed by input file rather than by stored label value. Use this
+            when group membership is decided by *which file* the chunks came
+            from (e.g. a CLI ``-i A=file1.npz -i B=file2.npz`` invocation) --
+            it separates the two groups correctly even when file1.npz and
+            file2.npz's internal ``labels`` arrays happen to share a value
+            (leech#323). Mutually exclusive with ``relabel_pairwise``.
 
     Returns:
         If output_dir is None: Tuple of (train_chunks, val_chunks, test_chunks)
@@ -934,6 +965,8 @@ def merge_and_split_chunks(
 
     if train_frac + val_frac > 1.0:
         raise ValueError(f"train_frac ({train_frac}) + val_frac ({val_frac}) must be <= 1.0")
+    if relabel_pairwise is not None and relabel_by_file is not None:
+        raise ValueError("Pass at most one of relabel_pairwise and relabel_by_file")
 
     # Setup seed and output directory if provided
     if output_dir is not None:
@@ -959,11 +992,16 @@ def merge_and_split_chunks(
     if output_dir is not None:
         output_paths = _split_output_paths(output_dir)
 
+        label_overrides = (
+            relabel_by_file
+            if relabel_by_file is not None
+            else _build_label_overrides(input_paths, relabel_pairwise)
+        )
         counts = _merge_arrays_by_split(
             input_paths=input_paths,
             split_read_ids=split_read_ids,
             output_paths=output_paths,
-            label_overrides=_build_label_overrides(input_paths, relabel_pairwise),
+            label_overrides=label_overrides,
             source_group_overrides={p: _source_group_from_path(p) for p in input_paths},
         )
 
@@ -985,7 +1023,14 @@ def merge_and_split_chunks(
             for chunk in chunks:
                 chunk["source_group"] = source_group
 
-            if relabel_pairwise is not None:
+            if relabel_by_file is not None and chunk_path in relabel_by_file:
+                # Provenance-based: every chunk from this file gets the same
+                # override regardless of its own stored label value.
+                label_int, label_str = relabel_by_file[chunk_path]
+                for chunk in chunks:
+                    chunk["label_int"] = label_int
+                    chunk["label"] = label_str
+            elif relabel_pairwise is not None:
                 group1, group2 = relabel_pairwise
                 group1_labels = [group1] if isinstance(group1, str) else group1
                 group2_labels = [group2] if isinstance(group2, str) else group2
@@ -1012,6 +1057,7 @@ def merge_and_kfold_split_chunks(
     k_fold: int,
     seed: int | None = None,
     relabel_pairwise: tuple[str | list[str], str | list[str]] | None = None,
+    relabel_by_file: dict[Path, tuple[int, str]] | None = None,
 ) -> dict[str, Any]:
     """
     Merge multiple chunk files and split into k folds at read level for cross-validation.
@@ -1033,6 +1079,12 @@ def merge_and_kfold_split_chunks(
         relabel_pairwise: Optional tuple of (group1, group2) for pairwise comparison.
             Each group can be a single label (str) or multiple labels (list[str]).
             Chunks matching group1 get label_int=0, chunks matching group2 get label_int=1.
+            Value-based; see :func:`merge_and_split_chunks` for the distinction
+            from ``relabel_by_file``. Mutually exclusive with ``relabel_by_file``.
+        relabel_by_file: Optional ``{path: (label_int, label_str)}`` override,
+            keyed by input file rather than by stored label value -- see
+            :func:`merge_and_split_chunks`. Mutually exclusive with
+            ``relabel_pairwise``.
 
     Returns:
         Dictionary with statistics:
@@ -1061,6 +1113,8 @@ def merge_and_kfold_split_chunks(
 
     if k_fold < 3:
         raise ValueError(f"k_fold must be >= 3, got {k_fold}")
+    if relabel_pairwise is not None and relabel_by_file is not None:
+        raise ValueError("Pass at most one of relabel_pairwise and relabel_by_file")
 
     # Setup seed and output directory
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1079,11 +1133,16 @@ def merge_and_kfold_split_chunks(
 
     # ---- Pass 2: merge arrays per fold ----
     logger.info("Pass 2: Merging arrays per fold")
+    label_overrides = (
+        relabel_by_file
+        if relabel_by_file is not None
+        else _build_label_overrides(input_paths, relabel_pairwise)
+    )
     n_total, folds_stats = _merge_folds(
         input_paths=input_paths,
         fold_read_assignments=fold_read_assignments,
         output_dir=output_dir,
-        label_overrides=_build_label_overrides(input_paths, relabel_pairwise),
+        label_overrides=label_overrides,
         source_group_overrides={p: _source_group_from_path(p) for p in input_paths},
     )
 
