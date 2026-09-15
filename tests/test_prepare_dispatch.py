@@ -26,9 +26,9 @@ def _drive(monkeypatch, work, *, num_workers, n_batches, batch_size=2):
     """Run ``_iter_rust_batches`` over ``n_batches`` stub batches.
 
     ``work`` stands in for ``_prepare_batch_rust_with_failures`` and must
-    return its ``(chunks, n_failed_reads, n_submitted)`` shape -- see
-    :class:`leech.preparation.parallel.BatchOutcome` for what the driver does
-    with each field.
+    return its ``(chunks, n_failed_reads, n_submitted, n_missing_from_pod5)``
+    shape -- see :class:`leech.preparation.parallel.BatchOutcome` for what the
+    driver does with each field.
     """
     batches = [[object()] * batch_size for _ in range(n_batches)]
     monkeypatch.setattr(par, "iter_read_info_batches", lambda *a, **k: iter(batches))
@@ -64,7 +64,7 @@ class TestRustBatchDispatchIsConcurrent:
             release.wait(timeout=20.0)
             with lock:
                 live -= 1
-            return [{"read_id": "x"}], 0, 1
+            return [{"read_id": "x"}], 0, 1, 0
 
         def watcher():
             deadline = time.monotonic() + 20.0
@@ -87,7 +87,7 @@ class TestRustBatchDispatchIsConcurrent:
         """Results arrive in submission order, each tagged with its read count."""
 
         def work(read_batch, config, motif_searcher, kmer_levels=None):
-            return [{"n": len(read_batch)}], 0, 1
+            return [{"n": len(read_batch)}], 0, 1, 0
 
         results = _drive(monkeypatch, work, num_workers=4, n_batches=5, batch_size=3)
 
@@ -108,7 +108,7 @@ class TestRustBatchDispatchIsConcurrent:
                 n = calls["n"]
             if n == 2:
                 raise RuntimeError("boom")
-            return [{"ok": True}], 0, 1
+            return [{"ok": True}], 0, 1, 0
 
         results = _drive(monkeypatch, work, num_workers=2, n_batches=4)
 
@@ -134,7 +134,7 @@ class TestRustBatchDispatchIsConcurrent:
         as a clean no-motif batch either."""
 
         def work(read_batch, config, motif_searcher, kmer_levels=None):
-            return [], 0, 2  # 2 reads submitted, Rust returned nothing
+            return [], 0, 2, 0  # 2 found in the POD5, Rust returned nothing
 
         (outcome,) = _drive(monkeypatch, work, num_workers=1, n_batches=1)
 
@@ -147,13 +147,61 @@ class TestRustBatchDispatchIsConcurrent:
         the batch had a motif match) is a legitimate, non-failure outcome."""
 
         def work(read_batch, config, motif_searcher, kmer_levels=None):
-            return [], 0, 0  # nothing submitted -- no motif anywhere in the batch
+            return [], 0, 0, 0  # nothing submitted -- no motif anywhere in the batch
 
         (outcome,) = _drive(monkeypatch, work, num_workers=1, n_batches=1)
 
         assert not outcome.batch_failed
         assert outcome.chunks == []
         assert outcome.n_failed_reads == 0
+
+    def test_batch_wholly_absent_from_the_pod5_is_not_a_failure(self, monkeypatch):
+        """Issue #325: the third way a batch yields nothing.
+
+        Every submitted read was simply not in this POD5 -- the expected
+        shape when the POD5 was pre-filtered to a subset of the BAM's reads.
+        Indistinguishable from the #267/#258 signature above without the
+        per-call count Rust now returns, and it happens on EVERY batch of
+        such a run, so treating it as failure aborts the whole thing.
+        """
+
+        def work(read_batch, config, motif_searcher, kmer_levels=None):
+            return [], 0, 3, 3  # 3 submitted, all 3 absent from the POD5
+
+        (outcome,) = _drive(monkeypatch, work, num_workers=1, n_batches=1)
+
+        assert not outcome.batch_failed
+        assert outcome.chunks == []
+        assert outcome.n_failed_reads == 0
+        assert outcome.n_reads_missing_from_pod5 == 3
+
+    def test_zero_yield_still_fails_for_the_reads_that_were_found(self, monkeypatch):
+        """The #267/#258 guard survives partial POD5 coverage.
+
+        One read of three was absent; the other two WERE found and still
+        produced nothing, which is the genuine zero-output failure. Only
+        those two count.
+        """
+
+        def work(read_batch, config, motif_searcher, kmer_levels=None):
+            return [], 0, 3, 1
+
+        (outcome,) = _drive(monkeypatch, work, num_workers=1, n_batches=1)
+
+        assert not outcome.batch_failed
+        assert outcome.n_failed_reads == 2
+        assert outcome.n_reads_missing_from_pod5 == 1
+
+    def test_absent_reads_are_reported_even_when_chunks_come_back(self, monkeypatch):
+        """A productive batch still reports what the POD5 was missing."""
+
+        def work(read_batch, config, motif_searcher, kmer_levels=None):
+            return [{"read_id": "x"}], 0, 3, 2
+
+        (outcome,) = _drive(monkeypatch, work, num_workers=1, n_batches=1)
+
+        assert outcome.n_failed_reads == 0
+        assert outcome.n_reads_missing_from_pod5 == 2
 
     def test_in_flight_window_is_bounded(self, monkeypatch):
         """The driver must not pull the whole BAM into memory up front."""
@@ -167,7 +215,7 @@ class TestRustBatchDispatchIsConcurrent:
         def work(read_batch, config, motif_searcher, kmer_levels=None):
             started.release()
             proceed.wait(timeout=20.0)
-            return [], 0, 0
+            return [], 0, 0, 0
 
         def counting_batches(*a, **k):
             for _ in range(500):
@@ -325,3 +373,69 @@ class TestPrepareTrainingDataParallelFailureHandling:
         assert stats["total_chunks"] == 0
         assert stats["failed_reads"] == 0
         assert stats["failed_batches"] == 0
+        assert stats["reads_missing_from_pod5"] == 0
+
+    def test_reads_absent_from_the_pod5_do_not_trip_the_threshold(self, monkeypatch):
+        """Issue #325: 9 of 10 reads not in the POD5 -- 90%, and fine.
+
+        This is what a POD5 pre-filtered to one cognate region looks like
+        against a full-scope BAM. Before the fix every one of those reads was
+        counted as failed, so the run raised with no output at all even
+        though the one present read extracted correctly.
+        """
+        outcomes = [
+            par.BatchOutcome(n_reads=10, chunks=[{"read_id": "r0"}], n_reads_missing_from_pod5=9)
+        ]
+        chunks, stats = self._run(monkeypatch, outcomes)
+        assert len(chunks) == 1
+        assert stats["reads_missing_from_pod5"] == 9
+        assert stats["failed_reads"] == 0
+        # Absent reads belong to neither "no motif" nor "failed".
+        assert stats["reads_without_motif"] == 0
+        assert stats["reads_with_motif"] == 1
+
+    def test_failed_fraction_is_measured_over_attempted_reads(self, monkeypatch):
+        """Absent reads leave the denominator too, or they hide real failures.
+
+        100 reads, 90 absent from the POD5, 6 of the remaining 10 failing:
+        60% of what was actually attempted, but only 6% of the BAM. Measured
+        against the BAM it never trips, and a genuinely broken pipeline
+        finishes clean behind a pre-filtered POD5.
+        """
+        outcomes = [
+            par.BatchOutcome(
+                n_reads=100,
+                chunks=[{"read_id": f"r{i}"} for i in range(4)],
+                n_failed_reads=6,
+                n_reads_missing_from_pod5=90,
+            )
+        ]
+        with pytest.raises(RuntimeError, match="threshold"):
+            self._run(monkeypatch, outcomes)
+
+    def test_every_read_absent_returns_cleanly(self, monkeypatch):
+        """Nothing attempted is not a failed fraction -- and not a crash.
+
+        A wholly mismatched BAM/POD5 pair lands here with an empty
+        denominator. It is still caught, one level up: zero chunks is what
+        ``handle_prepare`` raises on, and the count is in the stats.
+        """
+        outcomes = [par.BatchOutcome(n_reads=10, chunks=[], n_reads_missing_from_pod5=10)]
+        chunks, stats = self._run(monkeypatch, outcomes)
+        assert chunks == []
+        assert stats["total_chunks"] == 0
+        assert stats["reads_missing_from_pod5"] == 10
+        assert stats["failed_reads"] == 0
+
+    def test_a_genuine_failure_behind_a_filtered_pod5_still_raises(self, monkeypatch):
+        """Both buckets at once: the #265 guard must still fire."""
+        outcomes = [
+            par.BatchOutcome(
+                n_reads=20,
+                chunks=[],
+                n_failed_reads=8,
+                n_reads_missing_from_pod5=10,
+            )
+        ]
+        with pytest.raises(RuntimeError, match="threshold"):
+            self._run(monkeypatch, outcomes)

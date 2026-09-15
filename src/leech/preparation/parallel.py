@@ -72,6 +72,11 @@ logger = logging.getLogger("leech.preparation.parallel")
 #: legitimately strict motif/config never trips it by accident, while a run
 #: this broken cannot masquerade as "0 chunks extracted" plus N warnings in
 #: an sbatch log.
+#:
+#: The fraction is taken over the reads actually ATTEMPTED -- reads the POD5
+#: has no signal for are excluded from both the numerator and the denominator
+#: (issue #325), since a POD5 pre-filtered to a subset of the BAM is a
+#: supported pairing and routinely accounts for most of the BAM.
 MAX_FAILED_READ_FRACTION = 0.5
 
 
@@ -79,12 +84,26 @@ class BatchOutcome(NamedTuple):
     """Per-batch result yielded by either dispatcher (issue #265).
 
     ``n_failed_reads`` counts reads dropped by an exception while being
-    processed, plus -- Rust only -- reads that had a motif match and were
+    processed, plus -- Rust only -- reads that were found in the POD5 and
     submitted to the Rust pipeline, but for which the call returned zero
     chunks; that is the closest signal observable from Python without a
-    per-read outcome from ``leech_core`` (issue #267/#258, not in scope
-    here). It never counts reads with no motif match, which is an expected,
-    non-failure outcome.
+    per-read outcome from ``leech_core`` (issue #267/#258). It never counts
+    reads excluded for an expected reason, of which there are two:
+
+    - **no motif match** -- the read was processed cleanly and simply has no
+      focus base.
+    - **absent from the POD5** (``n_reads_missing_from_pod5``, issue #325) --
+      the BAM covers the full reference set while the POD5 was deliberately
+      pre-filtered to a subset of those reads, which is what ``escpod
+      bam-filter`` and this project's own pipeline Filter stage produce. That
+      mismatch is by design and routinely exceeds 50% of the BAM, so counting
+      it as failure trips ``MAX_FAILED_READ_FRACTION`` and aborts a run whose
+      every present read extracted correctly.
+
+    The second bucket is deliberately *not* a weakening of #265: a read that
+    was found in the POD5 and still produced nothing stays a failure, and only
+    a batch whose submitted reads were **all** missing escapes the Rust
+    zero-yield heuristic (see :func:`_iter_rust_batches`).
 
     ``batch_failed`` is True only when the whole per-batch call raised (a
     Rust panic, a bad config, ...) rather than any individual read.
@@ -94,6 +113,7 @@ class BatchOutcome(NamedTuple):
     chunks: list[dict[str, np.ndarray | str | int | None]]
     n_failed_reads: int = 0
     batch_failed: bool = False
+    n_reads_missing_from_pod5: int = 0
 
 
 def _process_read_chunk_worker(
@@ -114,13 +134,13 @@ def _process_read_chunk_worker(
     existing callers (``tests/test_backend_parity.py`` chief among them) rely
     on for a direct, chunks-only comparison against the Rust backend.
     """
-    chunks, _n_failed = _process_read_chunk_worker_with_failures(args)
+    chunks, _n_failed, _n_missing = _process_read_chunk_worker_with_failures(args)
     return chunks
 
 
 def _process_read_chunk_worker_with_failures(
     args: tuple[list[ReadInfo], PrepareConfig],
-) -> tuple[list[dict[str, np.ndarray | str | int | None]], int]:
+) -> tuple[list[dict[str, np.ndarray | str | int | None]], int, int]:
     """``_process_read_chunk_worker``, plus a count of reads that raised.
 
     Builds its own motif searcher from ``config`` on every call -- correct,
@@ -134,10 +154,12 @@ def _process_read_chunk_worker_with_failures(
         args: Tuple of (read_infos, config)
 
     Returns:
-        ``(chunks, n_failed_reads)``. ``n_failed_reads`` counts reads whose
-        processing raised and was skipped; it does not count reads that
-        processed cleanly but had no motif match, or reads dropped by
-        ``focus_map`` filtering.
+        ``(chunks, n_failed_reads, n_reads_missing_from_pod5)``.
+        ``n_failed_reads`` counts reads whose processing raised and was
+        skipped; it does not count reads that processed cleanly but had no
+        motif match, or reads dropped by ``focus_map`` filtering, or reads
+        this POD5 has no signal for -- the last of those is its own,
+        expected-exclusion bucket (issue #325).
     """
     read_infos, config = args
 
@@ -159,7 +181,7 @@ def _process_read_infos(
     read_infos: list[ReadInfo],
     config: PrepareConfig,
     motif_searcher: MotifSearcher | None,
-) -> tuple[list[dict[str, np.ndarray | str | int | None]], int]:
+) -> tuple[list[dict[str, np.ndarray | str | int | None]], int, int]:
     """Core per-batch extraction loop, given an already-resolved motif searcher.
 
     Shared by :func:`_process_read_chunk_worker_with_failures` (builds its own
@@ -168,11 +190,12 @@ def _process_read_infos(
     rebuilding the searcher on every batch (issue #275).
 
     Returns:
-        ``(chunks, n_failed_reads)`` -- see
+        ``(chunks, n_failed_reads, n_reads_missing_from_pod5)`` -- see
         :func:`_process_read_chunk_worker_with_failures`.
     """
     all_chunks: list[dict[str, np.ndarray | str | int | None]] = []
     n_failed = 0
+    n_missing_from_pod5 = 0
 
     # Focus-map early-skip: drop reads not in the map BEFORE the POD5
     # signal fetch and move-table parse. Without this, an 800k-read BAM
@@ -181,7 +204,7 @@ def _process_read_infos(
     if config.labeling.focus_map is not None:
         read_infos = [ri for ri in read_infos if ri.read_id in config.labeling.focus_map]
         if not read_infos:
-            return all_chunks, n_failed
+            return all_chunks, n_failed, n_missing_from_pod5
 
     # Batch-read all POD5 signals via the process-local reader cache.
     read_info_by_id = {ri.read_id: ri for ri in read_infos}
@@ -191,14 +214,23 @@ def _process_read_infos(
         try:
             cached = pod5_cache.get(read_info.read_id)
             if cached is None:
-                # Missing signal, not a missing motif -- e.g. a read_id BAM
-                # has that this POD5 doesn't. Count it: it is exactly the
-                # kind of failure a systematic problem (wrong POD5, a
-                # directory passed where a file was expected, #166) produces
-                # on every read, and it used to vanish here with no log line
-                # and no count at all.
-                logger.warning(f"Worker: no POD5 signal for read {read_info.read_id}")
-                n_failed += 1
+                # A read_id the BAM has and this POD5 does not. Counted, but
+                # in its own bucket rather than as a failure (issue #325):
+                # pairing a full-scope BAM with a POD5 pre-filtered to a
+                # subset of its reads is the documented shape of this
+                # project's pipeline Filter stage, and counting the
+                # difference as failure aborts the whole run through
+                # MAX_FAILED_READ_FRACTION as soon as the filter is at all
+                # selective. A genuinely wrong POD5 (#166) still surfaces:
+                # it yields zero chunks, which `handle_prepare` raises on,
+                # and the stats say how many reads were absent.
+                #
+                # Per-read logging is `debug`, not `warning`, for the same
+                # reason -- on a pre-filtered POD5 this fires for most of the
+                # BAM, and the run-level count in the "Read yield" line is
+                # the figure worth reading.
+                logger.debug(f"Worker: no POD5 signal for read {read_info.read_id}")
+                n_missing_from_pod5 += 1
                 continue
             raw_signal, pod5_metadata = cached
 
@@ -250,7 +282,7 @@ def _process_read_infos(
             n_failed += 1
             continue
 
-    return all_chunks, n_failed
+    return all_chunks, n_failed, n_missing_from_pod5
 
 
 # ---------------------------------------------------------------------------
@@ -309,7 +341,7 @@ def _init_worker(config: PrepareConfig) -> None:
 
 def _process_pooled_batch(
     args: tuple[int, list[ReadInfo]],
-) -> tuple[int, list[dict[str, np.ndarray | str | int | None]], int]:
+) -> tuple[int, list[dict[str, np.ndarray | str | int | None]], int, int]:
     """``mp.Pool`` task entry point: read config/searcher from worker globals.
 
     Tasks carry ``(seq, read_batch)`` only -- everything else was resolved
@@ -328,8 +360,10 @@ def _process_pooled_batch(
             f"mp.Pool worker failed to initialize: {_worker_init_error}"
         ) from _worker_init_error
     seq, read_infos = args
-    chunks, n_failed = _process_read_infos(read_infos, _worker_config, _worker_motif_searcher)
-    return seq, chunks, n_failed
+    chunks, n_failed, n_missing = _process_read_infos(
+        read_infos, _worker_config, _worker_motif_searcher
+    )
+    return seq, chunks, n_failed, n_missing
 
 
 # ---------------------------------------------------------------------------
@@ -419,7 +453,7 @@ def _prepare_batch_rust(
     (``tests/test_backend_parity.py`` chief among them) rely on for a direct,
     chunks-only comparison against the Python backend.
     """
-    chunks, _n_failed, _n_submitted = _prepare_batch_rust_with_failures(
+    chunks, _n_failed, _n_submitted, _n_missing = _prepare_batch_rust_with_failures(
         read_infos, config, motif_searcher, kmer_levels
     )
     return chunks
@@ -430,7 +464,7 @@ def _prepare_batch_rust_with_failures(
     config: PrepareConfig,
     motif_searcher: MotifSearcher | None,
     kmer_levels=None,
-) -> tuple[list[dict[str, np.ndarray | str | int | None]], int, int]:
+) -> tuple[list[dict[str, np.ndarray | str | int | None]], int, int, int]:
     """``_prepare_batch_rust``, plus failure/submission counts (issue #265).
 
     Args:
@@ -446,12 +480,15 @@ def _prepare_batch_rust_with_failures(
             from.
 
     Returns:
-        ``(chunks, n_failed_reads, n_reads_submitted)``. ``n_reads_submitted``
-        is the number of reads that had a motif match and were handed to the
-        Rust call -- the closest thing to "reads Rust actually attempted" a
-        Python driver can observe without a per-read outcome from
-        ``leech_core`` (issue #267/#258, not in scope here). A read with no
-        motif match is not a failure and is not counted in either figure.
+        ``(chunks, n_failed_reads, n_reads_submitted, n_missing_from_pod5)``.
+        ``n_reads_submitted`` is the number of reads that had a motif match
+        and were handed to the Rust call. ``n_missing_from_pod5`` is how many
+        of those the POD5 turned out to hold no signal for -- Rust reports it
+        per call (issue #325) because from Python the two are otherwise
+        indistinguishable: both a pre-filtered POD5 and a genuinely broken
+        pipeline show up as "reads went in, no chunks came out". A read with
+        no motif match is not a failure and is not counted in any of these
+        figures.
     """
     # Collect per-read BAM metadata arrays for the Rust call
     read_ids: list[str] = []
@@ -520,7 +557,7 @@ def _prepare_batch_rust_with_failures(
 
     n_submitted = len(read_ids)
     if not read_ids:
-        return [], n_failed, n_submitted
+        return [], n_failed, n_submitted, 0
 
     # Resolve signal context. Base-defined mode (issue #278) resolves its own
     # per-chunk sample window inside Rust from `signal_context_bases_left/
@@ -572,7 +609,7 @@ def _prepare_batch_rust_with_failures(
         kmer_levels = None
 
     # Call Rust: POD5 I/O + normalize + anchor + refine + features + chunk extraction
-    rust_chunks = _rs_extract_training_chunks(
+    rust_result = _rs_extract_training_chunks(
         pod5_path=str(config.pod5_path),
         read_ids=read_ids,
         sequences=sequences,
@@ -605,6 +642,19 @@ def _prepare_batch_rust_with_failures(
         signal_context_bases_left=bases_ctx[0] if bases_ctx is not None else None,
         signal_context_bases_right=bases_ctx[1] if bases_ctx is not None else None,
     )
+
+    # `leech_core` returns `(chunks, n_missing_from_pod5)` since #325. An
+    # extension predating that returns a bare list, which would unpack as a
+    # cryptic ValueError about the number of chunks -- and `leech_core` is a
+    # separate distribution that can legitimately sit at another revision
+    # (see `_rust_accel.rust_version_mismatch`), so say which half is stale.
+    if not isinstance(rust_result, tuple):
+        raise RuntimeError(
+            "leech_core.extract_training_chunks returned a bare chunk list; this "
+            "extension predates the (chunks, n_missing_from_pod5) return added "
+            "in rnabioco/leech#325. Rebuild it with `bash rust/build.sh`."
+        )
+    rust_chunks, n_missing_from_pod5 = rust_result
 
     # Attach Python-side labels/metadata.
     # The window Rust actually used, resolved by the same rule Python's
@@ -642,7 +692,7 @@ def _prepare_batch_rust_with_failures(
 
         all_chunks.append(chunk_dict)
 
-    return all_chunks, n_failed, n_submitted
+    return all_chunks, n_failed, n_submitted, n_missing_from_pod5
 
 
 # ---------------------------------------------------------------------------
@@ -739,6 +789,9 @@ def _iter_rust_batches(
     A batch whose call raises outright (a Rust panic, a config error) is
     reported as ``batch_failed=True`` rather than silently swallowed to an
     empty result -- the caller decides whether that is fatal (issue #265).
+    A batch that returned no chunks despite reads being *found in the POD5*
+    is reported as those reads failing, for the same reason; a batch whose
+    reads were simply absent from a pre-filtered POD5 is not (issue #325).
 
     ``kmer_levels``: pre-built ``leech_core.KmerLevels`` handle (or ``None``),
     built ONCE by the caller and shared read-only across every concurrently
@@ -777,22 +830,36 @@ def _iter_rust_batches(
 
             n_reads, future = pending.popleft()
             try:
-                chunks, n_failed, n_submitted = future.result()
+                chunks, n_failed, n_submitted, n_missing = future.result()
             except Exception as e:
                 logger.warning(f"Rust batch failed, skipping: {e}")
                 yield BatchOutcome(n_reads, [], n_failed_reads=n_reads, batch_failed=True)
                 continue
 
-            if n_submitted > 0 and not chunks:
-                # Real work went in (reads with a motif match) and nothing
-                # came back, with no exception raised. That is the closest
-                # signal a Python driver has to "Rust dropped every read in
-                # this batch" without a per-read outcome from leech_core
-                # (issue #267/#258, not in scope here) -- treat every
-                # submitted read as failed rather than letting it read as a
-                # clean "no motif" batch.
-                n_failed = max(n_failed, n_submitted)
-            yield BatchOutcome(n_reads, chunks, n_failed_reads=n_failed)
+            # Reads that were FOUND in the POD5 and handed to the pipeline.
+            # `n_submitted` alone conflates two batches that look identical
+            # from here (issue #325): one where the pipeline misbehaved, and
+            # one whose reads simply are not in a POD5 pre-filtered to a
+            # subset of the BAM. Only the first is a failure, and on a
+            # selective filter the second is *every* batch.
+            n_attempted = n_submitted - n_missing
+            if n_attempted > 0 and not chunks:
+                # Real work went in (reads with a motif match, present in the
+                # POD5) and nothing came back, with no exception raised. That
+                # is the closest signal a Python driver has to "Rust dropped
+                # every read in this batch" without a per-read outcome from
+                # leech_core (issue #267/#258) -- treat every attempted read
+                # as failed rather than letting it read as a clean "no motif"
+                # batch. Reads absent from the POD5 are excluded from the
+                # count, not merely from the trigger: they were never
+                # attempted.
+                n_failed = max(n_failed, n_attempted)
+            yield BatchOutcome(
+                n_reads,
+                chunks,
+                n_failed_reads=n_failed,
+                n_reads_missing_from_pod5=n_missing,
+            )
 
 
 def _iter_python_batches(
@@ -829,10 +896,15 @@ def _iter_python_batches(
             yield (seq, read_batch)
 
     with mp.Pool(processes=num_workers, initializer=_init_worker, initargs=(config,)) as pool:
-        for seq, chunk_results, n_failed in pool.imap_unordered(
+        for seq, chunk_results, n_failed, n_missing in pool.imap_unordered(
             _process_pooled_batch, _worker_arg_stream()
         ):
-            yield BatchOutcome(batch_sizes.pop(seq, 0), chunk_results, n_failed_reads=n_failed)
+            yield BatchOutcome(
+                batch_sizes.pop(seq, 0),
+                chunk_results,
+                n_failed_reads=n_failed,
+                n_reads_missing_from_pod5=n_missing,
+            )
 
 
 def _count_reads_with_chunks(batch_chunks: list[dict]) -> int:
@@ -986,6 +1058,7 @@ def prepare_training_data_parallel(
     reads_with_chunks = 0
     batches_completed = 0
     total_failed_reads = 0
+    total_missing_from_pod5 = 0
     failed_batches = 0
 
     use_progress_bar = sys.stdout.isatty()
@@ -1057,6 +1130,7 @@ def prepare_training_data_parallel(
                 reads_with_chunks += _count_reads_with_chunks(outcome.chunks)
                 total_chunks += len(outcome.chunks)
                 total_failed_reads += outcome.n_failed_reads
+                total_missing_from_pod5 += outcome.n_reads_missing_from_pod5
                 failed_batches += int(outcome.batch_failed)
                 if chunk_sink is None:
                     all_chunks.extend(outcome.chunks)
@@ -1080,6 +1154,7 @@ def prepare_training_data_parallel(
             reads_with_chunks += _count_reads_with_chunks(outcome.chunks)
             total_chunks += len(outcome.chunks)
             total_failed_reads += outcome.n_failed_reads
+            total_missing_from_pod5 += outcome.n_reads_missing_from_pod5
             failed_batches += int(outcome.batch_failed)
             if chunk_sink is None:
                 all_chunks.extend(outcome.chunks)
@@ -1094,6 +1169,7 @@ def prepare_training_data_parallel(
             "total_reads": 0,
             "reads_with_motif": 0,
             "reads_without_motif": 0,
+            "reads_missing_from_pod5": 0,
             "total_chunks": 0,
             "failed_reads": 0,
             "failed_batches": 0,
@@ -1109,12 +1185,16 @@ def prepare_training_data_parallel(
     # from an outright-failed batch or a per-read exception into "no motif
     # found", so a systematic failure (a Rust panic on every call, a bad
     # config) looked identical in the log to a healthy run with a strict
-    # motif. `failed_reads`/`failed_batches` are their own bucket now.
-    reads_without_motif = max(0, total_reads - reads_with_chunks - total_failed_reads)
+    # motif. `failed_reads`/`failed_batches` are their own bucket now, and so
+    # are reads this POD5 simply does not carry (issue #325).
+    reads_without_motif = max(
+        0, total_reads - reads_with_chunks - total_failed_reads - total_missing_from_pod5
+    )
     stats = {
         "total_reads": total_reads,
         "reads_with_motif": reads_with_chunks,
         "reads_without_motif": reads_without_motif,
+        "reads_missing_from_pod5": total_missing_from_pod5,
         "total_chunks": total_chunks,
         "failed_reads": total_failed_reads,
         "failed_batches": failed_batches,
@@ -1133,10 +1213,17 @@ def prepare_training_data_parallel(
     # Failed reads/batches are broken out from "no motif" explicitly (issue
     # #265): folding them together is exactly what let a total-failure run
     # (a Rust panic on every batch) read as a clean "no motif found" result.
+    # Reads absent from the POD5 are their own bucket for the mirror-image
+    # reason (issue #325): they are expected against a pre-filtered POD5, so
+    # they must not read as failures -- but a run that extracted from a
+    # fraction of its BAM should say so in one line rather than leave it to
+    # be inferred from a yield percentage.
     logger.info(
         f"Read yield [{backend}]: {reads_with_chunks}/{total_reads} reads produced chunks "
         f"({100.0 * reads_with_chunks / total_reads:.2f}%); "
         f"{reads_without_motif} had no motif match; "
+        f"{total_missing_from_pod5} were absent from the POD5 "
+        f"({100.0 * total_missing_from_pod5 / total_reads:.2f}%); "
         f"{total_failed_reads} failed during processing"
         + (f" across {failed_batches} failed batch(es)" if failed_batches else "")
     )
@@ -1152,16 +1239,27 @@ def prepare_training_data_parallel(
             f"reads counted as failed."
         )
 
-    failed_fraction = total_failed_reads / total_reads
+    # Measured against the reads that were actually ATTEMPTED, not every read
+    # in the BAM (issue #325). A POD5 pre-filtered to a subset of the BAM's
+    # reads is a supported pairing, and those reads were never processed --
+    # leaving them in the denominator would let a genuinely broken run hide
+    # behind them: 100 reads present and 60 of them failing shows as 6% of a
+    # 1000-read BAM and never trips. Zero attempted reads is not a failure
+    # this check can speak to; `handle_prepare` raises on the resulting zero
+    # chunks, and the stats say how many reads the POD5 was missing.
+    reads_attempted = total_reads - total_missing_from_pod5
+    failed_fraction = total_failed_reads / reads_attempted if reads_attempted > 0 else 0.0
     if failed_fraction > MAX_FAILED_READ_FRACTION:
         raise RuntimeError(
-            f"prepare failed [{backend}]: {total_failed_reads}/{total_reads} reads "
+            f"prepare failed [{backend}]: {total_failed_reads}/{reads_attempted} reads "
             f"({100.0 * failed_fraction:.1f}%) failed during processing, above the "
             f"{100.0 * MAX_FAILED_READ_FRACTION:.0f}% threshold "
             f"(leech.preparation.parallel.MAX_FAILED_READ_FRACTION). This usually "
             f"means a systematic problem -- a bad config, a corrupted POD5, a "
             f"dtype error hit on nearly every read -- not ordinary per-read "
-            f"dropout. Check the warnings above for the underlying error(s)."
+            f"dropout. Check the warnings above for the underlying error(s). "
+            f"({total_reads} reads seen, {total_missing_from_pod5} of them absent "
+            f"from the POD5 and therefore never attempted.)"
         )
 
     return all_chunks, stats

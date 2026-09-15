@@ -229,8 +229,9 @@ uv run leech data prepare --pod5 data.pod5 --bam alignments.bam \
 | Python (fallback) | `_iter_python_batches` — `mp.Pool(num_workers)` | each process holds its own cached POD5 reader |
 
 `--workers` sets the number of batches in flight on **both**. Both iterators
-yield a `BatchOutcome(n_reads, chunks, n_failed_reads, batch_failed)`; the
-caller (`prepare_training_data_parallel`) does progress and accounting once.
+yield a `BatchOutcome(n_reads, chunks, n_failed_reads, batch_failed,
+n_reads_missing_from_pod5)`; the caller (`prepare_training_data_parallel`)
+does progress and accounting once.
 `n_failed_reads` and `batch_failed` exist so a systematically broken run
 (a Rust panic on every batch, a bad config) raises instead of finishing with
 "0 chunks, exit 0" and a pile of warnings — see "Failing loud on a broken
@@ -299,6 +300,35 @@ That tradeoff was chosen deliberately for #265 (don't trust a corpus one of
 whose batches came from a misbehaving pipeline); a retry-per-batch or
 save-partial-and-report policy would be a different, larger change and is not
 implemented.
+
+**A read the POD5 does not carry is an expected exclusion, not a failure
+(issue #325).** Pairing a full-scope BAM with a POD5 pre-filtered to a subset
+of its reads — `escpod bam-filter`, the pipeline's own Filter stage — is a
+supported, routine shape, and the mismatch is usually most of the BAM. Counted
+as failure it tripped `MAX_FAILED_READ_FRACTION` on every such run: no output
+at all, though every read that *was* present extracted correctly.
+`BatchOutcome.n_reads_missing_from_pod5` is that bucket, alongside
+`reads_without_motif` and separate from `n_failed_reads`; the "Read yield"
+line reports it and `stats["reads_missing_from_pod5"]` carries it out.
+
+The failed fraction is taken over the reads **attempted** — `total_reads`
+minus the missing ones — in both numerator and denominator. Leaving them in
+the denominator is the mirror bug: 100 reads present with 60 failing reads as
+6% of a 1000-read BAM and never trips.
+
+Telling the two apart needs Rust's help. `training.rs` drops a read whose id
+is not in the signal map to zero chunks, so from Python a pre-filtered batch
+and a batch the pipeline silently broke on look identical — which is what
+`_iter_rust_batches`' "submitted reads, no chunks back" heuristic (#267/#258)
+keys off. `extract_training_chunks` therefore returns
+`(chunks, n_missing_from_pod5)` rather than a bare list, and the heuristic
+fires on `n_submitted - n_missing` instead of `n_submitted`: reads that were
+found and still produced nothing are failures exactly as before, and only a
+batch whose reads were *all* absent escapes it. Do not weaken that back to
+`n_submitted > 0`.
+
+A wholly mismatched BAM/POD5 pair (#166) is still caught — it extracts zero
+chunks, which `handle_prepare` raises on, naming the absent-read count.
 
 ### POD5 access from Rust
 

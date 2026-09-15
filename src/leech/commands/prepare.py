@@ -329,12 +329,19 @@ def handle_prepare(
             # `prepare_training_data_parallel` already raises on its own
             # for an outright-failed batch or too high a failed-read
             # fraction, so reaching here with 0 chunks and no exception
-            # means every read was processed cleanly and legitimately had
-            # no motif match (indels at the motif site, insufficient
-            # context, or MAPQ filtering via --min-mapq={min_mapq}).
+            # means every read was either processed cleanly and legitimately
+            # had no motif match (indels at the motif site, insufficient
+            # context, or MAPQ filtering via --min-mapq={min_mapq}), or was
+            # absent from the POD5. The latter is an expected exclusion
+            # rather than a failure (issue #325) and so no longer trips
+            # MAX_FAILED_READ_FRACTION -- which means a wholly mismatched
+            # BAM/POD5 pair (#166) now lands here instead, and the message
+            # has to name it or that mistake reads as a motif problem.
             raise RuntimeError(
-                f"0 chunks extracted from {reads_processed} reads. Common "
-                f"causes: indels at motif site, insufficient context, or "
+                f"0 chunks extracted from {reads_processed} reads "
+                f"({stats.get('reads_missing_from_pod5', 0)} of them absent from "
+                f"the POD5). Common causes: a BAM/POD5 pair that do not share "
+                f"reads, indels at motif site, insufficient context, or "
                 f"MAPQ filtering (--min-mapq={min_mapq}). Stats: {stats}"
             )
 

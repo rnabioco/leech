@@ -290,6 +290,18 @@ fn process_one_read_training(
 
 /// Run per-read training extraction in parallel (rayon, GIL released),
 /// then convert results to Python dicts with numpy arrays.
+///
+/// Returns `(chunks, n_missing_from_pod5)`. The second figure counts
+/// `read_ids` this POD5 has no signal for -- a read the caller submitted and
+/// this call silently produced nothing for. It is reported separately because
+/// the two ways a submitted read can yield no chunk are not the same event
+/// (issue #325): a read absent from the POD5 is an *expected* exclusion when
+/// the POD5 was deliberately pre-filtered to a subset of the BAM's reads
+/// (`escpod bam-filter`, the pipeline's own Filter stage), while a read that
+/// *was* found and still produced nothing is the zero-output signature
+/// `_iter_rust_batches` treats as a failure (issue #267/#258). Without this
+/// count the Python driver cannot tell them apart, and a selective POD5
+/// filter trips `MAX_FAILED_READ_FRACTION` on every batch.
 #[allow(clippy::too_many_arguments)]
 fn _process_and_convert_training<'py>(
     py: Python<'py>,
@@ -305,8 +317,17 @@ fn _process_and_convert_training<'py>(
     cigar_tuples: &Option<Vec<Vec<(u32, u32)>>>,
     reference_sequences: &Option<Vec<Option<String>>>,
     signal_context_bases: Option<(i64, i64)>,
-) -> PyResult<Vec<Py<PyAny>>> {
+) -> PyResult<(Vec<Py<PyAny>>, usize)> {
     let n_reads = read_ids.len();
+
+    // Counted over the SUBMITTED ids, so it is directly comparable against
+    // `n_submitted` on the Python side: `n_missing_from_pod5 == n_submitted`
+    // means the whole batch was filtered out of this POD5, which is not a
+    // failure at all.
+    let n_missing_from_pod5 = read_ids
+        .iter()
+        .filter(|rid| !signal_map.contains_key(rid.as_str()))
+        .count();
 
     // Phase 2: Per-read processing (parallel via rayon, GIL released)
     let all_chunks: Vec<Vec<TrainingChunkResult>> = py.detach(|| {
@@ -391,7 +412,7 @@ fn _process_and_convert_training<'py>(
         }
     }
 
-    Ok(results)
+    Ok((results, n_missing_from_pod5))
 }
 
 // ---------------------------------------------------------------------------
@@ -400,9 +421,16 @@ fn _process_and_convert_training<'py>(
 
 /// Extract training-format chunks for a batch of reads in one Rust call.
 ///
-/// Returns a list of Python dicts, each containing numpy arrays for signal,
-/// dwell, features, and metadata. Labels and other Python-side metadata
-/// are attached by the caller.
+/// Returns `(chunks, n_missing_from_pod5)`: a list of Python dicts, each
+/// containing numpy arrays for signal, dwell, features, and metadata, and the
+/// number of submitted `read_ids` this POD5 holds no signal for. Labels and
+/// other Python-side metadata are attached by the caller.
+///
+/// The second element exists so the caller can tell "this POD5 was pre-filtered
+/// to a subset of the BAM" (benign, and the whole point of the pipeline's
+/// Filter stage) from "reads were found and the pipeline still produced
+/// nothing" (a real failure). See `_process_and_convert_training` and issue
+/// #325.
 ///
 /// Per-read processing is parallelized with rayon (GIL released).
 #[pyfunction]
@@ -473,7 +501,7 @@ pub fn extract_training_chunks<'py>(
     base_justify: &str,
     signal_context_bases_left: Option<i64>,
     signal_context_bases_right: Option<i64>,
-) -> PyResult<Vec<Py<PyAny>>> {
+) -> PyResult<(Vec<Py<PyAny>>, usize)> {
     let signal_context_bases = match (signal_context_bases_left, signal_context_bases_right) {
         (Some(l), Some(r)) => Some((l, r)),
         _ => None,

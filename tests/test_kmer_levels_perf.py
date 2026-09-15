@@ -89,7 +89,9 @@ def test_kmer_table_argument_conversion_is_cheap_once_built():
 
     # Warm up (first call pays one-time page-fault / cache-warming cost that
     # has nothing to do with argument conversion).
-    assert _call() == []
+    # `(chunks, n_missing_from_pod5)` since #325 -- no read ids submitted, so
+    # nothing to extract and nothing to be missing.
+    assert _call() == ([], 0)
 
     timings_ms = []
     for _ in range(N_CALLS):
