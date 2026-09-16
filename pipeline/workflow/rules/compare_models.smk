@@ -56,6 +56,9 @@ rule train_architecture_pairwise:
         early_stopping=config.get("early_stopping_patience", 5),
         device="cpu" if config.get("use_cpu_training", False) else "cuda",
     shell:
+        # --resume points at the undeclared rolling checkpoint
+        # (model_resume.pt), not either declared output -- see
+        # train_pairwise_aa in train.smk and leech#330 for why.
         """
         uv run leech model train \
             --train-data {input.train} \
@@ -69,6 +72,7 @@ rule train_architecture_pairwise:
             --learning-rate {params.lr} \
             --early-stopping {params.early_stopping} \
             --device {params.device} \
+            --resume {params.output_dir}/model_resume.pt \
             2>&1 | tee {log}
         """
 

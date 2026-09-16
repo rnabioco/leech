@@ -18,6 +18,7 @@ import json
 import logging
 import multiprocessing
 import os
+import random
 from pathlib import Path
 
 import numpy as np
@@ -36,10 +37,11 @@ from leech.distributed import (
     backend_for,
     configure_rank_logging,
     device_for,
+    gather_objects,
     spawn,
     validate_request,
 )
-from leech.training import Trainer, train_model
+from leech.training import Trainer, _capture_rng_state, _restore_rng_state, train_model
 
 # --------------------------------------------------------------------------
 # Sharding: the union of the ranks must be the epoch, exactly once
@@ -666,6 +668,106 @@ def test_single_gpu_creates_no_process_group(temp_chunks_file, tmp_path):
     _train(temp_chunks_file, tmp_path / "one_rank", gpus=1)
 
     assert not td.is_initialized()
+
+
+@pytest.mark.timeout(90)
+def test_two_rank_run_without_validation_does_not_hang(temp_chunks_file, tmp_path):
+    """``_ensure_best_checkpoint``'s no-stored-best fallback must not hang under DDP.
+
+    With no validation, ``self._best_model_state`` is never set, so
+    ``_ensure_best_checkpoint`` falls back to ``self.save_checkpoint(...)`` --
+    which gathers per-rank RNG state as a collective (#330). That fallback
+    used to sit behind an ``_is_main``-gated early return, so only rank 0
+    would ever reach it: every other rank had already returned, leaving rank
+    0 waiting on a collective its peers never join. A regression here hangs
+    rather than fails, which is why this has an explicit timeout rather than
+    relying on the suite's default.
+    """
+    train_model(
+        train_data_path=temp_chunks_file,
+        val_data_path=None,
+        model_name="ConvLSTMDwell",
+        output_dir=tmp_path / "no_val",
+        epochs=1,
+        batch_size=4,
+        device="cpu",
+        motif="CCAGGC",
+        seed=42,
+        num_workers=0,
+        gpus=2,
+    )
+
+    assert (tmp_path / "no_val" / "model_best.pt").exists()
+
+
+# --------------------------------------------------------------------------
+# Interrupt-safe resume (#330): RNG state is per rank, gathered for the save
+# and restored from each rank's own index, never another rank's
+# --------------------------------------------------------------------------
+
+
+def _rng_restore_worker(rank: int, world: int, port: int, out_dir: str) -> None:
+    os.environ["MASTER_ADDR"] = "127.0.0.1"
+    os.environ["MASTER_PORT"] = str(port)
+    td.init_process_group("gloo", rank=rank, world_size=world)
+    try:
+        ctx = DistContext(rank=rank, local_rank=rank, world_size=world, backend="gloo")
+        # A different draw per rank (mirroring how each rank's augmentation
+        # and DataLoader-worker seeding already diverges by design), so a
+        # restore that accidentally used another rank's entry produces a
+        # provably wrong `actual` below rather than one that happens to match.
+        random.seed(100 + rank)
+        np.random.seed(100 + rank)
+        torch.manual_seed(100 + rank)
+        random.random()
+        np.random.rand()
+        torch.rand(1)
+
+        state = _capture_rng_state()
+        expected = (random.random(), float(np.random.rand()), torch.rand(1).item())
+
+        # Simulate other work advancing this rank's RNGs between the save and
+        # the eventual resume (the epochs a real run would keep training).
+        random.random()
+        np.random.rand()
+        torch.rand(1)
+
+        # The collective every rank must call, exactly as save_checkpoint does
+        # ahead of its `_is_main` early return.
+        gathered = gather_objects(state, ctx)
+        assert len(gathered) == world
+
+        # `_resume_from_checkpoint` restores only `gathered[self.dist.rank]`.
+        _restore_rng_state(gathered[rank])
+        actual = (random.random(), float(np.random.rand()), torch.rand(1).item())
+
+        torch.save({"expected": expected, "actual": actual}, Path(out_dir) / f"rng_{rank}.pt")
+        td.barrier()
+    finally:
+        td.destroy_process_group()
+
+
+def test_resume_restores_per_rank_rng(tmp_path):
+    """Each rank's restored RNG state reproduces its own trajectory, not a peer's.
+
+    Rank 1 restoring rank 0's state (the bug a naive "save rank 0 only, reuse
+    everywhere" implementation would have) diverges immediately: seed 100 and
+    seed 101 agree on nothing. ``expected != actual`` for either rank fails
+    this the same way.
+    """
+    import torch.multiprocessing as mp
+
+    mp.spawn(_rng_restore_worker, args=(2, _free_port(), str(tmp_path)), nprocs=2, join=True)
+
+    for rank in range(2):
+        result = torch.load(tmp_path / f"rng_{rank}.pt", weights_only=False)
+        assert result["actual"] == result["expected"], f"rank {rank}"
+
+    # And the two ranks' own trajectories are distinct, so a restore that
+    # silently collapsed to one shared state would not go unnoticed above.
+    r0 = torch.load(tmp_path / "rng_0.pt", weights_only=False)
+    r1 = torch.load(tmp_path / "rng_1.pt", weights_only=False)
+    assert r0["expected"] != r1["expected"]
 
 
 # --------------------------------------------------------------------------

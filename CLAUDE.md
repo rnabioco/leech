@@ -650,6 +650,60 @@ with pre-loaded chunks (they would be pickled to every rank), or above
 `torch.cuda.device_count()` (which otherwise hangs in NCCL init instead of
 raising).
 
+### Interrupt-safe resume: `model_resume.pt` is undeclared on purpose
+
+`--resume` used to only accept `model_last.pt`, which `Trainer.train()` writes
+exactly once, after the epoch loop exits (issue #330). A SLURM walltime kill
+is not a loop exit — it never writes `model_last.pt` at all — so a Snakemake
+`restart-times` retry found nothing to resume from and started over from a
+fresh random seed, every time, for the whole `4h`-vs-`8.3h` cost of the run
+that timed out.
+
+`Trainer.save_checkpoint("model_resume.pt", ...)` now runs at the end of
+every epoch (atomically — `_atomic_torch_save` writes a sibling `.tmp` file
+and `os.replace`s it in, so a kill mid-write leaves the *previous* epoch's
+file intact, never a truncated one). It carries the complete resumable
+state — `history`, `patience_counter`, the adversarial head, the `ClipGrad`
+buffer, per-rank RNG/DataLoader-generator state (gathered via
+`distributed.gather_objects`, a collective every rank must call even though
+only rank 0 writes — see the warning below), the run seed, and a recipe +
+corpus fingerprint `_resume_from_checkpoint` refuses to resume across if
+either changed — and is deleted the moment a run finishes cleanly
+(`Trainer._finalize`). The recipe fingerprint (`_recipe_snapshot`) is scoped
+to exactly what `Trainer.__init__` itself can vary — optimizer, scheduler,
+loss, auxiliary-head settings — not the wider provenance `TrainConfig` also
+carries (motif, seq_encoding, batch_size, sampling strategy, ...), which only
+`train_model`'s fuller `cfg=None` fallback populates; a `Trainer` built
+directly (a real, tested path — ~60 call sites) never sets those, so guarding
+on them would refuse a legitimate direct-`Trainer` resume regardless of
+whether anything that actually matters changed.
+
+**Every `save_checkpoint` call site must be reached by every rank, or the
+RNG-state gather hangs.** It is a collective, called ahead of the
+`_is_main` early return specifically so every rank joins it even though only
+rank 0 goes on to write. `_ensure_best_checkpoint`'s no-stored-best fallback
+(reached when validation never ran, so nothing was ever "best") used to sit
+behind its own `_is_main`-gated early return — meaning only rank 0 would ever
+call `save_checkpoint`, and its collective would wait forever on peers that
+already returned. Fixed by making the *branch decision* (`best_path.exists()`,
+`self._best_model_state`) rank-invariant and gating only the actual writes on
+`_is_main`; `test_two_rank_run_without_validation_does_not_hang` is the
+regression test, with its own timeout since a reintroduction of this bug
+hangs rather than fails.
+
+**`model_resume.pt` is deliberately not a rule `output:`.** Snakemake deletes
+every declared output of a job that fails (`restart-times` is not
+`keep-incomplete`), so a rolling checkpoint filed under `model_last.pt` — or
+under a new declared name — would vanish along with the run it was meant to
+resume, the instant the walltime kill that necessitates it also makes the job
+"failed". Its whole value is surviving that deletion. `train.smk` and
+`compare_models.smk` pass `--resume {output_dir}/model_resume.pt`
+unconditionally (ignored when absent, i.e. every first attempt) precisely
+because it sits outside `output:` and a retry can still find it. Do not
+"clean up" this asymmetry by declaring it, moving its content into
+`model_last.pt`, or writing it only when `--resume` was passed — any of those
+puts it back where Snakemake deletes it before the retry starts.
+
 ### CTC-CRF: a second task, and five rules that do not announce themselves
 
 `leech.crf` maps a signal window to a *sequence* rather than a label — a CRF
@@ -1241,6 +1295,13 @@ The codebase is feature-complete (v0.12.0):
 - ✓ `ReadInfo` accepts either `CL` or lowercase `cl` for the charging-level
   BAM tag (preferring `CL` when both are present), so a renamed tag no longer
   silently zeroes `--cl-regression` gradients
+- ✓ Interrupt-safe `--resume`: an atomically-written, per-epoch
+  `model_resume.pt` (undeclared in the Snakemake rules on purpose, see
+  "Interrupt-safe resume") carries the full resumable state -- history,
+  early-stopping patience, the adversarial head, the `ClipGrad` buffer,
+  per-rank RNG state, the run seed -- and a recipe/corpus fingerprint
+  `--resume` refuses to cross, so a SLURM walltime kill recovers on retry
+  instead of restarting from a fresh seed
 
 All core functionality is implemented and ready for use.
 

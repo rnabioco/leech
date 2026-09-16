@@ -102,6 +102,13 @@ rule train_pairwise_aa:
         device="cpu" if config.get("use_cpu_training", False) else "cuda",
         gpus=config.get("train_gpus", 1),
     shell:
+        # --resume points at the undeclared rolling checkpoint
+        # (model_resume.pt), not either declared output -- Snakemake deletes
+        # a failed attempt's declared outputs, so a --resume wired to
+        # model_last.pt or model_best.pt would find nothing on the retry a
+        # SLURM walltime kill triggers. Ignored by `leech model train` when
+        # absent, so the first attempt is unaffected. See CLAUDE.md
+        # ("Interrupt-safe resume") and leech#330.
         """
         uv run leech model train \
             --train-data {input.train} \
@@ -116,5 +123,6 @@ rule train_pairwise_aa:
             --early-stopping {params.early_stopping} \
             --device {params.device} \
             --gpus {params.gpus} \
+            --resume {params.output_dir}/model_resume.pt \
             2>&1 | tee {log}
         """

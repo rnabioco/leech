@@ -92,7 +92,12 @@ The training process will save:
 
 - `model_best.pt`: Best model checkpoint, by `--checkpoint-metric` (default
   `auto`: val_auc for binary tasks, val_f1 for multiclass)
-- `model_last.pt`: Latest checkpoint
+- `model_last.pt`: Written once training finishes (early stopping or
+  completion)
+- `model_resume.pt`: Rolling checkpoint written after every epoch, for
+  recovering a run an external kill cut off mid-training (see `--resume` in
+  the [CLI reference](../reference/cli.md#leech-model-train)); deleted once
+  training finishes cleanly
 - `metrics.json`: Training metrics over time
 
 ## Step 3: Test the Model

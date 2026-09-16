@@ -1156,8 +1156,11 @@ class TestCheckpointRecovery:
             resume_from=output_dir / "model_last.pt",
         )
 
-        # Should have trained for epochs 4 and 5 (2 epochs)
-        assert len(history["train_loss"]) == 2
+        # The returned history covers the WHOLE run (issue #330): the 3
+        # restored epochs plus the 2 newly trained ones, not just the latter
+        # -- a resumed run's metrics.json must report the full run, or a
+        # comparison across a retried job silently only sees its tail.
+        assert len(history["train_loss"]) == 5
 
     def test_resume_restores_best_val_acc(self, temp_chunks_file, tmp_path):
         """Test that resume restores best_val_acc."""
