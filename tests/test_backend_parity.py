@@ -32,9 +32,18 @@ Comparison is by field kind, not by name:
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
-from conftest import LEVELS_FILE, TRNA_BAM, TRNA_FIXTURES_AVAILABLE, TRNA_POD5, TRNA_REF
+from conftest import (
+    FIXTURES_DIR,
+    LEVELS_FILE,
+    TRNA_BAM,
+    TRNA_FIXTURES_AVAILABLE,
+    TRNA_POD5,
+    TRNA_REF,
+)
 from legacy_bam_helpers import collect_read_infos
 
 from leech.chunking import save_chunks
@@ -100,6 +109,7 @@ def _config(
     signal_context_bases: tuple[int, int] | None = None,
     signal_len: int | None = None,
     require_query_mapping: bool = True,
+    pod5_path: Path = TRNA_POD5,
 ) -> PrepareConfig:
     reference_sequences = None
     motif_reference = "bam"
@@ -114,7 +124,7 @@ def _config(
         signal_refiner = SigMapRefiner.from_table(LEVELS_FILE, scale_iters=scale_iters)
 
     return PrepareConfig(
-        pod5_path=TRNA_POD5,
+        pod5_path=pod5_path,
         signal=SignalConfig(
             reverse_signal=True,
             anchor=anchor,
@@ -287,6 +297,20 @@ class TestBackendFieldParity:
         """`-1` meant "no DP" on one backend and "one DP pass" on the other,
         which is #193."""
         py, rs = _run_both_backends(_config(scale_iters=scale_iters), tmp_path)
+        _assert_npz_parity(py, rs)
+
+    def test_directory_pod5_input(self, _rust_available, tmp_path):
+        """``pod5_path`` a directory (issue #339), not just ``TRNA_POD5`` itself.
+
+        ``FIXTURES_DIR`` holds two POD5 files (``trna_reads.pod5`` and
+        ``can_reads.pod5``), so this also exercises the case that matters most:
+        a directory whose scan turns up reads the target BAM never mentions.
+        Before escapepod-rs#384/leech#339, the Rust path could not open a
+        directory at all (`Reader::open` -> "Is a directory"); this is the
+        parity property that was previously only reachable through
+        ``--backend python``.
+        """
+        py, rs = _run_both_backends(_config(pod5_path=FIXTURES_DIR), tmp_path)
         _assert_npz_parity(py, rs)
 
     @pytest.mark.parametrize("signal_context", [(200, 200), (90, 300), (400, 100)])

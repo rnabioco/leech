@@ -332,20 +332,33 @@ chunks, which `handle_prepare` raises on, naming the absent-read count.
 
 ### POD5 access from Rust
 
-`rust/src/pod5_cache.rs` holds a process-global cache of open `escapepod_signal::Reader`s.
-**Always go through `cached_reader(path)`; never call `Reader::open` directly.**
+`rust/src/pod5_cache.rs` holds a process-global cache of open POD5 sources via
+`escapepod_signal::cached_dataset`. **Always go through `read_signals_by_ids`
+(or `cached_dataset`) directly; never call `Reader::open` or `Dataset::open`
+directly.** `pod5_path` may be a single file or a directory of them (a
+MinKNOW run) — there is deliberately no file/directory branch anywhere in
+this module (issue #339, on top of escapepod-rs#384's `Dataset`/`cached_dataset`).
+A single-file `Dataset` costs nothing extra over a bare `Reader`, because
+every file a `Dataset` touches — one file or a hundred — is itself opened
+through the *same* `cached_reader`/`ReaderCache` a direct single-file caller
+would use, so a file reached both ways shares one `Arc<Reader>` and one
+warmed index.
 
 A `Reader` caches its read-id index in a `OnceLock` on itself, and
 `reads_by_ids` without an index falls back to a single-threaded scan of the
 entire reads table (all 22 columns) that can only stop once every target is
 found. Reads arrive in BAM order, which is unrelated to POD5 storage order, so
 that scan effectively runs to end-of-file — per batch. `cached_reader` opens
-each POD5 once per process and warms the index once, in memory, from a scan
-projected to the read_id column. It writes no `.p5s` sidecar and does not
-require one.
+each POD5 once per process and warms its index once, in memory, from a scan
+projected to the read_id column; `cached_dataset` does the dataset-level
+analogue one level up — warming a read-id → owning-file routing map before
+the dataset is published, so concurrent first lookups find it built. Neither
+writes a `.p5s` sidecar or requires one.
 
 The Python side does the equivalent in `io/pod5_reader.py`, which caches an
-entered `DatasetReader` per process (entering is what warms the index).
+entered `DatasetReader` per process (entering is what warms the index) and
+already handled directory input before the Rust side could (escapepod's
+`DatasetReader` is where escapepod-rs#384's `Dataset` logic was lifted from).
 
 Phase 1 (POD5 I/O) in `inference.rs` and `training.rs` runs inside `py.detach`.
 Keep it that way — holding the GIL across the I/O serializes every caller

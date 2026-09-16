@@ -662,16 +662,16 @@ wheels = [
 
 [[package]]
 name = "escapepod"
-version = "0.26.0"
+version = "0.27.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/ca/05/15473eddbb0feebade89bd5ae683bf7680bd99d615da8c05125f55d1c692/escapepod-0.26.0.tar.gz", hash = "sha256:83a4bcb66dff52d29067d9ec3c05c943cf20f78bbd6ccec8f0e3f5253d4117fb", size = 1298983, upload-time = "2026-09-13T19:02:56.039Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/62/c6/a8fc70575d3a7497585fecbf630f721e0aaff5635573b42f95b77095c495/escapepod-0.27.0.tar.gz", hash = "sha256:d5a524b065b40cd398d152ad77107e2a2b02f4c041bd078d30484fb1cd71ab2b", size = 1309505, upload-time = "2026-09-16T18:16:44.689548Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/fa/bc/c63a57f4c49b049ccc4ba62e0252f5edaeb57b2650328febe246e0b632ba/escapepod-0.26.0-cp39-abi3-macosx_10_12_x86_64.whl", hash = "sha256:69678a6ca64ca73e190f9b3f0bfda0808c75b2a31c67b69c0149a7717a01e22e", size = 2029229, upload-time = "2026-09-13T19:02:44.176Z" },
-    { url = "https://files.pythonhosted.org/packages/f4/ab/f1fc5e5055e27a44f4911ac4e61a8d9135d996d8320b0337810708370d46/escapepod-0.26.0-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:26e9dfea5530c2b39d78a13f79e7cc15191357be098ef26d57eb74b6c758846f", size = 1779342, upload-time = "2026-09-13T19:02:46.14Z" },
-    { url = "https://files.pythonhosted.org/packages/8d/fb/07d8f580ef1d076e681aefc293d694f1cc9ca7571c41661179a2f82454fc/escapepod-0.26.0-cp39-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:e97b31d8a06adccdf5b08a688299490ce1e51000ef1355dd0b35ed7cd83308de", size = 1971265, upload-time = "2026-09-13T19:02:47.975Z" },
-    { url = "https://files.pythonhosted.org/packages/e7/a2/0e4c7e6f10a051761924d320399c8841182475810cc952ddff1c607060b5/escapepod-0.26.0-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:a6d926f414d891135d3a65af86b18fffa87bf2763e4600845d4df8342de40a07", size = 2207082, upload-time = "2026-09-13T19:02:49.784Z" },
-    { url = "https://files.pythonhosted.org/packages/74/e8/1bd16a70b451c5896e8f3b8c76b2dab59ec7ab4a7d4342385dfa1550c26e/escapepod-0.26.0-cp39-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:1177d45cfe79c730f7975015fcaf4349fa982e13f853a1b8a74e1c79aada25c7", size = 2184549, upload-time = "2026-09-13T19:02:51.593Z" },
-    { url = "https://files.pythonhosted.org/packages/9e/0c/7f113df700d21aba268f380bdb53f61d4fe11d7bdafdba86e0f4615893e3/escapepod-0.26.0-cp39-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:233cdac6a4ecd4f68db10c59a8c572d3591201dcb580cc5c8554b685bf08a6aa", size = 2386726, upload-time = "2026-09-13T19:02:53.155Z" },
+    { url = "https://files.pythonhosted.org/packages/c5/d3/f8f1e87f5bfd7c34ec49bfce5f903ec5c8966c186cfa68b705c6a9ff8068/escapepod-0.27.0-cp39-abi3-macosx_10_12_x86_64.whl", hash = "sha256:ac4365ea22151788d9b1b1a1accf38d53d3e1c851b01fa4d832a9d866fee33e5", size = 2036323, upload-time = "2026-09-16T18:16:35.624421Z" },
+    { url = "https://files.pythonhosted.org/packages/c9/fc/dae174cf282e1c1a4cf233edbc6f256eeea92b621e60e033428b529e461a/escapepod-0.27.0-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:2ee094b369524215b1523a98f461be170c98f063aff3b9c15a1d20f694a02506", size = 1785224, upload-time = "2026-09-16T18:16:37.264687Z" },
+    { url = "https://files.pythonhosted.org/packages/b3/12/b67f5f180f6f8a13ee346a9b07c5533f8ace6a2f31fe85c7c9679c9efc29/escapepod-0.27.0-cp39-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:2d3ebcec7793357872a372b6f79934f6626c585a2b6fd228e55e627f419d31c5", size = 1978457, upload-time = "2026-09-16T18:16:38.652294Z" },
+    { url = "https://files.pythonhosted.org/packages/a3/e5/4bf69ba09d0c5b0a62e2bf379aa5f2ce97c24684cd9bde82e78a4c9f6cb1/escapepod-0.27.0-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:f1eca25ed731e4e86d4cb94c0d065ae6ca1fe66a0147750c79c7a8e8c63b98a5", size = 2215203, upload-time = "2026-09-16T18:16:40.009218Z" },
+    { url = "https://files.pythonhosted.org/packages/54/de/7caf5ef7fec727240e24dcfa4b28a9c0078a638b5ee5cff9af1db0174183/escapepod-0.27.0-cp39-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:0e84bb67f5f095b307fe1a68f6ca56bdbdc2681a7bf2ff5161ac14ac586d3979", size = 2192149, upload-time = "2026-09-16T18:16:41.637868Z" },
+    { url = "https://files.pythonhosted.org/packages/f2/83/fe7522d1309312c09302b6ca7547ab629b4ce68f770fac39b786a88f5192/escapepod-0.27.0-cp39-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:721ce628b650baadabbfe69af3f5f786d58ab51d9d81293c1f6b23b098783e33", size = 2393483, upload-time = "2026-09-16T18:16:43.163935Z" },
 ]
 
 [[package]]
@@ -1321,7 +1321,7 @@ docs = [
 [package.metadata]
 requires-dist = [
     { name = "click", specifier = ">=8.1.0" },
-    { name = "escapepod", specifier = ">=0.26.0" },
+    { name = "escapepod", specifier = ">=0.27.0" },
     { name = "great-tables", marker = "extra == 'notebook'", specifier = ">=0.23.0" },
     { name = "leech", extras = ["onnx"], marker = "extra == 'dev'" },
     { name = "leech", extras = ["test"], marker = "extra == 'dev'" },
