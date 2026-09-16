@@ -10,6 +10,13 @@ New entries are no longer added to this file by hand — see
 
 <!-- towncrier release notes start -->
 
+## [0.12.2] - 2026-09-16
+
+### Fixed
+
+- **`--resume` can now recover a run an external kill (SLURM walltime, OOM, `scancel`) cut off mid-loop, not only a clean exit.** `model_last.pt` was written exactly once, after the epoch loop exited, so an interrupted run left `--resume` nothing to find and every retry started over from a fresh random seed -- the whole reason a Snakemake `restart-times` retry existed was defeated by the checkpoint design it depended on. A new rolling checkpoint, `model_resume.pt`, is written atomically at the end of every epoch and carries the full resumable state (history, early-stopping patience, the adversarial head, the `ClipGrad` buffer, per-rank RNG state, the run seed) plus a recipe and corpus fingerprint that `--resume` now refuses to cross rather than silently warm-starting a different run. It is deleted on a clean finish and deliberately left undeclared in the Snakemake rules, since a declared output would be deleted by Snakemake itself the moment a walltime kill "fails" the job -- exactly when the retry needs it most. `train.smk` and `compare_models.smk` now pass `--resume {output_dir}/model_resume.pt` unconditionally. ((#330))
+
+
 ## [0.12.1] - 2026-09-15
 
 ### Fixed
