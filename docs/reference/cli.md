@@ -281,7 +281,8 @@ pick. It takes precedence over `--max-grad-norm` if both are given.
 `--save-optim-every N` trades resumability for checkpoint size. Note that it
 applies by epoch number, so `model_last.pt` carries optimizer state only if the
 final epoch is a multiple of N; resuming from a checkpoint without it starts
-from a fresh optimizer and logs a warning.
+from a fresh optimizer and logs a warning. It has no effect on
+`model_resume.pt`, which always carries optimizer state -- see below.
 
 **Loss function:**
 
@@ -324,7 +325,8 @@ from a fresh optimizer and logs a warning.
 **Output files:**
 
 - `model_best.pt` -- best checkpoint by `--checkpoint-metric` (default `auto`: val_auc for binary, val_f1 for multiclass). Also accepts `tpr_at_fpr:<f>` (TPR at a fixed FPR) and `callable_at_precision:<p>` (fraction of validation reads callable at a precision floor) for a low-FPR operating regime -- binary tasks only; `leech model optimize`'s `--selection-metric` takes the same names.
-- `model_last.pt` -- final epoch checkpoint
+- `model_last.pt` -- final epoch checkpoint, written once after training ends (early stopping or completion)
+- `model_resume.pt` -- rolling checkpoint, written atomically after *every* epoch and deleted on clean exit. This is the file that makes `--resume` recover a run an external kill (SLURM walltime, OOM, `scancel`) cut off mid-loop: `model_last.pt` never appears in that case, since it is only written when the epoch loop actually finishes. Point `--resume` at `model_resume.pt` in anything that retries a job -- a Snakemake `restart-times`, a resubmitted sbatch script. Refuses to resume (raises, does not warn) if the optimizer/scheduler/loss/auxiliary-head recipe or either corpus file changed since it was written; delete it to start over instead of warm-starting a different run under it. The check is scoped to what `Trainer` itself can vary -- a checkpoint's `--motif`, `--batch-size`, `--seq-encoding` etc. are provenance recorded in `config.json`, not enforced here, since a `Trainer` built directly (bypassing `leech model train`) never sets them. Do not add `model_resume.pt` to `output:` in a Snakemake rule -- Snakemake deletes a failed job's declared outputs, which would erase the one file the retry needs.
 - `config.json` -- full training configuration (needed for inference)
 - `metrics.json` -- per-epoch metrics
 
@@ -344,10 +346,18 @@ leech model train \
   --max-grad-norm 1.0 \
   --scheduler reduce_on_plateau --scheduler-patience 5
 
-# Resume from checkpoint
+# Recover an interrupted run (SLURM walltime, OOM, scancel, ...) -- safe to
+# pass unconditionally in a retry, since --resume is ignored when the file
+# doesn't exist (e.g. the first attempt)
 leech model train \
   --train-data chunks/train.json --val-data chunks/val.json \
   --model ConvLSTMDwell --output-dir models/ \
+  --resume models/model_resume.pt
+
+# Extend a run that finished cleanly to more epochs
+leech model train \
+  --train-data chunks/train.json --val-data chunks/val.json \
+  --model ConvLSTMDwell --output-dir models/ --epochs 80 \
   --resume models/model_last.pt
 
 # Large effective batch on a small GPU, with adaptive clipping

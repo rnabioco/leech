@@ -4,7 +4,11 @@ Tests for training module.
 Tests Trainer class and train_model function.
 """
 
+import copy
 import json
+import logging
+import os
+import random
 import sys
 from pathlib import Path
 
@@ -808,6 +812,478 @@ class TestBestModelResumeGuarantee:
                 assert torch.equal(
                     original_best_state[key], restored_ckpt["model_state_dict"][key]
                 ), f"Weight mismatch in {key}"
+
+
+def _crash_after_n_epochs(n: int):
+    """A ``Trainer.train_epoch`` replacement that raises on its n-th call.
+
+    Patched in as ``monkeypatch.setattr(Trainer, "train_epoch", ...)`` to
+    simulate an external kill (SLURM walltime, OOM, ``scancel``): the first
+    ``n - 1`` epochs complete normally -- each getting its own rolling
+    ``model_resume.pt`` -- and the n-th never finishes, so ``model_last.pt``
+    is never written and ``model_resume.pt`` still holds epoch ``n - 1``.
+    """
+    original = Trainer.train_epoch
+    calls = {"n": 0}
+
+    def _wrapped(self, *args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == n:
+            raise RuntimeError("simulated interruption")
+        return original(self, *args, **kwargs)
+
+    return _wrapped
+
+
+class TestInterruptSafeResume:
+    """``model_resume.pt``: recovering a run an external kill cut off mid-loop.
+
+    Before this (#330), ``model_last.pt`` was written exactly once, after the
+    epoch loop exited -- so a SLURM walltime kill left nothing for ``--resume``
+    to find, and every retry started over from a fresh random seed. These
+    tests exercise the rolling per-epoch checkpoint that fixes that, and the
+    trainer state it has to carry for a resumed run to be a continuation
+    rather than a warm start.
+    """
+
+    @pytest.fixture
+    def sample_dataloader(self, temp_chunks_file):
+        """A minimal loader for direct ``Trainer``-level checkpoint round trips.
+
+        Mirrors ``TestTrainer.sample_dataloader`` -- duplicated rather than
+        shared because a pytest fixture defined inside a class is only visible
+        to that class's own tests, matching how ``TestTrainer`` already scopes
+        its copy.
+        """
+        dataset = LeechDataset(
+            temp_chunks_file,
+            signal_len=400,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding="base_onehot",
+        )
+        return DataLoader(dataset, batch_size=2, shuffle=True, collate_fn=collate_fn)
+
+    def test_model_resume_removed_on_clean_exit(self, temp_chunks_file, tmp_path):
+        output_dir = tmp_path / "training"
+        train_model(
+            train_data_path=temp_chunks_file,
+            val_data_path=temp_chunks_file,
+            model_name="ConvLSTMDwell",
+            output_dir=output_dir,
+            epochs=2,
+            batch_size=2,
+            device="cpu",
+            motif="CCAGGC",
+            seed=42,
+        )
+
+        assert not (output_dir / "model_resume.pt").exists()
+        assert (output_dir / "model_last.pt").exists()
+
+    def test_rolling_checkpoint_written_every_epoch(self, temp_chunks_file, tmp_path, monkeypatch):
+        output_dir = tmp_path / "training"
+        monkeypatch.setattr(Trainer, "train_epoch", _crash_after_n_epochs(3))
+
+        with pytest.raises(RuntimeError, match="simulated interruption"):
+            train_model(
+                train_data_path=temp_chunks_file,
+                val_data_path=temp_chunks_file,
+                model_name="ConvLSTMDwell",
+                output_dir=output_dir,
+                epochs=4,
+                batch_size=2,
+                device="cpu",
+                motif="CCAGGC",
+                seed=42,
+            )
+
+        # Epochs 1-2 completed (the 3rd train_epoch call is the one that
+        # raised), so the rolling checkpoint reflects epoch 2 and the
+        # loop-exit-only model_last.pt was never written.
+        resume_ckpt = torch.load(
+            output_dir / "model_resume.pt", map_location="cpu", weights_only=False
+        )
+        assert resume_ckpt["epoch"] == 2
+        assert not (output_dir / "model_last.pt").exists()
+
+    def test_interrupted_run_resumes_to_identical_history(
+        self, temp_chunks_file, tmp_path, monkeypatch
+    ):
+        """An interrupted-then-resumed run reproduces a straight run's history.
+
+        This is a sequential SGD loop, not a permutation-invariant aggregate:
+        forgetting the loader-generator position, the RNG state, or the
+        optimizer's momentum changes which batches land in which order and
+        what dropout draws, which moves every epoch after the resume point,
+        not just the first one.
+        """
+        common = {
+            "train_data_path": temp_chunks_file,
+            "val_data_path": temp_chunks_file,
+            "model_name": "ConvLSTMDwell",
+            "epochs": 4,
+            "batch_size": 2,
+            "device": "cpu",
+            "motif": "CCAGGC",
+            "seed": 42,
+            "num_workers": 0,
+        }
+
+        reference = train_model(output_dir=tmp_path / "reference", **common)
+
+        interrupted_dir = tmp_path / "interrupted"
+        original_train_epoch = Trainer.train_epoch
+        monkeypatch.setattr(Trainer, "train_epoch", _crash_after_n_epochs(3))
+        with pytest.raises(RuntimeError, match="simulated interruption"):
+            train_model(output_dir=interrupted_dir, **common)
+        # Restore the real train_epoch for the resumed phase below, without
+        # touching monkeypatch's own end-of-test teardown.
+        monkeypatch.setattr(Trainer, "train_epoch", original_train_epoch)
+
+        resumed = train_model(
+            output_dir=interrupted_dir,
+            resume_from=interrupted_dir / "model_resume.pt",
+            **common,
+        )
+
+        assert len(resumed["train_loss"]) == 4
+        np.testing.assert_allclose(
+            resumed["train_loss"], reference["train_loss"], rtol=1e-4, atol=1e-4
+        )
+        np.testing.assert_allclose(resumed["val_loss"], reference["val_loss"], rtol=1e-4, atol=1e-4)
+        assert not (interrupted_dir / "model_resume.pt").exists()
+
+    def test_resume_continues_early_stopping(self, temp_chunks_file, tmp_path, monkeypatch):
+        """``patience_counter`` is not reset on resume.
+
+        val_auc is pinned flat after epoch 1 "improves" against the -inf
+        floor: epoch 2 -> patience 1, epoch 3 -> patience 2. Interrupting
+        right after epoch 2 and resuming with a fresh Trainer (patience reset
+        to 0, the pre-#330 bug) would run two more epochs before stopping;
+        carrying patience_counter over stops after exactly one.
+        """
+
+        def _flat_validate(self, progress=None, task_id=None):
+            return 0.5, 0.6, 0.6, 0.6  # val_loss, val_acc, val_auc, val_f1
+
+        output_dir = tmp_path / "training"
+        original_train_epoch = Trainer.train_epoch
+        monkeypatch.setattr(Trainer, "validate", _flat_validate)
+        monkeypatch.setattr(Trainer, "train_epoch", _crash_after_n_epochs(3))
+
+        with pytest.raises(RuntimeError, match="simulated interruption"):
+            train_model(
+                train_data_path=temp_chunks_file,
+                val_data_path=temp_chunks_file,
+                model_name="ConvLSTMDwell",
+                output_dir=output_dir,
+                epochs=10,
+                batch_size=2,
+                device="cpu",
+                motif="CCAGGC",
+                seed=42,
+                early_stopping_patience=2,
+                checkpoint_metric="val_auc",
+            )
+        monkeypatch.setattr(Trainer, "train_epoch", original_train_epoch)
+
+        resumed = train_model(
+            train_data_path=temp_chunks_file,
+            val_data_path=temp_chunks_file,
+            model_name="ConvLSTMDwell",
+            output_dir=output_dir,
+            epochs=10,
+            batch_size=2,
+            device="cpu",
+            motif="CCAGGC",
+            seed=42,
+            early_stopping_patience=2,
+            checkpoint_metric="val_auc",
+            resume_from=output_dir / "model_resume.pt",
+        )
+
+        # 2 epochs restored from the checkpoint + exactly 1 resumed epoch
+        # before early stopping fires -- not 2, which is what a
+        # patience_counter reset to 0 on resume would produce.
+        assert len(resumed["train_loss"]) == 3
+        assert not (output_dir / "model_resume.pt").exists()
+
+    def test_resume_restores_adversarial_head(self, sample_dataloader, model_config, tmp_path):
+        output_dir = tmp_path / "training"
+        trainer1 = Trainer(
+            model=get_model("ConvLSTMDwell", **model_config),
+            model_type="ConvLSTMDwell",
+            train_loader=sample_dataloader,
+            device="cpu",
+            output_dir=output_dir,
+            adversarial_lambda=0.1,
+            adversarial_num_classes=3,
+        )
+        assert trainer1.adversarial_head is not None
+        with torch.no_grad():
+            for p in trainer1.adversarial_head.parameters():
+                p.add_(1.0)
+        expected_state = copy.deepcopy(trainer1.adversarial_head.state_dict())
+        trainer1.save_checkpoint("model_resume.pt", epoch=1)
+
+        trainer2 = Trainer(
+            model=get_model("ConvLSTMDwell", **model_config),
+            model_type="ConvLSTMDwell",
+            train_loader=sample_dataloader,
+            device="cpu",
+            output_dir=output_dir,
+            adversarial_lambda=0.1,
+            adversarial_num_classes=3,
+            resume_checkpoint=output_dir / "model_resume.pt",
+        )
+
+        for key, value in expected_state.items():
+            assert torch.equal(value, trainer2.adversarial_head.state_dict()[key]), key
+
+    def test_resume_restores_clip_grad_buffer(self, sample_dataloader, model_config, tmp_path):
+        output_dir = tmp_path / "training"
+        trainer1 = Trainer(
+            model=get_model("ConvLSTMDwell", **model_config),
+            model_type="ConvLSTMDwell",
+            train_loader=sample_dataloader,
+            device="cpu",
+            output_dir=output_dir,
+            quantile_grad_clip=True,
+        )
+        trainer1.clip_grad_fn.buffer[:] = np.linspace(0.1, 1.0, len(trainer1.clip_grad_fn.buffer))
+        trainer1.clip_grad_fn.i = 37
+        trainer1.save_checkpoint("model_resume.pt", epoch=1)
+
+        trainer2 = Trainer(
+            model=get_model("ConvLSTMDwell", **model_config),
+            model_type="ConvLSTMDwell",
+            train_loader=sample_dataloader,
+            device="cpu",
+            output_dir=output_dir,
+            quantile_grad_clip=True,
+            resume_checkpoint=output_dir / "model_resume.pt",
+        )
+
+        np.testing.assert_array_equal(trainer2.clip_grad_fn.buffer, trainer1.clip_grad_fn.buffer)
+        assert trainer2.clip_grad_fn.i == 37
+
+    def test_atomic_write_leaves_previous_checkpoint_intact_on_failure(self, tmp_path, monkeypatch):
+        path = tmp_path / "model_resume.pt"
+        leech.training._atomic_torch_save({"epoch": 1, "marker": "first"}, path)
+        assert path.exists()
+
+        def _boom(obj, dest):
+            # A real kill mid-torch.save leaves a truncated file at the
+            # destination it was writing to -- which, because of the atomic
+            # swap, is the sibling .tmp path, never `path` itself.
+            Path(dest).write_bytes(b"not a valid checkpoint")
+            raise RuntimeError("simulated crash mid-write")
+
+        monkeypatch.setattr(leech.training.torch, "save", _boom)
+        with pytest.raises(RuntimeError, match="simulated crash mid-write"):
+            leech.training._atomic_torch_save({"epoch": 2, "marker": "second"}, path)
+        monkeypatch.undo()
+
+        loaded = torch.load(path, map_location="cpu", weights_only=False)
+        assert loaded["marker"] == "first"
+        leftover_tmp = path.with_name(path.name + ".tmp")
+        assert leftover_tmp.exists()
+        assert leftover_tmp.read_bytes() == b"not a valid checkpoint"
+
+    def test_resume_refuses_recipe_mismatch(self, temp_chunks_file, tmp_path):
+        output_dir = tmp_path / "training"
+        train_model(
+            train_data_path=temp_chunks_file,
+            val_data_path=temp_chunks_file,
+            model_name="ConvLSTMDwell",
+            output_dir=output_dir,
+            epochs=1,
+            batch_size=2,
+            device="cpu",
+            motif="CCAGGC",
+            seed=42,
+            learning_rate=0.001,
+        )
+        last_path = output_dir / "model_last.pt"
+        assert last_path.exists()
+
+        with pytest.raises(RuntimeError, match="recipe changed"):
+            train_model(
+                train_data_path=temp_chunks_file,
+                val_data_path=temp_chunks_file,
+                model_name="ConvLSTMDwell",
+                output_dir=output_dir,
+                epochs=2,
+                batch_size=2,
+                device="cpu",
+                motif="CCAGGC",
+                seed=42,
+                learning_rate=0.01,  # changed from phase 1
+                resume_from=last_path,
+            )
+
+    def test_resume_refuses_corpus_mismatch(self, temp_chunks_file, tmp_path):
+        output_dir = tmp_path / "training"
+        train_model(
+            train_data_path=temp_chunks_file,
+            val_data_path=temp_chunks_file,
+            model_name="ConvLSTMDwell",
+            output_dir=output_dir,
+            epochs=1,
+            batch_size=2,
+            device="cpu",
+            motif="CCAGGC",
+            seed=42,
+        )
+        last_path = output_dir / "model_last.pt"
+
+        # Simulate a Snakemake re-run regenerating the corpus: same path,
+        # different mtime.
+        stat = temp_chunks_file.stat()
+        os.utime(temp_chunks_file, (stat.st_atime, stat.st_mtime + 100))
+
+        with pytest.raises(RuntimeError, match="train corpus changed"):
+            train_model(
+                train_data_path=temp_chunks_file,
+                val_data_path=temp_chunks_file,
+                model_name="ConvLSTMDwell",
+                output_dir=output_dir,
+                epochs=2,
+                batch_size=2,
+                device="cpu",
+                motif="CCAGGC",
+                seed=42,
+                resume_from=last_path,
+            )
+
+    def test_resume_allows_longer_epochs_and_patience_without_raising(
+        self, temp_chunks_file, tmp_path
+    ):
+        output_dir = tmp_path / "training"
+        train_model(
+            train_data_path=temp_chunks_file,
+            val_data_path=temp_chunks_file,
+            model_name="ConvLSTMDwell",
+            output_dir=output_dir,
+            epochs=1,
+            batch_size=2,
+            device="cpu",
+            motif="CCAGGC",
+            seed=42,
+        )
+        last_path = output_dir / "model_last.pt"
+
+        # Must not raise despite epochs/early_stopping_patience differing --
+        # both are excluded from the recipe guard on purpose.
+        train_model(
+            train_data_path=temp_chunks_file,
+            val_data_path=temp_chunks_file,
+            model_name="ConvLSTMDwell",
+            output_dir=output_dir,
+            epochs=2,
+            early_stopping_patience=3,
+            batch_size=2,
+            device="cpu",
+            motif="CCAGGC",
+            seed=42,
+            resume_from=last_path,
+        )
+
+    def test_resume_keeps_original_seed(self, temp_chunks_file, tmp_path):
+        output_dir = tmp_path / "training"
+        train_model(
+            train_data_path=temp_chunks_file,
+            val_data_path=temp_chunks_file,
+            model_name="ConvLSTMDwell",
+            output_dir=output_dir,
+            epochs=1,
+            batch_size=2,
+            device="cpu",
+            motif="CCAGGC",
+            seed=123,
+        )
+        last_path = output_dir / "model_last.pt"
+
+        # No --seed on the resume: train_model generates a fresh random one
+        # internally, which must be immediately superseded by the
+        # checkpoint's -- both training_seed.txt and config.json record what
+        # the run actually ran under, not what it briefly considered.
+        train_model(
+            train_data_path=temp_chunks_file,
+            val_data_path=temp_chunks_file,
+            model_name="ConvLSTMDwell",
+            output_dir=output_dir,
+            epochs=2,
+            batch_size=2,
+            device="cpu",
+            motif="CCAGGC",
+            resume_from=last_path,
+        )
+
+        assert (output_dir / "training_seed.txt").read_text().strip() == "123"
+        config = json.loads((output_dir / "config.json").read_text())
+        assert config["seed"] == 123
+
+    def test_resume_skips_rng_restore_on_world_size_mismatch(
+        self, sample_dataloader, model_config, tmp_path, caplog
+    ):
+        output_dir = tmp_path / "training"
+        trainer1 = Trainer(
+            model=get_model("ConvLSTMDwell", **model_config),
+            model_type="ConvLSTMDwell",
+            train_loader=sample_dataloader,
+            device="cpu",
+            output_dir=output_dir,
+        )
+        trainer1.save_checkpoint("model_resume.pt", epoch=1)
+
+        # Hand-edit the checkpoint to look like it was written at world_size=2.
+        path = output_dir / "model_resume.pt"
+        ckpt = torch.load(path, map_location="cpu", weights_only=False)
+        assert len(ckpt["rng_states"]) == 1
+        ckpt["rng_states"] = ckpt["rng_states"] * 2
+        ckpt["loader_generator_states"] = ckpt["loader_generator_states"] * 2
+        torch.save(ckpt, path)
+
+        with caplog.at_level(logging.WARNING, logger="leech.training"):
+            trainer2 = Trainer(
+                model=get_model("ConvLSTMDwell", **model_config),
+                model_type="ConvLSTMDwell",
+                train_loader=sample_dataloader,
+                device="cpu",
+                output_dir=output_dir,
+                resume_checkpoint=path,
+            )
+
+        assert "world_size" in caplog.text
+        # The rest of the resume still applies despite the RNG skip.
+        assert trainer2.start_epoch == 2
+
+    def test_capture_and_restore_rng_state_roundtrips(self):
+        random.seed(7)
+        np.random.seed(7)
+        torch.manual_seed(7)
+        # Move off the fresh-seed state before capturing, so this isn't
+        # trivially true of any two freshly-seeded RNGs.
+        random.random()
+        np.random.rand()
+        torch.rand(1)
+
+        state = leech.training._capture_rng_state()
+        expected = (random.random(), float(np.random.rand()), torch.rand(3))
+
+        # Simulate other work happening between save and resume.
+        random.random()
+        np.random.rand()
+        torch.rand(5)
+
+        leech.training._restore_rng_state(state)
+        actual = (random.random(), float(np.random.rand()), torch.rand(3))
+
+        assert actual[0] == expected[0]
+        assert actual[1] == expected[1]
+        assert torch.equal(actual[2], expected[2])
 
 
 if __name__ == "__main__":

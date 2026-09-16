@@ -744,7 +744,11 @@ def merge(
     "--resume",
     type=click.Path(path_type=Path),
     default=None,
-    help="Resume training from a checkpoint file (e.g., model_last.pt). Ignored if file doesn't exist.",
+    help="Resume training from a checkpoint file. Pass model_resume.pt (written every "
+    "epoch, including after an interrupted run -- e.g. a SLURM walltime kill) to "
+    "recover mid-run, or model_last.pt to extend a run that finished cleanly. "
+    "Ignored if the file doesn't exist. Refuses to resume if the recipe or the "
+    "corpus changed since the checkpoint was written.",
 )
 @click.option(
     "--seq-encoding",

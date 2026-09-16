@@ -4,9 +4,11 @@ Training loop and utilities for leech models.
 
 import contextlib
 import copy
+import dataclasses
 import json
 import logging
 import math
+import os
 import random
 from collections.abc import Callable, Iterable
 from pathlib import Path
@@ -50,6 +52,7 @@ from leech.distributed import (
     context_from_env,
     device_for,
     gather_arrays,
+    gather_objects,
     spawn,
     validate_request,
 )
@@ -83,6 +86,123 @@ def _seed_worker(worker_id: int) -> None:
     worker_seed = torch.initial_seed() % 2**32
     np.random.seed(worker_seed)
     random.seed(worker_seed)
+
+
+def _atomic_torch_save(obj: Any, path: Path) -> None:
+    """Write a checkpoint atomically: ``path`` never holds a truncated file.
+
+    ``torch.save`` streams the pickle straight to the destination, so a
+    process kill mid-write leaves a corrupt file at exactly the path a
+    ``--resume`` will look for next. Writing to a sibling temp file first and
+    swapping it in with ``os.replace`` (a same-filesystem rename, atomic on
+    every OS this runs on) means a kill either lands before the swap -- the
+    previous ``path`` is untouched -- or after it, never in between.
+    """
+    tmp_path = path.with_name(path.name + ".tmp")
+    torch.save(obj, tmp_path)
+    os.replace(tmp_path, path)
+
+
+def _corpus_fingerprint(path: Path | None) -> dict[str, Any] | None:
+    """``{path, size, mtime}`` for the recipe guard, or ``None`` if unavailable.
+
+    Not a content hash -- a multi-GiB npz is too large to hash on every
+    checkpoint save -- so this catches "the corpus was regenerated" (a
+    Snakemake re-run after upstream inputs changed) rather than "the bytes
+    are identical". ``None`` for a missing path (pre-loaded ``train_chunks``,
+    which carries no path at all) so the guard simply has nothing to compare.
+    """
+    if path is None:
+        return None
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return {"path": str(path), "size": stat.st_size, "mtime": stat.st_mtime}
+
+
+def _recipe_snapshot(cfg: TrainConfig, model_type: str) -> dict[str, Any]:
+    """The part of the recipe a resume must match exactly.
+
+    Scoped to exactly what ``Trainer.__init__`` itself can vary through its
+    own constructor kwargs -- optimizer, scheduler, loss and auxiliary-head
+    settings -- not the wider provenance ``TrainConfig`` also carries (motif,
+    seq_encoding, batch_size, sampling strategy, confound, ...). Those fields
+    are populated only by ``train_model``'s own, fuller ``cfg=None`` fallback
+    (see the MAINTENANCE note on both ``if cfg is None`` blocks in this
+    module) -- a ``Trainer`` built directly, bypassing ``train_model`` (a
+    supported, tested path: ~60 call sites), never sets them, so guarding on
+    them would refuse a legitimate direct-Trainer resume regardless of
+    whether anything that actually matters changed.
+
+    ``epochs``/``early_stopping_patience`` are legitimately changed to extend
+    a resumed run; ``checkpoint_metric`` already has its own softer mismatch
+    handling in ``_resume_from_checkpoint`` (reset the running best rather
+    than refuse); ``save_optim_every`` changes only what a checkpoint stores,
+    never what training computes. All three are omitted for that reason, not
+    because they are outside ``Trainer``'s own surface.
+
+    Pickled by ``torch.save``, not JSON, so tuples and floats round-trip
+    exactly with no string-formatting drift to paper over.
+    """
+    full = dataclasses.asdict(cfg)
+    optim = full["optim"]
+    return {
+        "model_type": model_type,
+        "loss_type": full["loss_type"],
+        "focal_gamma": full["focal_gamma"],
+        "focal_neg_gamma": full["focal_neg_gamma"],
+        "label_smoothing": full["label_smoothing"],
+        "mixed_precision": full["mixed_precision"],
+        "num_out": full["num_out"],
+        "learning_rate": optim["learning_rate"],
+        "weight_decay": optim["weight_decay"],
+        "max_grad_norm": optim["max_grad_norm"],
+        "quantile_grad_clip": optim["quantile_grad_clip"],
+        "grad_accum_split": optim["grad_accum_split"],
+        "scheduler": full["scheduler"],
+        "aux_head": full["aux_head"],
+    }
+
+
+def _capture_rng_state() -> dict[str, Any]:
+    """This process's RNG state, for a checkpoint that can resume mid-epoch order.
+
+    Covers the three RNGs augmentation actually draws from at ``num_workers=0``
+    (the common case where there is no worker subprocess to seed separately):
+    Python's ``random``, numpy's legacy global state, and torch's CPU
+    generator. CUDA state is included when available so a GPU run's dropout/
+    AMP-adjacent draws resume too, though model weights (not RNG replay) are
+    what make a GPU resume correct -- host-side nondeterminism there is
+    already accepted elsewhere in this module.
+    """
+    state: dict[str, Any] = {
+        "python_random": random.getstate(),
+        "numpy": np.random.get_state(),
+        "torch_cpu": torch.get_rng_state(),
+    }
+    if torch.cuda.is_available():
+        state["torch_cuda"] = torch.cuda.get_rng_state_all()
+    return state
+
+
+def _restore_rng_state(state: dict[str, Any] | None) -> None:
+    """Inverse of :func:`_capture_rng_state`; a no-op on ``None`` or a partial dict."""
+    if state is None:
+        return
+    if "python_random" in state:
+        random.setstate(state["python_random"])
+    if "numpy" in state:
+        np.random.set_state(state["numpy"])
+    if "torch_cpu" in state:
+        torch.set_rng_state(state["torch_cpu"])
+    cuda_state = state.get("torch_cuda")
+    if cuda_state is not None and torch.cuda.is_available():
+        # A resume onto a different device count (or a CPU-saved checkpoint
+        # resumed on GPU) has a state list of the wrong length; restore only
+        # the devices this process actually has rather than raising.
+        n = min(len(cuda_state), torch.cuda.device_count())
+        torch.cuda.set_rng_state_all(cuda_state[:n])
 
 
 def linear_warmup_cosine_decay(
@@ -487,6 +607,9 @@ class Trainer:
         checkpoint_metric: str = "auto",
         dist: DistContext | None = None,
         cfg: TrainConfig | None = None,
+        seed: int | None = None,
+        train_data_path: Path | None = None,
+        val_data_path: Path | None = None,
     ):
         # The recipe as one object (#270). Every caller above still passes
         # loose kwargs (43 test call sites plus train_model's own kwarg path)
@@ -580,6 +703,7 @@ class Trainer:
         self._ddp_modules: list[nn.Module] = []
 
         # Wrap model with inference wrapper for unified forward pass
+        self.model_type = model_type
         self.model_wrapper = ModelInferenceWrapper(model, model_type)
         self.model = self.model_wrapper.model  # Keep reference to underlying model
         self.model.to(device)
@@ -595,6 +719,17 @@ class Trainer:
         self.max_grad_norm = max_grad_norm
         self.warmup_epochs = warmup_epochs
         self.base_lr = learning_rate
+        # Provenance for the interrupt-safe resume checkpoint (issue #330):
+        # the run seed (overwritten by whatever a resumed checkpoint recorded,
+        # so `training_seed.txt` ends the run holding the seed it actually ran
+        # under) and the corpus fingerprints the recipe guard compares against.
+        self.seed = seed
+        self._train_data_path = train_data_path
+        self._val_data_path = val_data_path
+        # Not reset on resume -- see `_resume_from_checkpoint` -- so early
+        # stopping continues counting from where an interrupted run left off
+        # instead of getting `early_stopping_patience` fresh epochs every retry.
+        self.patience_counter = 0
 
         # Gradient accumulation: split each batch into N sub-batches, scale each
         # sub-loss by 1/N, and step the optimizer once per full batch.
@@ -968,6 +1103,42 @@ class Trainer:
         logger.info(f"Resuming from checkpoint: {checkpoint_path}")
         checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
 
+        # Recipe guard (#330): --resume continues *this* run, it does not
+        # warm-start a different one. A checkpoint from before this field
+        # existed has no "recipe" key and is trusted as before. Checked
+        # before anything below mutates self, so a refusal leaves the
+        # Trainer exactly as freshly constructed.
+        resumed_recipe = checkpoint.get("recipe")
+        if resumed_recipe is not None:
+            current_recipe = _recipe_snapshot(self.cfg, self.model_type)
+            mismatched = {
+                key: (resumed_recipe.get(key), current_recipe[key])
+                for key in current_recipe
+                if current_recipe[key] != resumed_recipe.get(key)
+            }
+            if mismatched:
+                raise RuntimeError(
+                    f"Refusing to resume {checkpoint_path}: the training recipe "
+                    f"changed since it was written ({mismatched!r}). --resume "
+                    "continues an interrupted run under the same recipe; it does "
+                    f"not warm-start a different one. Delete {checkpoint_path.name} "
+                    "to start over from scratch."
+                )
+        resumed_corpus = checkpoint.get("corpus")
+        if resumed_corpus is not None:
+            current_corpus = {
+                "train": _corpus_fingerprint(self._train_data_path),
+                "val": _corpus_fingerprint(self._val_data_path),
+            }
+            for split in ("train", "val"):
+                old_fp, new_fp = resumed_corpus.get(split), current_corpus.get(split)
+                if old_fp is not None and new_fp is not None and old_fp != new_fp:
+                    raise RuntimeError(
+                        f"Refusing to resume {checkpoint_path}: the {split} corpus "
+                        f"changed since it was written ({old_fp!r} -> {new_fp!r}). "
+                        f"Delete {checkpoint_path.name} to start over from scratch."
+                    )
+
         self.model.load_state_dict(checkpoint["model_state_dict"])
         # Optimizer state is optional: with --save-optim-every N > 1 most
         # checkpoints carry weights only. Fall back to the fresh optimizer state
@@ -1037,6 +1208,77 @@ class Trainer:
             and checkpoint.get("cl_regression_head_state_dict") is not None
         ):
             self.cl_regression_head.load_state_dict(checkpoint["cl_regression_head_state_dict"])
+
+        # Restore the adversarial head. Without this a resumed adversarial run
+        # pairs a trained backbone with a fresh, random head -- CL regression's
+        # own head was already saved/restored above, this is the same idea for
+        # the other aux head.
+        if (
+            self.adversarial_head is not None
+            and checkpoint.get("adversarial_head_state_dict") is not None
+        ):
+            self.adversarial_head.load_state_dict(checkpoint["adversarial_head_state_dict"])
+
+        # Restore the ClipGrad rolling buffer. Left at its default (primed to
+        # 1e6, index 0), the first `buffer_size` post-resume steps are
+        # effectively unclipped -- the same "early steps unclipped" behavior
+        # the buffer's own priming exists to give a genuinely fresh run, but
+        # wrong to repeat on every retry of an interrupted one.
+        if self.clip_grad_fn is not None and checkpoint.get("clip_grad_buffer") is not None:
+            self.clip_grad_fn.buffer = np.asarray(checkpoint["clip_grad_buffer"], dtype=np.float64)
+            self.clip_grad_fn.i = checkpoint.get("clip_grad_index", 0)
+
+        # patience_counter and history are absent from a pre-#330 checkpoint;
+        # the __init__ defaults (0, a fresh history dict) are already in place
+        # in that case, matching this method's previous behavior exactly.
+        self.patience_counter = checkpoint.get("patience_counter", self.patience_counter)
+        resumed_history = checkpoint.get("history")
+        if resumed_history is not None:
+            self.history = resumed_history
+
+        # The seed this checkpoint actually ran under. A resume makes this
+        # true whether or not the caller's --seed agrees (the RNG states
+        # restored below are what actually govern the next draw); train_model
+        # rewrites training_seed.txt from this after construction.
+        checkpoint_seed = checkpoint.get("seed")
+        if checkpoint_seed is not None:
+            if self.seed is not None and self.seed != checkpoint_seed:
+                logger.warning(
+                    f"Resuming with seed={self.seed}, but {checkpoint_path} was "
+                    f"trained under seed={checkpoint_seed}. Continuing under the "
+                    "checkpoint's seed -- RNG state restored below reflects it, "
+                    "not the requested one."
+                )
+            self.seed = checkpoint_seed
+
+        # RNG state is per rank (each rank's augmentation and DataLoader-worker
+        # seeding diverges from the others by design, see DistributedWeightedSampler
+        # in distributed.py), so the checkpoint carries one entry per rank and
+        # each process restores only its own. A world_size change between the
+        # interrupted attempt and this one makes the indexing meaningless --
+        # skip the RNG restore and say so, rather than resuming rank 2 from
+        # what used to be rank 0's trajectory.
+        rng_states = checkpoint.get("rng_states")
+        loader_generator_states = checkpoint.get("loader_generator_states")
+        if rng_states is not None and len(rng_states) != self.dist.world_size:
+            logger.warning(
+                f"{checkpoint_path} was checkpointed at world_size={len(rng_states)}, "
+                f"this run is world_size={self.dist.world_size}; skipping RNG-state "
+                "restore. Training resumes correctly (weights and optimizer state "
+                "are unaffected) but augmentation draws start from a fresh seed "
+                "rather than continuing the interrupted sequence."
+            )
+        else:
+            if rng_states is not None:
+                _restore_rng_state(rng_states[self.dist.rank])
+            if (
+                loader_generator_states is not None
+                and len(loader_generator_states) == self.dist.world_size
+                and self.train_loader.generator is not None
+            ):
+                rank_state = loader_generator_states[self.dist.rank]
+                if rank_state is not None:
+                    self.train_loader.generator.set_state(rank_state)
 
         logger.info(
             f"Resumed from epoch {self.start_epoch - 1} "
@@ -1549,7 +1791,10 @@ class Trainer:
         Returns:
             Training history dictionary
         """
-        patience_counter = 0
+        # NOT reset here -- self.patience_counter carries over from a resumed
+        # checkpoint (or starts at 0 from __init__ on a fresh Trainer), so
+        # early stopping continues counting rather than getting a fresh
+        # `early_stopping_patience` epochs on every retry of an interrupted run.
         total_epochs = max(0, epochs - self.start_epoch + 1)
         last_epoch = self.start_epoch - 1
 
@@ -1559,10 +1804,7 @@ class Trainer:
                 f"Training already complete (resumed at epoch {self.start_epoch - 1}, "
                 f"requested {epochs}). Saving checkpoints and exiting."
             )
-            if self.output_dir:
-                self._ensure_best_checkpoint()
-                self.save_checkpoint("model_last.pt", epoch=self.start_epoch - 1)
-                self.save_history()
+            self._finalize(last_epoch=self.start_epoch - 1)
             barrier(self.dist)
             return self.history
 
@@ -1702,7 +1944,7 @@ class Trainer:
                         self.best_val_selection = current_value
                         self.best_epoch = epoch
                         self._best_model_state = copy.deepcopy(self.model.state_dict())
-                        patience_counter = 0
+                        self.patience_counter = 0
 
                         if self.output_dir:
                             self.save_checkpoint("model_best.pt", epoch=epoch)
@@ -1717,10 +1959,13 @@ class Trainer:
                                 f"val_auc: {val_auc:.4f}{sel_note})[/bold green]"
                             )
                     else:
-                        patience_counter += 1
+                        self.patience_counter += 1
 
                     # Early stopping (disabled if patience is 0)
-                    if early_stopping_patience > 0 and patience_counter >= early_stopping_patience:
+                    if (
+                        early_stopping_patience > 0
+                        and self.patience_counter >= early_stopping_patience
+                    ):
                         self._print(f"[yellow]Early stopping at epoch {epoch}[/yellow]")
                         break
                 else:
@@ -1729,18 +1974,43 @@ class Trainer:
                         f"Train Loss: {train_loss:.4f} Acc: {train_acc:.4f}"
                     )
 
+                # Rolling resume checkpoint (issue #330): written every epoch,
+                # after everything above (validation, best-model tracking, the
+                # scheduler step) has updated for it, so it always reflects the
+                # state the *next* epoch should start from. Deliberately not a
+                # declared Snakemake output -- see `_finalize` -- so a rule
+                # retry after a walltime kill still finds it on disk.
+                if self.output_dir:
+                    self.save_checkpoint("model_resume.pt", epoch=epoch)
+
                 progress.update(epoch_task, advance=1)
 
         # Save final model. The writers are no-ops off rank 0; the barrier is
         # what keeps a rank from tearing down its process group while rank 0 is
         # still inside a collective-free write the others would outlive.
-        if self.output_dir:
-            self.save_checkpoint("model_last.pt", epoch=last_epoch)
-            self._ensure_best_checkpoint()
-            self.save_history()
+        self._finalize(last_epoch=last_epoch)
         barrier(self.dist)
 
         return self.history
+
+    def _finalize(self, last_epoch: int) -> None:
+        """Write the terminal checkpoints and retire the rolling resume file.
+
+        Shared by a genuinely completed epoch loop and a resume that landed
+        past the requested epoch count (nothing left to train) -- either way
+        the run is done, so ``model_resume.pt``, which means exactly "this run
+        was interrupted", no longer applies. Removing it is what lets a
+        finished run's directory be resumed again later (``--resume
+        model_last.pt`` to extend it) without a stale ``model_resume.pt``
+        confusing which file records the more recent state.
+        """
+        if not self.output_dir:
+            return
+        self.save_checkpoint("model_last.pt", epoch=last_epoch)
+        self._ensure_best_checkpoint()
+        self.save_history()
+        if self._is_main:
+            (self.output_dir / "model_resume.pt").unlink(missing_ok=True)
 
     def _serializable_best_val_selection(self) -> float:
         """``best_val_selection`` for JSON output, never the ``-inf`` sentinel.
@@ -1756,8 +2026,19 @@ class Trainer:
         return self.best_val_selection if math.isfinite(self.best_val_selection) else 0.0
 
     def _ensure_best_checkpoint(self) -> None:
-        """Ensure model_best.pt exists, creating it from stored best weights if needed."""
-        if self.output_dir is None or not self._is_main:
+        """Ensure model_best.pt exists, creating it from stored best weights if needed.
+
+        Every rank must evaluate the same branch here and either all call
+        ``save_checkpoint`` or none do: that method gathers per-rank RNG state
+        as a collective (issue #330), so one rank reaching it while its peers
+        already returned from an ``_is_main``-gated early exit would hang the
+        caller forever, waiting on peers that never arrive. ``best_path.exists()``
+        and ``self._best_model_state`` are both rank-invariant already (shared
+        storage; DDP keeps weights, hence the stored state dict, in sync), so
+        only the two single-writer operations below -- not the branch decision
+        itself -- are gated on ``self._is_main``.
+        """
+        if self.output_dir is None:
             return
 
         best_path = self.output_dir / "model_best.pt"
@@ -1765,6 +2046,8 @@ class Trainer:
             return
 
         if self._best_model_state is not None:
+            if not self._is_main:
+                return
             # Save best model from stored state dict
             best_checkpoint: dict[str, Any] = {
                 "model_state_dict": self._best_model_state,
@@ -1781,14 +2064,16 @@ class Trainer:
             }
             if self._should_save_optimizer(self.best_epoch):
                 best_checkpoint["optimizer_state_dict"] = self.optimizer.state_dict()
-            torch.save(best_checkpoint, best_path)
+            _atomic_torch_save(best_checkpoint, best_path)
             logger.info(
                 f"Restored model_best.pt from stored best weights (epoch {self.best_epoch})"
             )
         else:
-            # Fallback: save current model (best available)
+            # Fallback: save current model (best available). Every rank calls
+            # this together -- see the docstring above.
             self.save_checkpoint("model_best.pt", epoch=self.best_epoch)
-            logger.info("Saved model_best.pt from current model weights (no stored best)")
+            if self._is_main:
+                logger.info("Saved model_best.pt from current model weights (no stored best)")
 
     def _should_save_optimizer(self, epoch: int) -> bool:
         """Whether this save should include optimizer state.
@@ -1806,7 +2091,20 @@ class Trainer:
 
         ``self.model`` is the unwrapped module even under DDP, so the keys are
         the single-GPU keys -- no ``module.`` prefix for a consumer to strip.
+
+        RNG/loader-generator state is per rank and gathered here, ahead of the
+        ``_is_main`` early return below: ``gather_objects`` is a collective,
+        and skipping it on the ranks that are about to return would hang the
+        rank that does call it, waiting on peers that never arrive.
         """
+        rng_states = gather_objects(_capture_rng_state(), self.dist)
+        loader_generator_state = (
+            self.train_loader.generator.get_state()
+            if self.train_loader.generator is not None
+            else None
+        )
+        loader_generator_states = gather_objects(loader_generator_state, self.dist)
+
         if self.output_dir is None or not self._is_main:
             return
 
@@ -1823,12 +2121,30 @@ class Trainer:
             "scheduler_state_dict": self.scheduler.state_dict() if self.scheduler else None,
             "scaler_state_dict": self.scaler.state_dict() if self.scaler else None,
             "best_model_state_dict": self._best_model_state,
+            # Everything below is what makes this a valid --resume target
+            # rather than just a snapshot of the weights (issue #330): enough
+            # state that a resumed run is a continuation, not a warm start.
+            "seed": self.seed,
+            "patience_counter": self.patience_counter,
+            "history": self.history,
+            "recipe": _recipe_snapshot(self.cfg, self.model_type),
+            "corpus": {
+                "train": _corpus_fingerprint(self._train_data_path),
+                "val": _corpus_fingerprint(self._val_data_path),
+            },
+            "rng_states": rng_states,
+            "loader_generator_states": loader_generator_states,
         }
         if self._should_save_optimizer(epoch):
             checkpoint["optimizer_state_dict"] = self.optimizer.state_dict()
         if self.cl_regression_head is not None:
             checkpoint["cl_regression_head_state_dict"] = self.cl_regression_head.state_dict()
-        torch.save(checkpoint, checkpoint_path)
+        if self.adversarial_head is not None:
+            checkpoint["adversarial_head_state_dict"] = self.adversarial_head.state_dict()
+        if self.clip_grad_fn is not None:
+            checkpoint["clip_grad_buffer"] = self.clip_grad_fn.buffer
+            checkpoint["clip_grad_index"] = self.clip_grad_fn.i
+        _atomic_torch_save(checkpoint, checkpoint_path)
 
     def save_history(self) -> None:
         """Save training history to JSON."""
@@ -2924,7 +3240,24 @@ def train_model(
         adversarial_num_classes=adversarial_num_classes,
         dist=dist_ctx,
         cfg=cfg,
+        seed=seed,
+        train_data_path=train_data_path,
+        val_data_path=val_data_path,
     )
+
+    # A resumed checkpoint may carry a different seed than the one generated
+    # or passed above (training_seed.txt and config.json were already written
+    # from `seed`, before the checkpoint -- and its RNG states -- were
+    # loaded). Rewrite both so they report the seed this run actually ran
+    # under, not a value that was immediately superseded.
+    if dist_ctx.is_main and trainer.seed is not None and trainer.seed != seed:
+        seed_file = output_dir / "training_seed.txt"
+        with open(seed_file, "w") as f:
+            f.write(f"{trainer.seed}\n")
+        config["seed"] = trainer.seed
+        with open(output_dir / "config.json", "w") as f:
+            json.dump(config, f, indent=2)
+        logger.info(f"Resumed under seed={trainer.seed}; updated {seed_file} and config.json")
 
     # Train
     history = trainer.train(epochs=epochs, early_stopping_patience=early_stopping_patience)

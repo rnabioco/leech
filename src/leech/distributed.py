@@ -329,6 +329,24 @@ def gather_arrays(array: np.ndarray, ctx: DistContext) -> list[np.ndarray]:
     return [np.asarray(part) for part in gathered]
 
 
+def gather_objects(obj: Any, ctx: DistContext) -> list[Any]:
+    """Collect one arbitrary picklable object per rank onto every rank.
+
+    Used for per-rank RNG/generator state ahead of a checkpoint save: those
+    have no fixed tensor shape (the numpy state alone is a 5-tuple mixing a
+    string, an array and two scalars), so ``all_gather_object`` is the only
+    collective that fits. A collective, so every rank must call this even
+    though only rank 0 goes on to write the file -- skipping it on the other
+    ranks hangs the one rank that does call it, waiting on peers that never
+    arrive.
+    """
+    if not ctx.enabled:
+        return [obj]
+    gathered: list[Any] = [None] * ctx.world_size
+    td.all_gather_object(gathered, obj)
+    return gathered
+
+
 class DistributedWeightedSampler(Sampler[int]):
     """A ``WeightedRandomSampler`` draw, split into disjoint per-rank shards.
 
