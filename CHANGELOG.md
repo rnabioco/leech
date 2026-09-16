@@ -10,6 +10,13 @@ New entries are no longer added to this file by hand — see
 
 <!-- towncrier release notes start -->
 
+## [0.12.3] - 2026-09-16
+
+### Fixed
+
+- **`--pod5` can now point at a directory of POD5 files (a MinKNOW run) on the Rust extraction path, not just a single file.** `rust/src/pod5_cache.rs` now resolves reads through `escapepod_signal::cached_dataset` (escapepod-rs#384) instead of `cached_reader`, with no file/directory branch — a single-file input costs nothing extra, since every file a dataset touches is opened through the same per-file reader cache either way. `--backend auto`/`--backend rust` both work on directory input now; `--backend python` already did. ((#339))
+
+
 ## [0.12.2] - 2026-09-16
 
 ### Fixed
