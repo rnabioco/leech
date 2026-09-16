@@ -37,7 +37,7 @@ jobs:
 
       - name: Install uv
         if: steps.check.outputs.skewed == 'true' && steps.check.outputs.actionable == 'true'
-        uses: astral-sh/setup-uv@v10.0.1
+        uses: astral-sh/setup-uv@v10.1.0
 
       - name: Move both pins to ${{ steps.check.outputs.target }}
         if: steps.check.outputs.skewed == 'true' && steps.check.outputs.actionable == 'true'
