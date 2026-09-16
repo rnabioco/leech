@@ -19,9 +19,10 @@ use crate::pod5_cache::{read_signal_map_by_ids, read_signals_by_ids};
 /// One read's POD5 result: (signal_i16, calibration_offset, calibration_scale).
 type Pod5ReadResult = (Py<PyArray1<i16>>, f32, f32);
 
-/// Read raw DAC signals for a batch of reads from a POD5 file.
+/// Read raw DAC signals for a batch of reads from a POD5 file or a directory
+/// of them.
 ///
-/// Resolves the read IDs against the shared indexed reader, then bulk-extracts
+/// Resolves the read IDs against the shared indexed dataset, then bulk-extracts
 /// every signal in one batch-grouped pass. The GIL is released for the whole
 /// call, so several Python threads may read concurrently.
 ///
@@ -69,7 +70,8 @@ impl PreloadedSignals {
     }
 }
 
-/// Pre-read raw DAC signals from a POD5 file, returning an opaque handle.
+/// Pre-read raw DAC signals from a POD5 file or a directory of them,
+/// returning an opaque handle.
 ///
 /// Releases the GIL during I/O so a background thread can prefetch while
 /// the main thread does other work (BAM metadata extraction, GPU inference).
