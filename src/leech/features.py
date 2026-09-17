@@ -543,11 +543,20 @@ def encode_signal_kmer(
     kmer_len = kmer_before + 1 + kmer_after
     enc = np.zeros((4 * kmer_len, signal_len), dtype=np.float32)
     seq_len = len(seq_to_sig_map) - 1
+    n_seq_ints = len(sequence_ints)
 
     for kmer_pos in range(kmer_len):
         offset = 4 * kmer_pos
         for seq_pos in range(seq_len):
-            base = sequence_ints[seq_pos + kmer_pos]
+            idx = seq_pos + kmer_pos
+            # Mirrors escapepod_signal::seq_encoding::encode_signal_kmer_into's
+            # `seq_ints.get(seq_pos + kmer_pos)`: a caller that supplies too
+            # little k-mer context (a chunk whose context runs off the edge of
+            # the read) gets an all-zero block for the affected k-mer
+            # positions, not an error -- see rnabioco/leech#347.
+            if idx >= n_seq_ints:
+                continue
+            base = sequence_ints[idx]
             if base < 0:
                 continue
             sig_start = seq_to_sig_map[seq_pos]

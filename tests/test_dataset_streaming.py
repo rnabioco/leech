@@ -190,6 +190,15 @@ FILL_MATRIX = [
 ]
 
 
+# The FILL_MATRIX cases that actually reach `encode_signal_kmer` (excludes
+# "signal_kmer_without_maps", which falls back to base_onehot and never calls
+# it) -- issue #347's pure-Python fallback regression coverage runs only
+# these, under a forced `HAS_RUST=False`.
+SIGNAL_KMER_FILL_CASES = [
+    c for c in FILL_MATRIX if "signal_kmer" in c[0] and c[0] != "signal_kmer_without_maps"
+]
+
+
 def assert_datasets_equal(streamed: LeechDataset, eager: LeechDataset) -> None:
     """Every tensor the two datasets expose must match bit for bit."""
     assert len(streamed) == len(eager)
@@ -398,6 +407,33 @@ class TestStreamingParity:
         assert streamed._effective_seq_encoding == "signal_kmer"
         assert_datasets_equal(streamed, eager)
 
+    @pytest.mark.parametrize("left_right", [None, (20, 24)])
+    def test_signal_kmer_encoding_pure_python_fallback(self, tmp_path, monkeypatch, left_right):
+        """`encode_signal_kmer`'s pure-Python path (no `leech-core`) must agree
+        with the Rust one on the same corpus (issue #347). This whole class of
+        bug is invisible whenever `leech_core` is installed -- which is every
+        CI job and dev environment -- so `HAS_RUST` is force-disabled here
+        rather than left to whatever happens to be built.
+        """
+        import leech.features as features_mod
+
+        monkeypatch.setattr(features_mod, "HAS_RUST", False)
+
+        path = tmp_path / "chunks.npz"
+        save_chunks(make_chunks(12), path)
+        kwargs = {
+            "signal_len": STORED_SIGNAL_LEN if left_right is None else 44,
+            "kmer_len": KMER_LEN,
+            "model_type": "ConvLSTMDwell",
+            "seq_encoding": "signal_kmer",
+            "signal_kmer_context": (2, 2),
+        }
+        if left_right is not None:
+            kwargs["left_context"], kwargs["right_context"] = left_right
+        streamed, eager = build(path, **kwargs)
+        assert streamed._effective_seq_encoding == "signal_kmer"
+        assert_datasets_equal(streamed, eager)
+
     def test_signal_kmer_falls_back_without_maps(self, tmp_path):
         path = tmp_path / "chunks.npz"
         save_chunks(make_chunks(8, with_maps=False), path)
@@ -477,6 +513,27 @@ class TestBlockFillParity:
     @pytest.mark.parametrize("name,corpus,options", FILL_MATRIX, ids=[c[0] for c in FILL_MATRIX])
     def test_block_filler_matches_preloaded_chunks(self, tmp_path, name, corpus, options):
         """And the whole point: the block-wise path still equals the eager one."""
+        path = tmp_path / "chunks.npz"
+        save_chunks(make_chunks(**corpus), path)
+        streamed, eager = build(path, **options)
+        assert streamed._block_fill_supported()
+        assert_datasets_equal(streamed, eager)
+
+    @pytest.mark.parametrize(
+        "name,corpus,options", SIGNAL_KMER_FILL_CASES, ids=[c[0] for c in SIGNAL_KMER_FILL_CASES]
+    )
+    def test_block_filler_matches_preloaded_chunks_pure_python_fallback(
+        self, tmp_path, monkeypatch, name, corpus, options
+    ):
+        """`encode_signal_kmer`'s pure-Python fallback must not crash or
+        diverge on the signal_kmer cases here -- issue #347. Every current CI
+        job and dev environment has `leech_core` installed, so nothing else
+        exercises this path; `HAS_RUST` is force-disabled to close that gap.
+        """
+        import leech.features as features_mod
+
+        monkeypatch.setattr(features_mod, "HAS_RUST", False)
+
         path = tmp_path / "chunks.npz"
         save_chunks(make_chunks(**corpus), path)
         streamed, eager = build(path, **options)
