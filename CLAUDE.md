@@ -414,11 +414,14 @@ back shifted, and can exceed `signal_len` outright. `extractor.py`'s `get_chunk`
 and `training.rs`'s `resolve_placed_window` (`inference_pipeline/training.rs`)
 now resolve the placed origin first and key `seq_to_sig_map` off that — a
 no-op in the pad branch (`win_start == sig_start` there), so only centre-crop
-was ever affected. `cut_chunk`'s own internal `SignalKmer` arm has the same bug
-in the pinned upstream crate itself (rnabioco/escapepod-rs#388, not yet fixed
-there); `inference.rs`'s predict path relies on that internal arm with no
-corrective second call, so it still inherits it pending that upstream fix (or
-its own workaround) — tracked separately, not fixed by #343.
+was ever affected. `cut_chunk`'s own internal `SignalKmer` arm had the same bug
+in the pinned upstream crate itself (rnabioco/escapepod-rs#388); `inference.rs`'s
+predict path relies on that internal arm with no corrective second call of its
+own, so it inherited the bug too until the pin was bumped to escapepod-signal
+v0.27.1 (rust/Cargo.toml), which carries the upstream fix (a shared
+`placed_window` helper `cut_chunk` now runs the window through before calling
+`signal_kmer_inputs`) — `inference.rs` needed no code change of its own once
+the pin moved.
 
 **The feature window resolves in exactly one place:
 `chunking.resolve_feature_window`.** `feature_start`/`feature_end` are signed

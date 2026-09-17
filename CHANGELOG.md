@@ -10,6 +10,15 @@ New entries are no longer added to this file by hand — see
 
 <!-- towncrier release notes start -->
 
+## [0.13.1] - 2026-09-17
+
+### Fixed
+
+- **`data prepare --signal-context-bases` with `--seq-encoding signal_kmer` (the default) could scatter a chunk's k-mer sequence identity at the wrong signal positions, and `leech predict`'s Rust path inherited the same bug.** Whenever a read's requested base-defined window was wider than `--signal-len`, `seq_to_sig_map` was built from the pre-crop request rather than the window `place_window` actually placed the signal in — a shift of up to hundreds of samples, invisible to the Python/Rust backend-parity suite because both prepare backends shared the identical bug. Fixed in the Python extractor and the Rust `data prepare` path directly; predict's Rust path relies on `escapepod_signal::chunk::cut_chunk`'s internal `SignalKmer` arm, which carried the same mismatch in the pinned upstream crate (rnabioco/escapepod-rs#388) — fixed there in `escapepod-signal` v0.27.1, which this pins to, so predict inherits the fix with no code change of its own. ((#343))
+- **`leech data merge`'s base-to-signal-map gather is now block-streamed like the rest of the merge, instead of loading one whole input file's CSR values array at a time.** `_load_s2s_csr`'s per-file `np.load` bounded the merge's transient memory to the largest single input file's `seq_to_sig_values`, which scales with `--signal-context-bases`'s window width; the new `iter_npz_csr_value_blocks` (`leech.chunking.serialization`) reads it in row-aligned byte blocks the same way the fixed-width members already are. A benchmark confirmed the merge itself scales linearly with context width at fixed corpus size, so this is a preventive fix rather than a response to a known incident. Also adds the first test coverage for the genuinely ragged (`signals`/`dwells`/`features`) object-array merge fallback, which no fixture had ever exercised. ((#344))
+- **`encode_signal_kmer`'s pure-Python fallback (used by any install without the `leech[rust]` extra) no longer crashes with `IndexError` on a chunk whose k-mer context runs off the edge of a read.** The pinned `escapepod-signal` crate treats a `sequence_ints` index past the end of the array as "nothing to encode at this k-mer position," matching an explicit upstream test (`missing_context_is_skipped_not_padded`); the Python fallback indexed unconditionally instead and raised. Invisible until now because every CI job and dev environment has the Rust extension built, so the fallback was never exercised — new tests force `HAS_RUST=False` to close that gap for good. ((#347))
+
+
 ## [0.13.0] - 2026-09-16
 
 ### Added
