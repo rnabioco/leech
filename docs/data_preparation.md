@@ -203,9 +203,10 @@ leech data prepare --signal-context-bases 8 24 --signal-len 2000 ...
 
 Mutually exclusive with `--signal-context`. Implemented in both prepare
 backends and held to identical output by `tests/test_backend_parity.py`; the
-Rust *inference* pipeline has no base-defined window support, so `leech
-predict` always runs a model trained this way through the Python path (with a
-warning under `--backend auto`, an error under `--backend rust`). The resolved
+Rust *inference* pipeline implements it too, resolving the same per-chunk
+window through the shared `resolve_signal_context_bases`
+(`rust/src/inference_pipeline/types.rs`), so `leech predict` uses the fast
+Rust path for a model trained this way just like any other. The resolved
 window is logged and recorded in `prepare_config.json`.
 
 ## Masking sequence-branch bases

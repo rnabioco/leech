@@ -22,7 +22,9 @@ use crate::pod5_io::PreloadedSignals;
 
 #[cfg(feature = "test-utils")]
 use super::signal_mapping::compute_ref_to_signal;
-use super::types::{ChunkResult, PipelineConfig, build_anchor, build_config};
+use super::types::{
+    ChunkResult, PipelineConfig, build_anchor, build_config, resolve_signal_context_bases,
+};
 
 /// One inference chunk returned to Python: (signal, seq_encoding, features?, read_id, base_idx).
 type InferenceChunkPy = (
@@ -57,6 +59,7 @@ fn process_one_read(
     cfg: &PipelineConfig<'_>,
     cigar_ops: Option<&[(u32, u32)]>,
     ref_seq: Option<&str>,
+    signal_context_bases: Option<(i64, i64)>,
 ) -> Vec<ChunkResult> {
     let inputs = chunk::ReadInputs {
         raw: raw_i16,
@@ -73,12 +76,45 @@ fn process_one_read(
         None => return vec![],
     };
     let rows = chunk::read_rows(&processed, &cfg.spec);
+    let n_bases = processed.n_bases();
     let num_features = cfg.spec.feature_channels.len();
     let dwell_width = cfg.spec.feature_width();
 
     positions
         .iter()
         .filter_map(|&base_idx| {
+            if base_idx < 0 || base_idx as usize >= n_bases {
+                return None;
+            }
+
+            // Base-defined window (issue #278/#341): a per-chunk `ChunkSpec`
+            // clone carrying the resolved SAMPLE window for this base, so a
+            // fast and a slow read see the same BASES of context. Mirrors
+            // `training::extract_training_chunks_from_read` exactly -- see
+            // that function's comment for why `signal_context` is the only
+            // field that needs overriding: `cut_chunk` derives its `focus`
+            // from `base_justify` and then `sig_start = focus - left`,
+            // `sig_end = focus + right`, so setting
+            // `(focus - sample_start, sample_end - focus)` reproduces the
+            // requested `[sample_start, sample_end)` interval exactly, and
+            // every other field (seq_encoding, feature_channels, ...) rides
+            // along unchanged via `.clone()`.
+            let mut per_base_spec;
+            let spec_for_cut: &chunk::ChunkSpec = if let Some((lb, rb)) = signal_context_bases {
+                let bi = base_idx as usize;
+                let (sample_start, sample_end) =
+                    resolve_signal_context_bases(&processed.seq_to_sig, base_idx, lb, rb, n_bases);
+                let focus = cfg
+                    .spec
+                    .base_justify
+                    .focus(processed.seq_to_sig[bi], processed.seq_to_sig[bi + 1]);
+                per_base_spec = cfg.spec.clone();
+                per_base_spec.signal_context = (focus - sample_start, sample_end - focus);
+                &per_base_spec
+            } else {
+                &cfg.spec
+            };
+
             // The only reason to drop a focus base is that it has no signal
             // boundaries -- `cut_chunk` returns `None` for exactly that (and,
             // under `SeqEncoding::SignalKmer`, when the window covers no base
@@ -86,7 +122,7 @@ fn process_one_read(
             // empty `chunk_signal_kmer_inputs` result). A k-mer window that
             // merely overhangs the sequence is `N`-padded internally, not
             // dropped -- see CLAUDE.md on issue #185.
-            let c = chunk::cut_chunk(&processed, &rows, &cfg.spec, base_idx)?;
+            let c = chunk::cut_chunk(&processed, &rows, spec_for_cut, base_idx)?;
             Some(ChunkResult {
                 signal: c.signal,
                 seq_enc: c.sequence,
@@ -119,6 +155,7 @@ fn _process_and_convert<'py>(
     cfg: &PipelineConfig<'_>,
     cigar_tuples: &Option<Vec<Vec<(u32, u32)>>>,
     reference_sequences: &Option<Vec<Option<String>>>,
+    signal_context_bases: Option<(i64, i64)>,
 ) -> PyResult<Vec<InferenceChunkPy>> {
     let n_reads = read_ids.len();
 
@@ -155,6 +192,7 @@ fn _process_and_convert<'py>(
                         cfg,
                         cigar,
                         rseq,
+                        signal_context_bases,
                     )
                 })
                 .collect()
@@ -231,6 +269,8 @@ fn _process_and_convert<'py>(
     refine_scale_iters = 2,
     signal_in_channels = 1,
     base_justify = "center",
+    signal_context_bases_left = None,
+    signal_context_bases_right = None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn extract_inference_chunks<'py>(
@@ -264,7 +304,13 @@ pub fn extract_inference_chunks<'py>(
     refine_scale_iters: i32,
     signal_in_channels: usize,
     base_justify: &str,
+    signal_context_bases_left: Option<i64>,
+    signal_context_bases_right: Option<i64>,
 ) -> PyResult<Vec<InferenceChunkPy>> {
+    let signal_context_bases = match (signal_context_bases_left, signal_context_bases_right) {
+        (Some(l), Some(r)) => Some((l, r)),
+        _ => None,
+    };
     let n_reads = read_ids.len();
     if sequences.len() != n_reads
         || mv_strides.len() != n_reads
@@ -336,6 +382,7 @@ pub fn extract_inference_chunks<'py>(
         &cfg,
         &cigar_tuples,
         &reference_sequences,
+        signal_context_bases,
     )
 }
 
@@ -379,6 +426,8 @@ pub fn extract_inference_chunks<'py>(
     refine_scale_iters = 2,
     signal_in_channels = 1,
     base_justify = "center",
+    signal_context_bases_left = None,
+    signal_context_bases_right = None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn extract_chunks_from_preloaded<'py>(
@@ -412,7 +461,13 @@ pub fn extract_chunks_from_preloaded<'py>(
     refine_scale_iters: i32,
     signal_in_channels: usize,
     base_justify: &str,
+    signal_context_bases_left: Option<i64>,
+    signal_context_bases_right: Option<i64>,
 ) -> PyResult<Vec<InferenceChunkPy>> {
+    let signal_context_bases = match (signal_context_bases_left, signal_context_bases_right) {
+        (Some(l), Some(r)) => Some((l, r)),
+        _ => None,
+    };
     let n_reads = read_ids.len();
     if sequences.len() != n_reads
         || mv_strides.len() != n_reads
@@ -477,6 +532,7 @@ pub fn extract_chunks_from_preloaded<'py>(
         &cfg,
         &cigar_tuples,
         &reference_sequences,
+        signal_context_bases,
     )
 }
 

@@ -1338,11 +1338,11 @@ def check_rust_extraction_available(
             discards the pre-crop signal that recovery reads from (see
             ``rust_supports_softclip_recovery``), so this also forces Python.
         signal_context_bases: The model's base-defined signal window
-            (``(L, R)``), or ``None`` for a sample-context model. The Rust
-            *inference* pipeline (``inference.rs``) has no base-defined
-            window support -- that landed only in the training/prepare path
-            (``training.rs``, issue #278) -- so a model trained with
-            ``--signal-context-bases`` always forces Python at predict time.
+            (``(L, R)``), or ``None`` for a sample-context model. Both Rust
+            pipelines implement this (``training.rs`` since issue #278,
+            ``inference.rs`` since issue #341), via the shared
+            ``resolve_signal_context_bases`` -- see
+            :data:`leech._rust_accel.RUST_SUPPORTS_SIGNAL_CONTEXT_BASES`.
         mask_seq_side: The model's ``mask_seq_side`` (from its config), or
             None. Focus-relative sequence masking (``_mask_focus_side``) is
             Python-only -- see ``rust_prepare_unsupported_reason`` for why --
@@ -1494,6 +1494,7 @@ def build_rust_extraction_kwargs(
     refine_scale_iters: int,
     signal_in_channels: int,
     base_justify: str,
+    signal_context_bases: tuple[int, int] | None = None,
 ) -> dict:
     """Build the kwargs dict passed to the rust extraction functions.
 
@@ -1512,6 +1513,11 @@ def build_rust_extraction_kwargs(
     k-mer table's ``dict -> KmerLevels`` conversion belongs: building it here
     means every batch call after this one borrows the same handle instead of
     re-marshalling the 262,144-entry table itself (issue #259).
+
+    ``signal_context_bases`` (``(L, R)`` base offsets, issue #278/#341) maps
+    to the Rust entry points' ``signal_context_bases_left``/``_right``
+    keyword pair -- ``None`` for either leaves both unset, which the Rust
+    side reads as "sample-context model" exactly like the training path.
     """
     kmer_table_handle = None
     kmer_table_len = 9
@@ -1542,6 +1548,12 @@ def build_rust_extraction_kwargs(
         "refine_scale_iters": refine_scale_iters,
         "signal_in_channels": signal_in_channels,
         "base_justify": base_justify,
+        "signal_context_bases_left": (
+            signal_context_bases[0] if signal_context_bases is not None else None
+        ),
+        "signal_context_bases_right": (
+            signal_context_bases[1] if signal_context_bases is not None else None
+        ),
     }
 
 

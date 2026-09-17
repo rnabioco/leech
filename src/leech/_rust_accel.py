@@ -114,18 +114,20 @@ def rust_supports_softclip_recovery(recover_softclip_signal: bool) -> bool:
 
 
 #: Whether the Rust *inference* pipeline (``inference.rs``) implements a
-#: base-defined signal window (``--signal-context-bases``, issue #278).
+#: base-defined signal window (``--signal-context-bases``, issue #278/#341).
 #:
-#: The *training/prepare* pipeline (``training.rs``) does -- both `data
-#: prepare` backends produce identical chunks for it, held to that by
-#: ``tests/test_backend_parity.py``. Predict's Rust path is a separate glue
-#: module (`inference.rs`) built around a single, per-read fixed
-#: ``ChunkSpec.signal_context``; extending it to resolve a per-chunk window
-#: the way ``training.rs`` does is future work, not implemented here. A model
-#: trained with ``--signal-context-bases`` always falls back to the Python
-#: predict path, which shares ``LeechRead.get_chunk`` with `data prepare` and
-#: so already re-derives the same window. Flip this to ``True`` if that changes.
-RUST_SUPPORTS_SIGNAL_CONTEXT_BASES = False
+#: Both Rust pipelines resolve the same per-chunk sample window through the
+#: one shared ``resolve_signal_context_bases`` (``rust/src/inference_pipeline/
+#: types.rs``), by cloning the batch's ``ChunkSpec`` per focus base and
+#: overriding just ``signal_context`` before calling ``cut_chunk`` --
+#: `training.rs` did this first (issue #278); `inference.rs` mirrors it
+#: exactly (issue #341). Predict's Rust path used to be a separate glue
+#: module built around a single, per-read fixed ``ChunkSpec.signal_context``
+#: with no way to honor this option, forcing every such model through the
+#: (correct, but much slower) Python predict path -- see
+#: ``tests/test_backend_parity.py`` (prepare) and the inference-path parity
+#: coverage next to it for the two Rust call sites held equal to Python.
+RUST_SUPPORTS_SIGNAL_CONTEXT_BASES = True
 
 
 def rust_supports_signal_context_bases(signal_context_bases: tuple[int, int] | None) -> bool:

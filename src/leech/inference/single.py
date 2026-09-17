@@ -920,6 +920,7 @@ def run_inference(
             refine_scale_iters=spec.refine_scale_iters,
             signal_in_channels=signal_in_channels,
             base_justify=base_justify,
+            signal_context_bases=spec.signal_context_bases,
         )
 
         def _collect_bam_metadata(aln_batch: list) -> tuple:

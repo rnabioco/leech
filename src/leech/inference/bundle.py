@@ -566,6 +566,7 @@ def run_bundle_inference(
             refine_scale_iters=spec.refine_scale_iters,
             signal_in_channels=bundle_signal_in_channels,
             base_justify=base_justify,
+            signal_context_bases=spec.signal_context_bases,
         )
 
     # Build InferenceConfig for parallel workers (reused across mega-batches).
