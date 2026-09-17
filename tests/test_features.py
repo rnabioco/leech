@@ -263,5 +263,80 @@ class TestMeanFastPathTail:
         np.testing.assert_allclose(python, rust, rtol=1e-5, atol=1e-6)
 
 
+class TestEncodeSignalKmerShortContext:
+    """`sequence_ints` shorter than `seq_len + kmer_before + kmer_after` --
+
+    a chunk whose k-mer context runs off the edge of the read -- must not
+    raise: both backends skip the affected k-mer positions and leave an
+    all-zero block, per `escapepod_signal::seq_encoding::encode_signal_kmer`'s
+    own `missing_context_is_skipped_not_padded` test upstream. Before #347,
+    Python's pure fallback indexed `sequence_ints` unconditionally and raised
+    `IndexError` on exactly this input, which is invisible whenever
+    `leech-core` is installed -- every CI job and dev environment -- since
+    Rust answers first and never hits the Python loop at all.
+    """
+
+    # 3 core bases, kmer_context=(2, 2) wants a 7-long sequence_ints
+    # (3 + 2 + 2); only the 3 core bases are supplied, matching what
+    # `LeechDataset`'s streaming path stores for a chunk near a read's edge.
+    SEQUENCE_INTS = np.array([2, 0, 3], dtype=np.int8)  # G, A, T -- no context
+    SEQ_TO_SIG_MAP = np.array([0, 4, 8, 12], dtype=np.int64)
+    SIGNAL_LEN = 12
+    KMER_CONTEXT = (2, 2)
+
+    def test_python_fallback_does_not_raise(self, monkeypatch):
+        import leech.features as features_mod
+
+        monkeypatch.setattr(features_mod, "HAS_RUST", False)
+        from leech.features import encode_signal_kmer
+
+        enc = encode_signal_kmer(
+            self.SEQUENCE_INTS, self.SEQ_TO_SIG_MAP, self.SIGNAL_LEN, self.KMER_CONTEXT
+        )
+        assert enc.shape == (4 * 5, self.SIGNAL_LEN)
+        # No leading context margin was supplied, so kmer_pos=0 reads
+        # `sequence_ints[seq_pos]` directly -- each base's own identity --
+        # and must be fully encoded.
+        block0 = enc[0:4]
+        assert block0[2, 0:4].sum() == 4  # G over base 0's span
+        assert block0[0, 4:8].sum() == 4  # A over base 1's span
+        assert block0[3, 8:12].sum() == 4  # T over base 2's span
+        # kmer_pos=4 needs sequence_ints[seq_pos + 4], never in range for a
+        # 3-long array -- skipped entirely, not an error.
+        assert enc[4 * 4 : 4 * 4 + 4].sum() == 0
+
+    def test_rust_and_python_agree_on_missing_context(self, monkeypatch):
+        from leech.features import HAS_RUST, encode_signal_kmer
+
+        if not HAS_RUST:
+            pytest.skip("leech_core not installed")
+        rust = encode_signal_kmer(
+            self.SEQUENCE_INTS, self.SEQ_TO_SIG_MAP, self.SIGNAL_LEN, self.KMER_CONTEXT
+        )
+
+        import leech.features as features_mod
+
+        monkeypatch.setattr(features_mod, "HAS_RUST", False)
+        python = encode_signal_kmer(
+            self.SEQUENCE_INTS, self.SEQ_TO_SIG_MAP, self.SIGNAL_LEN, self.KMER_CONTEXT
+        )
+        np.testing.assert_array_equal(python, rust)
+
+    def test_batch_pure_python_fallback_does_not_raise(self, monkeypatch):
+        """`encode_signal_kmer_batch`'s fallback just loops the single-row one."""
+        import leech.features as features_mod
+
+        monkeypatch.setattr(features_mod, "HAS_RUST", False)
+        from leech.features import encode_signal_kmer_batch
+
+        batch = encode_signal_kmer_batch(
+            self.SEQUENCE_INTS[None, :],
+            self.SEQ_TO_SIG_MAP[None, :],
+            self.SIGNAL_LEN,
+            self.KMER_CONTEXT,
+        )
+        assert batch.shape == (1, 4 * 5, self.SIGNAL_LEN)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
