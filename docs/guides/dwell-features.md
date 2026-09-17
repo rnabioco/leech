@@ -122,8 +122,9 @@ The feature branch has the largest impact when:
 
 - **Training data is limited** -- explicit features reduce what the model must
   learn from scratch
-- **The classification task is subtle** -- amino acid discrimination relies on
-  small dwell differences that benefit from direct feature access
-- **The region of interest is the CCA tail** -- this is where aminoacylation
-  produces the strongest dwell signal, and explicit features help the model
-  focus there
+- **The classification task is subtle** -- fine-grained multi-class
+  discrimination (e.g., amino acid identity in the tRNA charging example)
+  relies on small dwell differences that benefit from direct feature access
+- **The region of interest has a strong, localized dwell shift** -- for
+  example, the CCA tail in tRNA charging, where aminoacylation produces the
+  strongest dwell signal, and explicit features help the model focus there

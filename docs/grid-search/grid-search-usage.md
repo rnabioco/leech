@@ -5,7 +5,7 @@ This guide shows how to use the `leech model optimize` command to optimize chunk
 ## Overview
 
 Grid search systematically tests different signal window sizes (left/right context) to find the optimal configuration for your model. This is essential because:
-- Optimal context varies by amino acid pair
+- Optimal context varies by classification task (e.g., by amino acid pair in the tRNA charging example)
 - Asymmetric contexts often perform best (e.g., 9500 left / 500 right)
 - More context isn't always better (diminishing returns after ~10k samples)
 
@@ -16,10 +16,10 @@ Grid search systematically tests different signal window sizes (left/right conte
 First, prepare your training and validation chunks:
 
 ```bash title="Bash" linenums="1"
-# Prepare training data (e.g., charged tRNAs)
+# Prepare training data (example: tRNA charging, motif = CCA)
 uv run leech data prepare \
-  --pod5 charged_reads.pod5 \
-  --bam charged_alignments.bam \
+  --pod5 reads.pod5 \
+  --bam alignments.bam \
   --output-dir data/train/ \
   --motif CCA \
   --motif-offset 2 \
@@ -27,8 +27,8 @@ uv run leech data prepare \
 
 # Prepare validation data
 uv run leech data prepare \
-  --pod5 val_charged_reads.pod5 \
-  --bam val_charged_alignments.bam \
+  --pod5 val_reads.pod5 \
+  --bam val_alignments.bam \
   --output-dir data/val/ \
   --motif CCA \
   --motif-offset 2 \

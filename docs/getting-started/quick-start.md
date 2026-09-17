@@ -161,7 +161,7 @@ leech model bundle \
   --output bundle.pt \
   --version 1.0.0
 
-# Run all models on new data (aggregated amino acid prediction)
+# Run all models on new data (aggregated multi-class prediction)
 leech predict \
   --bundle bundle.pt --all \
   --pod5 new_reads.pod5 --bam new_alignments.bam \
@@ -175,6 +175,6 @@ See the [CLI Reference](../reference/cli.md) for full bundle and inference optio
 - **[Data Preparation](../data_preparation.md)** — parallel processing, motif search, multi-sample merging
 - **[Understanding Move Tables](../guides/move-tables.md)** — how leech decodes the BAM `mv` tag into per-base dwell times
 - **[Dwell Time Features](../guides/dwell-features.md)** — the 9-channel feature set and model architecture
-- **[Classification Tasks](../guides/classification-tasks.md)** — charged vs. uncharged, pairwise amino acid, and chemical property comparisons
+- **[Classification Tasks](../guides/classification-tasks.md)** — binary and multi-way classification strategies, worked through the tRNA charging/amino acid example
 - **[Grid Search](../grid-search/grid-search-usage.md)** — optimize signal context and hyperparameters
 - **[CLI Reference](../reference/cli.md)** — all commands including training improvements and bundle workflows

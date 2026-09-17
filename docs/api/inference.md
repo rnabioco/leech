@@ -42,7 +42,7 @@ The output BAM file contains the following additional tags. By default `ac`,
 | `am` | uint8 / float | Margin (top probability minus second-highest) |
 | `pn` | str | Comma-separated class names |
 | `pp` | uint8[] / float[] | Full probability distribution over classes |
-| `pc` | uint8 / float | Predicted charging level (only when a CL regression head is present) |
+| `pc` | uint8 / float | Predicted value of the optional continuous auxiliary regression target (only when a `--cl-regression` head is present; named for its origin as tRNA charging level, the `CL` BAM tag) |
 | `ji` | int32 | CIGAR-measured indel length at the motif junction (`0` = exact). Omitted when no junction measurement was attempted (no motif, or a Remora model) |
 | `jm` | uint8 | Whether the motif junction mapped to the reference (0/1). Omitted under the same conditions as `ji` |
 

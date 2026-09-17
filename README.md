@@ -12,12 +12,18 @@
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Leech classifies aminoacylation state and amino acid identity from Oxford
-Nanopore tRNA sequencing data. It extracts **dwell time features** from move
-tables (the BAM `mv` tag) and feeds them alongside raw signal and sequence
-context into a multi-branch neural network, giving it information that
-signal-only tools like [Remora](https://github.com/nanoporetech/remora)
-discard.
+Leech trains classifiers for motif-centered tasks on Oxford Nanopore signal
+data -- modified-base calling, or any other label attached to a sequence
+motif. It extracts **dwell time features** from move tables (the BAM `mv`
+tag) and feeds them alongside raw signal and sequence context into a
+multi-branch neural network, giving it information that signal-only tools
+like [Remora](https://github.com/nanoporetech/remora) discard.
+
+Development and validation used tRNA aminoacylation ("charging") state and
+amino acid identity classification from direct RNA sequencing as the driving
+example -- it shows up throughout the docs and the bundled Snakemake
+pipeline -- but nothing in the feature extraction, model, or CLI is specific
+to that assay: motifs, labels, and classes are all user-defined.
 
 ## Installation
 
@@ -201,8 +207,9 @@ Note the emission rule: a CRF with `state_len` cannot emit the first
 ## Snakemake pipeline
 
 For production workloads, leech includes a Snakemake pipeline supporting:
-- Charged vs. uncharged classification
-- Pairwise amino acid discrimination
+- Binary and pairwise classification (built around the tRNA charging/amino
+  acid example, but driven entirely by user-supplied sample and comparison
+  configs)
 - Grid search optimization
 - Multi-architecture comparison
 - HPC clusters (SLURM/LSF)
