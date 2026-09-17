@@ -764,3 +764,67 @@ class TestJunctionIndelRoundTrip:
         with np.load(resaved_path) as data:
             assert data["junction_indels"].tolist() == [0]
             assert data["junction_mappeds"].tolist() == [False]
+
+
+class TestCsrValueBlocks:
+    """``iter_npz_csr_value_blocks``: the CSR analogue of ``iter_npz_row_blocks``.
+
+    A merge's CSR gather (``leech.splitting.splitter``) used to `np.load` one
+    input file's whole ``seq_to_sig_values`` array at a time; this streams it
+    in row-aligned byte blocks instead, so a single wide-context file never
+    has to sit resident as one array (#344). Block boundaries are chosen from
+    ragged row lengths, not a fixed row width, so they will not generally land
+    on a chunk-row boundary -- exactly the case that has to be handled right.
+    """
+
+    def test_blocks_reassemble_to_the_original_ragged_values(self, tmp_path):
+        rng = np.random.default_rng(0)
+        lens = rng.integers(1, 50, 37)  # ragged and not block_bytes-aligned
+        offsets = ser.csr_offsets_from_lens(lens)
+        values = rng.integers(0, 1000, int(offsets[-1])).astype(np.int32)
+        path = tmp_path / "csr.npz"
+        np.savez(path, seq_to_sig_values=values)
+
+        seen_rows = 0
+        max_block_elems = 0
+        reassembled = np.empty(len(values), dtype=np.int32)
+        for row_start, row_end, block in ser.iter_npz_csr_value_blocks(
+            path, "seq_to_sig_values", offsets, block_bytes=64
+        ):
+            assert row_start == seen_rows
+            n = int(offsets[row_end] - offsets[row_start])
+            assert len(block) == n
+            reassembled[offsets[row_start] : offsets[row_end]] = block
+            max_block_elems = max(max_block_elems, len(block))
+            seen_rows = row_end
+        assert seen_rows == len(lens)
+        np.testing.assert_array_equal(reassembled, values)
+        # block_bytes=64 -> 16 int32 elements/block target. A block can
+        # overshoot the target by at most the one row that pushed it past —
+        # searchsorted finds the first offset >= target, which may land mid
+        # or just past a wide row rather than exactly on it — so the bound is
+        # target + the widest row seen, not target alone.
+        assert max_block_elems <= 16 + int(lens.max())
+
+    def test_a_single_row_wider_than_block_bytes_is_still_one_block(self, tmp_path):
+        # The wide row (495 elements) comes first: starting a batch at it
+        # with a 16-element target immediately exceeds the target within
+        # that one row, so it must come out alone rather than the iterator
+        # stalling or silently absorbing a neighbor.
+        offsets = np.array([0, 495, 500, 505], dtype=np.int64)
+        values = np.arange(505, dtype=np.int32)
+        path = tmp_path / "csr.npz"
+        np.savez(path, seq_to_sig_values=values)
+
+        blocks = list(
+            ser.iter_npz_csr_value_blocks(path, "seq_to_sig_values", offsets, block_bytes=64)
+        )
+        assert any(row_start == 0 and row_end == 1 for row_start, row_end, _ in blocks)
+        reassembled = np.concatenate([b for _, _, b in blocks])
+        np.testing.assert_array_equal(reassembled, values)
+
+    def test_empty_member_yields_nothing(self, tmp_path):
+        offsets = np.array([0], dtype=np.int64)
+        path = tmp_path / "csr.npz"
+        np.savez(path, seq_to_sig_values=np.empty(0, dtype=np.int32))
+        assert list(ser.iter_npz_csr_value_blocks(path, "seq_to_sig_values", offsets)) == []

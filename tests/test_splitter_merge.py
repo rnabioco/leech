@@ -628,6 +628,153 @@ class TestMergeMemory:
         )
 
 
+def make_wide_ragged_chunks(
+    n_chunks, prefix, label, *, seed=0, min_map_len=2_000, max_map_len=8_000, signal_len=20_000
+):
+    """Chunks with a wide, ragged ``seq_to_sig_map`` spanning several CSR blocks.
+
+    ``make_chunks``' maps are 5-10 bases -- enough to exercise the CSR gather
+    at all, but never wide enough for one file's ``seq_to_sig_values`` to
+    cross ``iter_npz_csr_value_blocks``'s block boundary. This widens the map
+    into the thousands so a file spans several 8 MB blocks, and (since row
+    lengths are random) those boundaries essentially never land on a
+    chunk-row boundary -- exactly the case #344's block-streamed CSR gather
+    has to get right.
+    """
+    rng = np.random.default_rng(seed)
+    chunks = []
+    for i in range(n_chunks):
+        n_bases = int(rng.integers(min_map_len, max_map_len))
+        read = i // CHUNKS_PER_READ
+        chunks.append(
+            {
+                "signal": rng.standard_normal(SIGNAL_LEN).astype(np.float32),
+                "sequence": "".join(rng.choice(list("ACGT"), KMER_LEN)),
+                "dwell": rng.integers(1, 9, FEAT[1]).astype(np.float32),
+                "features": rng.standard_normal(FEAT).astype(np.float32),
+                "label": label,
+                "label_int": i % 2,
+                "read_id": f"{prefix}_{read:06d}",
+                "base_idx": 100 + i,
+                "source_group": f"{label}_src",
+                "reference_name": f"tRNA-{label}",
+                "feature_start": -6,
+                "feature_end": 6,
+                "cl_value": (i % 7) - 1,
+                "seq_to_sig_map": np.sort(rng.integers(0, signal_len, n_bases + 1)).astype(
+                    np.int64
+                ),
+                "sequence_with_kmer_context": "".join(rng.choice(list("ACGT"), n_bases)),
+                "focus_signal_pos": signal_len // 2,
+            }
+        )
+    return chunks
+
+
+class TestWideRaggedCSRMerge:
+    """``seq_to_sig_values`` wide/ragged enough to span several CSR blocks (#344).
+
+    Regression coverage for the block-streamed CSR gather in
+    ``_merge_arrays_by_split``: block boundaries come from ragged row
+    lengths, not a fixed row width, so unlike the fixed-width path's blocks
+    they will not generally land on a chunk-row boundary. ``assert_round_trip``
+    compares every chunk's ``seq_to_sig_map`` value-for-value against the
+    source, so a block-boundary bug (an off-by-one in ``local_offsets``, a
+    write position drifting between blocks) shows up as a scrambled or
+    truncated map rather than passing silently.
+    """
+
+    def test_block_boundaries_do_not_corrupt_values(self, tmp_path):
+        n_chunks = 1_000  # ~5,000 elements/chunk avg * 4 bytes -> well over 8 MB/file
+        inputs = []
+        for i in range(2):
+            chunks = make_wide_ragged_chunks(n_chunks, f"wide{i}", f"W{i}", seed=i)
+            path = tmp_path / f"W{i}" / "all.npz"
+            save_chunks(chunks, path)
+            inputs.append(path)
+
+        # Sanity check this fixture actually spans multiple 8 MB default
+        # blocks -- otherwise the test would pass even with the old
+        # whole-file-load behavior and prove nothing about #344.
+        with np.load(inputs[0], allow_pickle=True) as data:
+            assert data["seq_to_sig_values"].nbytes > (8 << 20), (
+                "fixture is too small to exercise multi-block streaming"
+            )
+
+        result = merge_and_split_chunks(inputs, output_dir=tmp_path / "out", seed=42)
+        assert result["n_total"] == 2 * n_chunks
+        assert_round_trip(inputs, result["output_files"])
+
+
+def make_ragged_signal_chunks(n_chunks, prefix, label, *, seed=0):
+    """Chunks whose ``signal``/``dwell``/``features`` shapes genuinely vary.
+
+    ``iter_chunk_columns`` only stacks these into the fast ``*_flat`` form
+    when every chunk shares one shape; a per-chunk-varying shape falls back to
+    the pickled ``signals``/``dwells``/``features`` object arrays, which is
+    exactly the "boxed" list-accumulate-then-concatenate merge path (#344) --
+    previously exercised by no test at all.
+    """
+    rng = np.random.default_rng(seed)
+    chunks = []
+    for read in range(n_chunks // CHUNKS_PER_READ):
+        for j in range(CHUNKS_PER_READ):
+            i = read * CHUNKS_PER_READ + j
+            sig_len = SIGNAL_LEN + (i % 5)  # varies chunk to chunk, on purpose
+            chunks.append(
+                {
+                    "signal": rng.standard_normal(sig_len).astype(np.float32),
+                    "sequence": "".join(rng.choice(list("ACGT"), KMER_LEN)),
+                    "dwell": rng.integers(1, 9, FEAT[1]).astype(np.float32),
+                    "features": rng.standard_normal(FEAT).astype(np.float32),
+                    "label": label,
+                    "label_int": i % 2,
+                    "read_id": f"{prefix}_{read:06d}",
+                    "base_idx": 100 + i,
+                    "source_group": f"{label}_src",
+                    "reference_name": f"tRNA-{label}",
+                    "feature_start": -6,
+                    "feature_end": 6,
+                    "cl_value": (i % 7) - 1,
+                    "focus_signal_pos": sig_len // 2,
+                }
+            )
+    return chunks
+
+
+class TestBoxedFallbackMerge:
+    """The genuinely ragged (object-dtype) ``signals`` merge path (#344).
+
+    Before this, no fixture in the suite ever produced a per-chunk-varying
+    ``signal`` shape, so ``_merge_arrays_by_split``'s ``boxed_members``
+    branch (the ``np.load(..., allow_pickle=True)`` + per-split list +
+    single final ``np.concatenate``) was never exercised by anything --
+    memory-inefficient by design, but its correctness was untested.
+    """
+
+    def test_ragged_signal_round_trips_through_the_boxed_path(self, tmp_path):
+        inputs = []
+        for i, tag in enumerate(("Ala", "Gly")):
+            chunks = make_ragged_signal_chunks(24, tag.lower(), tag, seed=i)
+            path = tmp_path / tag / "all.npz"
+            save_chunks(chunks, path)
+            inputs.append(path)
+
+        # Confirm the fixture actually lands on the boxed (object-dtype) path
+        # rather than accidentally being uniform-width -- otherwise this test
+        # would silently exercise the fast path instead.
+        with np.load(inputs[0], allow_pickle=True) as data:
+            assert "signals" in data.files
+            assert "signals_flat" not in data.files
+
+        result = merge_and_split_chunks(inputs, output_dir=tmp_path / "out", seed=42)
+        assert result["n_total"] == 2 * 24
+        assert_round_trip(inputs, result["output_files"])
+        for path in result["output_files"].values():
+            if path.exists():
+                assert_is_a_corpus(path)
+
+
 class TestMergeSplitCLIProvenance:
     """``leech data merge -i A=file1.npz -i B=file2.npz`` (leech.commands.merge_split).
 
