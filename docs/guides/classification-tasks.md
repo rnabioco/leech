@@ -1,6 +1,16 @@
 # Classification Tasks
 
-Leech supports two classification tasks of increasing difficulty: binary
+Leech is a general library for training classifiers on motif-centered
+nanopore signal: the task, the classes, and what counts as "identity" for a
+conditional or hierarchical model are all yours to define. This page works
+through the concrete example that drove leech's development -- tRNA
+aminoacylation ("charging") state and amino acid identity from direct RNA
+sequencing -- because it exercises binary classification, hard multi-way
+discrimination, and identity-conditioned modeling strategies that generalize
+to other motif-centered classification tasks (e.g., other base modifications
+identified by a known sequence context).
+
+Within that example, leech supports two tasks of increasing difficulty: binary
 charged/uncharged classification and amino acid discrimination. This page
 describes both tasks, the modeling strategies for each, and how tRNA identity
 can be used to simplify the amino acid problem.
@@ -23,9 +33,10 @@ interesting task is identifying *which* amino acid is attached.
 
 ## Amino acid discrimination
 
-The primary goal of leech is to classify which of the 20 standard amino acids
-is attached to a charged tRNA. This is substantially harder than binary
-classification because the signal differences between amino acids are small.
+The harder, more scientifically interesting task in this example is
+classifying which of the 20 standard amino acids is attached to a charged
+tRNA. This is substantially harder than binary classification because the
+signal differences between amino acids are small.
 
 Consider three amino acids:
 

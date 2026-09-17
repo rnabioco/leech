@@ -2,7 +2,10 @@
 
 For production workloads, leech includes a Snakemake pipeline that handles
 data preparation, grid search, training, inference, and model comparison on
-HPC clusters.
+HPC clusters. The pipeline is task-agnostic -- samples, labels, and
+comparisons all come from your own config -- but the examples on this page
+use the tRNA charging/amino acid assay that drove its development, since
+that is the config it has been run against in production.
 
 ## Pipeline structure
 
@@ -32,6 +35,12 @@ pipeline/
 Edit `pipeline/config/config.yaml` to define your samples and parameters.
 
 ### Sample definitions
+
+`pod5`, `bam`, and `label` are the only keys the pipeline rules read; `label`
+is an arbitrary string passed straight to `leech data prepare --label`. Any
+other key (like `amino_acid` below) is just metadata for your own
+bookkeeping -- shown here because it's how the tRNA charging example names
+its samples.
 
 ```yaml
 samples:
@@ -97,15 +106,15 @@ grid_search_parallel: 1
 
 Each value may be a list or a `start:stop:step` range string.
 
-### Pairwise amino acid pairs
+### Pairwise comparisons
 
-```yaml
-amino_acids:
-  - "Ala"
-  - "Gly"
-  - "Val"
-  # ... etc
-```
+Comparisons are driven by a TSV spec (`comparison_spec_file` in
+`config.yaml`, pointing at one of `pipeline/config/comparisons_*.tsv`; see
+[Batch comparisons with a TSV spec](data_preparation.md#batch-comparisons-with-a-tsv-spec)).
+The bundled specs compare amino acid identity, since that's the tRNA charging
+example the pipeline ships configured for -- `comparisons_charged_uncharged.tsv`,
+`comparisons_all_pairwise.tsv`, and `comparisons_chemical_properties.tsv`. A
+different task supplies its own TSV of `meta_label	label_set` pairs.
 
 ## Running the pipeline
 
@@ -169,14 +178,14 @@ results/
 │   └── test.json
 ├── models/
 │   ├── grid_search/              # Grid search results
-│   ├── charged_vs_uncharged/     # Trained models
-│   │   ├── model_best.pt
+│   ├── {comparison}/              # Trained models, one dir per top-level
+│   │   ├── model_best.pt         # comparison (e.g. charged_vs_uncharged)
 │   │   ├── config.json
 │   │   └── metrics.json
 │   └── pairwise/{pair}/
 ├── inference/                    # Prediction BAMs
 │   └── {sample}_predictions.bam
 └── metrics/                      # Evaluation results
-    ├── charged_vs_uncharged_summary.tsv
+    ├── {comparison}_summary.tsv
     └── pairwise_summary.tsv
 ```

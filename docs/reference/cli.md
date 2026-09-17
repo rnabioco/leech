@@ -45,7 +45,7 @@ leech data prepare --pod5 FILE --bam FILE --output-dir DIR [OPTIONS]
 | `--signal-context LEFT RIGHT` | *(symmetric 225/225)* | Asymmetric signal window as two ints (e.g. `--signal-context 90 450`). Mutually exclusive with `--signal-context-bases` |
 | `--signal-context-bases L R` | *(disabled)* | Base-defined signal window: cuts at the base-to-signal map positions of offsets `-L`/`+R` around the focus base (e.g. `--signal-context-bases 8 24`), instead of a fixed sample count, so two reads at different translocation speeds read the same *bases* of context. Padded or centre-cropped to `--signal-len`. Mutually exclusive with `--signal-context`. Implemented in both prepare backends and in the Rust `predict` inference pipeline |
 | `--signal-len INT` | `(L+R+1)*36` | Fixed emitted signal length for `--signal-context-bases` (default is a conservative slow-read rate, so a typical read pads rather than centre-crops). Ignored without `--signal-context-bases` |
-| `--feature-start INT` | `-5` | Feature window start offset from focus base (negative = toward tRNA body) |
+| `--feature-start INT` | `-5` | Feature window start offset from focus base (negative = upstream, into the body of the read) |
 | `--feature-end INT` | `5` | Feature window end offset from focus base (positive = toward adaptor) |
 
 **Motif search:**
@@ -90,7 +90,7 @@ whenever the test corpus carries the field.
 |--------|---------|-------------|
 | `--base-justify STR` | `center` | Where to center signal chunk within the focus base: `start`, `center`, or `end` |
 | `--no-reverse-signal` | *(off)* | Do NOT reverse raw signal. By default signal is reversed for direct RNA (POD5 stores 3'->5'). Use this flag for DNA data. |
-| `--mask-seq-side [left\|right]` | *(none)* | Blank (`N`) sequence-branch bases strictly on that side (5'/left or 3'/right) of the focus base, in both `sequence` (base_onehot) and `sequence_with_kmer_context` (signal_kmer) -- the focus base itself is never masked. Prevents a feature+signal model from reading tRNA-body identity through acceptor-stem bases upstream of a 3'-end motif. Baked into the corpus, recorded in `prepare_config.json`, carried into the trained model's config, and reapplied automatically to live chunks by `leech predict`. Forces the Python extraction path (unsupported in Rust) at both prepare and predict time. `data merge` warns if the corpora being merged disagree on it. |
+| `--mask-seq-side [left\|right]` | *(none)* | Blank (`N`) sequence-branch bases strictly on that side (5'/left or 3'/right) of the focus base, in both `sequence` (base_onehot) and `sequence_with_kmer_context` (signal_kmer) -- the focus base itself is never masked. Prevents a feature+signal model from reading identity through bases upstream/downstream of a motif that would otherwise leak the label (e.g., tRNA-body identity leaking through acceptor-stem bases upstream of a 3'-end motif). Baked into the corpus, recorded in `prepare_config.json`, carried into the trained model's config, and reapplied automatically to live chunks by `leech predict`. Forces the Python extraction path (unsupported in Rust) at both prepare and predict time. `data merge` warns if the corpora being merged disagree on it. |
 
 **Signal map refinement:**
 
@@ -129,7 +129,7 @@ whenever the test corpus carries the field.
 **Examples:**
 
 ```bash
-# Basic: prepare charged tRNA data
+# Basic: prepare training data
 leech data prepare \
   --pod5 reads.pod5 --bam alignments.bam \
   --output-dir chunks/ --label 1
@@ -168,7 +168,7 @@ leech data merge -i LABEL=FILE -i LABEL=FILE -o DIR [OPTIONS]
 **Examples:**
 
 ```bash
-# Pairwise amino acid comparison
+# Pairwise comparison (e.g., amino acid identity)
 leech data merge \
   -i Ala=ala.npz -i Gly=gly.npz \
   -o merged/
@@ -708,7 +708,7 @@ leech predict --pod5 FILE --bam FILE --output FILE (--model DIR | --bundle FILE 
 | Option | Description |
 |--------|-------------|
 | `--pair NAME` | Run a single pair's model from the bundle |
-| `--all` | Run every model in the bundle, aggregate to a single amino acid prediction |
+| `--all` | Run every model in the bundle, aggregate to a single multi-class prediction (e.g., amino acid identity for a one-vs-all bundle) |
 | `--raw` | Write full-float probabilities instead of the compact uint8 encoding (`ac`/`pp` tags) |
 
 **Signal handling:**
@@ -757,7 +757,7 @@ leech predict \
   --pod5 reads.pod5 --bam alignments.bam \
   --output predictions.bam
 
-# Run all models in bundle (aggregated amino acid prediction)
+# Run all models in bundle (aggregated multi-class prediction)
 leech predict \
   --bundle bundles/aa_classifier.pt --all \
   --pod5 reads.pod5 --bam alignments.bam \
@@ -815,7 +815,7 @@ leech data merge -i Ala=chunks/ala/all.npz -i Gly=chunks/gly/all.npz -o merged/
 ### Bundle workflow (multi-pair deployment)
 
 ```bash
-# 1. Train pairwise models (one per amino acid pair)
+# 1. Train pairwise models (one per class pair, e.g. amino acid pair)
 leech model train --train-data ala_gly/train.json ... --output-dir models/Ala_vs_Gly/
 leech model train --train-data ala_val/train.json ... --output-dir models/Ala_vs_Val/
 # ... repeat for each pair

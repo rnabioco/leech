@@ -180,15 +180,16 @@ the focus base:
 
 - `center` (default) -- midpoint of the focus base's signal region
 - `start` -- first signal sample of the focus base
-- `end` -- last signal sample (useful for 3' modifications like aminoacylation)
+- `end` -- last signal sample (useful for 3' modifications, e.g. aminoacylation in the tRNA charging example)
 
 ## Base-defined signal window
 
 `--signal-context` cuts a fixed number of raw *samples* on each side of the
 focus base. Because translocation speed varies read to read, that window
-covers a different number of *bases* on a fast read than a slow one -- for the
-charging assay, a fast read's fixed-sample window can miss a base at +24 (say,
-the start of the LDX barcode) that a slow read's identical window reaches.
+covers a different number of *bases* on a fast read than a slow one -- for
+example, in the tRNA charging assay, a fast read's fixed-sample window can
+miss a base at +24 (say, the start of the LDX barcode) that a slow read's
+identical window reaches.
 
 `--signal-context-bases L R` cuts the window at the base-to-signal map
 positions of offsets `-L` and `+R` around the focus base instead, so every
@@ -212,9 +213,10 @@ window is logged and recorded in `prepare_config.json`.
 ## Masking sequence-branch bases
 
 A feature+signal model's sequence branch (`sequence` / `sequence_with_kmer_context`)
-begins with bases well upstream of the focus base -- for a 3'-end motif like
-tRNA's CCA, those are acceptor-stem bases that identify the tRNA body outright,
-leaking information the model isn't supposed to have.
+begins with bases well upstream of the focus base -- for a 3'-end motif this
+can leak identity the model isn't supposed to have (e.g., for tRNA's CCA
+motif, those upstream bases are acceptor-stem bases that identify the tRNA
+body outright).
 
 `--mask-seq-side [left|right]` blanks (`N`) sequence-branch characters
 strictly to that side (5'/left or 3'/right) of the focus base, in both the
@@ -268,9 +270,10 @@ leech data merge \
 This creates `merged/train.npz`, `merged/val.npz`, `merged/test.npz` with no
 read appearing in more than one split.
 
-### Pairwise amino acid comparisons
+### Pairwise class comparisons
 
-For binary amino acid classification:
+For binary classification between two classes (amino acid identity is the
+running example; any pair of `--label` values works the same way):
 
 ```bash
 leech data merge \
@@ -325,9 +328,9 @@ boundary.
 
 If you plan to search over dwell offsets during grid search, prepare data with a
 wider feature window using `--feature-start` and `--feature-end`. These set the
-feature window bounds as signed offsets from the focus base (negative = toward
-the tRNA body, positive = toward the adaptor). The defaults are `-5` and `5`
-(i.e., `±kmer_context`).
+feature window bounds as signed offsets from the focus base (negative = upstream,
+into the body of the read; positive = downstream, toward the adaptor). The
+defaults are `-5` and `5` (i.e., `±kmer_context`).
 
 ```bash
 leech data prepare --feature-start -20 --feature-end 20 ...

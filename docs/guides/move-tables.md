@@ -2,8 +2,9 @@
 
 Move tables are the foundation of dwell time feature extraction in leech.
 They encode how raw nanopore signal maps to basecalled sequence, enabling
-computation of per-base dwell times that distinguish charged from uncharged
-tRNAs.
+computation of per-base dwell times that distinguish one class of base from
+another -- for example, charged from uncharged tRNAs, the example used
+throughout this page.
 
 ## Move table overview
 
@@ -13,7 +14,10 @@ The figure below illustrates how leech extracts dwell times from move tables:
 
 **Panel A** shows the raw nanopore signal with colored regions indicating different bases. **Panel B** displays stride positions where the basecaller samples the signal. **Panel C** shows the move table (from BAM `mv` tag) with 1s indicating new bases and 0s indicating the pore is still reading the same base. **Panel D** combines the sequence with per-base dwell times calculated from the move table.
 
-Modified bases (like charged tRNAs) often exhibit **different translocation kinetics** through the nanopore, resulting in distinctive dwell time patterns that leech models can learn to recognize.
+Chemically modified bases -- for example, aminoacylation ("charging") of a
+tRNA -- often exhibit **different translocation kinetics** through the
+nanopore, resulting in distinctive dwell time patterns that leech models can
+learn to recognize.
 
 ## Nanopore signal and basecalling
 
@@ -112,9 +116,12 @@ seq_to_sig = move_table.to_seq_to_sig_map()
 dwells = np.diff(seq_to_sig)
 ```
 
-## Biological significance
+## Example: aminoacylation and the CCA tail
 
-Aminoacylation (charging) of a tRNA attaches an amino acid to the 3' CCA tail.
+The rest of this page is generic to any modified-base or motif-centered
+classification task; this section works through the concrete tRNA charging
+example. Aminoacylation (charging) of a tRNA attaches an amino acid to the
+3' CCA tail.
 This chemical modification alters the tRNA's physical properties as it passes
 through the nanopore, producing measurable changes in dwell time at and near
 the attachment site.
