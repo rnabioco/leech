@@ -59,16 +59,36 @@ fn window_over_bases(
     out
 }
 
+/// The window's actual placed origin/end in the emitted `signal_len`-wide
+/// array. Identical to `(sig_start, sig_end)` when the request fits
+/// (`requested <= signal_len`); centre-cropped inward by `crop` samples on
+/// each side otherwise -- mirrors `place_window`'s own arithmetic
+/// (`escapepod_signal::chunk`) exactly, so a caller building
+/// `seq_to_sig_map` from `signal_kmer_inputs` gets offsets in the same frame
+/// `place_window` actually placed the signal in, not the raw pre-crop
+/// request (issue #343 / rnabioco/escapepod-rs#388).
+fn resolve_placed_window(sig_start: i64, sig_end: i64, signal_len: usize) -> (i64, i64) {
+    let requested = (sig_end - sig_start).max(0);
+    if requested <= signal_len as i64 {
+        (sig_start, sig_end)
+    } else {
+        let crop = (requested - signal_len as i64) / 2;
+        let start = sig_start + crop;
+        (start, start + signal_len as i64)
+    }
+}
+
 /// The anchor's offset within the emitted `signal_len`-wide array.
 ///
 /// A constant (`fixed_signal_context_left`) in sample mode: `left + right ==
 /// signal_len` always there, so `cut_chunk`'s internal `place_window` never
 /// crops. In base-defined mode the number of samples spanning `L..R` bases
 /// varies read to read and chunk to chunk, landing on either side of
-/// `signal_len`, so the offset is resolved per chunk here -- replicating
-/// `place_window`'s own pad (left-aligned, zero-fill right) / centre-crop
-/// split (`escapepod_signal::chunk`) rather than the array contents
-/// themselves, which `cut_chunk` already cut.
+/// `signal_len`, so the offset is resolved per chunk here via
+/// [`resolve_placed_window`], which replicates `place_window`'s own pad
+/// (left-aligned, zero-fill right) / centre-crop split
+/// (`escapepod_signal::chunk`) rather than the array contents themselves,
+/// which `cut_chunk` already cut.
 fn resolve_chunk_focus_signal_pos(
     win_left: i64,
     win_right: i64,
@@ -79,13 +99,8 @@ fn resolve_chunk_focus_signal_pos(
     if !bases_mode {
         return fixed_signal_context_left;
     }
-    let requested = win_left + win_right;
-    if requested <= signal_len as i64 {
-        win_left
-    } else {
-        let crop = (requested - signal_len as i64) / 2;
-        win_left - crop
-    }
+    let (placed_start, _) = resolve_placed_window(0, win_left + win_right, signal_len);
+    win_left - placed_start
 }
 
 /// Extract training-format chunks from a processed read.
@@ -153,14 +168,19 @@ fn extract_training_chunks_from_read(
                 (c.signal, Vec::new())
             };
 
-            // Always computed regardless of `spec.seq_encoding`, keyed off the
-            // REQUESTED (pre-crop) SIGNAL window -- the same pair
-            // `cut_chunk`'s own SignalKmer branch would hand
-            // `signal_kmer_inputs` internally, not the post-crop window
-            // `place_window` actually placed (issue #186).
+            // Always computed regardless of `spec.seq_encoding`, keyed off
+            // the ACTUAL PLACED signal window -- not the raw pre-crop
+            // request (`c.focus_signal_pos - win_left`/`+ win_right`), which
+            // disagrees with where `cut_chunk`/`place_window` actually put
+            // the signal whenever the base-defined window is wider than
+            // `signal_len` and gets centre-cropped (issue #343). In sample
+            // mode `left + right == signal_len` always, so `place_window`
+            // never crops and `resolve_placed_window` is a no-op there.
             let (win_left, win_right) = spec_for_cut.signal_context;
-            let sig_start = c.focus_signal_pos - win_left;
-            let sig_end = c.focus_signal_pos + win_right;
+            let raw_sig_start = c.focus_signal_pos - win_left;
+            let raw_sig_end = c.focus_signal_pos + win_right;
+            let (sig_start, sig_end) =
+                resolve_placed_window(raw_sig_start, raw_sig_end, cfg.spec.signal_len);
             let (seq_to_sig_map, ctx_bytes) =
                 chunk::signal_kmer_inputs(processed, sig_start, sig_end, cfg.spec.signal_len, ctx)
                     .unwrap_or_default();
@@ -550,4 +570,109 @@ pub fn extract_training_chunks<'py>(
         &reference_sequences,
         signal_context_bases,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_placed_window_is_a_no_op_when_the_request_fits() {
+        assert_eq!(resolve_placed_window(100, 300, 400), (100, 300));
+        // Exactly `signal_len` wide -- still the narrower-or-equal branch.
+        assert_eq!(resolve_placed_window(100, 500, 400), (100, 500));
+    }
+
+    #[test]
+    fn resolve_placed_window_centre_crops_when_the_request_is_wider() {
+        // requested = 1572, signal_len = 1128, crop = (1572-1128)/2 = 222 --
+        // the exact numbers from the issue #343 repro.
+        let (start, end) = resolve_placed_window(1000, 2572, 1128);
+        assert_eq!(start, 1000 + 222);
+        assert_eq!(end - start, 1128);
+    }
+
+    #[test]
+    fn resolve_chunk_focus_signal_pos_matches_the_pre_refactor_formula() {
+        // Non-bases mode: passthrough regardless of window size.
+        assert_eq!(
+            resolve_chunk_focus_signal_pos(999, 999, 400, false, 225),
+            225
+        );
+
+        // Bases mode, narrower-or-equal: focus_signal_pos == win_left.
+        assert_eq!(
+            resolve_chunk_focus_signal_pos(100, 300, 400, true, 225),
+            100
+        );
+
+        // Bases mode, wider (centre-crop): win_left - crop, matching the
+        // #343 repro numbers (win_left=1000, win_right=1572, signal_len=1128
+        // -- requested = 2572, crop = (2572-1128)/2 = 722).
+        assert_eq!(
+            resolve_chunk_focus_signal_pos(1000, 1572, 1128, true, 225),
+            1000 - 722
+        );
+    }
+
+    #[test]
+    fn signal_kmer_inputs_stays_within_signal_len_after_centre_crop() {
+        // Regression test for issue #343: before the fix, handing
+        // `signal_kmer_inputs` the pre-crop (raw_sig_start, raw_sig_end) pair
+        // produced map values exceeding `signal_len` by up to `2 * crop`
+        // samples. After resolving the placed window first, every value must
+        // land in `[0, signal_len]`.
+        //
+        // A synthetic 40-base read, ~40 samples/base, so a request for many
+        // bases of context comfortably exceeds a deliberately narrow
+        // `signal_len`.
+        let n_bases = 40usize;
+        let seq_to_sig: Vec<i64> = (0..=n_bases as i64).map(|i| i * 40).collect();
+        let sequence = vec![b'A'; n_bases];
+        let processed = chunk::ProcessedRead {
+            signal: vec![0.0f32; seq_to_sig[n_bases] as usize],
+            seq_to_sig,
+            sequence,
+            levels: None,
+        };
+
+        let signal_len = 400usize;
+        let base_idx = 20i64;
+        let (win_left, win_right) = (25i64, 25i64); // 50 bases of context requested
+        let focus = (processed.seq_to_sig[base_idx as usize]
+            + processed.seq_to_sig[base_idx as usize + 1])
+            / 2;
+        let raw_sig_start = focus - win_left * 40; // bases -> samples, matching seq_to_sig step
+        let raw_sig_end = focus + win_right * 40;
+
+        // Sanity check this synthetic case actually exercises centre-crop.
+        assert!(raw_sig_end - raw_sig_start > signal_len as i64);
+
+        let (sig_start, sig_end) = resolve_placed_window(raw_sig_start, raw_sig_end, signal_len);
+        let ctx = KmerContext {
+            before: 0,
+            after: 0,
+        };
+        let (map, _bases) =
+            chunk::signal_kmer_inputs(&processed, sig_start, sig_end, signal_len, ctx)
+                .expect("window covers real bases");
+
+        for &v in &map {
+            assert!(
+                (0..=signal_len as i64).contains(&v),
+                "seq_to_sig_map value {v} outside [0, {signal_len}] after centre-crop fix"
+            );
+        }
+
+        // And, for contrast, confirm the OLD (pre-fix) call *would* have
+        // overflowed -- pins that this test actually exercises the bug this
+        // issue is about, not a vacuously-true window.
+        let (bad_map, _) =
+            chunk::signal_kmer_inputs(&processed, raw_sig_start, raw_sig_end, signal_len, ctx)
+                .expect("window covers real bases");
+        assert!(
+            bad_map.iter().any(|&v| v > signal_len as i64),
+            "expected the pre-crop-origin call to overflow signal_len, as issue #343 describes"
+        );
+    }
 }

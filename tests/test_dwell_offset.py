@@ -296,6 +296,40 @@ class TestGetChunkSignalContextBases:
         np.testing.assert_array_equal(chunk["signal"], read.signal[415:715])
         assert chunk["focus_signal_pos"] == 565 - 415
 
+    def test_wider_than_signal_len_centre_crop_seq_to_sig_map_matches_placed_window(
+        self, read_with_known_dwells
+    ):
+        """Regression test for issue #343: `seq_to_sig_map` must be keyed off
+        the window `place_window` actually PLACED (win_start=415..win_end=715
+        -- see the sibling test above), not the pre-crop REQUESTED window
+        (sample_start=400..sample_end=730). Before the fix, subtracting the
+        pre-crop origin (400) rather than the placed one (415) left every
+        interior value 15 samples too high -- e.g. base 21's boundary at
+        sample 730 read back as 330, overflowing the 300-sample stored array
+        by 30 samples, rather than the correct 315.
+
+        Ground truth computed independently of `get_chunk`'s own arithmetic,
+        directly from `read_with_known_dwells`'s `seq_to_sig_map[i] = 100 +
+        30*i`: base 15 (L=R=5) covers bases 10..20 inclusive, i.e. the map
+        boundaries at indices 10..21 -> samples
+        [400,430,460,490,520,550,580,610,640,670,700,730]. Shifted by the
+        PLACED origin (415, not the requested 400) and with the edges
+        snapped to the emitted array's bounds ([0]=0, [-1]=chunk_len=300):
+        [0, 15, 45, 75, 105, 135, 165, 195, 225, 255, 285, 300].
+        """
+        read = read_with_known_dwells
+        chunk = read.get_chunk(
+            base_idx=15, signal_context_bases=(5, 5), signal_len=300, kmer_context=5
+        )
+        assert chunk is not None
+        expected = np.array([0, 15, 45, 75, 105, 135, 165, 195, 225, 255, 285, 300], dtype=np.int64)
+        np.testing.assert_array_equal(chunk["seq_to_sig_map"], expected)
+        # Every interior value must be a valid index into the emitted,
+        # 300-sample `signal` array -- the direct symptom #343 measured
+        # (values overflowing signal_len when keyed off the wrong origin).
+        assert chunk["seq_to_sig_map"].max() <= 300
+        assert chunk["seq_to_sig_map"].min() >= 0
+
     def test_read_edge_clamp_pads_rather_than_drops(self, read_with_known_dwells):
         """A window near the read's edge is narrower, not a dropped chunk --
         the one allowed drop rule (CLAUDE.md) is unaffected. Also pins the
