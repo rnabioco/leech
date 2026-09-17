@@ -102,6 +102,79 @@ def csr_from_object_rows(rows: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return values, offsets
 
 
+def iter_npz_csr_value_blocks(
+    input_path: Path,
+    values_name: str,
+    offsets: np.ndarray,
+    *,
+    block_bytes: int = 8 << 20,
+) -> Iterator[tuple[int, int, np.ndarray]]:
+    """Yield ``(row_start, row_end, values)`` over a CSR values member's rows.
+
+    Like :func:`iter_npz_row_blocks`, but for a ragged (CSR-encoded) member
+    whose rows have no fixed width, so block boundaries are chosen from the
+    already-known ``offsets`` (cheap: one array, loaded once per file) rather
+    than a constant row size. Reads proceed sequentially through the member's
+    bytes -- no seeking -- because CSR rows are stored in ascending row order.
+
+    A single `_load_s2s_csr`-style whole-file load holds one file's entire
+    CSR values array resident at once; this bounds it to ``~block_bytes``
+    regardless of file size, matching the fixed-width path's peak.
+
+    Args:
+        input_path: Path to .npz file.
+        values_name: The flat CSR values member's name (e.g. ``"seq_to_sig_values"``).
+        offsets: This member's CSR row offsets (``len(offsets) == n_rows + 1``),
+            already loaded by the caller.
+        block_bytes: Target resident bytes per block.
+
+    Yields:
+        ``(row_start, row_end, values)`` where ``values`` holds the
+        concatenated rows ``[row_start, row_end)``, i.e.
+        ``values_full[offsets[row_start]:offsets[row_end]]``.
+
+    Raises:
+        ValueError: If the member is not a plain streamable 1-D array, or is
+            shorter than ``offsets`` claims.
+    """
+    n_rows = len(offsets) - 1
+    if n_rows <= 0:
+        return
+
+    with zipfile.ZipFile(input_path) as zf, zf.open(values_name + ".npy") as fp:
+        shape, fortran_order, dtype = _read_npy_header(fp)
+        if fortran_order or dtype.hasobject or len(shape) != 1:
+            raise ValueError(f"npz member '{values_name}' is not a plain 1-D array")
+        total = int(offsets[-1])
+        if shape[0] != total:
+            raise ValueError(
+                f"npz member '{values_name}' has {shape[0]} elements, offsets claim {total}"
+            )
+
+        target_elems = max(1, block_bytes // max(dtype.itemsize, 1))
+        row_start = 0
+        pos = 0  # elements already read from the stream
+        while row_start < n_rows:
+            row_end = min(
+                int(np.searchsorted(offsets, offsets[row_start] + target_elems, side="left")),
+                n_rows,
+            )
+            # A single row wider than target_elems still has to come out as
+            # one block, or row_end never advances.
+            row_end = max(row_end, row_start + 1)
+            want_elems = int(offsets[row_end] - pos)
+            block = np.empty(want_elems, dtype=dtype)
+            got = _readinto_exact(fp, memoryview(block.reshape(-1).view(np.uint8)))
+            if got != want_elems * dtype.itemsize:
+                raise ValueError(
+                    f"npz member '{values_name}' truncated at element {pos}: "
+                    f"read {got} of {want_elems * dtype.itemsize} bytes"
+                )
+            pos += want_elems
+            yield row_start, row_end, block
+            row_start = row_end
+
+
 def npz_member_names(input_path: Path) -> set[str]:
     """Names of every member of an .npz, without reading any data.
 

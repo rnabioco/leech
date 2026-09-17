@@ -19,6 +19,7 @@ from leech.chunking import (
     csr_from_object_rows,
     csr_gather_index,
     csr_offsets_from_lens,
+    iter_npz_csr_value_blocks,
     iter_npz_row_blocks,
     load_chunks,
     npz_array_members,
@@ -452,25 +453,71 @@ def _merge_arrays_by_split(
 
         # Base-to-signal maps are CSR (values + offsets), so they are selected
         # by gathering rows rather than by masking, and their offsets are
-        # rebuilt from the accumulated row lengths at save time.
-        s2s = _load_s2s_csr(plan.path, plan.members)
-        for sname in split_names:
-            rows = plan.rows[sname]
-            if not rows.size:
-                continue
-            if s2s is None:
-                # No maps in this file; keep the row count aligned so a merge
-                # with files that do have them stays row-indexable.
-                s2s_lens[sname].append(np.zeros(rows.size, dtype=np.int64))
-                continue
-            values, offsets = s2s
-            lens, _col, src = csr_gather_index(offsets, rows)
-            s2s_lens[sname].append(lens)
-            gathered = int(lens.sum())
-            at = s2s_written[sname]
-            s2s_values_out[sname][at : at + gathered] = values[src]
-            s2s_written[sname] = at + gathered
-        del s2s
+        # rebuilt from the accumulated row lengths at save time. The modern
+        # `seq_to_sig_values` format is block-streamed via
+        # `iter_npz_csr_value_blocks`, the same way the fixed-width members
+        # above are, so one wide-context file never has to sit resident as a
+        # single whole CSR values array (issue #344) -- only the legacy
+        # pickled `seq_to_sig_maps` format still needs one `np.load`, since
+        # it is already an in-memory Python object array the moment it is
+        # loaded at all, so streaming it would buy nothing.
+        offsets = plan.s2s_offsets
+        if offsets is None:
+            # No maps in this file; keep the row count aligned so a merge
+            # with files that do have them stays row-indexable.
+            for sname in split_names:
+                rows = plan.rows[sname]
+                if rows.size:
+                    s2s_lens[sname].append(np.zeros(rows.size, dtype=np.int64))
+        elif "seq_to_sig_values" in plan.members:
+            base_s2s = dict(s2s_written)
+            # Per-split cumulative value-length before each of this split's
+            # rows, within this file -- lets a block compute its absolute
+            # write position the same way the fixed-width path above uses
+            # `base[sname] + lo`, without needing the whole file resident.
+            cum_lens = {
+                sname: np.concatenate([[0], np.cumsum(offsets[rows + 1] - offsets[rows])]).astype(
+                    np.int64
+                )
+                for sname, rows in ((s, plan.rows[s]) for s in split_names)
+            }
+            for row_start, row_end, block in iter_npz_csr_value_blocks(
+                plan.path, "seq_to_sig_values", offsets
+            ):
+                local_offsets = offsets[row_start : row_end + 1] - offsets[row_start]
+                for sname in split_names:
+                    rows = plan.rows[sname]
+                    if not rows.size:
+                        continue
+                    lo = int(np.searchsorted(rows, row_start))
+                    hi = int(np.searchsorted(rows, row_end))
+                    if lo == hi:
+                        continue
+                    local_rows = rows[lo:hi] - row_start
+                    lens, _col, src = csr_gather_index(local_offsets, local_rows)
+                    s2s_lens[sname].append(lens)
+                    n = int(lens.sum())
+                    dst = base_s2s[sname] + int(cum_lens[sname][lo])
+                    s2s_values_out[sname][dst : dst + n] = block[src]
+            for sname in split_names:
+                rows = plan.rows[sname]
+                if rows.size:
+                    s2s_written[sname] = base_s2s[sname] + int(cum_lens[sname][-1])
+        else:
+            s2s = _load_s2s_csr(plan.path, plan.members)
+            assert s2s is not None
+            values, _legacy_offsets = s2s
+            for sname in split_names:
+                rows = plan.rows[sname]
+                if not rows.size:
+                    continue
+                lens, _col, src = csr_gather_index(offsets, rows)
+                s2s_lens[sname].append(lens)
+                gathered = int(lens.sum())
+                at = s2s_written[sname]
+                s2s_values_out[sname][at : at + gathered] = values[src]
+                s2s_written[sname] = at + gathered
+            del s2s
 
     # Assemble and save one split at a time, dropping each before the next.
     saved_counts: dict[str, int] = {}
