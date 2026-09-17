@@ -10,6 +10,13 @@ New entries are no longer added to this file by hand — see
 
 <!-- towncrier release notes start -->
 
+## [0.13.0] - 2026-09-16
+
+### Added
+
+- **`leech predict` now runs a model trained with `--signal-context-bases` through the fast Rust extraction path instead of always falling back to Python.** `rust/src/inference_pipeline/inference.rs` mirrors the per-chunk `ChunkSpec` resolution `data prepare`'s Rust path already used (issue #278): for a base-defined window it resolves the sample interval via a base-to-signal map lookup shared with `training.rs` and cuts with a spec cloned just for that chunk. Predict's Rust and Python paths now produce byte-identical signal windows for such a model, held equal by a new backend-parity test. ((#342))
+
+
 ## [0.12.3] - 2026-09-16
 
 ### Fixed
