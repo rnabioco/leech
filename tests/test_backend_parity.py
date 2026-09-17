@@ -320,12 +320,24 @@ class TestBackendFieldParity:
 
     @pytest.mark.parametrize(("left_bases", "right_bases"), [(8, 24), (5, 5)])
     def test_signal_context_bases(self, _rust_available, tmp_path, left_bases, right_bases):
-        """Base-defined signal window (issue #278), the in-range case.
+        """Base-defined signal window (issue #278) against real tRNA reads.
 
-        A modest `(L, R)` that a tRNA-length fixture read comfortably holds
-        on both sides of its motif -- no read-edge clamping is exercised
-        here, only that the base-to-signal-map resolution and the resulting
-        pad-to-signal_len agree between backends.
+        `default_signal_len_for_bases_context` sizes at the documented
+        slow-read rate specifically so a *typical* read's window is narrower
+        than `signal_len` (padded, not centre-cropped) -- but these real
+        fixture reads have slower-than-typical stretches, so in practice
+        EVERY chunk at `(8, 24)` and most at `(5, 5)` already request a
+        WIDER window and land in the centre-crop branch (confirmed by
+        instrumenting `resolve_signal_context_bases` directly: 18/18 and
+        7/18 of the 18 fixture chunks respectively, at exactly this
+        `signal_len`). This test was therefore already exercising centre-crop
+        the whole time -- which is exactly why issue #343 (both backends
+        keying `seq_to_sig_map` off the pre-crop rather than the placed
+        window) went undetected here: both backends shared the identical
+        bug, so their identically-wrong values still satisfied parity. No
+        read-edge clamping is exercised here (that is
+        `test_signal_context_bases_edge_padding` below); this test is
+        specifically the "some/most chunks centre-crop" case.
         """
         from leech.chunking import default_signal_len_for_bases_context
 
@@ -336,6 +348,24 @@ class TestBackendFieldParity:
                 signal_len=signal_len,
             ),
             tmp_path,
+        )
+        # Non-vacuous per #343: a chunk that centre-cropped has the FULL
+        # signal_len window filled with real signal (place_window bounds the
+        # copy by `chunk_len` exactly in that branch), so a real,
+        # continuously-valued normalized signal landing on exact 0.0 is a
+        # measure-zero coincidence -- unlike the padding branch, where the
+        # padded region is always a literal 0.0 fill. At least one chunk
+        # having zero exact-zero samples confirms this parametrization still
+        # reaches centre-crop, rather than a fixture change silently moving
+        # every chunk back into the padding branch and leaving this test
+        # green while checking nothing about issue #343's fix.
+        signals = py["signals_flat"] if "signals_flat" in py else py["signals"]
+        n_fully_dense = sum(1 for row in signals if not np.any(row == 0.0))
+        assert n_fully_dense > 0, (
+            f"signal_context_bases=({left_bases}, {right_bases}) at signal_len="
+            f"{signal_len} produced no fully-dense (centre-cropped) chunk, so this "
+            f"test no longer exercises the branch issue #343 was about -- widen "
+            f"(left_bases, right_bases) relative to signal_len until it does"
         )
         _assert_npz_parity(py, rs)
 

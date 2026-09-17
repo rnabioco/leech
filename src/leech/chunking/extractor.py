@@ -505,15 +505,8 @@ class LeechRead:
             sample_start, sample_end = resolve_signal_context_bases(
                 self.seq_to_sig_map, base_idx, left_bases, right_bases, self.num_mapped_bases
             )
-            # The REQUESTED (pre-crop) window -- used below for seq_to_sig_map
-            # / sequence_with_kmer_context, matching
-            # escapepod_signal::chunk::cut_chunk's own SignalKmer branch,
-            # which hands signal_kmer_inputs this same pre-crop pair rather
-            # than the post-crop one place_window actually placed.
-            sig_start = sample_start
-            sig_end = sample_end
             seq_to_sig_offset = 0
-            requested = max(0, sig_end - sig_start)
+            requested = max(0, sample_end - sample_start)
 
             # The anchor's offset within the emitted signal_len-wide array,
             # and the true copy bound -- mirrors
@@ -536,6 +529,16 @@ class LeechRead:
                 win_start = sample_start + crop
                 win_end = win_start + chunk_len
             focus_signal_pos_value = focus_sig_pos - win_start
+
+            # seq_to_sig_map / sequence_with_kmer_context must be keyed off
+            # the ACTUAL placed window (win_start/win_end) -- not the
+            # pre-crop request (sample_start/sample_end) -- since that is
+            # where the emitted `signal_chunk` array actually starts (issue
+            # #343). In the narrower-or-equal branch above these are
+            # identical (win_start == sample_start), so this is a no-op
+            # there; only the centre-crop branch differs, by `crop` samples.
+            sig_start = win_start
+            sig_end = win_end
 
             signal_chunk = np.zeros(chunk_len, dtype=np.float32)
             signal_residual_chunk = (

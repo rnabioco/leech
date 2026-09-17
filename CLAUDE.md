@@ -399,10 +399,26 @@ went unnoticed because nothing compared the fields. Rust gets both from
 `escapepod_signal::chunk::signal_kmer_inputs` (`pub` since escapepod-rs v0.26.0,
 rnabioco/leech#258): `inference.rs` reaches it through `cut_chunk`'s own
 `SeqEncoding::SignalKmer` arm, and `training.rs` calls it a second time
-directly (with the same `sig_start`/`sig_end` `cut_chunk` used, via
-`Chunk::focus_signal_pos`), since the training format always records these two
-fields regardless of `--seq-encoding`. Only `--seq-encoding signal_kmer` reads
-them at train time, which is why a full divergence was invisible.
+directly, since the training format always records these two fields regardless
+of `--seq-encoding`. Only `--seq-encoding signal_kmer` reads them at train
+time, which is why a full divergence was invisible.
+
+**`sig_start`/`sig_end` must be the window's ACTUAL PLACED origin, not the raw
+pre-crop request — a second, narrower variant of the #186 bug (issue #343).**
+`--signal-context-bases`'s centre-crop branch (a read's requested window wider
+than `signal_len`) places the signal at `sig_start + crop`
+(`escapepod_signal::chunk::place_window`'s own arithmetic), but naively handing
+`signal_kmer_inputs` the pre-crop `(sig_start, sig_end)` — `focus ± left/right`
+— disagrees with that by exactly `crop` samples: `seq_to_sig_map` values come
+back shifted, and can exceed `signal_len` outright. `extractor.py`'s `get_chunk`
+and `training.rs`'s `resolve_placed_window` (`inference_pipeline/training.rs`)
+now resolve the placed origin first and key `seq_to_sig_map` off that — a
+no-op in the pad branch (`win_start == sig_start` there), so only centre-crop
+was ever affected. `cut_chunk`'s own internal `SignalKmer` arm has the same bug
+in the pinned upstream crate itself (rnabioco/escapepod-rs#388, not yet fixed
+there); `inference.rs`'s predict path relies on that internal arm with no
+corrective second call, so it still inherits it pending that upstream fix (or
+its own workaround) — tracked separately, not fixed by #343.
 
 **The feature window resolves in exactly one place:
 `chunking.resolve_feature_window`.** `feature_start`/`feature_end` are signed
