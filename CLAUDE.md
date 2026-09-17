@@ -1143,7 +1143,7 @@ tests/               # pytest tests
 - **Signal normalization**: Median-MAD (default) is robust to outliers; z-score, quantile, and pa_scaling (physics-aware) methods available
 - **Signal map refinement**: Optional kmer-level-table-based refinement of base boundaries (`--refine-signal-map`, `--kmer-table`)
 - **Signal orientation**: RNA signals are reversed by default (POD5 stores 3'→5', basecaller expects 5'→3'); use `--no-reverse-signal` for DNA
-- **Base-defined signal window**: `--signal-context-bases L R` cuts the window at base-to-signal map offsets rather than a fixed sample count, so reads at different translocation speeds cover the same bases of context; padded/centre-cropped to `--signal-len`. Mutually exclusive with `--signal-context`; Rust inference has no base-defined window, so predict always runs such a model through Python
+- **Base-defined signal window**: `--signal-context-bases L R` cuts the window at base-to-signal map offsets rather than a fixed sample count, so reads at different translocation speeds cover the same bases of context; padded/centre-cropped to `--signal-len`. Mutually exclusive with `--signal-context`; both the prepare and predict Rust pipelines implement it (issue #278, #341), resolving the per-chunk window through the same shared `resolve_signal_context_bases` (`rust/src/inference_pipeline/types.rs`)
 - **Sequence masking**: `--mask-seq-side left|right` blanks sequence-branch characters strictly on that side of the focus base (never the focus base itself), so a feature+signal model can't read tRNA-body identity through bases upstream of a 3'-end motif. Python-only extraction; carried into model config and reapplied automatically at predict time
 - **Sequence encoding**: `base_onehot` (default 4-channel) or `signal_kmer` (36-dimensional signal-level kmers)
 - **Feature concatenation**: Models expect 3 inputs: (signal, sequence, features) where features combines dwell and signal statistics
@@ -1281,10 +1281,11 @@ The codebase is feature-complete (v0.12.0):
   export — neither is visible to `verify_onnx`
 - ✓ `--signal-context-bases L R` for a base-defined (rather than
   sample-defined) signal window, resolved and padded/centre-cropped to
-  `--signal-len`; `--mask-seq-side left|right` to blank sequence-branch
-  identity on one side of the focus base. Both are Python-only at the
-  backend boundaries where Rust doesn't implement them (predict-time
-  inference for the former, both prepare and predict for the latter)
+  `--signal-len` -- implemented in both Rust pipelines (prepare since #278,
+  predict since #341) via one shared `resolve_signal_context_bases`;
+  `--mask-seq-side left|right` to blank sequence-branch identity on one side
+  of the focus base remains Python-only at both prepare and predict, since
+  Rust has no implementation of the masking itself
 - ✓ `junction_indel`/`junction_mapped` recorded on every chunk (both prepare
   backends); `--sample-weight-field` generalizes `--balance-groups` to any
   chunk metadata field, `leech predict --abstain-on-junction-indel` applies

@@ -21,7 +21,9 @@ use escapepod_signal::seq_encoding::KmerContext;
 
 use crate::kmer_levels::KmerLevels;
 
-use super::types::{PipelineConfig, TrainingChunkResult, build_anchor, build_config};
+use super::types::{
+    PipelineConfig, TrainingChunkResult, build_anchor, build_config, resolve_signal_context_bases,
+};
 
 /// Raw per-base dwell, straight from the map -- not one of `ChunkSpec`'s
 /// `FeatureChannel`s (those are gated by `compute_features`), but
@@ -55,42 +57,6 @@ fn window_over_bases(
         out[left_pad..left_pad + n].copy_from_slice(&values[fs..fs + n]);
     }
     out
-}
-
-/// Resolve `(L, R)` base offsets around `base_idx` to a sample interval via
-/// the read's own base-to-signal map (`--signal-context-bases`, issue #278).
-///
-/// `chunking.resolve_signal_context_bases` (Python) is the canonical
-/// definition; this mirrors it exactly and the two are held equal by
-/// `tests/test_backend_parity.py`'s bases-context matrix row. `sample_start`
-/// is the first sample of base `base_idx - L` and `sample_end` is the first
-/// sample past base `base_idx + R`, both clamped to the read's own mapped
-/// span (base 0 through `n_bases - 1`) -- clamping, not dropping, is the
-/// guard `--signal-context-bases` promises at either edge of a read (the one
-/// allowed drop rule, CLAUDE.md, is unaffected: only `base_idx` itself being
-/// unmapped drops a chunk, checked by the caller before this runs).
-///
-/// `left_bases`/`right_bases` are meant to be `>= 0` -- the CLI and
-/// `handle_prepare` both refuse a negative value before any read is touched
-/// -- but `lo_base`/`hi_base` are independently clamped to
-/// `[0, n_bases - 1]` regardless of sign, matching
-/// `chunking.resolve_signal_context_bases` (Python) exactly. Without this a
-/// large-magnitude negative `left_bases` pushes `lo_base` past `n_bases`,
-/// and indexing `seq_to_sig` with it is a hard **panic** here (unlike
-/// Python's `IndexError`) -- one that, per issue #265's zero-tolerance
-/// policy, aborts the whole in-flight batch and discards every chunk
-/// `ChunkSpool` has already spooled to disk.
-fn resolve_signal_context_bases(
-    seq_to_sig: &[i64],
-    base_idx: i64,
-    left_bases: i64,
-    right_bases: i64,
-    n_bases: usize,
-) -> (i64, i64) {
-    let last_base = (n_bases - 1) as i64;
-    let lo_base = (base_idx - left_bases).clamp(0, last_base) as usize;
-    let hi_base = (base_idx + right_bases).clamp(0, last_base) as usize;
-    (seq_to_sig[lo_base], seq_to_sig[hi_base + 1])
 }
 
 /// The anchor's offset within the emitted `signal_len`-wide array.

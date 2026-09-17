@@ -43,7 +43,7 @@ leech data prepare --pod5 FILE --bam FILE --output-dir DIR [OPTIONS]
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--signal-context LEFT RIGHT` | *(symmetric 225/225)* | Asymmetric signal window as two ints (e.g. `--signal-context 90 450`). Mutually exclusive with `--signal-context-bases` |
-| `--signal-context-bases L R` | *(disabled)* | Base-defined signal window: cuts at the base-to-signal map positions of offsets `-L`/`+R` around the focus base (e.g. `--signal-context-bases 8 24`), instead of a fixed sample count, so two reads at different translocation speeds read the same *bases* of context. Padded or centre-cropped to `--signal-len`. Mutually exclusive with `--signal-context`. Implemented in both prepare backends; the Rust *inference* pipeline has no base-defined window support, so a model trained with this always runs `predict` through the Python path |
+| `--signal-context-bases L R` | *(disabled)* | Base-defined signal window: cuts at the base-to-signal map positions of offsets `-L`/`+R` around the focus base (e.g. `--signal-context-bases 8 24`), instead of a fixed sample count, so two reads at different translocation speeds read the same *bases* of context. Padded or centre-cropped to `--signal-len`. Mutually exclusive with `--signal-context`. Implemented in both prepare backends and in the Rust `predict` inference pipeline |
 | `--signal-len INT` | `(L+R+1)*36` | Fixed emitted signal length for `--signal-context-bases` (default is a conservative slow-read rate, so a typical read pads rather than centre-crops). Ignored without `--signal-context-bases` |
 | `--feature-start INT` | `-5` | Feature window start offset from focus base (negative = toward tRNA body) |
 | `--feature-end INT` | `5` | Feature window end offset from focus base (positive = toward adaptor) |
@@ -736,12 +736,11 @@ leech predict --pod5 FILE --bam FILE --output FILE (--model DIR | --bundle FILE 
 !!! note "When `auto` falls back"
 
     Some options cannot be honored by the Rust pipeline -- non-median-MAD
-    `--signal-norm`, softclip signal recovery, a model trained with
-    `--signal-context-bases` (the Rust *inference* path has no base-defined
-    window support), and a model trained with `--mask-seq-side` (focus-relative
-    sequence masking is Python-only) among them. Under `auto` those fall back to
-    Python with a warning; under `--backend rust` they raise rather than
-    silently producing different chunks.
+    `--signal-norm`, softclip signal recovery, and a model trained with
+    `--mask-seq-side` (focus-relative sequence masking is Python-only) among
+    them. Under `auto` those fall back to Python with a warning; under
+    `--backend rust` they raise rather than silently producing different
+    chunks.
 
 **Examples:**
 
