@@ -902,7 +902,9 @@ mod tests {
 
         let channels = 4 * 3; // KmerContext(1,1) -> kmer_len 3
         assert_eq!(c.sequence.len(), channels * cfg.spec.signal_len);
-        let row = 4 * 1 + 2; // kmer_pos=1 (centre), base 'G' = 2
+        let kmer_pos_centre = 1; // KmerContext(1,1)'s own-identity position
+        let base_g = 2;
+        let row = 4 * kmer_pos_centre + base_g;
         let start = row * cfg.spec.signal_len;
         assert_eq!(
             &c.sequence[start..start + cfg.spec.signal_len],
