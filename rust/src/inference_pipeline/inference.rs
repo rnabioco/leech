@@ -823,6 +823,96 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// rnabioco/escapepod-rs#388 / rnabioco/leech#343: predict's Rust path
+    /// (`process_one_read`) relies entirely on `cut_chunk`'s internal
+    /// `SignalKmer` arm -- unlike `training.rs`, which makes its own
+    /// corrected second call -- so it can only be fixed by the pinned
+    /// `escapepod-signal` crate itself. This test exercises the *exact*
+    /// per-chunk wiring `process_one_read` uses (the same
+    /// `resolve_signal_context_bases` + `base_justify.focus` +
+    /// `per_base_spec.signal_context` construction, copied verbatim below)
+    /// against a hand-verified fixture, rather than trusting the pin bump.
+    ///
+    /// Fixture: `signal = [0..10) as f32`, `seq_to_sig = [0,2,4,6,8,10]` (5
+    /// bases of 2 samples each), `sequence = b"ACGTA"`. `base_idx=2` ('G'),
+    /// `signal_context_bases=(1,3)` resolves to the sample window `[2, 10)`
+    /// (8 samples) -- wider than `signal_len=4`, forcing the centre-crop
+    /// branch (`crop = (8-4)/2 = 2`, placed window `[4, 8)` ==
+    /// `signal[4..8] = [4,5,6,7]`).
+    ///
+    /// Base 2's real samples are `seq_to_sig[2..4) = [4, 6)` -- i.e. raw
+    /// indices 4 and 5, which land at *placed-window-relative* columns 0-1
+    /// (not 2-3, which is what the pre-#388 pre-crop origin would have
+    /// produced). Row `4*kmer_pos(1) + base('G'=2) = 6` is base 2's
+    /// own-identity channel (kmer_pos=1 is the centre of a `before=1,
+    /// after=1` context); it must be hot at columns `[0, 2)` and zero at
+    /// `[2, 4)`.
+    #[test]
+    fn signal_kmer_predict_path_aligns_through_centre_crop() {
+        let processed = chunk::ProcessedRead {
+            signal: (0..10).map(|i| i as f32).collect(),
+            seq_to_sig: vec![0, 2, 4, 6, 8, 10],
+            sequence: b"ACGTA".to_vec(),
+            levels: None,
+        };
+        let mut cfg = build_config(
+            true,
+            "reference",
+            "signal_kmer",
+            Some((1, 1)),
+            200,
+            200,
+            5,
+            4, // signal_len -- narrower than the 8-sample requested window
+            false,
+            None,
+            None,
+            true,
+            None,
+            9,
+            4,
+            5,
+            2,
+            1,
+            "start",
+        )
+        .expect("valid config");
+        cfg.spec.signal_len = 4;
+
+        let n_bases = processed.n_bases();
+        let base_idx: i64 = 2;
+        let bi = base_idx as usize;
+        let rows = chunk::read_rows(&processed, &cfg.spec);
+
+        // Verbatim copy of process_one_read's per-chunk spec construction.
+        let (sample_start, sample_end) =
+            resolve_signal_context_bases(&processed.seq_to_sig, base_idx, 1, 3, n_bases);
+        assert_eq!((sample_start, sample_end), (2, 10));
+        let focus = cfg
+            .spec
+            .base_justify
+            .focus(processed.seq_to_sig[bi], processed.seq_to_sig[bi + 1]);
+        let mut per_base_spec = cfg.spec.clone();
+        per_base_spec.signal_context = (focus - sample_start, sample_end - focus);
+
+        let c = chunk::cut_chunk(&processed, &rows, &per_base_spec, base_idx)
+            .expect("chunk should be produced");
+
+        assert_eq!(c.signal, vec![4.0, 5.0, 6.0, 7.0]);
+
+        let channels = 4 * 3; // KmerContext(1,1) -> kmer_len 3
+        assert_eq!(c.sequence.len(), channels * cfg.spec.signal_len);
+        let row = 4 * 1 + 2; // kmer_pos=1 (centre), base 'G' = 2
+        let start = row * cfg.spec.signal_len;
+        assert_eq!(
+            &c.sequence[start..start + cfg.spec.signal_len],
+            &[1.0, 1.0, 0.0, 0.0],
+            "base 2's own-identity channel must be hot where its real signal \
+             (indices 4-5, placed-window columns 0-1) actually landed, not \
+             shifted by the crop amount"
+        );
+    }
+
     #[test]
     fn an_unrecognised_base_justify_is_a_value_error() {
         let result = build_config(
