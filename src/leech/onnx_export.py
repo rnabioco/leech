@@ -51,9 +51,15 @@ written beside it:
 * **Which input is which.** Arity and channel counts are visible; roles are not,
   and ``seq_channels = sum(signal_kmer_context) * 4 + 4`` is not something a
   consumer should have to re-derive.
-* **What the output means.** leech classifiers emit a single BCE logit ``(N, 1)``,
-  not a two-class softmax. Read as the latter, every call is wrong and nothing
-  errors.
+* **What the output means.** A ``num_out == 1`` checkpoint emits a single BCE
+  logit ``(N, 1)``, not a two-class softmax — read as the latter, every call is
+  wrong and nothing errors. A ``num_out > 1`` checkpoint (``loss_type:
+  cross_entropy``) is the opposite shape of wrong: it emits ``(N, num_out)`` and
+  the convention is a softmax, not a BCE logit. :func:`describe_output` derives
+  the block from the checkpoint's own ``num_out`` (never guessed, never
+  hardcoded to the binary case) so the two conventions cannot be swapped, and
+  the class order comes from ``label_map`` -- see its docstring for what
+  happens when a multiclass checkpoint has none.
 
 And one thing the graph does not contain at all: for ``seq_encoding="signal_kmer"``
 the 36-channel sequence input is :func:`leech.features.encode_signal_kmer`
@@ -77,7 +83,9 @@ __all__ = [
     "InputSpec",
     "contract",
     "describe_inputs",
+    "describe_output",
     "export_onnx",
+    "graph_output_width",
     "strip_value_info",
     "verify_onnx",
 ]
@@ -144,6 +152,91 @@ def describe_inputs(config: dict, example_inputs: tuple) -> list[InputSpec]:
             )
         )
     return specs
+
+
+def describe_output(config: dict, num_out: int, *, name: str = "logits") -> dict[str, Any]:
+    """Describe a classifier graph's single output: shape and convention.
+
+    ``num_out`` — not the graph, not a flag — decides which convention this
+    is, because the two read identically as a bare tensor and disagree on
+    every call if swapped:
+
+    * ``num_out <= 1``: leech's original single BCE logit, ``(batch, 1)``,
+      ``P(positive) = sigmoid(logits)``. Byte-for-byte the block this module
+      always wrote, so an existing binary export's contract is unchanged.
+    * ``num_out > 1`` (``loss_type: cross_entropy``): ``(batch, num_out)``,
+      a softmax over the class axis. Class order comes from
+      ``config["label_map"]`` (``{name: int}``), sorted by the int, since
+      that is the only place the mapping from column index to class name
+      exists — the graph itself only knows there are ``num_out`` columns.
+
+      A multiclass checkpoint can lack a ``label_map`` (auto-detected
+      ``num_out`` from raw integer labels with no name recorded anywhere —
+      see ``training.py``'s ``Auto-detected multi-class`` path). Refusing to
+      export such a checkpoint would block a real, if under-documented,
+      workflow, and the column order itself is not in doubt -- only the
+      names are. So this writes ``"classes": null`` and logs a warning
+      rather than raising: a consumer gets a correct, index-ordered softmax
+      contract that cannot name its own classes, instead of no contract at
+      all. A ``label_map`` whose length disagrees with ``num_out`` is a
+      different case -- that is not missing information, it is contradictory
+      information, and is refused outright.
+
+    If a calibration is present (``config["calibration"]``, populated by
+    :mod:`leech.calibration` -- multiclass calibration operates on logits,
+    which is what a consumer must apply it to *before* taking the softmax),
+    its method travels in the contract too. Applying it is still the
+    consumer's job; this only names it.
+    """
+    if num_out <= 1:
+        return {
+            "name": name,
+            "shape": ["batch", 1],
+            "dtype": "float32",
+            "convention": "a SINGLE BCE logit, not a two-class softmax. "
+            "P(positive) = sigmoid(logits).",
+        }
+
+    label_map = config.get("label_map") or {}
+    if label_map:
+        if len(label_map) != num_out:
+            raise ValueError(
+                f"label_map has {len(label_map)} entries but num_out={num_out} "
+                "-- these must agree, or the contract's class order cannot be "
+                "trusted."
+            )
+        if sorted(int(v) for v in label_map.values()) != list(range(num_out)):
+            raise ValueError(
+                f"label_map indices {sorted(label_map.values())} are not exactly "
+                f"0..{num_out - 1} -- the column each class names would be wrong."
+            )
+        classes = [cls for cls, _ in sorted(label_map.items(), key=lambda kv: kv[1])]
+    else:
+        classes = None
+        logger.warning(
+            "num_out=%d with no label_map in config -- exporting the softmax "
+            "output contract with class order by index only; class names are "
+            "not recoverable from this checkpoint.",
+            num_out,
+        )
+
+    out: dict[str, Any] = {
+        "name": name,
+        "shape": ["batch", num_out],
+        "dtype": "float32",
+        "convention": f"a {num_out}-way softmax over logits, not a single BCE "
+        "logit. P(class_i) = softmax(logits)[:, i].",
+        "classes": classes,
+    }
+
+    calibration = config.get("calibration")
+    if calibration:
+        out["calibration"] = {
+            "method": calibration.get("method", "unknown"),
+            "applied": "to logits, before the softmax -- the consumer's job, "
+            "not baked into this graph.",
+        }
+    return out
 
 
 def export_onnx(
@@ -227,6 +320,33 @@ def strip_value_info(path: str | Path) -> int:
     del proto.graph.value_info[:]
     onnx.save(proto, str(path))
     return n
+
+
+def graph_output_width(path: str | Path, name: str) -> int | None:
+    """The static (non-batch) width of a named graph output.
+
+    Only the batch axis is declared dynamic (see :func:`export_onnx`'s
+    ``dynamic_axes`` default), so the last axis of a classifier head should
+    always carry a concrete ``dim_value`` -- ``None`` here means the exporter
+    left it symbolic, which is itself worth surfacing rather than silently
+    treating as "matches".
+
+    This is the check :func:`leech.model_export.export_single_model_onnx`
+    runs against ``num_out`` before writing the contract: the graph is the
+    ground truth for what the model actually emits, and a config that lies
+    about ``num_out`` (or a graph an export step reshaped unexpectedly) must
+    not reach a consumer as a trusted ``.json`` sidecar.
+    """
+    import onnx
+
+    proto = onnx.load(str(path), load_external_data=False)
+    for out in proto.graph.output:
+        if out.name != name:
+            continue
+        dims = out.type.tensor_type.shape.dim
+        last = dims[-1]
+        return last.dim_value if last.HasField("dim_value") else None
+    raise KeyError(f"onnx graph at {path} has no output named {name!r}")
 
 
 def verify_onnx(

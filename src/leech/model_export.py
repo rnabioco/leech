@@ -175,9 +175,13 @@ def export_single_model_onnx(
     """Export a trained arm to ONNX, with the contract a consumer needs beside it.
 
     Writes ``output_path`` and ``output_path.with_suffix(".json")``. The sidecar
-    is not decoration: which input is which, and that the output is a single BCE
-    logit rather than a two-class softmax, are both invisible in the graph and
-    wrong-by-default if guessed.
+    is not decoration: which input is which, and what the output means, are
+    both invisible in the graph and wrong-by-default if guessed. The output
+    block is derived from the checkpoint's ``num_out`` (single BCE logit for
+    ``num_out <= 1``, an ``num_out``-way softmax otherwise) — see
+    :func:`leech.onnx_export.describe_output` — and the graph's actual output
+    width is checked against ``num_out`` before the contract is trusted and
+    written.
 
     Args:
         model_dir: directory with ``config.json`` and ``model_best.pt``.
@@ -186,31 +190,57 @@ def export_single_model_onnx(
         opset: defaults to :data:`leech.onnx_export.OPSET`.
     """
     from leech.model_loading import load_model_from_checkpoint
-    from leech.onnx_export import OPSET, contract, describe_inputs, export_onnx, verify_onnx
+    from leech.onnx_export import (
+        OPSET,
+        contract,
+        describe_inputs,
+        describe_output,
+        export_onnx,
+        graph_output_width,
+        verify_onnx,
+    )
 
     opset = opset or OPSET
+    model_dir = Path(model_dir)
     model, config = load_model_from_checkpoint(model_dir, device="cpu")
     example = _build_example_inputs(model, config, batch_size=2)
     specs = describe_inputs(config, example)
     names = [spec.name for spec in specs]
+
+    num_out = int(config.get("num_out", 1))
+    contract_config = config
+    if num_out > 1 and "calibration" not in config:
+        # config.json (loaded above) never carries calibration -- only a
+        # *bundle*'s in-memory config does (leech.bundling merges it there
+        # from the bundle's own "model" entry). A checkpoint directory keeps
+        # it beside config.json instead, as calibration.json, written by
+        # `leech model calibrate` -- so look for it the same way
+        # inference/helpers.py's `config.get("calibration") if num_out > 1`
+        # expects it to already be there.
+        from leech.calibration import load_calibration
+
+        cal_params = load_calibration(model_dir)
+        if cal_params is not None:
+            contract_config = {**config, "calibration": cal_params}
 
     output_path = Path(output_path)
     export_onnx(
         model, example, output_path, input_names=names, output_names=["logits"], opset=opset
     )
 
+    expected_width = 1 if num_out <= 1 else num_out
+    actual_width = graph_output_width(output_path, "logits")
+    if actual_width != expected_width:
+        raise ValueError(
+            f"exported graph's output width ({actual_width}) does not match "
+            f"num_out={num_out} from {model_dir / 'config.json'} -- refusing to "
+            "write a .json contract describing a shape the graph does not have."
+        )
+
     max_diff = verify_onnx(output_path, model, example, input_names=names) if verify else None
     meta = contract(
         specs,
-        [
-            {
-                "name": "logits",
-                "shape": ["batch", 1],
-                "dtype": "float32",
-                "convention": "a SINGLE BCE logit, not a two-class softmax. "
-                "P(positive) = sigmoid(logits).",
-            }
-        ],
+        [describe_output(contract_config, num_out)],
         opset=opset,
         extra={"model_name": config.get("model_name"), "leech_config": config},
     )

@@ -121,9 +121,10 @@ uv run leech model export --model-dir models/ --format onnx -o model.onnx
 ```
 
 Every export writes a contract beside the graph, carrying what the graph cannot:
-which input is which, and that a leech classifier emits a **single BCE logit**
-rather than a two-class softmax — reading it as the latter makes every call
-wrong without erroring.
+which input is which, and what the output means — a **single BCE logit** for a
+binary checkpoint, or a **softmax over `num_out` classes** (with the class
+order from `label_map`) for a multiclass one — reading one convention as the
+other makes every call wrong without erroring.
 
 ## CLI overview
 

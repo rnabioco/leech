@@ -9,6 +9,7 @@ cannot read off the graph — which input is which, and what the output means.
 from __future__ import annotations
 
 import json
+import logging
 
 import numpy as np
 import pytest
@@ -22,7 +23,14 @@ from leech.crf import CrfEncoder, EncoderConfig  # noqa: E402
 from leech.crf.export import export_crf_onnx, load_training_sidecar  # noqa: E402
 from leech.model_export import export_single_model_onnx  # noqa: E402
 from leech.models import get_model  # noqa: E402
-from leech.onnx_export import OPSET, describe_inputs, export_onnx, verify_onnx  # noqa: E402
+from leech.onnx_export import (  # noqa: E402
+    OPSET,
+    describe_inputs,
+    describe_output,
+    export_onnx,
+    graph_output_width,
+    verify_onnx,
+)
 
 #: float32 machine epsilon. Anything at this order is rounding, not disagreement.
 EPS = 1.1920929e-07
@@ -247,6 +255,212 @@ def test_classifier_export_records_the_opset(tmp_path, model_dir):
     out = tmp_path / "model.onnx"
     export_single_model_onnx(model_dir, out, verify=False)
     assert json.loads(out.with_suffix(".json").read_text())["opset"] == OPSET
+
+
+def test_binary_contract_output_block_is_byte_for_byte_unchanged(tmp_path, model_dir):
+    """leech#357 must not touch the num_out<=1 contract at all."""
+    out = tmp_path / "model.onnx"
+    export_single_model_onnx(model_dir, out, verify=False)
+    output = json.loads(out.with_suffix(".json").read_text())["outputs"][0]
+    assert output == {
+        "name": "logits",
+        "shape": ["batch", 1],
+        "dtype": "float32",
+        "convention": "a SINGLE BCE logit, not a two-class softmax. P(positive) = sigmoid(logits).",
+    }
+
+
+# ── leech#357: the multiclass output contract ──────────────────────────────
+
+
+@pytest.fixture
+def multiclass_model_dir(tmp_path, model_config):
+    """A small `num_out=4` checkpoint, the shape a `loss_type: cross_entropy`
+    (e.g. amino-acid) model trains as -- with a `label_map` recording which
+    column is which class, the same way `leech model train` writes one."""
+    directory = tmp_path / "multiclass_model"
+    directory.mkdir()
+    label_map = {"ala": 0, "gly": 1, "ser": 2, "val": 3}
+    config = {
+        "model_name": "ConvLSTMDwell",
+        "num_out": len(label_map),
+        "label_map": label_map,
+        **model_config,
+    }
+    (directory / "config.json").write_text(json.dumps(config))
+    model = get_model("ConvLSTMDwell", num_out=len(label_map), **model_config)
+    torch.save({"model_state_dict": model.state_dict()}, directory / "model_best.pt")
+    return directory, label_map
+
+
+def test_multiclass_contract_shape_matches_the_graph(tmp_path, multiclass_model_dir):
+    """The whole point of #357: the contract's declared shape, the actual
+    graph's output width, and `num_out` must all agree."""
+    directory, label_map = multiclass_model_dir
+    out = tmp_path / "model.onnx"
+    export_single_model_onnx(directory, out)
+    meta = json.loads(out.with_suffix(".json").read_text())
+    output = meta["outputs"][0]
+
+    assert output["shape"] == ["batch", len(label_map)]
+    assert graph_output_width(out, "logits") == len(label_map)
+    diff = meta["verification"]["onnxruntime_vs_torch_max_abs_diff"]
+    assert diff < 1e-4, f"max abs diff {diff:.3e}"
+
+
+def test_multiclass_contract_states_the_softmax_convention(tmp_path, multiclass_model_dir):
+    directory, _ = multiclass_model_dir
+    out = tmp_path / "model.onnx"
+    export_single_model_onnx(directory, out, verify=False)
+    convention = json.loads(out.with_suffix(".json").read_text())["outputs"][0]["convention"]
+    assert "softmax" in convention.lower()
+    assert "sigmoid(" not in convention
+    assert "P(positive)" not in convention
+
+
+def test_multiclass_contract_class_order_matches_label_map(tmp_path, multiclass_model_dir):
+    directory, label_map = multiclass_model_dir
+    out = tmp_path / "model.onnx"
+    export_single_model_onnx(directory, out, verify=False)
+    classes = json.loads(out.with_suffix(".json").read_text())["outputs"][0]["classes"]
+    assert classes == [name for name, _ in sorted(label_map.items(), key=lambda kv: kv[1])]
+
+
+def test_multiclass_without_label_map_omits_classes_and_warns(tmp_path, model_config, caplog):
+    """A multiclass checkpoint auto-detected from raw integer labels can have
+    no label_map at all (see training.py's "Auto-detected multi-class" path).
+    That is missing information, not contradictory information: refusing to
+    export would block a real workflow, and the column order is still
+    correct -- only the names are unknown."""
+    directory = tmp_path / "model"
+    directory.mkdir()
+    config = {"model_name": "ConvLSTMDwell", "num_out": 4, **model_config}
+    (directory / "config.json").write_text(json.dumps(config))
+    model = get_model("ConvLSTMDwell", num_out=4, **model_config)
+    torch.save({"model_state_dict": model.state_dict()}, directory / "model_best.pt")
+
+    with caplog.at_level(logging.WARNING, logger="leech.onnx_export"):
+        out = directory / "model.onnx"
+        export_single_model_onnx(directory, out, verify=False)
+
+    meta = json.loads(out.with_suffix(".json").read_text())
+    assert meta["outputs"][0]["classes"] is None
+    assert any("label_map" in record.message for record in caplog.records)
+
+
+def test_multiclass_label_map_length_mismatch_is_refused(tmp_path, model_config):
+    """A label_map that disagrees with num_out is not missing information, it
+    is contradictory -- unlike the no-label_map case, this is refused."""
+    directory = tmp_path / "model"
+    directory.mkdir()
+    config = {
+        "model_name": "ConvLSTMDwell",
+        "num_out": 4,
+        "label_map": {"a": 0, "b": 1},
+        **model_config,
+    }
+    (directory / "config.json").write_text(json.dumps(config))
+    model = get_model("ConvLSTMDwell", num_out=4, **model_config)
+    torch.save({"model_state_dict": model.state_dict()}, directory / "model_best.pt")
+
+    with pytest.raises(ValueError, match="label_map"):
+        export_single_model_onnx(directory, tmp_path / "model.onnx", verify=False)
+
+
+def test_multiclass_contract_names_the_calibration_method(tmp_path, multiclass_model_dir):
+    """Multiclass calibration is applied to logits before the softmax -- the
+    contract names the method; applying it stays the consumer's job."""
+    directory, _ = multiclass_model_dir
+    (directory / "calibration.json").write_text(
+        json.dumps(
+            {
+                "method": "matrix",
+                "W": [[1.0, 0.0, 0.0, 0.0]] * 4,
+                "b": [0.0, 0.0, 0.0, 0.0],
+                "ece_before": 0.2,
+                "ece_after": 0.1,
+            }
+        )
+    )
+    out = tmp_path / "model.onnx"
+    export_single_model_onnx(directory, out, verify=False)
+    output = json.loads(out.with_suffix(".json").read_text())["outputs"][0]
+    assert output["calibration"]["method"] == "matrix"
+
+
+def test_export_raises_when_graph_output_width_disagrees_with_num_out(
+    tmp_path, multiclass_model_dir, monkeypatch
+):
+    """The graph is ground truth for what the model actually emits. A config
+    that lies about num_out -- hand-edited, or an architecture that silently
+    ignores it -- must not reach a consumer as a trusted contract."""
+    import leech.onnx_export as onnx_export_module
+
+    directory, _ = multiclass_model_dir
+    monkeypatch.setattr(onnx_export_module, "graph_output_width", lambda path, name: 99)
+
+    with pytest.raises(ValueError, match="does not match"):
+        export_single_model_onnx(directory, tmp_path / "model.onnx", verify=False)
+
+
+# ── describe_output as a pure function ──────────────────────────────────────
+
+
+def test_describe_output_binary_is_the_original_block():
+    assert describe_output({}, 1) == {
+        "name": "logits",
+        "shape": ["batch", 1],
+        "dtype": "float32",
+        "convention": "a SINGLE BCE logit, not a two-class softmax. P(positive) = sigmoid(logits).",
+    }
+
+
+def test_describe_output_orders_classes_by_label_map_value():
+    out = describe_output({"label_map": {"c": 2, "a": 0, "b": 1}}, 3)
+    assert out["classes"] == ["a", "b", "c"]
+    assert out["shape"] == ["batch", 3]
+
+
+def test_describe_output_rejects_a_label_map_of_the_wrong_length():
+    with pytest.raises(ValueError, match="label_map"):
+        describe_output({"label_map": {"a": 0, "b": 1}}, 3)
+
+
+def test_describe_output_without_label_map_warns_and_returns_null_classes(caplog):
+    with caplog.at_level(logging.WARNING, logger="leech.onnx_export"):
+        out = describe_output({}, 3)
+    assert out["classes"] is None
+    assert any("label_map" in record.message for record in caplog.records)
+
+
+def test_describe_output_names_the_calibration_method():
+    config = {
+        "label_map": {"a": 0, "b": 1},
+        "calibration": {"method": "temperature", "temperature": 1.5},
+    }
+    out = describe_output(config, 2)
+    assert out["calibration"] == {
+        "method": "temperature",
+        "applied": "to logits, before the softmax -- the consumer's job, "
+        "not baked into this graph.",
+    }
+
+
+def test_graph_output_width_matches_a_plain_linear_head(tmp_path):
+    model = torch.nn.Linear(4, 7).eval()
+    example = (torch.randn(2, 4),)
+    path = export_onnx(model, example, tmp_path / "lin.onnx", input_names=["x"], output_names=["y"])
+    assert graph_output_width(path, "y") == 7
+
+
+def test_graph_output_width_raises_for_an_unknown_output_name(tmp_path):
+    model = torch.nn.Linear(4, 7).eval()
+    example = (torch.randn(2, 4),)
+    path = export_onnx(
+        model, example, tmp_path / "lin2.onnx", input_names=["x"], output_names=["y"]
+    )
+    with pytest.raises(KeyError):
+        graph_output_width(path, "nope")
 
 
 def test_standardized_features_survive_onnx_export(tmp_path):
@@ -479,3 +693,12 @@ def test_verify_returns_the_actual_difference(tmp_path):
     example = (torch.randn(3, 4),)
     path = export_onnx(model, example, tmp_path / "lin.onnx", input_names=["x"], output_names=["y"])
     assert verify_onnx(path, model, example, input_names=["x"]) < 1e-5
+
+
+def test_multiclass_label_map_must_index_every_column_from_zero():
+    from leech.onnx_export import describe_output
+
+    with pytest.raises(ValueError, match="not exactly"):
+        describe_output({"label_map": {"a": 1, "b": 2, "c": 3}}, 3)
+    with pytest.raises(ValueError, match="not exactly"):
+        describe_output({"label_map": {"a": 0, "b": 2, "c": 3}}, 3)
