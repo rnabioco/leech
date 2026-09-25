@@ -33,7 +33,11 @@ from leech.chunking import feature_window_from_metadata
 from leech.chunking.table import ChunkTable
 from leech.cli_config import make_console
 from leech.configs import AugmentConfig, AuxHeadConfig, OptimConfig, SchedulerConfig, TrainConfig
-from leech.constants import DEFAULT_FEATURE_CHANNELS, DEFAULT_REFINE_HALF_BANDWIDTH
+from leech.constants import (
+    DEFAULT_FEATURE_CHANNELS,
+    DEFAULT_REFINE_HALF_BANDWIDTH,
+    select_feature_channels,
+)
 from leech.dataset import (
     LeechDataset,
     collate_fn,
@@ -2297,6 +2301,7 @@ def train_model(
     signal_mode: str = "both",
     checkpoint_metric: str = "auto",
     standardize_features: bool = False,
+    feature_channels: list[str] | None = None,
     gpus: int = 1,
     _dist: DistContext | None = None,
     cfg: TrainConfig | None = None,
@@ -2364,6 +2369,22 @@ def train_model(
             right_context reach outside the stored chunk (a corpus prepared
             with a narrower signal_context than this crop). Default False
             logs one warning for the whole dataset the first time it happens.
+        feature_channels: Channel ablation (issue #358 follow-up) -- select
+            and order a SUBSET of the training corpus's recorded
+            ``feature_channels`` list (``prepare_config.json``, falling back
+            to the historical twelve when absent). Every requested name must
+            be in the corpus's recorded list, checked here before any
+            dataset is built; ``LeechDataset`` re-validates against the
+            corpus's actual stored row count, which can be narrower than the
+            recorded list (a ``kmer_*`` name recorded but never computed
+            because no k-mer table was configured -- the same silent drop
+            ``merge_feature_channels`` applies at prepare time). Applied
+            identically to the validation corpus. ``None`` (default) uses
+            every row the corpus has, exactly as before this existed. The
+            checkpoint's ``config.json`` records this SELECTED list as
+            ``feature_channels`` (what ``leech predict`` extracts) and the
+            corpus's full recorded list separately as
+            ``corpus_feature_channels``, for provenance.
         **model_kwargs: Additional model parameters (passed to model constructor)
 
     Returns:
@@ -2404,6 +2425,7 @@ def train_model(
             num_out=num_out,
             signal_mode=signal_mode,
             standardize_features=standardize_features,
+            feature_channels=feature_channels,
             motif=motif,
             motif_offset=motif_offset,
             base_justify=base_justify,
@@ -2464,6 +2486,7 @@ def train_model(
     num_out = cfg.num_out
     signal_mode = cfg.signal_mode
     standardize_features = cfg.standardize_features
+    feature_channels = cfg.feature_channels
     motif = cfg.motif
     motif_offset = cfg.motif_offset
     base_justify = cfg.base_justify
@@ -2652,6 +2675,27 @@ def train_model(
             with open(_fc_sidecar_path) as f:
                 _train_feature_channels = json.load(f).get("feature_channels")
 
+    # Channel ablation (issue #358 follow-up): validate a requested
+    # `--feature-channels` subset against the corpus's *recorded* list right
+    # away, before either dataset is built -- a cheap, immediate failure for
+    # a typo or a channel this corpus never recorded at all. `LeechDataset`
+    # re-checks against the corpus's actual stored row count below (the
+    # kmer_* carry-over), which this check cannot see since it never opens
+    # the npz.
+    _corpus_feature_channels = (
+        list(_train_feature_channels)
+        if _train_feature_channels is not None
+        else list(DEFAULT_FEATURE_CHANNELS)
+    )
+    if feature_channels is not None:
+        select_feature_channels(_corpus_feature_channels, feature_channels)
+        logger.info(
+            "Selecting %d of %d corpus feature channels: %s",
+            len(feature_channels),
+            len(_corpus_feature_channels),
+            feature_channels,
+        )
+
     # Create datasets (use pre-loaded chunks if provided)
     train_dataset = LeechDataset(
         chunk_path=train_data_path,
@@ -2679,6 +2723,7 @@ def train_model(
         dwell_template_table=dwell_template_table,
         standardize_features=standardize_features,
         feature_channel_names=_train_feature_channels,
+        selected_feature_channels=feature_channels,
     )
 
     val_dataset = None
@@ -2702,6 +2747,7 @@ def train_model(
             signal_mode=signal_mode,
             dwell_template_table=dwell_template_table,
             feature_channel_names=_train_feature_channels,
+            selected_feature_channels=feature_channels,
         )
 
     # What the datasets actually yield, which is not always what was asked for:
@@ -3227,7 +3273,21 @@ def train_model(
         # this checkpoint was trained on. A config lacking the key (a
         # sidecar older than #358, or no sidecar at all) means the historical
         # twelve -- the same fallback pattern as `DEFAULT_SEQ_ENCODING_FALLBACK`.
-        "feature_channels": prepare_metadata.get(
+        #
+        # Channel ablation (issue #358 follow-up): when `--feature-channels`
+        # selected a SUBSET, that selection -- not the corpus's full list --
+        # is what gets recorded here, since this is exactly the list
+        # `leech predict` extracts. The corpus's full recorded list is kept
+        # alongside it, unconditionally, as `corpus_feature_channels` (never
+        # read back by predict) purely for provenance -- "what could this
+        # checkpoint have used" if a later run wants to try a different
+        # subset without re-preparing.
+        "feature_channels": (
+            list(feature_channels)
+            if feature_channels is not None
+            else prepare_metadata.get("feature_channels", list(DEFAULT_FEATURE_CHANNELS))
+        ),
+        "corpus_feature_channels": prepare_metadata.get(
             "feature_channels", list(DEFAULT_FEATURE_CHANNELS)
         ),
         "kmer_table_sha256": prepare_metadata.get("kmer_table_sha256"),

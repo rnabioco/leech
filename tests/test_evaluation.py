@@ -326,6 +326,164 @@ class TestParametricCheckpointMetricReporting:
         )
 
 
+def _build_ablation_corpus(tmp_path, channel_names, n=24, feat_width=11):
+    """Write a small npz corpus (+ matching ``prepare_config.json`` sidecar)
+    whose ``features`` rows are named ``channel_names``, each a distinct,
+    recoverable per-base constant (``channel_index * 1000 + position``), so a
+    selected subset can be checked by tensor VALUE, not just shape.
+
+    ``dwell`` width == ``feature_start``/``feature_end`` span == ``kmer_len``
+    (11), so ``LeechDataset._prepare_features`` never takes its further
+    width-slicing branch -- channel *selection*, the thing under test, is
+    the only thing that can move a value between rows here.
+    """
+    import json
+
+    from leech.chunking import save_chunks
+
+    rng = np.random.default_rng(19)
+    chunks = []
+    for i in range(n):
+        rows = [
+            np.arange(feat_width, dtype=np.float32) + ch_idx * 1000.0
+            for ch_idx in range(len(channel_names))
+        ]
+        chunks.append(
+            {
+                "signal": rng.standard_normal(400).astype(np.float32),
+                "dwell": rng.integers(2, 12, feat_width).astype(np.float32),
+                "features": np.stack(rows, axis=0),
+                "sequence": "ACGTACGTACG",
+                "label": f"c{i % 2}",
+                "label_int": i % 2,
+                "read_id": f"read_{i:05d}",
+                "base_idx": 10 + (i % 5),
+                "source_group": "grp0",
+                "feature_start": -5,
+                "feature_end": 5,
+            }
+        )
+    corpus_dir = tmp_path / "corpus"
+    corpus_dir.mkdir()
+    path = corpus_dir / "train.npz"
+    save_chunks(chunks, path)
+    (corpus_dir / "prepare_config.json").write_text(json.dumps({"feature_channels": channel_names}))
+    return path
+
+
+class TestEvalTestFeatureChannelSelection:
+    """``leech eval test`` (:func:`~leech.evaluation.evaluate_model`) must
+    select the checkpoint's own channel subset out of a wider corpus
+    (channel ablation, issue #358 follow-up) -- a real gap, not a
+    follow-up: an ablation sweep scores every arm with ``eval test`` against
+    the SAME all-channel corpus, so without this every subset checkpoint got
+    a tensor of the wrong width.
+    """
+
+    FULL = [
+        "dwell",
+        "dwell_log",
+        "dwell_mean",
+        "dwell_std",
+        "dwell_ratio",
+        "level_mean",
+        "level_median",
+    ]
+
+    def test_subset_checkpoint_receives_selected_rows_by_value(self, tmp_path, monkeypatch):
+        import torch
+
+        from leech.evaluation import evaluate_model
+        from leech.models.inference_wrapper import ModelInferenceWrapper
+        from leech.training import train_model
+
+        corpus = _build_ablation_corpus(tmp_path, self.FULL)
+        subset = ["level_mean", "dwell", "dwell_std"]
+
+        model_dir = tmp_path / "model"
+        train_model(
+            train_data_path=corpus,
+            val_data_path=None,
+            model_name="ConvLSTMDwell",
+            output_dir=model_dir,
+            signal_len=400,
+            kmer_len=11,
+            epochs=1,
+            batch_size=4,
+            device="cpu",
+            motif="CCAGGC",
+            seed=42,
+            feature_channels=subset,
+        )
+
+        captured: list[torch.Tensor] = []
+        original_forward = ModelInferenceWrapper.forward_batch
+
+        def spy(self, batch, device):
+            captured.append(batch["features"].clone())
+            return original_forward(self, batch, device)
+
+        monkeypatch.setattr(ModelInferenceWrapper, "forward_batch", spy)
+
+        evaluate_model(
+            model_path=model_dir,
+            test_data_path=corpus,
+            output_path=tmp_path / "metrics.json",
+            device="cpu",
+            batch_size=8,
+        )
+
+        assert captured
+        features = torch.cat(captured, dim=0)
+        assert features.shape[1] == len(subset)
+        for row_idx, name in enumerate(subset):
+            expected_row = torch.arange(11, dtype=torch.float32) + self.FULL.index(name) * 1000.0
+            torch.testing.assert_close(
+                features[:, row_idx, :], expected_row.unsqueeze(0).expand(features.shape[0], -1)
+            )
+
+    def test_old_style_checkpoint_takes_the_identity_path(self, temp_chunks_file, tmp_path):
+        """A checkpoint that never used ``--feature-channels``, scored
+        against a corpus that agrees with its own fallback, must pass
+        ``selected_feature_channels=None`` -- the pre-existing, byte-identical
+        path -- rather than a spurious selection.
+        """
+        from leech.dataset import LeechDataset
+        from leech.evaluation import evaluate_model
+        from leech.training import train_model
+
+        model_dir = tmp_path / "model"
+        train_model(
+            train_data_path=temp_chunks_file,
+            val_data_path=None,
+            model_name="ConvLSTMDwell",
+            output_dir=model_dir,
+            epochs=1,
+            batch_size=2,
+            device="cpu",
+            motif="CCAGGC",
+            seed=42,
+        )
+
+        seen_selection: list = []
+        original_init = LeechDataset.__init__
+
+        def spy_init(self, *args, **kwargs):
+            seen_selection.append(kwargs.get("selected_feature_channels"))
+            return original_init(self, *args, **kwargs)
+
+        with mock.patch.object(LeechDataset, "__init__", spy_init):
+            evaluate_model(
+                model_path=model_dir,
+                test_data_path=temp_chunks_file,
+                output_path=tmp_path / "metrics.json",
+                device="cpu",
+                batch_size=2,
+            )
+
+        assert seen_selection == [None]
+
+
 class TestDataLoaderWorkers:
     """Eval must feed the GPU from more than one process (issue #205).
 

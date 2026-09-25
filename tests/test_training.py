@@ -479,6 +479,204 @@ class TestTrainModel:
         )
 
 
+def _build_ablation_train_chunks(channel_names, n=24, feat_width=11):
+    """Hand-built chunk dicts (bypassing npz loading via ``train_chunks=``,
+    same as ``test_num_features_correct_when_dataset_degrades_to_list_storage``
+    above) whose ``features`` rows are named ``channel_names``, each a
+    distinct per-base constant so a selection can be checked by value.
+
+    ``dwell`` width == ``feature_start``/``feature_end`` span == ``kmer_len``
+    (11) so ``_prepare_features`` takes no further width-slicing branch --
+    channel *selection*, not window geometry, is what's under test.
+    """
+    rng = np.random.default_rng(11)
+    chunks = []
+    for i in range(n):
+        rows = [
+            np.arange(feat_width, dtype=np.float32) + ch_idx * 1000.0
+            for ch_idx in range(len(channel_names))
+        ]
+        chunks.append(
+            {
+                "signal": rng.standard_normal(400).astype(np.float32),
+                "dwell": rng.integers(2, 12, feat_width).astype(np.float32),
+                "features": np.stack(rows, axis=0),
+                "sequence": "ACGTACGTACG",
+                "label": f"c{i % 2}",
+                "label_int": i % 2,
+                "read_id": f"read_{i:05d}",
+                "base_idx": 10 + (i % 5),
+                "source_group": "grp0",
+                "feature_start": -5,
+                "feature_end": 5,
+            }
+        )
+    return chunks
+
+
+class TestFeatureChannelSelectionTraining:
+    """``train_model(feature_channels=...)`` (channel ablation, issue #358
+    follow-up): selects a subset of the training corpus's recorded feature
+    list, records the selection (and the corpus's full list, for provenance)
+    into the checkpoint, and refuses an unknown/absent channel before
+    training starts.
+    """
+
+    FULL = [
+        "dwell",
+        "dwell_log",
+        "dwell_mean",
+        "dwell_std",
+        "dwell_ratio",
+        "level_mean",
+        "level_median",
+    ]
+
+    @staticmethod
+    def _write_sidecar(tmp_path, channels):
+        (tmp_path / "prepare_config.json").write_text(json.dumps({"feature_channels": channels}))
+
+    def test_records_subset_and_corpus_list_in_checkpoint(self, tmp_path):
+        self._write_sidecar(tmp_path, self.FULL)
+        subset = ["level_mean", "dwell", "dwell_std"]
+        output_dir = tmp_path / "training"
+
+        train_model(
+            train_data_path=tmp_path / "train.npz",
+            val_data_path=None,
+            train_chunks=_build_ablation_train_chunks(self.FULL),
+            model_name="ConvLSTMDwell",
+            output_dir=output_dir,
+            signal_len=400,
+            kmer_len=11,
+            epochs=1,
+            batch_size=4,
+            device="cpu",
+            motif="CCAGGC",
+            seed=42,
+            feature_channels=subset,
+        )
+
+        with open(output_dir / "config.json") as f:
+            config = json.load(f)
+
+        assert config["feature_channels"] == subset
+        assert config["corpus_feature_channels"] == self.FULL
+        assert config["num_features"] == len(subset) == 3
+
+    def test_unset_is_byte_identical_to_before(self, tmp_path):
+        """Unset ``--feature-channels`` records exactly what training already
+        recorded before this flag existed -- the corpus's full list, and
+        nothing narrowed."""
+        self._write_sidecar(tmp_path, self.FULL)
+        output_dir = tmp_path / "training"
+
+        train_model(
+            train_data_path=tmp_path / "train.npz",
+            val_data_path=None,
+            train_chunks=_build_ablation_train_chunks(self.FULL),
+            model_name="ConvLSTMDwell",
+            output_dir=output_dir,
+            signal_len=400,
+            kmer_len=11,
+            epochs=1,
+            batch_size=4,
+            device="cpu",
+            motif="CCAGGC",
+            seed=42,
+        )
+
+        with open(output_dir / "config.json") as f:
+            config = json.load(f)
+
+        assert config["feature_channels"] == self.FULL
+        assert config["corpus_feature_channels"] == self.FULL
+        assert config["num_features"] == len(self.FULL)
+
+    def test_unknown_channel_raises_before_training(self, tmp_path):
+        self._write_sidecar(tmp_path, self.FULL)
+
+        with pytest.raises(ValueError, match="bogus"):
+            train_model(
+                train_data_path=tmp_path / "train.npz",
+                val_data_path=None,
+                train_chunks=_build_ablation_train_chunks(self.FULL),
+                model_name="ConvLSTMDwell",
+                output_dir=tmp_path / "training",
+                signal_len=400,
+                kmer_len=11,
+                epochs=1,
+                batch_size=4,
+                device="cpu",
+                motif="CCAGGC",
+                seed=42,
+                feature_channels=["dwell", "bogus"],
+            )
+
+    def test_absent_channel_falls_back_to_the_historical_default(self, tmp_path):
+        """No sidecar at all (a corpus older than issue #358) means the
+        corpus's list is the historical twelve -- selecting one of those
+        names must succeed even without a `prepare_config.json`."""
+        from leech.constants import DEFAULT_FEATURE_CHANNELS
+
+        train_chunks = _build_ablation_train_chunks(list(DEFAULT_FEATURE_CHANNELS))
+        output_dir = tmp_path / "training"
+
+        train_model(
+            train_data_path=tmp_path / "train.npz",  # tmp_path has no sidecar
+            val_data_path=None,
+            train_chunks=train_chunks,
+            model_name="ConvLSTMDwell",
+            output_dir=output_dir,
+            signal_len=400,
+            kmer_len=11,
+            epochs=1,
+            batch_size=4,
+            device="cpu",
+            motif="CCAGGC",
+            seed=42,
+            feature_channels=["dwell", "level_mean"],
+        )
+
+        with open(output_dir / "config.json") as f:
+            config = json.load(f)
+        assert config["feature_channels"] == ["dwell", "level_mean"]
+        assert config["corpus_feature_channels"] == list(DEFAULT_FEATURE_CHANNELS)
+
+    def test_predict_side_extraction_round_trips(self, tmp_path):
+        """The checkpoint's ``config.json`` ``feature_channels`` is exactly
+        what ``InferenceSpec.from_config`` extracts for ``leech predict`` --
+        issue #358's pre-existing carrying mechanism, exercised end to end
+        against a checkpoint trained with a channel subset."""
+        from leech.inference.helpers import InferenceSpec
+
+        self._write_sidecar(tmp_path, self.FULL)
+        subset = ["dwell_log", "level_median"]
+        output_dir = tmp_path / "training"
+
+        train_model(
+            train_data_path=tmp_path / "train.npz",
+            val_data_path=None,
+            train_chunks=_build_ablation_train_chunks(self.FULL),
+            model_name="ConvLSTMDwell",
+            output_dir=output_dir,
+            signal_len=400,
+            kmer_len=11,
+            epochs=1,
+            batch_size=4,
+            device="cpu",
+            motif="CCAGGC",
+            seed=42,
+            feature_channels=subset,
+        )
+
+        with open(output_dir / "config.json") as f:
+            config = json.load(f)
+
+        spec = InferenceSpec.from_config(config)
+        assert spec.feature_channels == subset
+
+
 class TestClassWeighting:
     """Test class weighting functionality."""
 

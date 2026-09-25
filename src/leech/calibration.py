@@ -23,7 +23,12 @@ import torch.nn as nn
 from torch.optim import LBFGS
 from torch.utils.data import DataLoader
 
-from leech.constants import DEFAULT_SEQ_ENCODING_FALLBACK
+from leech.constants import (
+    DEFAULT_FEATURE_CHANNELS,
+    DEFAULT_SEQ_ENCODING_FALLBACK,
+    corpus_recorded_feature_channels,
+    resolve_corpus_feature_selection,
+)
 from leech.dataset import LeechDataset, collate_fn, resolve_val_dataloader_workers
 from leech.models.inference_wrapper import ModelInferenceWrapper
 
@@ -178,6 +183,17 @@ def calibrate_model(
     # chunk_path (not pre-loaded chunks) so the dataset streams the arrays out
     # of the npz instead of holding a second full copy of them (#211).
     dwell_template_table = config.get("dwell_template_table") or None
+    # Channel ablation (issue #358 follow-up): the checkpoint may have been
+    # trained on a SUBSET of this corpus's channels -- `None` (no-op) when
+    # the checkpoint's declared list already matches the corpus, which is
+    # every pre-existing checkpoint/corpus pair. `feature_channel_names` (the
+    # corpus's own recorded list) must travel alongside the selection --
+    # LeechDataset needs it to reconcile the selection against the corpus's
+    # actual data by name.
+    corpus_feature_channels = corpus_recorded_feature_channels(val_data_path)
+    feature_channels_selection = resolve_corpus_feature_selection(
+        config.get("feature_channels", DEFAULT_FEATURE_CHANNELS), val_data_path
+    )
     val_dataset = LeechDataset(
         chunk_path=val_data_path,
         model_type=model_name,
@@ -190,6 +206,8 @@ def calibrate_model(
         allow_encoding_fallback=False,
         signal_mode=config.get("signal_mode", "both"),
         dwell_template_table=dwell_template_table,
+        feature_channel_names=corpus_feature_channels,
+        selected_feature_channels=feature_channels_selection,
     )
     val_loader = DataLoader(
         val_dataset,
@@ -528,6 +546,17 @@ def calibrate_model_multiclass(
     # chunk_path (not pre-loaded chunks) so the dataset streams the arrays out
     # of the npz instead of holding a second full copy of them (#211).
     dwell_template_table = config.get("dwell_template_table") or None
+    # Channel ablation (issue #358 follow-up): the checkpoint may have been
+    # trained on a SUBSET of this corpus's channels -- `None` (no-op) when
+    # the checkpoint's declared list already matches the corpus, which is
+    # every pre-existing checkpoint/corpus pair. `feature_channel_names` (the
+    # corpus's own recorded list) must travel alongside the selection --
+    # LeechDataset needs it to reconcile the selection against the corpus's
+    # actual data by name.
+    corpus_feature_channels = corpus_recorded_feature_channels(val_data_path)
+    feature_channels_selection = resolve_corpus_feature_selection(
+        config.get("feature_channels", DEFAULT_FEATURE_CHANNELS), val_data_path
+    )
     val_dataset = LeechDataset(
         chunk_path=val_data_path,
         model_type=model_name,
@@ -540,6 +569,8 @@ def calibrate_model_multiclass(
         allow_encoding_fallback=False,
         signal_mode=config.get("signal_mode", "both"),
         dwell_template_table=dwell_template_table,
+        feature_channel_names=corpus_feature_channels,
+        selected_feature_channels=feature_channels_selection,
     )
     val_loader = DataLoader(
         val_dataset,

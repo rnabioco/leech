@@ -77,6 +77,30 @@ full option description.
     read-level variation in translocation speed, making the feature more
     comparable across reads.
 
+### Channel ablation
+
+Preparing a corpus and choosing which channels feed the model don't have to
+happen at the same time. `leech data prepare --feature-channels all` records
+every known channel (the default list above plus `level_skew`/
+`level_kurtosis`) in one corpus; `leech model train --feature-channels
+dwell,dwell_log,level_mean` then selects and orders a **subset** of that
+corpus's recorded rows for a single training run, without re-preparing.
+This is the shape a channel-ablation sweep wants: prepare once with
+`all`, then run `model train` (or `model optimize`) once per arm with a
+different `--feature-channels` subset.
+
+Every name in `model train --feature-channels` must already be in the
+corpus's recorded list -- an unknown name, or one the corpus never recorded,
+is refused before training starts, naming the missing channels and the
+corpus's list. Selection is by name, not position, so it also reorders
+correctly if the requested order differs from how the corpus stored the
+rows. The checkpoint's `config.json` records the **selected** list as
+`feature_channels` (exactly what `leech predict` extracts for that
+checkpoint) and the corpus's full recorded list separately as
+`corpus_feature_channels`, so the road not taken in a given ablation arm is
+still on record. Leaving `--feature-channels` unset at train time uses every
+row the corpus has, exactly as before this existed.
+
 ## Three-branch architecture
 
 The `ConvLSTMDwell` model processes the three input types through parallel

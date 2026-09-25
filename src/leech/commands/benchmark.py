@@ -12,6 +12,7 @@ from rich.table import Table
 from torch.utils.data import DataLoader
 
 from leech.cli_config import make_console
+from leech.constants import corpus_recorded_feature_channels, resolve_corpus_feature_selection
 from leech.dataset import LeechDataset, collate_fn
 from leech.models import get_model
 from leech.models.inference_wrapper import ModelInferenceWrapper
@@ -41,6 +42,23 @@ def _build_loader_and_model(
     extra_model_kwargs: dict[str, Any] | None = None,
 ) -> tuple[DataLoader, torch.nn.Module, ModelInferenceWrapper, int]:
     """Minimal mirror of ``train_model`` construction — loader, model, wrapper."""
+    extra_model_kwargs = dict(extra_model_kwargs) if extra_model_kwargs else {}
+    # Channel ablation (issue #358 follow-up): a --model-config snippet may
+    # declare `feature_channels` to benchmark the tensor shape a specific
+    # ablation arm actually trains on -- not a constructor kwarg any model
+    # accepts, so it's popped out here rather than reaching get_model()
+    # below. Unlike a real checkpoint's config.json (eval/calibrate), a
+    # --model-config snippet has no historical-twelve fallback convention:
+    # absence means "no selection requested", matching train_model's own
+    # "unset uses every row" rule.
+    feature_channels_wanted = extra_model_kwargs.pop("feature_channels", None)
+    # `feature_channel_names` (the corpus's own recorded list) must travel
+    # alongside the selection -- LeechDataset needs it to reconcile the
+    # selection against the corpus's actual data by name.
+    corpus_feature_channels = corpus_recorded_feature_channels(train_data)
+    feature_channels_selection = resolve_corpus_feature_selection(
+        feature_channels_wanted, train_data
+    )
     dataset = LeechDataset(
         chunk_path=train_data,
         signal_len=signal_len,
@@ -49,6 +67,8 @@ def _build_loader_and_model(
         seq_encoding=seq_encoding,
         signal_mode=signal_mode,
         standardize_features=standardize_features,
+        feature_channel_names=corpus_feature_channels,
+        selected_feature_channels=feature_channels_selection,
     )
     logger.info(f"Loaded {len(dataset)} chunks from {train_data}")
 

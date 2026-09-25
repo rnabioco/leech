@@ -117,7 +117,14 @@ def handle_prepare(
             ordering the corpus's feature rows (issue #358). ``None``
             (default) means :data:`~leech.constants.DEFAULT_FEATURE_CHANNELS`
             -- the historical twelve, verbatim, so an unset flag reproduces
-            every corpus prepared before this existed byte-identically.
+            every corpus prepared before this existed byte-identically. The
+            single-token list ``["all"]`` expands to
+            :data:`~leech.constants.ALL_FEATURE_CHANNELS` (the twelve plus
+            ``level_skew``/``level_kurtosis``), so a corpus can be prepared
+            with every known channel once and `model train --feature-channels`
+            can pick a subset per run without re-preparing. Whichever way it
+            resolves, the *expanded* list is what's recorded --
+            ``prepare_config.json`` never stores the literal word "all".
             Recorded in ``prepare_config.json``; `model train` carries it into
             the checkpoint's ``config.json`` and `leech predict` extracts
             exactly that list. Unknown names are refused here, before any
@@ -131,6 +138,7 @@ def handle_prepare(
     from leech.chunking import ChunkSpool, default_signal_len_for_bases_context
     from leech.configs import ChunkConfig, LabelConfig, MotifConfig, PrepareConfig, SignalConfig
     from leech.constants import (
+        ALL_FEATURE_CHANNELS,
         DEFAULT_FEATURE_CHANNELS,
         DEFAULT_SIGNAL_CONTEXT,
         validate_feature_channels,
@@ -139,9 +147,16 @@ def handle_prepare(
     from leech.preparation import prepare_training_data_parallel, write_splits
     from leech.seeding import setup_random_seed
 
-    resolved_feature_channels = (
-        list(feature_channels) if feature_channels else list(DEFAULT_FEATURE_CHANNELS)
-    )
+    # "all" is only special as the sole token (issue #358 follow-up: channel
+    # ablation) -- a list that merely contains it alongside real names falls
+    # through unchanged and is refused below by validate_feature_channels,
+    # same as any other unknown name, rather than silently swallowing them.
+    if feature_channels and len(feature_channels) == 1 and feature_channels[0].lower() == "all":
+        resolved_feature_channels = list(ALL_FEATURE_CHANNELS)
+    elif feature_channels:
+        resolved_feature_channels = list(feature_channels)
+    else:
+        resolved_feature_channels = list(DEFAULT_FEATURE_CHANNELS)
     # Refused here, before any read is touched or any worker is spawned
     # (issue #358) -- a typo surfacing minutes into a parallel prepare run,
     # inside a worker, is a much worse failure than a `ValueError` up front.

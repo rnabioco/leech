@@ -55,7 +55,12 @@ from leech.chunking import (
     npz_array_members,
     npz_member_names,
 )
-from leech.constants import AUTO_DATALOADER_WORKERS, DEFAULT_FEATURE_CHANNELS
+from leech.constants import (
+    AUTO_DATALOADER_WORKERS,
+    DEFAULT_FEATURE_CHANNELS,
+    resolve_stored_feature_channels,
+    select_feature_channels,
+)
 from leech.features import encode_signal_kmer, encode_signal_kmer_batch, sequence_to_int
 from leech.models import requires_features, wide_features
 
@@ -626,6 +631,7 @@ class LeechDataset(Dataset):
         dwell_template_table: str | Path | None = None,
         standardize_features: bool = False,
         feature_channel_names: Sequence[str] | None = None,
+        selected_feature_channels: Sequence[str] | None = None,
     ):
         """
         Initialize dataset.
@@ -717,8 +723,24 @@ class LeechDataset(Dataset):
                 historical twelve, which keys ``_apply_time_stretch``'s
                 dwell/dwell_log/dwell_mean rule to the same positions (0, 1,
                 2) it always used, so an unset corpus behaves identically to
-                before this existed. Only consulted when ``time_stretch_range``
-                is active.
+                before this existed. Consulted when ``time_stretch_range`` is
+                active (for the by-name lookup) and whenever
+                ``selected_feature_channels`` is given (as the *nominal* list
+                to reconcile against the tensor's actual stored row count --
+                see :func:`~leech.constants.resolve_stored_feature_channels`).
+            selected_feature_channels: Channel ablation (issue #358
+                follow-up) -- select and reorder a SUBSET of the corpus's
+                feature rows by name, resolved once here against the actual
+                stored row count (not assumed position) and applied to every
+                per-chunk feature array before anything else touches it, so
+                ``num_features``, per-channel standardization stats,
+                feature-noise augmentation and time-stretch's by-name dwell
+                lookup all see the selected tensor. ``None`` (default) keeps
+                every row exactly as before this existed -- selection logic
+                does not run at all in that case, so an unset corpus is
+                byte-identical. Raises ``ValueError`` naming any requested
+                channel absent from the corpus's actual data (see
+                :func:`~leech.constants.select_feature_channels`).
         """
         self.chunk_path = chunk_path
         self.signal_len = signal_len
@@ -809,6 +831,44 @@ class LeechDataset(Dataset):
 
         if len(self.chunks) == 0:
             raise ValueError(f"No valid chunks found{f' in {chunk_path}' if chunk_path else ''}")
+
+        # Channel ablation (issue #358 follow-up): resolve and apply a
+        # `selected_feature_channels` subset, once, against the corpus's
+        # ACTUAL stored row count -- not the (possibly wider, if a `kmer_*`
+        # name was recorded but never computed) nominal recorded list. Gated
+        # entirely on `selected_feature_channels is not None` so an unset
+        # corpus runs none of this new code and stays byte-identical to
+        # before it existed.
+        self._feature_row_idx: np.ndarray | None = None
+        self.effective_feature_channels: list[str] | None = None
+        if self._needs_features:
+            if selected_feature_channels is not None:
+                actual_count = self._stored_feature_row_count()
+                if actual_count is None:
+                    raise ValueError(
+                        "selected_feature_channels was requested but this dataset's "
+                        "stored feature row count could not be determined"
+                        f"{f' ({chunk_path})' if chunk_path else ''}"
+                    )
+                available = resolve_stored_feature_channels(_fc_names, actual_count)
+                row_idx = select_feature_channels(available, selected_feature_channels)
+                self._feature_row_idx = np.asarray(row_idx, dtype=np.int64)
+                effective_names = list(selected_feature_channels)
+                # The tensor's channel axis now has the SELECTED order, not
+                # the corpus's recorded order -- recompute the by-name
+                # indices _apply_time_stretch uses against it.
+                self._dwell_idx = (
+                    effective_names.index("dwell") if "dwell" in effective_names else None
+                )
+                self._dwell_log_idx = (
+                    effective_names.index("dwell_log") if "dwell_log" in effective_names else None
+                )
+                self._dwell_mean_idx = (
+                    effective_names.index("dwell_mean") if "dwell_mean" in effective_names else None
+                )
+                self.effective_feature_channels = effective_names
+            else:
+                self.effective_feature_channels = _fc_names
 
         # Pre-tensorize: encode sequences, labels, signals, and features once.
         # Each accumulator fills one preallocated contiguous tensor — see
@@ -1756,6 +1816,12 @@ class LeechDataset(Dataset):
         """
         if features.dtype != np.float32:
             features = features.astype(np.float32)
+        # Channel ablation (issue #358 follow-up): select/reorder the channel
+        # axis before anything else touches it -- resolved once in __init__
+        # against the corpus's actual stored row count, not this block's own
+        # (unaffected) channel count.
+        if self._feature_row_idx is not None:
+            features = features[:, self._feature_row_idx, :]
         if (
             starts is not None
             and dwell_width is not None
@@ -1803,6 +1869,30 @@ class LeechDataset(Dataset):
         if seq_encoding == "signal_kmer":
             self._s2s_csr = load_seq_to_sig_csr(chunk_path)
             self._s2s_rows = np.nonzero(keep)[0]
+
+    def _stored_feature_row_count(self) -> int | None:
+        """The corpus's actual ``features`` channel count, or ``None`` if unknown.
+
+        Channel ablation (issue #358 follow-up) needs this to reconcile a
+        recorded ``feature_channels`` list against what's actually in the
+        npz (see :func:`~leech.constants.resolve_stored_feature_channels`).
+        The row-streamed path (``self._array_stream``, always paired with a
+        ``ChunkTable``) knows it from the flat member's header without
+        reading any data; the pre-loaded/eager path (a plain list of chunk
+        dicts, from ``load_chunks`` or the ``chunks=`` constructor arg) reads
+        it off the first chunk that actually has a ``features`` array --
+        every chunk in a corpus has the same channel count, only the width
+        (per-base column count) can vary.
+        """
+        if self._array_stream is not None:
+            shape = self._array_stream.row_shapes.get("features")
+            return shape[0] if shape else None
+        for chunk in self.chunks:
+            if isinstance(chunk, dict):
+                feat = chunk.get("features")
+                if feat is not None:
+                    return int(feat.shape[0])
+        return None
 
     def _crop_starts(self, values: np.ndarray, offsets: np.ndarray) -> np.ndarray:
         """Per-chunk focus signal position for the streamed base-to-signal maps.
@@ -1936,6 +2026,14 @@ class LeechDataset(Dataset):
         """
         if features.dtype != np.float32:
             features = features.astype(np.float32)
+
+        # Channel ablation (issue #358 follow-up): select/reorder the channel
+        # axis before anything else touches it, including the dwell-template
+        # append below -- those 20 rows are a separate mechanism (opt-in via
+        # --dwell-template-table) layered on top of the corpus's own recorded
+        # channels, not part of the selection.
+        if self._feature_row_idx is not None:
+            features = features[self._feature_row_idx, :]
 
         # Append 20 dwell template ratio channels before slicing
         features = self._append_template_channels(features, chunk)

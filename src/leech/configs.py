@@ -324,6 +324,16 @@ class TrainConfig:
     # Per-channel feature standardization: compute corpus-wide mean/std once
     # and freeze them into the feature branch's first layer (issue #283).
     standardize_features: bool = False
+    # Channel ablation (issue #358 follow-up): select and order a SUBSET of
+    # the training corpus's recorded `feature_channels` list (see
+    # `SignalConfig.feature_channels`). `None` (default) uses every row the
+    # corpus has, exactly as before this existed -- train_model validates
+    # every name against the corpus's recorded list before touching the
+    # dataset, and `LeechDataset` re-validates against the corpus's actual
+    # stored row count (the kmer_* carry-over `merge_feature_channels` can
+    # produce). Recorded verbatim as config.json's `feature_channels`, so
+    # `leech predict` extracts exactly this selection.
+    feature_channels: list[str] | None = None
 
     # Provenance / extraction geometry recorded in config.json, not used to
     # extract anything here -- see chunking.resolve_feature_window and

@@ -284,3 +284,138 @@ class TestCalibrateModelReconstructsFullConfig:
         a, b = calibrate_model(model_dir, temp_chunks_file, device="cpu", batch_size=4)
         assert isinstance(a, float)
         assert isinstance(b, float)
+
+
+def _build_ablation_corpus(tmp_path, channel_names, n=24, feat_width=11):
+    """Write a small npz corpus (+ matching ``prepare_config.json`` sidecar)
+    whose ``features`` rows are named ``channel_names``, each a distinct,
+    recoverable per-base constant (``channel_index * 1000 + position``), so a
+    selected subset can be checked by tensor VALUE, not just shape.
+    """
+    import numpy as np
+
+    from leech.chunking import save_chunks
+
+    rng = np.random.default_rng(23)
+    chunks = []
+    for i in range(n):
+        rows = [
+            np.arange(feat_width, dtype=np.float32) + ch_idx * 1000.0
+            for ch_idx in range(len(channel_names))
+        ]
+        chunks.append(
+            {
+                "signal": rng.standard_normal(400).astype(np.float32),
+                "dwell": rng.integers(2, 12, feat_width).astype(np.float32),
+                "features": np.stack(rows, axis=0),
+                "sequence": "ACGTACGTACG",
+                "label": f"c{i % 2}",
+                "label_int": i % 2,
+                "read_id": f"read_{i:05d}",
+                "base_idx": 10 + (i % 5),
+                "source_group": "grp0",
+                "feature_start": -5,
+                "feature_end": 5,
+            }
+        )
+    corpus_dir = tmp_path / "corpus"
+    corpus_dir.mkdir()
+    path = corpus_dir / "train.npz"
+    save_chunks(chunks, path)
+    (corpus_dir / "prepare_config.json").write_text(json.dumps({"feature_channels": channel_names}))
+    return path
+
+
+class TestCalibrateModelFeatureChannelSelection:
+    """``leech model calibrate`` (:func:`~leech.calibration.calibrate_model`)
+    must select the checkpoint's own channel subset out of a wider corpus
+    (channel ablation, issue #358 follow-up) -- the same gap ``eval test``
+    had: an ablation sweep's checkpoints are typically calibrated against
+    the SAME all-channel corpus.
+    """
+
+    FULL = [
+        "dwell",
+        "dwell_log",
+        "dwell_mean",
+        "dwell_std",
+        "dwell_ratio",
+        "level_mean",
+        "level_median",
+    ]
+
+    @staticmethod
+    def _write_checkpoint(model_dir, num_features, feature_channels=None):
+        from leech.models import get_model
+
+        model_dir.mkdir()
+        kwargs = {
+            "signal_len": 400,
+            "kmer_len": 11,
+            "num_features": num_features,
+            "conv_channels": [4, 8, 16],
+            "lstm_hidden": 8,
+            "seq_encoding": "base_onehot",
+        }
+        model = get_model("ConvLSTMDwell", **kwargs)
+        torch.save({"model_state_dict": model.state_dict()}, model_dir / "model_best.pt")
+        config = {"model_name": "ConvLSTMDwell", **kwargs}
+        if feature_channels is not None:
+            config["feature_channels"] = feature_channels
+        (model_dir / "config.json").write_text(json.dumps(config))
+
+    def test_subset_checkpoint_receives_selected_rows_by_value(self, tmp_path, monkeypatch):
+        from leech.calibration import calibrate_model
+        from leech.models.inference_wrapper import ModelInferenceWrapper
+
+        corpus = _build_ablation_corpus(tmp_path, self.FULL)
+        subset = ["level_mean", "dwell", "dwell_std"]
+
+        model_dir = tmp_path / "model"
+        self._write_checkpoint(model_dir, num_features=len(subset), feature_channels=subset)
+
+        captured: list[torch.Tensor] = []
+        original_forward = ModelInferenceWrapper.forward_batch
+
+        def spy(self, batch, device):
+            captured.append(batch["features"].clone())
+            return original_forward(self, batch, device)
+
+        monkeypatch.setattr(ModelInferenceWrapper, "forward_batch", spy)
+
+        calibrate_model(model_dir, corpus, device="cpu", batch_size=8)
+
+        assert captured
+        features = torch.cat(captured, dim=0)
+        assert features.shape[1] == len(subset)
+        for row_idx, name in enumerate(subset):
+            expected_row = torch.arange(11, dtype=torch.float32) + self.FULL.index(name) * 1000.0
+            torch.testing.assert_close(
+                features[:, row_idx, :], expected_row.unsqueeze(0).expand(features.shape[0], -1)
+            )
+
+    def test_old_style_checkpoint_takes_the_identity_path(self, temp_chunks_file, tmp_path):
+        """A checkpoint with no recorded ``feature_channels`` key, scored
+        against a corpus that agrees with its own fallback, must pass
+        ``selected_feature_channels=None`` -- the pre-existing, byte-identical
+        path -- rather than a spurious selection.
+        """
+        from unittest import mock
+
+        from leech.calibration import calibrate_model
+        from leech.dataset import LeechDataset
+
+        model_dir = tmp_path / "model"
+        self._write_checkpoint(model_dir, num_features=5)  # no feature_channels key at all
+
+        seen_selection: list = []
+        original_init = LeechDataset.__init__
+
+        def spy_init(self, *args, **kwargs):
+            seen_selection.append(kwargs.get("selected_feature_channels"))
+            return original_init(self, *args, **kwargs)
+
+        with mock.patch.object(LeechDataset, "__init__", spy_init):
+            calibrate_model(model_dir, temp_chunks_file, device="cpu", batch_size=4)
+
+        assert seen_selection == [None]

@@ -1253,6 +1253,222 @@ class TestFeatureChannelOrder:
             )
 
 
+class TestAllFeatureChannelsToken:
+    """``--feature-channels all`` (channel ablation): expands to every known
+    channel, so a corpus prepared once with everything can have `model train
+    --feature-channels` select a subset per run without re-preparing.
+    """
+
+    def test_all_feature_channels_is_default_plus_skew_kurtosis(self):
+        from leech.constants import ALL_FEATURE_CHANNELS, DEFAULT_FEATURE_CHANNELS
+
+        assert ALL_FEATURE_CHANNELS == [
+            *DEFAULT_FEATURE_CHANNELS,
+            "level_skew",
+            "level_kurtosis",
+        ]
+
+    @staticmethod
+    def _fake_zero_chunks(**kwargs):
+        return [], {
+            "total_reads": 5,
+            "reads_with_motif": 0,
+            "reads_without_motif": 5,
+            "total_chunks": 0,
+            "failed_reads": 0,
+            "failed_batches": 0,
+        }
+
+    def test_all_token_expands_and_is_recorded_expanded(self, tmp_path, monkeypatch):
+        """The literal word "all" must never reach ``prepare_config.json`` --
+        only the expanded list it stands for (issue #358 follow-up).
+        """
+        import json
+
+        from leech.commands.prepare import handle_prepare
+        from leech.constants import ALL_FEATURE_CHANNELS
+
+        monkeypatch.setattr(
+            "leech.preparation.prepare_training_data_parallel", self._fake_zero_chunks
+        )
+        output_dir = tmp_path / "out"
+        with pytest.raises(RuntimeError, match="0 chunks"):
+            handle_prepare(
+                pod5=tmp_path / "fake.pod5",
+                bam=tmp_path / "fake.bam",
+                output_dir=output_dir,
+                motif="CCAGGC",
+                motif_reference="bam",
+                refine_signal_map=False,
+                workers=2,
+                feature_channels=["all"],
+            )
+        written = json.loads((output_dir / "prepare_config.json").read_text())
+        assert written["feature_channels"] == list(ALL_FEATURE_CHANNELS)
+        assert "all" not in written["feature_channels"]
+
+    def test_all_token_is_case_insensitive(self, tmp_path, monkeypatch):
+        import json
+
+        from leech.commands.prepare import handle_prepare
+        from leech.constants import ALL_FEATURE_CHANNELS
+
+        monkeypatch.setattr(
+            "leech.preparation.prepare_training_data_parallel", self._fake_zero_chunks
+        )
+        output_dir = tmp_path / "out"
+        with pytest.raises(RuntimeError, match="0 chunks"):
+            handle_prepare(
+                pod5=tmp_path / "fake.pod5",
+                bam=tmp_path / "fake.bam",
+                output_dir=output_dir,
+                motif="CCAGGC",
+                motif_reference="bam",
+                refine_signal_map=False,
+                workers=2,
+                feature_channels=["ALL"],
+            )
+        written = json.loads((output_dir / "prepare_config.json").read_text())
+        assert written["feature_channels"] == list(ALL_FEATURE_CHANNELS)
+
+    def test_all_alongside_another_name_is_not_special_and_is_refused(self, tmp_path, monkeypatch):
+        """ "all" is only special as the SOLE token -- alongside a real name it
+        falls through unchanged and is refused like any other unknown name,
+        rather than silently swallowing the real name.
+        """
+        from leech.commands.prepare import handle_prepare
+
+        monkeypatch.setattr(
+            "leech.preparation.prepare_training_data_parallel", self._fake_zero_chunks
+        )
+        with pytest.raises(ValueError, match="all"):
+            handle_prepare(
+                pod5=tmp_path / "fake.pod5",
+                bam=tmp_path / "fake.bam",
+                output_dir=tmp_path / "out",
+                motif="CCAGGC",
+                motif_reference="bam",
+                refine_signal_map=False,
+                workers=2,
+                feature_channels=["all", "dwell"],
+            )
+
+
+class TestResolveCorpusFeatureSelection:
+    """``leech.constants.resolve_corpus_feature_selection`` -- the shared
+    rule behind every place that builds a ``LeechDataset`` from a corpus to
+    score/benchmark an ALREADY-DECIDED channel list against it (``leech eval
+    test``, ``leech model calibrate``, ``leech model benchmark``), not just
+    ``model train``'s own corpus. Channel ablation (issue #358 follow-up):
+    a checkpoint's declared list can be a strict subset of what a given
+    corpus actually carries -- every arm of an ablation sweep is typically
+    scored against the SAME all-channel corpus.
+    """
+
+    @staticmethod
+    def _write_corpus(tmp_path, channel_names, dirname="corpus", n=4, feat_width=5):
+        """A minimal npz corpus (only the ``features`` row count matters
+        here) plus a matching ``prepare_config.json`` sidecar."""
+        import json
+
+        from leech.chunking import save_chunks
+
+        corpus_dir = tmp_path / dirname
+        corpus_dir.mkdir()
+        chunks = []
+        for i in range(n):
+            chunks.append(
+                {
+                    "signal": np.zeros(10, dtype=np.float32),
+                    "dwell": np.zeros(feat_width, dtype=np.float32),
+                    "features": np.zeros((len(channel_names), feat_width), dtype=np.float32),
+                    "sequence": "A" * feat_width,
+                    "label": f"c{i % 2}",
+                    "label_int": i % 2,
+                    "read_id": f"read_{i:05d}",
+                    "base_idx": 2,
+                    "feature_start": -2,
+                    "feature_end": 2,
+                }
+            )
+        path = corpus_dir / "train.npz"
+        save_chunks(chunks, path)
+        (corpus_dir / "prepare_config.json").write_text(
+            json.dumps({"feature_channels": channel_names})
+        )
+        return path
+
+    def test_none_wanted_is_identity_without_touching_the_corpus(self, tmp_path):
+        from leech.constants import resolve_corpus_feature_selection
+
+        # A path that does not even exist -- proves the corpus is never opened.
+        assert resolve_corpus_feature_selection(None, tmp_path / "missing.npz") is None
+
+    def test_matching_wanted_is_identity(self, tmp_path):
+        """Every pre-existing checkpoint/corpus pair (which never disagree)
+        must take the identity path -- byte-identical, no new code engaged.
+        """
+        from leech.constants import resolve_corpus_feature_selection
+
+        channels = ["dwell", "dwell_log", "level_mean"]
+        corpus = self._write_corpus(tmp_path, channels)
+        assert resolve_corpus_feature_selection(list(channels), corpus) is None
+
+    def test_subset_wanted_is_returned_for_selection(self, tmp_path):
+        from leech.constants import resolve_corpus_feature_selection
+
+        channels = ["dwell", "dwell_log", "level_mean", "level_skew"]
+        corpus = self._write_corpus(tmp_path, channels)
+        subset = ["level_mean", "dwell"]
+        assert resolve_corpus_feature_selection(subset, corpus) == subset
+
+    def test_old_checkpoint_default_selects_from_a_wider_all_channel_corpus(self, tmp_path):
+        """An OLD checkpoint (no recorded key, so the historical twelve)
+        must select cleanly out of a corpus prepared with
+        ``--feature-channels all`` -- it carries more rows than the old
+        checkpoint's model has input channels for.
+        """
+        from leech.constants import (
+            ALL_FEATURE_CHANNELS,
+            DEFAULT_FEATURE_CHANNELS,
+            resolve_corpus_feature_selection,
+        )
+
+        corpus = self._write_corpus(tmp_path, list(ALL_FEATURE_CHANNELS))
+        result = resolve_corpus_feature_selection(list(DEFAULT_FEATURE_CHANNELS), corpus)
+        assert result == list(DEFAULT_FEATURE_CHANNELS)
+
+    def test_absent_sidecar_falls_back_to_the_historical_default(self, tmp_path):
+        """A corpus with no ``prepare_config.json`` at all (older than issue
+        #358) is treated as the historical twelve -- matching a checkpoint
+        that also defaults there is identity, not a spurious selection."""
+        import numpy as np
+
+        from leech.chunking import save_chunks
+        from leech.constants import DEFAULT_FEATURE_CHANNELS, resolve_corpus_feature_selection
+
+        corpus_dir = tmp_path / "old_corpus"
+        corpus_dir.mkdir()
+        chunks = [
+            {
+                "signal": np.zeros(10, dtype=np.float32),
+                "dwell": np.zeros(5, dtype=np.float32),
+                "features": np.zeros((len(DEFAULT_FEATURE_CHANNELS), 5), dtype=np.float32),
+                "sequence": "AAAAA",
+                "label": "c0",
+                "label_int": 0,
+                "read_id": "read_00000",
+                "base_idx": 2,
+                "feature_start": -2,
+                "feature_end": 2,
+            }
+        ]
+        path = corpus_dir / "train.npz"
+        save_chunks(chunks, path)
+        # No prepare_config.json written at all.
+        assert resolve_corpus_feature_selection(list(DEFAULT_FEATURE_CHANNELS), path) is None
+
+
 class TestFeatureChannelsMergeRefusal:
     """`data merge` refuses corpora whose `feature_channels` lists differ
     (issue #358) -- unlike the softer, warn-only `critical_keys` check

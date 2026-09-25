@@ -20,7 +20,13 @@ from sklearn.metrics import (
 )
 from torch.utils.data import DataLoader
 
-from leech.constants import DEFAULT_SEQ_ENCODING_FALLBACK, TORCH_COMPILE_MIN_SAMPLES
+from leech.constants import (
+    DEFAULT_FEATURE_CHANNELS,
+    DEFAULT_SEQ_ENCODING_FALLBACK,
+    TORCH_COMPILE_MIN_SAMPLES,
+    corpus_recorded_feature_channels,
+    resolve_corpus_feature_selection,
+)
 from leech.dataset import LeechDataset, collate_fn, resolve_dataloader_workers
 from leech.inference.helpers import is_multiclass as _is_multiclass_config
 from leech.metrics import compute_metrics, print_metrics, save_metrics
@@ -212,6 +218,18 @@ def evaluate_model(
     # that were trained with per-AA dwell templates.
     logger.info(f"\nLoading test data from {test_data_path}")
     dwell_template_table = config.get("dwell_template_table") or None
+    # Channel ablation (issue #358 follow-up): the checkpoint may have been
+    # trained on a SUBSET of this corpus's channels -- e.g. every arm of an
+    # ablation sweep scored against the same all-channel corpus. `None` when
+    # the checkpoint's declared list already matches the corpus (every
+    # pre-existing pair), so this is a no-op for anything that predates the
+    # feature. `feature_channel_names` (the corpus's own recorded list) must
+    # travel alongside the selection -- LeechDataset needs it to reconcile
+    # `selected_feature_channels` against the corpus's actual data by name.
+    corpus_feature_channels = corpus_recorded_feature_channels(test_data_path)
+    feature_channels_selection = resolve_corpus_feature_selection(
+        config.get("feature_channels", DEFAULT_FEATURE_CHANNELS), test_data_path
+    )
     test_dataset = LeechDataset(
         test_data_path,
         signal_len=signal_len,
@@ -229,6 +247,8 @@ def evaluate_model(
         allow_encoding_fallback=False,
         signal_mode=signal_mode,
         dwell_template_table=dwell_template_table,
+        feature_channel_names=corpus_feature_channels,
+        selected_feature_channels=feature_channels_selection,
     )
 
     # torch.compile the model (CUDA graph + kernel fusion). Same policy as

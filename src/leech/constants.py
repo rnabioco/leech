@@ -5,7 +5,10 @@ This module provides a single source of truth for default values,
 magic numbers, and configuration constants used throughout the codebase.
 """
 
-from collections.abc import Iterable
+import json
+import zipfile
+from collections.abc import Iterable, Sequence
+from pathlib import Path
 
 # Required BAM tags for nanopore signal analysis
 REQUIRED_BAM_TAGS = ["mv", "ns"]
@@ -172,6 +175,23 @@ KNOWN_FEATURE_CHANNELS: frozenset[str] = frozenset(
     [*DEFAULT_FEATURE_CHANNELS, "level_skew", "level_kurtosis"]
 )
 
+# `leech data prepare --feature-channels all` expands to this (issue #358
+# follow-up: channel ablation) -- the historical twelve in their order, then
+# the two opt-in channels. Recorded in `prepare_config.json` as this expanded
+# list, never as the literal word "all", so every downstream reader
+# (`model train`, `leech predict`, `data merge`) sees ordinary channel names
+# and needs no special case for the token.
+ALL_FEATURE_CHANNELS: list[str] = [*DEFAULT_FEATURE_CHANNELS, "level_skew", "level_kurtosis"]
+
+# The only channels `merge_feature_channels` (chunking/extractor.py) ever
+# drops from a recorded list -- silently, when no k-mer level table is
+# configured. `resolve_stored_feature_channels` below applies the same rule
+# in reverse, reconciling a corpus's recorded list against the actual row
+# count of its stored feature tensor.
+KMER_RESIDUAL_FEATURE_CHANNELS: frozenset[str] = frozenset(
+    ["kmer_expected", "kmer_residual", "kmer_residual_abs"]
+)
+
 
 def validate_feature_channels(names: Iterable[str]) -> None:
     """Raise ``ValueError`` naming any channel neither backend can compute.
@@ -190,6 +210,198 @@ def validate_feature_channels(names: Iterable[str]) -> None:
             f"Unknown feature channel(s): {unknown}. Known channels: "
             f"{sorted(KNOWN_FEATURE_CHANNELS)}"
         )
+
+
+def resolve_stored_feature_channels(recorded: Iterable[str], actual_row_count: int) -> list[str]:
+    """Reconcile a corpus's *recorded* feature-channel list against its stored row count.
+
+    ``prepare_config.json``'s ``feature_channels`` (issue #358) is the list
+    requested at ``data prepare`` time, verbatim -- it is not filtered down to
+    what actually landed in the npz. The only rows ``merge_feature_channels``
+    (chunking/extractor.py) ever drops from that list are the three k-mer
+    residual channels, and only when the run had no k-mer level table
+    configured -- a property of the run this function doesn't have direct
+    access to, so it infers presence from the row-count mismatch instead.
+
+    Used when selecting a channel subset at train time (channel ablation):
+    the row a channel name maps to in the stored tensor must be its position
+    among the channels that actually survived prepare, not its position in
+    the recorded list.
+
+    Returns the subset of ``recorded`` that actually exists, in recorded
+    order. Raises ``ValueError`` if dropping the k-mer residual names still
+    doesn't reconcile the counts -- a mismatch this rule cannot explain.
+    """
+    recorded = list(recorded)
+    if len(recorded) == actual_row_count:
+        return recorded
+    reduced = [n for n in recorded if n not in KMER_RESIDUAL_FEATURE_CHANNELS]
+    if len(reduced) == actual_row_count:
+        return reduced
+    raise ValueError(
+        f"Corpus's recorded feature_channels ({len(recorded)}: {recorded}) does not "
+        f"match its stored feature row count ({actual_row_count}), even after "
+        f"dropping the k-mer residual channels that merge_feature_channels can drop "
+        f"({sorted(KMER_RESIDUAL_FEATURE_CHANNELS)}). This corpus may be corrupt or "
+        "from an incompatible leech version."
+    )
+
+
+def select_feature_channels(available: Sequence[str], requested: Iterable[str]) -> list[int]:
+    """Row indices into ``available`` for each name in ``requested``, in requested order.
+
+    Used both to validate a ``--feature-channels`` subset against a corpus's
+    channel list (the indices are then discarded, only the validation
+    matters) and, in :class:`~leech.dataset.LeechDataset`, to actually select
+    and reorder the stored feature tensor's rows.
+
+    Raises ``ValueError`` naming the missing channels and ``available``
+    itself when any requested name is not in ``available`` -- e.g. a typo, or
+    a k-mer residual channel this corpus's actual data doesn't have (see
+    :func:`resolve_stored_feature_channels`).
+    """
+    requested = list(requested)
+    index = {name: i for i, name in enumerate(available)}
+    missing = [n for n in requested if n not in index]
+    if missing:
+        raise ValueError(
+            f"Unknown feature channel(s) for this corpus: {missing}. "
+            f"Corpus feature channels ({len(available)}): {list(available)}"
+        )
+    return [index[n] for n in requested]
+
+
+def corpus_recorded_feature_channels(corpus_path: Path) -> list[str]:
+    """A corpus's recorded ``feature_channels`` list, from its
+    ``prepare_config.json`` sidecar (falling back to the historical twelve
+    when the sidecar is missing or predates issue #358) -- the read side of
+    the same convention ``training.py``'s own ``_train_feature_channels``
+    uses.
+
+    Public (not just an implementation detail of
+    :func:`resolve_corpus_feature_selection`): any caller that also passes
+    ``selected_feature_channels`` to a fresh :class:`~leech.dataset.LeechDataset`
+    (``leech eval test``, ``leech model calibrate``, ``leech model
+    benchmark``) must pass this SAME list as ``feature_channel_names`` too --
+    ``LeechDataset`` needs it to know the corpus's own nominal list, to
+    reconcile against the actual stored row count and resolve
+    ``selected_feature_channels`` by name. Passing neither (the default,
+    ``None`` -- the historical twelve) is wrong for any corpus whose real
+    recorded list differs, which is exactly the ablation case this whole
+    feature is for.
+    """
+    sidecar = corpus_path.parent / "prepare_config.json"
+    if sidecar.exists():
+        with open(sidecar) as f:
+            recorded = json.load(f).get("feature_channels")
+        if recorded is not None:
+            return list(recorded)
+    return list(DEFAULT_FEATURE_CHANNELS)
+
+
+def _corpus_actual_feature_row_count(corpus_path: Path) -> int | None:
+    """The corpus's actual stored ``features`` channel count, or ``None`` if
+    it cannot be determined cheaply (missing/corrupt file). Mirrors
+    :meth:`~leech.dataset.LeechDataset._stored_feature_row_count`, but from a
+    bare path rather than an already-open dataset: the fast path reads only
+    the flat member's ``.npy`` header (no data), falling back to a full
+    ``load_chunks`` for a corpus written before the flat array format.
+    """
+    from leech.chunking import load_chunks, npz_array_members
+
+    try:
+        members = npz_array_members(corpus_path)
+    except (OSError, ValueError, zipfile.BadZipFile):
+        return None
+    shape_dtype = members.get("features_flat")
+    if shape_dtype is not None and len(shape_dtype[0]) >= 2:
+        return shape_dtype[0][1]
+    try:
+        chunks = load_chunks(corpus_path)
+    except (OSError, ValueError, zipfile.BadZipFile):
+        return None
+    for chunk in chunks:
+        feat = chunk.get("features") if isinstance(chunk, dict) else None
+        if feat is not None:
+            return int(feat.shape[0])
+    return None
+
+
+def resolve_corpus_feature_selection(
+    wanted: Sequence[str] | None, corpus_path: Path | str
+) -> list[str] | None:
+    """The ``LeechDataset(selected_feature_channels=...)`` a consumer should
+    pass to score/benchmark ``corpus_path`` against a ``wanted`` channel
+    list -- the shared rule behind every place that builds a
+    :class:`~leech.dataset.LeechDataset` from a corpus for something OTHER
+    than ``model train``'s own corpus: ``leech eval test``
+    (:func:`~leech.evaluation.evaluate_model`), ``leech model calibrate``
+    (:func:`~leech.calibration.calibrate_model` and
+    :func:`~leech.calibration.calibrate_model_multiclass`), and ``leech model
+    benchmark`` (:func:`~leech.commands.benchmark.handle_benchmark`).
+
+    Channel ablation (issue #358 follow-up) means a checkpoint's declared
+    channel list can be a strict SUBSET of what a given corpus actually
+    carries -- every arm of an ablation sweep is typically scored against
+    the SAME all-channel corpus prepared once with ``--feature-channels
+    all``. Without this, each of those four callers builds a dataset with
+    every row the corpus has, which is the wrong width for a checkpoint
+    trained on a subset (a channel-count crash at best; a silent misalign at
+    worst, if two corpora happen to share a row count by coincidence).
+
+    Args:
+        wanted: The channel list to score against, in order -- typically a
+            checkpoint's ``config.json["feature_channels"]`` (``None``
+            passed in by the *caller* already means "the historical twelve",
+            since that key is always populated by a config written after
+            issue #358; a caller with no checkpoint at all, e.g. an ad hoc
+            ``leech model benchmark --model-config`` snippet with no
+            ``feature_channels`` key, should pass literal ``None`` here to
+            mean "no selection was requested" instead). ``None`` returns
+            ``None`` unconditionally, without even opening the corpus.
+        corpus_path: The corpus file that will be handed to
+            :class:`~leech.dataset.LeechDataset` (a ``train.npz``/
+            ``val.npz`` or test corpus). Its ``prepare_config.json`` sidecar
+            and its own stored ``features`` row count are both read here,
+            cheaply (header/shape only, except for a legacy pre-flat-format
+            corpus).
+
+    Returns:
+        ``None`` when ``wanted`` already equals the corpus's resolved list
+        (:func:`resolve_stored_feature_channels`) -- pass this straight
+        through as ``selected_feature_channels``, taking ``LeechDataset``'s
+        identity/no-op path, so every EXISTING checkpoint/corpus pair (which
+        never disagree) is unaffected byte for byte. Otherwise, ``wanted``
+        itself, to pass as ``selected_feature_channels`` -- ``LeechDataset``
+        then selects/reorders those rows, refusing clearly
+        (:func:`select_feature_channels`) if the corpus's actual data lacks
+        one of them. This is also what lets an OLD checkpoint (no recorded
+        key, so the historical twelve) evaluate correctly against a NEW
+        ``--feature-channels all`` corpus that carries more rows than that.
+    """
+    if wanted is None:
+        return None
+    wanted = list(wanted)
+    corpus_path = Path(corpus_path)
+    recorded = corpus_recorded_feature_channels(corpus_path)
+    actual_count = _corpus_actual_feature_row_count(corpus_path)
+    try:
+        corpus_resolved = (
+            resolve_stored_feature_channels(recorded, actual_count)
+            if actual_count is not None
+            else recorded
+        )
+    except ValueError:
+        # The recorded list and the corpus's actual row count disagree in a
+        # way this rule can't explain (a corpus older than any of this
+        # feature, or one with a channel set this reconciliation wasn't
+        # built to describe -- e.g. a hand-built test fixture). Identity is
+        # the safe default: LeechDataset's un-selected path already handles
+        # whatever the corpus actually has, exactly as it did before this
+        # feature existed, so a caller here that can't confidently prove a
+        # real mismatch must not force a NEW failure mode onto it.
+        return None
+    return None if wanted == corpus_resolved else wanted
 
 
 # Signal map refinement defaults.
