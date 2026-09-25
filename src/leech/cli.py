@@ -362,6 +362,27 @@ data.command_order = ("prepare", "merge")
         "(unsupported in Rust)."
     ),
 )
+@click.option(
+    "--feature-channels",
+    type=str,
+    default=None,
+    help=(
+        "Comma-separated feature-channel names selecting and ordering the "
+        "corpus's feature rows (e.g. 'dwell,dwell_log,level_mean,level_skew'), "
+        "or the single word 'all' for every known channel (the historical "
+        "twelve plus level_skew/level_kurtosis) -- prepare once with 'all' "
+        "and pick a subset later with 'model train --feature-channels', "
+        "instead of re-preparing per ablation arm. Default: the historical "
+        "twelve (dwell, dwell_log, dwell_mean, dwell_std, dwell_ratio, "
+        "level_mean, level_median, level_std, level_range, kmer_expected, "
+        "kmer_residual, kmer_residual_abs), so omitting this reproduces "
+        "every corpus prepared before this flag existed byte-identically. "
+        "Recorded in prepare_config.json as the expanded list (never the "
+        "word 'all'); carried into the trained model's config.json; 'leech "
+        "predict' extracts exactly that list. Both extraction backends "
+        "honor it. Unknown names are refused before any read is touched."
+    ),
+)
 def prepare(
     pod5,
     bam,
@@ -399,9 +420,14 @@ def prepare(
     focus_tsv,
     recover_softclip_signal,
     mask_seq_side,
+    feature_channels,
 ):
     """Prepare training data from POD5 and BAM files."""
     from leech.commands import handle_prepare
+
+    parsed_feature_channels = (
+        [c.strip() for c in feature_channels.split(",") if c.strip()] if feature_channels else None
+    )
 
     # Validate pa_scaling params
     if signal_norm == "pa_scaling" and (pa_mean is None or pa_stdev is None):
@@ -461,6 +487,7 @@ def prepare(
         focus_tsv=focus_tsv,
         recover_softclip_signal=recover_softclip_signal,
         mask_seq_side=mask_seq_side,
+        feature_channels=parsed_feature_channels,
     )
 
 
@@ -903,6 +930,24 @@ def merge(
         "ConvLSTM families); requesting it for one that doesn't raises."
     ),
 )
+@click.option(
+    "--feature-channels",
+    type=str,
+    default=None,
+    help=(
+        "Comma-separated feature-channel names selecting and ordering a "
+        "SUBSET of the training corpus's recorded feature rows (channel "
+        "ablation) -- e.g. 'dwell,dwell_log,level_mean'. Every name must be "
+        "in the corpus's recorded feature_channels list (see 'data prepare "
+        "--feature-channels'); an unknown or absent one is refused before "
+        "training starts, naming the missing channels and the corpus's "
+        "list. Default (unset): use every row the corpus has, exactly as "
+        "before this flag existed. The selected list is what the checkpoint's "
+        "config.json records as feature_channels -- 'leech predict' extracts "
+        "exactly those rows -- and the corpus's full list is kept alongside "
+        "it as corpus_feature_channels, for provenance."
+    ),
+)
 def train(
     train_data,
     val_data,
@@ -963,12 +1008,17 @@ def train(
     dwell_template_table,
     checkpoint_metric,
     standardize_features,
+    feature_channels,
 ):
     """Train a model on prepared data."""
     from leech.commands.train import handle_train
     from leech.losses import parse_label_noise_rate
 
     confound = _resolve_confound_token(confound, confound_config)
+
+    parsed_feature_channels = (
+        [c.strip() for c in feature_channels.split(",") if c.strip()] if feature_channels else None
+    )
 
     try:
         label_noise_rates = parse_label_noise_rate(label_noise_rate)
@@ -1042,6 +1092,7 @@ def train(
         dwell_template_table=dwell_template_table,
         checkpoint_metric=checkpoint_metric,
         standardize_features=standardize_features,
+        feature_channels=parsed_feature_channels,
     )
 
 
@@ -1568,6 +1619,19 @@ def fetch(name, model_version, tag, output_dir, repo):
         "'tpr_at_fpr:<f>' and 'callable_at_precision:<p>' -- binary tasks only."
     ),
 )
+@click.option(
+    "--feature-channels",
+    type=str,
+    default=None,
+    help=(
+        "Comma-separated feature-channel names selecting and ordering a "
+        "SUBSET of the training corpus's recorded feature rows (channel "
+        "ablation), passed through to every grid point exactly as 'model "
+        "train --feature-channels' -- see that flag's help for the rules "
+        "(every name must be in the corpus's recorded list, or refused "
+        "before training starts; default unset uses every row)."
+    ),
+)
 def optimize(
     train_data,
     val_data,
@@ -1619,12 +1683,17 @@ def optimize(
     cl_lambda,
     signal_mode,
     selection_metric,
+    feature_channels,
 ):
     """Optimize model hyperparameters using grid search over chunk contexts."""
     from leech.commands.optimize import handle_optimize
     from leech.losses import parse_label_noise_rate
 
     confound = _resolve_confound_token(confound, confound_config)
+
+    parsed_feature_channels = (
+        [c.strip() for c in feature_channels.split(",") if c.strip()] if feature_channels else None
+    )
 
     try:
         label_noise_rates = parse_label_noise_rate(label_noise_rate)
@@ -1681,6 +1750,7 @@ def optimize(
         cl_lambda=cl_lambda,
         signal_mode=signal_mode,
         selection_metric=selection_metric,
+        feature_channels=parsed_feature_channels,
     )
 
 

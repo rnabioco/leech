@@ -75,6 +75,7 @@ def handle_train(
     checkpoint_metric: str = "auto",
     focal_neg_gamma: float | None = None,
     standardize_features: bool = False,
+    feature_channels: list[str] | None = None,
     **model_kwargs: Any,
 ) -> dict[str, Any]:
     """
@@ -136,6 +137,11 @@ def handle_train(
         standardize_features: Compute per-channel feature mean/std once over
             the training corpus and freeze them into the feature branch as
             an affine layer (off by default).
+        feature_channels: Comma-selected subset of the training corpus's
+            recorded feature-channel list (channel ablation). ``None``
+            (default) uses every row the corpus has, exactly as before this
+            existed. See ``leech.training.train_model``'s parameter of the
+            same name for the validation rules and what gets recorded.
         **model_kwargs: Additional model-specific parameters
 
     Returns:
@@ -228,6 +234,12 @@ def handle_train(
         # checkpoint_metric is (#324).
         "selection_metric",
         "standardize_features",
+        "feature_channels",
+        # config.json's provenance-only record of the corpus's FULL recorded
+        # list (never a constructor arg) -- reusing a checkpoint's config.json
+        # via --model-config must not replay it into train_model's
+        # **model_kwargs, same reasoning as selection_metric above.
+        "corpus_feature_channels",
         "signal_kmer_context",
         "left_context",
         "right_context",
@@ -280,6 +292,7 @@ def handle_train(
         mixed_precision=mixed_precision,
         checkpoint_metric=checkpoint_metric,
         standardize_features=standardize_features,
+        feature_channels=feature_channels,
         signal_mode=signal_mode,
         motif=motif,
         motif_offset=motif_offset,

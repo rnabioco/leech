@@ -641,6 +641,7 @@ def _prepare_batch_rust_with_failures(
         base_justify=config.chunk.base_justify,
         signal_context_bases_left=bases_ctx[0] if bases_ctx is not None else None,
         signal_context_bases_right=bases_ctx[1] if bases_ctx is not None else None,
+        feature_channels=config.signal.feature_channels,
     )
 
     # `leech_core` returns `(chunks, n_missing_from_pod5)` since #325. An

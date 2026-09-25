@@ -66,6 +66,7 @@ def handle_optimize(
     signal_mode: str = "both",
     selection_metric: str = "auto",
     focal_neg_gamma: float | None = None,
+    feature_channels: list[str] | None = None,
 ) -> Path:
     """
     Handle the optimize command logic.
@@ -104,6 +105,12 @@ def handle_optimize(
         balance_groups: Balance sampling across source groups
         label_noise_rates: ``{source_group: flip_rate}`` for
             ``loss_type="noise_corrected_bce"``; unmapped groups get rate 0
+        feature_channels: Comma-list of feature-channel names selecting a
+            subset of the training corpus's recorded feature rows (channel
+            ablation), forwarded to ``train_model`` unchanged for every grid
+            point -- see ``leech.training.train_model``'s ``feature_channels``
+            for the validation/selection rules. ``None`` (default) uses every
+            row the corpus has, exactly as before this existed.
 
     Returns:
         Path to grid search summary file
@@ -159,6 +166,7 @@ def handle_optimize(
         confound=confound,
         label_noise_rates=label_noise_rates,
         signal_mode=signal_mode,
+        feature_channels=feature_channels,
         optim=OptimConfig(
             learning_rate=learning_rate,
             weight_decay=weight_decay,

@@ -519,6 +519,92 @@ class TestCLIMotif:
         assert config["standardize_features"] is True
         assert config["feature_mean"] is not None
 
+    def test_cli_train_passes_feature_channels(self, temp_chunks_file, tmp_path):
+        """``model train --feature-channels`` (channel ablation, issue #358
+        follow-up) reaches ``train_model`` and is recorded in config.json.
+
+        ``temp_chunks_file`` actually stores 5 channels -- dwell, dwell_log,
+        level_mean, level_median, level_std, per ``sample_leech_read``'s own
+        (deliberately reduced) fixture dicts -- so the sidecar written here
+        records that real list, making a 2-of-5 selection resolvable.
+        """
+        from click.testing import CliRunner
+
+        from leech.cli import cli
+
+        corpus_channels = ["dwell", "dwell_log", "level_mean", "level_median", "level_std"]
+        (tmp_path / "prepare_config.json").write_text(
+            json.dumps({"feature_channels": corpus_channels})
+        )
+        output_dir = tmp_path / "cli_feature_channels"
+        result = CliRunner().invoke(
+            cli,
+            [
+                "model",
+                "train",
+                "--train-data",
+                str(temp_chunks_file),
+                "--model",
+                "ConvLSTMDwell",
+                "--output-dir",
+                str(output_dir),
+                "--epochs",
+                "1",
+                "--batch-size",
+                "2",
+                "--device",
+                "cpu",
+                "--motif",
+                "CCAGGC",
+                "--feature-channels",
+                "dwell,level_mean",
+            ],
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+        config = _read_config(output_dir)
+        assert config["feature_channels"] == ["dwell", "level_mean"]
+        assert config["corpus_feature_channels"] == corpus_channels
+        assert config["num_features"] == 2
+
+    def test_cli_train_unknown_feature_channel_errors(self, temp_chunks_file, tmp_path):
+        from click.testing import CliRunner
+
+        from leech.cli import cli
+
+        corpus_channels = ["dwell", "dwell_log", "level_mean", "level_median", "level_std"]
+        (tmp_path / "prepare_config.json").write_text(
+            json.dumps({"feature_channels": corpus_channels})
+        )
+        output_dir = tmp_path / "cli_feature_channels_bad"
+        result = CliRunner().invoke(
+            cli,
+            [
+                "model",
+                "train",
+                "--train-data",
+                str(temp_chunks_file),
+                "--model",
+                "ConvLSTMDwell",
+                "--output-dir",
+                str(output_dir),
+                "--epochs",
+                "1",
+                "--batch-size",
+                "2",
+                "--device",
+                "cpu",
+                "--motif",
+                "CCAGGC",
+                "--feature-channels",
+                "dwell,not_a_real_channel",
+            ],
+        )
+        assert result.exit_code != 0
+        assert "not_a_real_channel" in str(result.output) or "not_a_real_channel" in str(
+            result.exception
+        )
+
     def test_cli_optimize_missing_motif_errors(self, temp_chunks_file, tmp_path):
         from click.testing import CliRunner
 

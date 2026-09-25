@@ -110,6 +110,7 @@ def _config(
     signal_len: int | None = None,
     require_query_mapping: bool = True,
     pod5_path: Path = TRNA_POD5,
+    feature_channels: list[str] | None = None,
 ) -> PrepareConfig:
     reference_sequences = None
     motif_reference = "bam"
@@ -132,6 +133,7 @@ def _config(
             refine_signal_map=refine,
             refine_scale_iters=scale_iters,
             signal_refiner=signal_refiner,
+            **({"feature_channels": feature_channels} if feature_channels is not None else {}),
         ),
         motif=MotifConfig(
             motif="CCAGGC",
@@ -290,6 +292,25 @@ class TestBackendFieldParity:
         py, rs = _run_both_backends(
             _config(feature_start=feature_start, feature_end=feature_end), tmp_path
         )
+        _assert_npz_parity(py, rs)
+
+    @pytest.mark.parametrize(
+        "feature_channels",
+        [
+            ["dwell", "level_mean"],
+            ["level_skew", "dwell_log", "level_kurtosis", "kmer_expected"],
+            ["level_kurtosis", "level_skew", "level_mean", "level_median", "level_std"],
+        ],
+    )
+    def test_feature_channels_custom_list(self, _rust_available, tmp_path, feature_channels):
+        """A non-default ``--feature-channels`` list (issue #358), including
+        the new ``level_skew``/``level_kurtosis`` channels and a
+        reordering, must produce byte-identical feature rows on both
+        backends -- not just the historical twelve in their original order.
+        """
+        py, rs = _run_both_backends(_config(feature_channels=feature_channels), tmp_path)
+        assert "features_flat" in py, "fixture chunks did not stack to a uniform feature shape"
+        assert py["features_flat"].shape[1] == len(feature_channels)
         _assert_npz_parity(py, rs)
 
     @pytest.mark.parametrize("scale_iters", [-1, 0, 1, 2])

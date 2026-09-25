@@ -974,6 +974,200 @@ class TestStandardizeFeatures:
         torch.testing.assert_close(plain[0]["features"], standardized[0]["features"])
 
 
+def _build_channel_ablation_corpus(tmp_path, channel_names, n_chunks=6):
+    """Write a small npz corpus whose ``features`` rows are named
+    ``channel_names``, each channel a distinct, recoverable per-base constant
+    (``channel_index * 1000 + base position``), so a selected subset can be
+    checked against exact tensor CONTENTS, not just shape.
+
+    Mirrors ``tests/test_data_prep.py::TestFeatureChannelOrder._build_read``'s
+    approach of handing ``LeechRead`` custom feature dicts directly, rather
+    than computing them from real signal -- what's under test here is row
+    *selection*, not the feature formulas themselves.
+    """
+    import numpy as np
+
+    from leech.chunking import LeechRead, save_chunks
+
+    num_bases, dwell, kmer_context = 40, 8, 5
+    rng = np.random.default_rng(7)
+    seq_to_sig = np.arange(num_bases + 1, dtype=np.int64) * dwell
+    signal = rng.standard_normal(num_bases * dwell).astype(np.float32)
+    sequence = "".join(rng.choice(list("ACGT"), num_bases))
+    dwells = np.diff(seq_to_sig)
+
+    dwell_names = {"dwell", "dwell_log", "dwell_mean", "dwell_std", "dwell_ratio"}
+    dwell_feats: dict[str, np.ndarray] = {}
+    signal_feats: dict[str, np.ndarray] = {}
+    for i, name in enumerate(channel_names):
+        values = np.arange(num_bases, dtype=np.float32) + i * 1000.0
+        (dwell_feats if name in dwell_names else signal_feats)[name] = values
+
+    read = LeechRead(
+        read_id="ablation_read",
+        sequence=sequence,
+        signal=signal,
+        seq_to_sig_map=seq_to_sig,
+        dwells=dwells,
+        dwell_features=dwell_feats,
+        signal_features=signal_feats,
+        feature_channel_names=channel_names,
+    )
+
+    chunks = []
+    for i in range(n_chunks):
+        base_idx = kmer_context + i
+        chunk = read.get_chunk(base_idx, signal_context=(40, 40), kmer_context=kmer_context)
+        assert chunk is not None
+        chunk["read_id"] = read.read_id
+        chunk["label_int"] = i % 2
+        chunk["label"] = "c1" if i % 2 else "c0"
+        chunks.append(chunk)
+
+    path = tmp_path / "corpus.npz"
+    save_chunks(chunks, path)
+    return path
+
+
+class TestFeatureChannelSelection:
+    """``LeechDataset(selected_feature_channels=...)`` (channel ablation,
+    issue #358 follow-up): select and reorder a SUBSET of the corpus's
+    recorded feature rows by name, resolved against the tensor's actual
+    stored row count rather than assumed position, so ``num_features``,
+    standardization stats, feature-noise augmentation and time-stretch's
+    by-name dwell lookup all see exactly the selected rows.
+    """
+
+    FULL = [
+        "dwell",
+        "dwell_log",
+        "dwell_mean",
+        "dwell_std",
+        "dwell_ratio",
+        "level_mean",
+        "level_median",
+        "level_std",
+        "level_range",
+        "level_skew",
+        "level_kurtosis",
+    ]
+
+    @staticmethod
+    def _dataset(corpus, **kwargs):
+        return LeechDataset(
+            corpus,
+            signal_len=80,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding="base_onehot",
+            feature_channel_names=TestFeatureChannelSelection.FULL,
+            **kwargs,
+        )
+
+    def test_selects_exact_rows_in_order(self, tmp_path):
+        corpus = _build_channel_ablation_corpus(tmp_path, self.FULL)
+        subset = ["level_mean", "dwell", "dwell_std"]
+
+        baseline = self._dataset(corpus)
+        selected = self._dataset(corpus, selected_feature_channels=subset)
+
+        assert selected._features_tensor.shape[1] == len(subset)
+        expected_idx = [self.FULL.index(name) for name in subset]
+        torch.testing.assert_close(
+            selected._features_tensor,
+            baseline._features_tensor[:, expected_idx, :],
+        )
+
+    def test_reordering_is_honored_not_just_membership(self, tmp_path):
+        """Same names, different order -- rows must follow the REQUEST, not
+        the corpus's own recorded order."""
+        corpus = _build_channel_ablation_corpus(tmp_path, self.FULL)
+        forward = self._dataset(corpus, selected_feature_channels=["dwell", "level_mean"])
+        reversed_ = self._dataset(corpus, selected_feature_channels=["level_mean", "dwell"])
+        torch.testing.assert_close(
+            forward._features_tensor[:, 0, :], reversed_._features_tensor[:, 1, :]
+        )
+        torch.testing.assert_close(
+            forward._features_tensor[:, 1, :], reversed_._features_tensor[:, 0, :]
+        )
+
+    def test_num_features_matches_selection(self, tmp_path):
+        corpus = _build_channel_ablation_corpus(tmp_path, self.FULL)
+        subset = ["dwell", "dwell_log", "level_skew"]
+        ds = self._dataset(corpus, selected_feature_channels=subset)
+        assert ds._features_tensor.shape[1] == len(subset) == 3
+
+    def test_effective_feature_channels_recorded(self, tmp_path):
+        corpus = _build_channel_ablation_corpus(tmp_path, self.FULL)
+        subset = ["level_std", "dwell_log"]
+        ds = self._dataset(corpus, selected_feature_channels=subset)
+        assert ds.effective_feature_channels == subset
+
+    def test_unset_is_byte_identical(self, tmp_path):
+        """No ``selected_feature_channels`` must run none of the new
+        selection code (identity, not merely "select everything")."""
+        corpus = _build_channel_ablation_corpus(tmp_path, self.FULL)
+        a = self._dataset(corpus)
+        b = self._dataset(corpus, selected_feature_channels=None)
+
+        torch.testing.assert_close(a._features_tensor, b._features_tensor)
+        assert a.effective_feature_channels == self.FULL
+        assert b.effective_feature_channels == self.FULL
+        assert a._feature_row_idx is None
+        assert b._feature_row_idx is None
+
+    def test_unknown_channel_raises_naming_missing_and_available(self, tmp_path):
+        corpus = _build_channel_ablation_corpus(tmp_path, self.FULL)
+        with pytest.raises(ValueError, match="bogus_channel"):
+            self._dataset(corpus, selected_feature_channels=["dwell", "bogus_channel"])
+
+    def test_kmer_carryover_reconciliation(self, tmp_path):
+        """A recorded list naming ``kmer_*`` channels that were never
+        actually computed (no k-mer level table at prepare time) must not
+        corrupt selection of the channels that DO exist -- and selecting one
+        of the phantom names must raise a clear error naming it (the
+        carry-over issue #358's own PR documented for the read side; this is
+        the same rule applied at train-time selection).
+        """
+        actual_present = self.FULL[:5]  # just the dwell family
+        recorded = [*actual_present, "kmer_expected", "kmer_residual", "kmer_residual_abs"]
+        corpus = _build_channel_ablation_corpus(tmp_path, actual_present)
+
+        ds = LeechDataset(
+            corpus,
+            signal_len=80,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding="base_onehot",
+            feature_channel_names=recorded,
+            selected_feature_channels=["dwell_std", "dwell"],
+        )
+        assert ds._features_tensor.shape[1] == 2
+        expected_idx = [actual_present.index(n) for n in ["dwell_std", "dwell"]]
+        baseline = LeechDataset(
+            corpus,
+            signal_len=80,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding="base_onehot",
+            feature_channel_names=actual_present,
+        )
+        torch.testing.assert_close(
+            ds._features_tensor, baseline._features_tensor[:, expected_idx, :]
+        )
+
+        with pytest.raises(ValueError, match="kmer_expected"):
+            LeechDataset(
+                corpus,
+                signal_len=80,
+                kmer_len=11,
+                model_type="ConvLSTMDwell",
+                seq_encoding="base_onehot",
+                feature_channel_names=recorded,
+                selected_feature_channels=["kmer_expected"],
+            )
+
+
 class TestTimeStretchPrimitives:
     """The pure numpy warp functions ``__getitems__`` composes (issue #281)."""
 

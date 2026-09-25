@@ -4,7 +4,7 @@ use pyo3::prelude::*;
 
 use crate::inference_pipeline::compute_per_base_stats;
 
-/// Compute per-base signal statistics: mean, median, std, range.
+/// Compute per-base signal statistics: mean, median, std, range, skew, kurtosis.
 ///
 /// Replaces the Python loop in features.py:compute_signal_features() that
 /// called np.median/np.std/np.max/np.min per base — very slow due to
@@ -19,12 +19,18 @@ use crate::inference_pipeline::compute_per_base_stats;
 /// the same read. Two implementations of one statistic is one too many —
 /// keep this a wrapper.
 ///
+/// `skew`/`kurtosis` (rnabioco/leech#358) are always computed alongside the
+/// original four -- cheap relative to the per-call Python/Rust boundary this
+/// function exists to amortize, and it keeps `compute_signal_features` (the
+/// only caller) from needing a second Rust entry point just to add two rows.
+///
 /// Args:
 ///     signal: Normalized signal array (float32)
 ///     seq_to_sig_map: Base-to-signal mapping (int64), length = num_bases + 1
 ///
 /// Returns:
-///     Tuple of (mean, median, std, range) arrays, each of length num_bases
+///     Tuple of (mean, median, std, range, skew, kurtosis) arrays, each of
+///     length num_bases
 #[pyfunction]
 #[allow(clippy::type_complexity)]
 pub fn compute_signal_stats<'py>(
@@ -36,6 +42,8 @@ pub fn compute_signal_stats<'py>(
     Bound<'py, PyArray1<f32>>,
     Bound<'py, PyArray1<f32>>,
     Bound<'py, PyArray1<f32>>,
+    Bound<'py, PyArray1<f32>>,
+    Bound<'py, PyArray1<f32>>,
 )> {
     let signal = signal.as_array();
     let sig_map = seq_to_sig_map.as_array();
@@ -43,12 +51,15 @@ pub fn compute_signal_stats<'py>(
     let sig_slice = signal.as_slice().expect("signal must be contiguous");
     let map_slice = sig_map.as_slice().expect("sig_map must be contiguous");
 
-    let (means, medians, stds, ranges) = compute_per_base_stats(sig_slice, map_slice);
+    let (means, medians, stds, ranges, skews, kurtoses) =
+        compute_per_base_stats(sig_slice, map_slice);
 
     Ok((
         Array1::from_vec(means).into_pyarray(py),
         Array1::from_vec(medians).into_pyarray(py),
         Array1::from_vec(stds).into_pyarray(py),
         Array1::from_vec(ranges).into_pyarray(py),
+        Array1::from_vec(skews).into_pyarray(py),
+        Array1::from_vec(kurtoses).into_pyarray(py),
     ))
 }

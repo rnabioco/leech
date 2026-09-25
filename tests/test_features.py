@@ -156,6 +156,100 @@ def test_compute_signal_features():
     assert features["level_std"][1] > 0.5
 
 
+class TestSkewKurtosis:
+    """`level_skew`/`level_kurtosis` (escapepod-rs#396, rnabioco/leech#358):
+    population skewness / Fisher excess kurtosis, `scipy.stats.skew`/
+    `kurtosis` at their defaults. Always computed by `compute_signal_features`
+    regardless of whether a run's `--feature-channels` list actually selects
+    them (they are not in the default list).
+    """
+
+    @pytest.fixture
+    def no_rust(self, monkeypatch):
+        """Force the pure-Python fallback (what `pip install leech` runs)."""
+        import leech.features as features_mod
+
+        monkeypatch.setattr(features_mod, "HAS_RUST", False)
+
+    def test_always_present(self, no_rust):
+        from leech.features import compute_signal_features
+
+        signal = np.array([1.0, 1.0, 1.0, 2.0, 3.0, 4.0, 100.0], dtype=np.float32)
+        seq_to_sig = np.array([0, 3, 7], dtype=np.int64)
+        feats = compute_signal_features(signal, seq_to_sig)
+        assert "level_skew" in feats
+        assert "level_kurtosis" in feats
+        # A long right tail on base 1 reads a positive skew.
+        assert feats["level_skew"][1] > 0
+
+    def test_degenerate_span_is_zero_not_nan(self, no_rust):
+        """A constant span, or a single-sample one, reads 0.0 -- the same
+        clamp `level_std` already has -- not scipy's `NaN`.
+        """
+        from leech.features import compute_signal_features
+
+        signal = np.array([5.0, 5.0, 5.0, 7.0], dtype=np.float32)
+        seq_to_sig = np.array([0, 3, 4], dtype=np.int64)  # base0: constant, base1: single sample
+        feats = compute_signal_features(signal, seq_to_sig)
+        assert feats["level_skew"][0] == 0.0
+        assert feats["level_kurtosis"][0] == 0.0
+        assert feats["level_skew"][1] == 0.0
+        assert feats["level_kurtosis"][1] == 0.0
+
+    def test_nan_in_span_propagates(self, no_rust):
+        from leech.features import compute_signal_features
+
+        signal = np.array([1.0, np.nan, 3.0], dtype=np.float32)
+        seq_to_sig = np.array([0, 3], dtype=np.int64)
+        feats = compute_signal_features(signal, seq_to_sig)
+        assert np.isnan(feats["level_skew"][0])
+        assert np.isnan(feats["level_kurtosis"][0])
+
+    def test_matches_scipy(self, no_rust):
+        scipy_stats = pytest.importorskip("scipy.stats")
+        from leech.features import compute_signal_features
+
+        rng = np.random.default_rng(5)
+        base0 = rng.standard_normal(37).astype(np.float32)
+        base1 = np.array([1.0, 1.0, 1.0, 50.0], dtype=np.float32)
+        signal = np.concatenate([base0, base1])
+        seq_to_sig = np.array([0, len(base0), len(signal)], dtype=np.int64)
+
+        feats = compute_signal_features(signal, seq_to_sig)
+        expected_skew = [
+            scipy_stats.skew(base0.astype(np.float64)),
+            scipy_stats.skew(base1.astype(np.float64)),
+        ]
+        expected_kurtosis = [
+            scipy_stats.kurtosis(base0.astype(np.float64)),
+            scipy_stats.kurtosis(base1.astype(np.float64)),
+        ]
+        np.testing.assert_allclose(feats["level_skew"], expected_skew, rtol=1e-5, atol=1e-6)
+        np.testing.assert_allclose(feats["level_kurtosis"], expected_kurtosis, rtol=1e-5, atol=1e-6)
+
+    def test_rust_and_python_agree(self, monkeypatch):
+        from leech.features import HAS_RUST, compute_signal_features
+
+        if not HAS_RUST:
+            pytest.skip("leech_core not installed")
+        rng = np.random.default_rng(9)
+        signal = rng.standard_normal(40).astype(np.float32)
+        seq_to_sig = np.array([0, 5, 13, 22, 40], dtype=np.int64)
+
+        rust_feats = compute_signal_features(signal, seq_to_sig)
+        rust_skew = rust_feats["level_skew"]
+        rust_kurtosis = rust_feats["level_kurtosis"]
+
+        import leech.features as features_mod
+
+        monkeypatch.setattr(features_mod, "HAS_RUST", False)
+        python_feats = compute_signal_features(signal, seq_to_sig)
+        np.testing.assert_allclose(python_feats["level_skew"], rust_skew, rtol=1e-3, atol=1e-5)
+        np.testing.assert_allclose(
+            python_feats["level_kurtosis"], rust_kurtosis, rtol=1e-3, atol=1e-5
+        )
+
+
 class TestMeanFastPathTail:
     """The per-base mean must not absorb signal past the end of the map.
 

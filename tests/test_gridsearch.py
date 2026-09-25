@@ -221,6 +221,34 @@ class TestGridSearchStreamsTheCorpus:
             assert call.get("train_chunks") is None
             assert call.get("val_chunks") is None
 
+    def test_feature_channels_passes_through_every_grid_point(
+        self, grid_corpus, tmp_path, monkeypatch
+    ):
+        """``model optimize --feature-channels`` (channel ablation, issue #358
+        follow-up) reaches ``train_model`` unchanged for every grid point --
+        it travels entirely inside the shared ``cfg: TrainConfig``, the same
+        way ``left_context``/``right_context`` (via ``dataclasses.replace``)
+        and every other training-recipe field already do.
+        """
+        train, val = grid_corpus
+        seen = []
+
+        def spy(**kwargs):
+            seen.append(kwargs)
+            return _fake_history()
+
+        monkeypatch.setattr(leech.gridsearch, "train_model", spy)
+        subset = ["dwell", "level_mean"]
+        cfg = TrainConfig(epochs=1, batch_size=8, motif="CCAGGC", feature_channels=subset)
+        config = _config(train, val, tmp_path / "grid", cfg=cfg)
+        config.left_contexts = [200, 240]
+
+        run_grid_search(config)
+
+        assert len(seen) == 2
+        for call in seen:
+            assert call["cfg"].feature_channels == subset
+
     def test_grid_search_does_not_pre_load_the_corpus(self, grid_corpus, tmp_path, monkeypatch):
         """Nothing decompresses the per-chunk arrays before training starts."""
         train, val = grid_corpus

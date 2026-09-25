@@ -5,7 +5,8 @@ use escapepod_signal::features::{
     span_stats,
 };
 
-/// Per-base mean, median, population sd and range over `signal`.
+/// Per-base mean, median, population sd, range, skewness and kurtosis over
+/// `signal`.
 ///
 /// Delegates to `escapepod_signal::features::span_stats`, which is the same
 /// reduction done better: one pass over the covered region with `f64` prefix
@@ -28,17 +29,25 @@ use escapepod_signal::features::{
 ///
 /// The signal is already median-MAD normalized by `process_read_signal`, so the
 /// normalization here is [`Normalization::None`].
+///
+/// `skew`/`kurtosis` are `escapepod-rs#396`'s addition (rnabioco/leech#358):
+/// population skewness and Fisher excess kurtosis over each span, `0.0` (not
+/// `NaN`) for a degenerate (constant or single-sample) span, matching the
+/// `sd`/`range` degenerate-span convention already in force here.
+#[allow(clippy::type_complexity)]
 pub(crate) fn compute_per_base_stats(
     signal: &[f32],
     seq_to_sig: &[i64],
-) -> (Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>) {
+) -> (Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>) {
     let num_bases = seq_to_sig.len().saturating_sub(1);
     let mut means = vec![0.0f32; num_bases];
     let mut medians = vec![0.0f32; num_bases];
     let mut stds = vec![0.0f32; num_bases];
     let mut ranges = vec![0.0f32; num_bases];
+    let mut skews = vec![0.0f32; num_bases];
+    let mut kurtoses = vec![0.0f32; num_bases];
     if num_bases == 0 {
-        return (means, medians, stds, ranges);
+        return (means, medians, stds, ranges, skews, kurtoses);
     }
 
     let spans: Vec<[i64; 2]> = (0..num_bases)
@@ -60,14 +69,12 @@ pub(crate) fn compute_per_base_stats(
             median: MedianConvention::SortPartialCmp,
         },
         &mut scratch,
-        SpanStatsOut {
-            dwell: &mut dwell_scratch,
-            mean: &mut means,
-            sd: &mut stds,
-            median: Some(&mut medians),
-            range: Some(&mut ranges),
-        },
+        SpanStatsOut::new(&mut dwell_scratch, &mut means, &mut stds)
+            .with_median(&mut medians)
+            .with_range(&mut ranges)
+            .with_skew(&mut skews)
+            .with_kurtosis(&mut kurtoses),
     );
 
-    (means, medians, stds, ranges)
+    (means, medians, stds, ranges, skews, kurtoses)
 }

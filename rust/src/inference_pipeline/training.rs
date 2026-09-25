@@ -452,6 +452,7 @@ fn _process_and_convert_training<'py>(
     base_justify = "center",
     signal_context_bases_left = None,
     signal_context_bases_right = None,
+    feature_channels = None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn extract_training_chunks<'py>(
@@ -487,6 +488,7 @@ pub fn extract_training_chunks<'py>(
     base_justify: &str,
     signal_context_bases_left: Option<i64>,
     signal_context_bases_right: Option<i64>,
+    feature_channels: Option<Vec<String>>,
 ) -> PyResult<(Vec<Py<PyAny>>, usize)> {
     let signal_context_bases = match (signal_context_bases_left, signal_context_bases_right) {
         (Some(l), Some(r)) => Some((l, r)),
@@ -544,6 +546,7 @@ pub fn extract_training_chunks<'py>(
         refine_scale_iters,
         signal_in_channels,
         base_justify,
+        feature_channels.as_deref(),
     )?;
 
     // Phase 1: POD5 I/O. The GIL is released for the whole phase — it is pure

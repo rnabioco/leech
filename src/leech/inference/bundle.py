@@ -498,6 +498,7 @@ def run_bundle_inference(
         compute_features=bundle_compute_features,
         refine_signal_map=bundle_refine,
         signal_refiner=bundle_refiner,
+        feature_channels=spec.feature_channels,
     )
     bundle_chunk_config = ChunkConfig(
         base_justify=base_justify,
@@ -567,6 +568,7 @@ def run_bundle_inference(
             signal_in_channels=bundle_signal_in_channels,
             base_justify=base_justify,
             signal_context_bases=spec.signal_context_bases,
+            feature_channels=spec.feature_channels,
         )
 
     # Build InferenceConfig for parallel workers (reused across mega-batches).
@@ -584,6 +586,7 @@ def run_bundle_inference(
                 pa_stdev=config.get("pa_stdev"),
                 refine_signal_map=bundle_refine,
                 signal_refiner=bundle_refiner,
+                feature_channels=spec.feature_channels,
             ),
             motif=MotifConfig(
                 motif=motif,

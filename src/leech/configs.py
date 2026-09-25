@@ -15,9 +15,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from leech.constants import (
+    DEFAULT_FEATURE_CHANNELS,
     DEFAULT_KMER_CONTEXT,
     DEFAULT_REFINE_HALF_BANDWIDTH,
     DEFAULT_SIGNAL_CONTEXT,
+    validate_feature_channels,
 )
 
 if TYPE_CHECKING:
@@ -43,8 +45,20 @@ class SignalConfig:
     # the refiner object itself doesn't track its source path.
     kmer_table_path: Path | None = None
     compute_features: bool = True
+    # The feature-channel list (issue #358), recorded verbatim in
+    # prepare_config.json / the trained model's config.json and reproduced
+    # exactly by `leech predict`. Defaults to the historical twelve, so a
+    # `SignalConfig()` built with no argument behaves byte-identically to
+    # every corpus/checkpoint prepared before this existed.
+    feature_channels: list[str] = field(default_factory=lambda: list(DEFAULT_FEATURE_CHANNELS))
 
     def __post_init__(self) -> None:
+        # Refused here too, not just at the CLI (`data prepare`'s
+        # `--feature-channels`) -- a `SignalConfig` built directly through the
+        # Python API (tests, notebooks, Snakemake) gets the same fail-fast
+        # check rather than a name silently vanishing at
+        # `merge_feature_channels` (issue #358).
+        validate_feature_channels(self.feature_channels)
         # `refine_signal_map=False` with a `signal_refiner` attached is
         # refused rather than unified across backends (issue #265). Python's
         # `build_leech_read` computed the 3 k-mer residual feature rows off
@@ -215,6 +229,11 @@ class PrepareConfig:
             "kmer_context": self.chunk.kmer_context,
             "recover_softclip_signal": self.chunk.recover_softclip_signal,
             "mask_seq_side": self.chunk.mask_seq_side,
+            # The recorded feature-channel list (issue #358) -- carried into
+            # the trained model's config.json by `model train` and read back
+            # exactly by `leech predict`; `data merge` refuses to combine
+            # corpora whose lists differ (commands/merge_split.py).
+            "feature_channels": list(self.signal.feature_channels),
             "label": self.labeling.label,
             "reference_fasta": str(self.reference_fasta) if self.reference_fasta else None,
         }
@@ -305,6 +324,16 @@ class TrainConfig:
     # Per-channel feature standardization: compute corpus-wide mean/std once
     # and freeze them into the feature branch's first layer (issue #283).
     standardize_features: bool = False
+    # Channel ablation (issue #358 follow-up): select and order a SUBSET of
+    # the training corpus's recorded `feature_channels` list (see
+    # `SignalConfig.feature_channels`). `None` (default) uses every row the
+    # corpus has, exactly as before this existed -- train_model validates
+    # every name against the corpus's recorded list before touching the
+    # dataset, and `LeechDataset` re-validates against the corpus's actual
+    # stored row count (the kmer_* carry-over `merge_feature_channels` can
+    # produce). Recorded verbatim as config.json's `feature_channels`, so
+    # `leech predict` extracts exactly this selection.
+    feature_channels: list[str] | None = None
 
     # Provenance / extraction geometry recorded in config.json, not used to
     # extract anything here -- see chunking.resolve_feature_window and
