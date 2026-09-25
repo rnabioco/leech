@@ -944,12 +944,23 @@ invisible to the round-trip check:
 
 **Every export writes a contract beside the graph**, because two things a
 consumer needs are invisible in it: which input is which (arity and channel
-counts are visible, roles are not), and what the output means — leech
-classifiers emit a *single BCE logit*, not a two-class softmax, and reading it
-as the latter makes every call wrong without erroring. The CRF's contract adds
-standardisation (in neither the config nor the checkpoint) and the emitted
-references (`target[state_len:]`, computed from the `state_len` the encoder
-declares so no caller can pass full-length targets by hand).
+counts are visible, roles are not), and what the output means. That second
+part is not one fixed claim — `describe_output` derives it from the
+checkpoint's `num_out` (#357): `num_out <= 1` is leech's original single BCE
+logit, not a two-class softmax, and reading it as the latter makes every call
+wrong without erroring; `num_out > 1` (`loss_type: cross_entropy`) is the
+opposite shape of wrong — a `(batch, num_out)` softmax, with the class order
+read from `label_map` when the checkpoint has one (a multiclass checkpoint
+auto-detected from raw integer labels can lack it — the contract then says
+`"classes": null` and warns rather than refusing to export, since the column
+order is still correct and only the names are unknown), and a calibration's
+`method` named when `calibration.json` sits beside the checkpoint (applying it
+to the logits before the softmax is still the consumer's job). The exported
+graph's own output width is checked against `num_out` before any of this is
+trusted and written. The CRF's contract adds standardisation (in neither the
+config nor the checkpoint) and the emitted references (`target[state_len:]`,
+computed from the `state_len` the encoder declares so no caller can pass
+full-length targets by hand).
 
 **The `signal_kmer` sequence input is not in the graph, and that is deliberate.**
 It is `encode_signal_kmer` output — a scatter of the one-hot k-mer context along

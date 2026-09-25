@@ -1404,9 +1404,10 @@ def export(model_dir, output, fmt):
     torch  loadable with torch.export.load() — no leech required; config is
            embedded in the file.
     onnx   loadable by any ONNX runtime. Writes a `.json` contract beside the
-           graph naming each input's role and the output convention (a single
-           BCE logit, NOT a two-class softmax), neither of which a consumer can
-           recover from the graph.
+           graph naming each input's role and the output convention -- a single
+           BCE logit for a binary checkpoint, a softmax over `num_out` classes
+           for a multiclass one (`loss_type: cross_entropy`) -- neither of
+           which a consumer can recover from the graph.
 
     With `--seq-encoding signal_kmer`, the `sequence` input is produced outside
     the model, in the dataset. The contract names how; `leech-core` ships that
