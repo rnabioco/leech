@@ -47,6 +47,7 @@ leech data prepare --pod5 FILE --bam FILE --output-dir DIR [OPTIONS]
 | `--signal-len INT` | `(L+R+1)*36` | Fixed emitted signal length for `--signal-context-bases` (default is a conservative slow-read rate, so a typical read pads rather than centre-crops). Ignored without `--signal-context-bases` |
 | `--feature-start INT` | `-5` | Feature window start offset from focus base (negative = upstream, into the body of the read) |
 | `--feature-end INT` | `5` | Feature window end offset from focus base (positive = toward adaptor) |
+| `--feature-channels LIST` | *(historical twelve)* | Comma-separated feature-channel names selecting and ordering the corpus's feature rows, e.g. `dwell,dwell_log,level_mean,level_skew`. Default (unset): `dwell,dwell_log,dwell_mean,dwell_std,dwell_ratio,level_mean,level_median,level_std,level_range,kmer_expected,kmer_residual,kmer_residual_abs` -- so omitting this flag reproduces every corpus prepared before it existed byte-identically. `level_skew`/`level_kurtosis` are also available (population skewness / Fisher excess kurtosis) but not in the default list. Row order *is* the model's input channel order: recorded in `prepare_config.json`, carried into the trained model's config, and extracted exactly by `leech predict` (never re-chosen at predict time). `data merge` refuses to combine corpora whose lists differ. Both extraction backends (Rust and Python) honor it. Unknown names are refused before any read is touched. |
 
 **Motif search:**
 

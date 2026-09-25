@@ -8,11 +8,13 @@ with support for motif-based filtering.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 import numpy as np
 
 from leech.constants import (
+    DEFAULT_FEATURE_CHANNELS,
     DEFAULT_KMER_CONTEXT,
     DEFAULT_MAX_SAMPLES_PER_BASE,
     DEFAULT_SIGNAL_CONTEXT,
@@ -228,23 +230,39 @@ def feature_window_from_metadata(source, kmer_context: int) -> tuple[int | None,
 def merge_feature_channels(
     dwell_features: dict[str, np.ndarray],
     signal_features: dict[str, np.ndarray],
+    feature_channels: Sequence[str] | None = None,
 ) -> list[tuple[str, np.ndarray]]:
     """Order the per-base feature arrays into the chunk's feature rows.
 
     Row order *is* the model's input channel order, so it is part of every
     trained checkpoint: reordering it silently feeds `level_mean` into the
-    filter that learned `dwell_log`. It is the dict-merge order it has always
-    been -- dwell rows in `compute_dwell_features` order, then the level rows
-    in `compute_signal_features` order, then the three k-mer residual rows that
-    `preparation.reader` folds into `signal_features` -- and it must stay equal
-    to the order `rust/src/inference_pipeline/processing.rs` pushes rows in.
-    `tests/test_data_prep.py::TestFeatureChannelOrder` pins it.
+    filter that learned `dwell_log`.
+
+    ``feature_channels`` (issue #358) is the recorded list a run was
+    configured with -- ``leech.constants.DEFAULT_FEATURE_CHANNELS`` when
+    unset, which reproduces the historical dict-merge order (dwell rows in
+    `compute_dwell_features` order, then the level rows in
+    `compute_signal_features` order, then the three k-mer residual rows
+    `preparation.reader` folds into `signal_features`) exactly. A name absent
+    from the merged dict -- the k-mer residual rows when no level table is
+    configured, matching pre-#358 behaviour -- is silently skipped rather than
+    raising: whether those three rows *exist* is decided by the run's
+    refinement settings, not by this function. A name that can never appear in
+    either dict (a typo) is refused earlier, at `data prepare` time
+    (`leech.constants.validate_feature_channels`), not here.
+
+    Must stay equal to the order
+    `rust/src/inference_pipeline/types.rs::build_config` builds
+    `ChunkSpec.feature_channels` in. `tests/test_data_prep.py::TestFeatureChannelOrder`
+    pins it.
 
     Resolved once per read rather than once per focus base: all-bases mode
     calls `get_chunk` thousands of times per read and each call was rebuilding
     this dict.
     """
-    return list({**dwell_features, **signal_features}.items())
+    combined = {**dwell_features, **signal_features}
+    names = feature_channels if feature_channels is not None else DEFAULT_FEATURE_CHANNELS
+    return [(name, combined[name]) for name in names if name in combined]
 
 
 def _mask_focus_side(
@@ -331,6 +349,11 @@ class LeechRead:
         signal_offset: Index of ``signal[0]`` within ``full_signal`` — the
             translation between cropped (``self.signal``) coordinates and
             absolute coordinates for ``full_signal``. Zero when not cropped.
+        feature_channel_names: The recorded channel list (issue #358)
+            selecting and ordering the feature rows out of ``dwell_features``/
+            ``signal_features`` -- ``None`` means
+            :data:`~leech.constants.DEFAULT_FEATURE_CHANNELS`, reproducing
+            the historical dict-merge order. See :func:`merge_feature_channels`.
     """
 
     def __init__(
@@ -347,6 +370,7 @@ class LeechRead:
         signal_residual: np.ndarray | None = None,
         full_signal: np.ndarray | None = None,
         signal_offset: int = 0,
+        feature_channel_names: Sequence[str] | None = None,
     ):
         """Initialize LeechRead."""
         self.read_id = read_id
@@ -356,7 +380,9 @@ class LeechRead:
         self.dwells = dwells
         self.dwell_features = dwell_features
         self.signal_features = signal_features
-        self.feature_channels = merge_feature_channels(dwell_features, signal_features)
+        self.feature_channels = merge_feature_channels(
+            dwell_features, signal_features, feature_channel_names
+        )
         # One (F, num_bases) matrix, stacked once per read, so `get_chunk`
         # slices/pads all F rows in a single 2D op instead of looping over
         # ~12 channels and stacking at the end of every chunk (issue #275).

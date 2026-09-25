@@ -263,6 +263,69 @@ class TestFeatureParity:
             )
 
 
+class TestSkewKurtosisParity:
+    """`level_skew`/`level_kurtosis` (escapepod-rs#396, rnabioco/leech#358):
+    the Rust `compute_signal_stats` pyfunction (which now returns six arrays,
+    `rust/src/inference_pipeline/features_stats.rs`) against the pure-Python
+    numpy fallback, over the same synthetic-read machinery
+    `TestFeatureParity` uses. Not covered by `test_features_identical` above,
+    since `_test_process_read`'s `ChunkSpec` is a fixed 9-channel spec
+    (dwell family + the four original level stats) predating these two
+    channels -- this compares the actual new code path directly instead.
+    """
+
+    @pytest.mark.parametrize("seed", [42, 77])
+    def test_skew_kurtosis_identical(self, seed, monkeypatch):
+        from leech._rust_accel import _rs_compute_signal_stats
+
+        read = _make_synthetic_read(seed=seed)
+        raw = read["raw_signal"]
+        ts = read["trim_offset"]
+        ns = read["num_samples"]
+        trimmed = raw[ts:ns].astype(np.float32)
+        trimmed = trimmed[::-1].copy()  # reverse=True
+
+        mt = MoveTable(
+            stride=read["stride"],
+            moves=read["moves"],
+            read_id="test",
+            num_samples=read["num_samples"],
+            trim_offset=read["trim_offset"],
+        )
+        py_map = mt.to_seq_to_sig_map() - ts
+        sig_len = ns - ts
+        py_map = sig_len - py_map[::-1]
+
+        py_norm, _ = normalize_read_signal(trimmed, method="median_mad")
+
+        rs_means, rs_medians, rs_stds, rs_ranges, rs_skews, rs_kurtoses = _rs_compute_signal_stats(
+            py_norm.astype(np.float32, copy=False),
+            py_map.astype(np.int64, copy=False),
+        )
+
+        # Force the pure-Python fallback so this compares the two
+        # implementations, not the Rust dispatch against itself.
+        import leech.features as features_mod
+
+        monkeypatch.setattr(features_mod, "HAS_RUST", False)
+        py_feats = compute_signal_features(py_norm, py_map)
+
+        np.testing.assert_allclose(
+            np.asarray(rs_skews),
+            py_feats["level_skew"],
+            rtol=1e-3,
+            atol=1e-5,
+            err_msg="level_skew mismatch between Rust and Python",
+        )
+        np.testing.assert_allclose(
+            np.asarray(rs_kurtoses),
+            py_feats["level_kurtosis"],
+            rtol=1e-3,
+            atol=1e-5,
+            err_msg="level_kurtosis mismatch between Rust and Python",
+        )
+
+
 class TestEndToEnd:
     """Full pipeline comparison with multiple signal sizes."""
 

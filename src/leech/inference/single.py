@@ -91,6 +91,7 @@ def _inference_worker(
                 refine_signal_map=config.signal.refine_signal_map,
                 signal_refiner=config.signal.signal_refiner,
                 compute_features=config.requires_features or config.signal_in_channels > 1,
+                feature_channels=config.signal.feature_channels,
             )
 
             leech_read = build_leech_read(
@@ -590,6 +591,7 @@ def run_inference(
                 pa_stdev=pa_stdev,
                 refine_signal_map=refine_signal_map,
                 signal_refiner=signal_refiner,
+                feature_channels=spec.feature_channels,
             ),
             motif=MotifConfig(
                 motif=motif,
@@ -772,6 +774,7 @@ def run_inference(
             refine_signal_map=refine_signal_map,
             signal_refiner=signal_refiner,
             compute_features=compute_features,
+            feature_channels=spec.feature_channels,
         )
         seq_chunk_config = ChunkConfig(
             base_justify=base_justify,
@@ -921,6 +924,7 @@ def run_inference(
             signal_in_channels=signal_in_channels,
             base_justify=base_justify,
             signal_context_bases=spec.signal_context_bases,
+            feature_channels=spec.feature_channels,
         )
 
         def _collect_bam_metadata(aln_batch: list) -> tuple:

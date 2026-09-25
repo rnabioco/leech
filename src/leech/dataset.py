@@ -55,7 +55,7 @@ from leech.chunking import (
     npz_array_members,
     npz_member_names,
 )
-from leech.constants import AUTO_DATALOADER_WORKERS
+from leech.constants import AUTO_DATALOADER_WORKERS, DEFAULT_FEATURE_CHANNELS
 from leech.features import encode_signal_kmer, encode_signal_kmer_batch, sequence_to_int
 from leech.models import requires_features, wide_features
 
@@ -505,15 +505,6 @@ def _expand_seq_to_sig_csr(
     return padded
 
 
-# Number of dwell-derived feature channels time-stretch knows how to scale --
-# `compute_dwell_features`'s fixed output order (dwell, dwell_log, dwell_mean,
-# dwell_std, dwell_ratio), which `merge_feature_channels` places first in
-# every chunk's feature rows. A corpus with fewer channels than this wasn't
-# extracted with the standard dwell feature set, so time-stretch leaves the
-# feature tensor alone rather than guessing at what its columns mean.
-_DWELL_FEATURE_COUNT = 5
-
-
 def _time_stretch_signal_rows(
     signal: np.ndarray, factors: np.ndarray, focus_idx: int | np.ndarray
 ) -> np.ndarray:
@@ -634,6 +625,7 @@ class LeechDataset(Dataset):
         time_stretch_range: tuple[float, float] | None = None,
         dwell_template_table: str | Path | None = None,
         standardize_features: bool = False,
+        feature_channel_names: Sequence[str] | None = None,
     ):
         """
         Initialize dataset.
@@ -718,6 +710,15 @@ class LeechDataset(Dataset):
                 *training* dataset; a validation/test/predict dataset should
                 leave this False and reuse the training corpus's stats via
                 the model instead.
+            feature_channel_names: The corpus's recorded feature-channel list
+                (issue #358), e.g. read from ``prepare_config.json``'s
+                ``feature_channels`` key. ``None`` (default) means
+                :data:`~leech.constants.DEFAULT_FEATURE_CHANNELS` -- the
+                historical twelve, which keys ``_apply_time_stretch``'s
+                dwell/dwell_log/dwell_mean rule to the same positions (0, 1,
+                2) it always used, so an unset corpus behaves identically to
+                before this existed. Only consulted when ``time_stretch_range``
+                is active.
         """
         self.chunk_path = chunk_path
         self.signal_len = signal_len
@@ -736,6 +737,20 @@ class LeechDataset(Dataset):
         self._shift_max_bases = shift_max_bases
         self._feature_noise_scale = feature_noise_scale
         self._standardize_features = standardize_features
+        # Name -> row index in the recorded feature-channel list (issue
+        # #358), resolved once here rather than per-batch. `None` when a
+        # name is absent from the list (a custom `--feature-channels` run
+        # that dropped it, or a channel that needs a k-mer table the run
+        # didn't configure) -- `_apply_time_stretch` skips the corresponding
+        # transform rather than guessing at a position.
+        _fc_names = (
+            list(feature_channel_names)
+            if feature_channel_names is not None
+            else list(DEFAULT_FEATURE_CHANNELS)
+        )
+        self._dwell_idx = _fc_names.index("dwell") if "dwell" in _fc_names else None
+        self._dwell_log_idx = _fc_names.index("dwell_log") if "dwell_log" in _fc_names else None
+        self._dwell_mean_idx = _fc_names.index("dwell_mean") if "dwell_mean" in _fc_names else None
         self._time_stretch_range = (
             tuple(time_stretch_range) if time_stretch_range is not None else (1.0, 1.0)
         )
@@ -2372,9 +2387,12 @@ class LeechDataset(Dataset):
         with its true, per-chunk (but typically corpus-uniform)
         ``focus_signal_pos`` instead of ``signal_len // 2``.
 
-        Per-channel rule for the first 5 feature rows -- the fixed order
-        ``compute_dwell_features`` writes and ``merge_feature_channels``
-        places first (dwell, dwell_log, dwell_mean, dwell_std, dwell_ratio):
+        Per-channel rule for the ``dwell``/``dwell_log``/``dwell_mean`` rows --
+        looked up by NAME in the corpus's recorded feature-channel list
+        (``self._dwell_idx``/``self._dwell_log_idx``/``self._dwell_mean_idx``,
+        resolved once in ``__init__``; issue #358 -- keyed by position before
+        this, which broke the moment a corpus's channel list was anything but
+        the historical default):
 
         - ``dwell`` and ``dwell_mean`` scale *with* the factor: a slower
           (stretched) translocation makes every dwell longer in proportion.
@@ -2386,12 +2404,12 @@ class LeechDataset(Dataset):
         - ``dwell_std`` is left unchanged -- it is not recomputed from a
           resampled window here, only the raw/mean/log channels are rescaled.
 
-        Level (signal-statistic) channels and everything past the first 5 rows
-        (e.g. k-mer residual features, dwell-template channels) are untouched:
-        they describe pA values or ratios, not elapsed time. A corpus with
-        fewer than 5 feature channels wasn't extracted with the standard dwell
-        feature set, so the feature tensor is left alone entirely rather than
-        guessing at what its columns mean.
+        Level (signal-statistic) channels and everything else (e.g. k-mer
+        residual features, dwell-template channels) are untouched: they
+        describe pA values or ratios, not elapsed time. A corpus whose
+        recorded list is missing one of the three names (a custom
+        ``--feature-channels`` run that dropped it) leaves the feature tensor
+        alone entirely rather than guessing at what its columns mean.
 
         ``seq_to_sig`` may be ``None`` (base_onehot encoding never reads it).
         """
@@ -2419,11 +2437,17 @@ class LeechDataset(Dataset):
                 seq_to_sig, factors_np, focus_idx_np, self.signal_len
             )
 
-        if self._needs_features and features.shape[1] >= _DWELL_FEATURE_COUNT:
+        if (
+            self._needs_features
+            and self._dwell_idx is not None
+            and self._dwell_log_idx is not None
+            and self._dwell_mean_idx is not None
+            and features.shape[1] > max(self._dwell_idx, self._dwell_log_idx, self._dwell_mean_idx)
+        ):
             scale = factors.view(batch, 1)
-            features[:, 0, :] *= scale
-            features[:, 2, :] *= scale
-            features[:, 1, :] += torch.log(factors).view(batch, 1)
+            features[:, self._dwell_idx, :] *= scale
+            features[:, self._dwell_mean_idx, :] *= scale
+            features[:, self._dwell_log_idx, :] += torch.log(factors).view(batch, 1)
 
         return signal, seq_to_sig, features
 

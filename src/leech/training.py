@@ -33,7 +33,7 @@ from leech.chunking import feature_window_from_metadata
 from leech.chunking.table import ChunkTable
 from leech.cli_config import make_console
 from leech.configs import AugmentConfig, AuxHeadConfig, OptimConfig, SchedulerConfig, TrainConfig
-from leech.constants import DEFAULT_REFINE_HALF_BANDWIDTH
+from leech.constants import DEFAULT_FEATURE_CHANNELS, DEFAULT_REFINE_HALF_BANDWIDTH
 from leech.dataset import (
     LeechDataset,
     collate_fn,
@@ -2638,6 +2638,20 @@ def train_model(
             )
             adversarial_lambda = 0.0
 
+    # Read the feature-channel list off the prepare sidecar now, before
+    # constructing the datasets below that need it to key time-stretch's
+    # dwell/dwell_log/dwell_mean rule by name (issue #358). A small, separate
+    # read from the full `prepare_metadata` block further down (which needs
+    # decisions this function makes in between) -- duplicating one dict
+    # lookup is cheaper and lower-risk than reordering a multi-hundred-line
+    # function.
+    _train_feature_channels: list[str] | None = None
+    if train_data_path is not None:
+        _fc_sidecar_path = train_data_path.parent / "prepare_config.json"
+        if _fc_sidecar_path.exists():
+            with open(_fc_sidecar_path) as f:
+                _train_feature_channels = json.load(f).get("feature_channels")
+
     # Create datasets (use pre-loaded chunks if provided)
     train_dataset = LeechDataset(
         chunk_path=train_data_path,
@@ -2664,6 +2678,7 @@ def train_model(
         time_stretch_range=augment_time_stretch,
         dwell_template_table=dwell_template_table,
         standardize_features=standardize_features,
+        feature_channel_names=_train_feature_channels,
     )
 
     val_dataset = None
@@ -2686,6 +2701,7 @@ def train_model(
             cl_regression=cl_regression,
             signal_mode=signal_mode,
             dwell_template_table=dwell_template_table,
+            feature_channel_names=_train_feature_channels,
         )
 
     # What the datasets actually yield, which is not always what was asked for:
@@ -3206,6 +3222,14 @@ def train_model(
         # it never saw in training. No `model train` CLI flag: it is baked
         # into the corpus at `data prepare` time, not chosen at train time.
         "mask_seq_side": prepare_metadata.get("mask_seq_side"),
+        # The recorded feature-channel list (issue #358), auto-carried from
+        # the prepare sidecar so `leech predict` extracts exactly the rows
+        # this checkpoint was trained on. A config lacking the key (a
+        # sidecar older than #358, or no sidecar at all) means the historical
+        # twelve -- the same fallback pattern as `DEFAULT_SEQ_ENCODING_FALLBACK`.
+        "feature_channels": prepare_metadata.get(
+            "feature_channels", list(DEFAULT_FEATURE_CHANNELS)
+        ),
         "kmer_table_sha256": prepare_metadata.get("kmer_table_sha256"),
         # Base-defined signal window (issue #278), carried through so
         # `predict` re-derives the same window `data prepare` cut; `None`

@@ -22,8 +22,12 @@ gains direct access to translocation kinetics.
 
 ## Feature components
 
-Leech computes 9 feature channels for each base in the k-mer context window.
-These are stacked into a feature matrix of shape `(9, kmer_len)`:
+Leech computes a per-base feature channel for each base in the k-mer context
+window; which channels a run extracts, and in what order, is a recorded
+setting (`--feature-channels`, see below). The default list -- unchanged
+since before that flag existed -- is 9 channels when no k-mer level table is
+configured (12 with one, adding the three `kmer_*` residual rows below),
+stacked into a feature matrix of shape `(F, kmer_len)`:
 
 | Channel       | Description                                   | Source          |
 |---------------|-----------------------------------------------|-----------------|
@@ -36,10 +40,37 @@ These are stacked into a feature matrix of shape `(9, kmer_len)`:
 | `level_median`| Median signal amplitude for this base         | Signal + moves  |
 | `level_std`   | Signal amplitude standard deviation           | Signal + moves  |
 | `level_range` | Signal amplitude range (max - min)            | Signal + moves  |
+| `kmer_expected`| Expected signal level from the k-mer table   | Signal + moves + k-mer table |
+| `kmer_residual`| `level_mean - kmer_expected` (signed)        | Signal + moves + k-mer table |
+| `kmer_residual_abs`| absolute value of `kmer_residual`        | Signal + moves + k-mer table |
+
+Two more channels are available but **not** in the default list -- opt in
+with `--feature-channels` for a model that needs the tail of the per-base
+signal distribution rather than just its first two moments:
+
+| Channel          | Description                                                            | Source          |
+|------------------|-------------------------------------------------------------------------|-----------------|
+| `level_skew`     | Population skewness of signal amplitude (`scipy.stats.skew` defaults)   | Signal + moves  |
+| `level_kurtosis` | Fisher excess kurtosis of signal amplitude (`scipy.stats.kurtosis` defaults) | Signal + moves |
+
+Both read `0.0`, not `NaN`, for a degenerate (constant or single-sample) span
+-- the same clamp `level_std` already has.
 
 The dwell features capture translocation kinetics, while the level features
 capture signal amplitude statistics. Together, they provide a compact
 per-base summary that complements the raw signal.
+
+### Choosing the channel list
+
+`leech data prepare --feature-channels dwell,dwell_log,...` selects and
+orders the feature rows a corpus is prepared with -- the row order *is* the
+model's input channel order, so it is recorded in `prepare_config.json` and
+carried into the trained checkpoint's `config.json`; `leech predict` reads it
+back and extracts exactly that list rather than guessing from a flag at
+predict time. Omitting `--feature-channels` uses the default list above, so
+an existing corpus or checkpoint is unaffected by this option's existence.
+See [`--feature-channels`](../reference/cli.md) in the CLI reference for the
+full option description.
 
 !!! note
     The `dwell_ratio` feature (base dwell / local mean dwell) normalizes for

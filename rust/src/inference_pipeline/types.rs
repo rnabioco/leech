@@ -13,6 +13,27 @@ use crate::kmer_levels::KmerLevels;
 
 use super::signal_mapping::typed_cigar;
 
+/// The channel list every corpus used before the list became configurable
+/// (rnabioco/leech#358), in row order. Used whenever a caller does not supply
+/// its own list -- the "config without the key means the historical twelve"
+/// fallback (mirrors `DEFAULT_SEQ_ENCODING_FALLBACK`'s pattern on the Python
+/// side). Must exactly match `leech.constants.DEFAULT_FEATURE_CHANNELS`;
+/// `tests/test_data_prep.py::TestFeatureChannelOrder` pins the two together.
+pub(crate) const DEFAULT_FEATURE_CHANNELS: &[&str] = &[
+    "dwell",
+    "dwell_log",
+    "dwell_mean",
+    "dwell_std",
+    "dwell_ratio",
+    "level_mean",
+    "level_median",
+    "level_std",
+    "level_range",
+    "kmer_expected",
+    "kmer_residual",
+    "kmer_residual_abs",
+];
+
 /// Per-chunk result for inference (pre-encoded arrays).
 pub(super) struct ChunkResult {
     pub(super) signal: Vec<f32>,
@@ -111,6 +132,7 @@ pub(super) fn build_config<'a>(
     refine_scale_iters: i32,
     signal_in_channels: usize,
     base_justify: &str,
+    feature_channel_names: Option<&[String]>,
 ) -> PyResult<PipelineConfig<'a>> {
     let use_reference = match anchor {
         "reference" => true,
@@ -175,27 +197,43 @@ pub(super) fn build_config<'a>(
 
     let mut feature_channels = Vec::new();
     if compute_features {
-        // Order matches the pre-port `features_data` stack exactly: dwell
-        // family first, then level-span stats, then (when a table is in
-        // play) the k-mer residual family. Parity tests compare this array
-        // positionally, so the order is load-bearing.
-        feature_channels.extend([
-            FeatureChannel::Dwell,
-            FeatureChannel::DwellLog,
-            FeatureChannel::DwellMean,
-            FeatureChannel::DwellStd,
-            FeatureChannel::DwellRatio,
-            FeatureChannel::LevelMean,
-            FeatureChannel::LevelMedian,
-            FeatureChannel::LevelStd,
-            FeatureChannel::LevelRange,
-        ]);
-        if levels_available {
-            feature_channels.extend([
-                FeatureChannel::KmerExpected,
-                FeatureChannel::KmerResidual,
-                FeatureChannel::KmerResidualAbs,
-            ]);
+        // The configured list (rnabioco/leech#358) -- `None` (a config/caller
+        // that predates the feature) falls back to the historical twelve, in
+        // the same order `features_data` used to hard-code. Order is
+        // load-bearing: it is the model's own input channel order, recorded
+        // by the caller in prepare_config.json / config.json and reproduced
+        // here verbatim.
+        let owned_default: Vec<String>;
+        let names: &[String] = match feature_channel_names {
+            Some(n) => n,
+            None => {
+                owned_default = DEFAULT_FEATURE_CHANNELS
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect();
+                &owned_default
+            }
+        };
+        for name in names {
+            let ch = FeatureChannel::from_name(name).ok_or_else(|| {
+                PyValueError::new_err(format!(
+                    "unrecognised feature channel {name:?} (known: {})",
+                    FeatureChannel::ALL
+                        .iter()
+                        .map(|c| c.name())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ))
+            })?;
+            // A channel that needs the k-mer level table (the three
+            // kmer_* rows) is silently omitted without one -- matching the
+            // pre-#358 behaviour, where those three rows were only ever
+            // appended when `levels_available`. Every other channel needs
+            // no external resource and is never dropped this way.
+            if ch.needs_levels() && !levels_available {
+                continue;
+            }
+            feature_channels.push(ch);
         }
     }
 

@@ -1129,6 +1129,67 @@ class TestFeatureChannelOrder:
         read = self._build_read()
         assert [name for name, _ in read.feature_channels] == self.EXPECTED
 
+    def test_unset_feature_channels_matches_the_constants_default(self):
+        """`LeechRead(feature_channel_names=None)` must reproduce
+        `leech.constants.DEFAULT_FEATURE_CHANNELS` exactly -- the "config
+        without the key means the historical twelve" fallback issue #358
+        introduced.
+        """
+        from leech.constants import DEFAULT_FEATURE_CHANNELS
+
+        assert self.EXPECTED == DEFAULT_FEATURE_CHANNELS
+
+    def test_custom_feature_channels_select_and_order_by_name(self):
+        """A non-default ``--feature-channels`` list (issue #358) selects a
+        subset of the computed columns, in the requested order -- including
+        ``level_skew``/``level_kurtosis``, which are not in the default list.
+        """
+        from leech.features import (
+            compute_dwell_features,
+            compute_kmer_residual_features,
+            compute_signal_features,
+        )
+
+        num_bases, dwell, seed = 40, 8, 3
+        rng = np.random.default_rng(seed)
+        seq_to_sig = np.arange(num_bases + 1, dtype=np.int64) * dwell
+        signal = rng.standard_normal(num_bases * dwell).astype(np.float32)
+        sequence = "".join(rng.choice(list("ACGT"), num_bases))
+        dwells = np.diff(seq_to_sig)
+
+        dwell_feats = compute_dwell_features(dwells)
+        signal_feats = compute_signal_features(signal, seq_to_sig)
+        signal_feats.update(
+            compute_kmer_residual_features(signal, seq_to_sig, sequence, {}, kmer_len=1)
+        )
+
+        custom = ["level_skew", "dwell", "level_kurtosis", "kmer_residual"]
+        read = LeechRead(
+            read_id="chan_order_custom",
+            sequence=sequence,
+            signal=signal,
+            seq_to_sig_map=seq_to_sig,
+            dwells=dwells,
+            dwell_features=dwell_feats,
+            signal_features=signal_feats,
+            feature_channel_names=custom,
+        )
+        assert [name for name, _ in read.feature_channels] == custom
+        by_name = dict(read.feature_channels)
+        np.testing.assert_array_equal(by_name["level_skew"], signal_feats["level_skew"])
+        np.testing.assert_array_equal(by_name["level_kurtosis"], signal_feats["level_kurtosis"])
+        np.testing.assert_array_equal(by_name["dwell"], dwell_feats["dwell"])
+        np.testing.assert_array_equal(by_name["kmer_residual"], signal_feats["kmer_residual"])
+
+    def test_unknown_channel_name_is_refused_by_signal_config(self):
+        """Unknown names are refused at prepare time (issue #358), not left
+        to silently vanish in `merge_feature_channels`.
+        """
+        from leech.configs import SignalConfig
+
+        with pytest.raises(ValueError, match="level_min"):
+            SignalConfig(feature_channels=["dwell", "level_min"])
+
     def test_chunk_rows_follow_the_channel_order(self):
         """`get_chunk` must emit rows in `feature_channels` order, one per channel."""
         read = self._build_read()
@@ -1190,6 +1251,64 @@ class TestFeatureChannelOrder:
                 atol=1e-6,
                 err_msg=f"feature '{name}' is not Rust row {row_idx}",
             )
+
+
+class TestFeatureChannelsMergeRefusal:
+    """`data merge` refuses corpora whose `feature_channels` lists differ
+    (issue #358) -- unlike the softer, warn-only `critical_keys` check
+    `_propagate_prepare_config` already does for fields like `mask_seq_side`
+    (see `tests/test_mask_seq_side.py`), a `feature_channels` mismatch
+    changes the *shape and identity* of every feature row, so it raises
+    rather than silently keeping "the first input's" list.
+    """
+
+    @staticmethod
+    def _write_sidecar(directory, feature_channels) -> None:
+        import json
+
+        directory.mkdir(parents=True, exist_ok=True)
+        payload = {} if feature_channels is None else {"feature_channels": feature_channels}
+        (directory / "prepare_config.json").write_text(json.dumps(payload))
+
+    def test_mismatched_lists_raise(self, tmp_path):
+        from leech.commands.merge_split import _propagate_prepare_config
+
+        dir_a, dir_b = tmp_path / "a", tmp_path / "b"
+        self._write_sidecar(dir_a, ["dwell", "level_mean"])
+        self._write_sidecar(dir_b, ["dwell", "level_skew"])
+
+        with pytest.raises(ValueError, match="feature_channels"):
+            _propagate_prepare_config([dir_a / "train.npz", dir_b / "train.npz"], tmp_path / "out")
+
+    def test_matching_lists_do_not_raise(self, tmp_path):
+        from leech.commands.merge_split import _propagate_prepare_config
+
+        dir_a, dir_b = tmp_path / "a", tmp_path / "b"
+        self._write_sidecar(dir_a, ["dwell", "level_mean"])
+        self._write_sidecar(dir_b, ["dwell", "level_mean"])
+
+        out_dir = tmp_path / "out"
+        _propagate_prepare_config([dir_a / "train.npz", dir_b / "train.npz"], out_dir)
+
+        import json
+
+        written = json.loads((out_dir / "prepare_config.json").read_text())
+        assert written["feature_channels"] == ["dwell", "level_mean"]
+
+    def test_missing_key_falls_back_to_the_historical_default(self, tmp_path):
+        """A sidecar predating issue #358 (no `feature_channels` key at all)
+        must compare equal to one that explicitly used the default list --
+        not spuriously conflict.
+        """
+        from leech.commands.merge_split import _propagate_prepare_config
+        from leech.constants import DEFAULT_FEATURE_CHANNELS
+
+        dir_a, dir_b = tmp_path / "a", tmp_path / "b"
+        self._write_sidecar(dir_a, None)  # old sidecar, no key at all
+        self._write_sidecar(dir_b, list(DEFAULT_FEATURE_CHANNELS))
+
+        # Must not raise.
+        _propagate_prepare_config([dir_a / "train.npz", dir_b / "train.npz"], tmp_path / "out")
 
 
 class _FakeAlignment:

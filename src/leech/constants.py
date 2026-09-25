@@ -5,6 +5,8 @@ This module provides a single source of truth for default values,
 magic numbers, and configuration constants used throughout the codebase.
 """
 
+from collections.abc import Iterable
+
 # Required BAM tags for nanopore signal analysis
 REQUIRED_BAM_TAGS = ["mv", "ns"]
 
@@ -134,6 +136,61 @@ DEFAULT_SIGNAL_KMER_CONTEXT = (4, 4)  # Kmer context for signal-level kmer encod
 # records the effective encoding it used into config.json -- so a config
 # that lacks the key was never touched by that flag at all.
 DEFAULT_SEQ_ENCODING_FALLBACK = "base_onehot"
+
+# The feature-channel list every corpus/checkpoint used before it became a
+# recorded, configurable setting (issue #358) -- `leech data prepare
+# --feature-channels`'s default, verbatim, so nothing already prepared or
+# trained changes. Row order here IS the model's input channel order: dwell
+# family first (`compute_dwell_features`'s fixed output order), then the
+# level-span stats, then the three k-mer residual rows (present only when a
+# k-mer level table is configured -- see `merge_feature_channels`). Must match
+# `rust/src/inference_pipeline/types.rs::DEFAULT_FEATURE_CHANNELS` exactly;
+# `tests/test_data_prep.py::TestFeatureChannelOrder` pins the two together.
+DEFAULT_FEATURE_CHANNELS: list[str] = [
+    "dwell",
+    "dwell_log",
+    "dwell_mean",
+    "dwell_std",
+    "dwell_ratio",
+    "level_mean",
+    "level_median",
+    "level_std",
+    "level_range",
+    "kmer_expected",
+    "kmer_residual",
+    "kmer_residual_abs",
+]
+
+# Every channel name either backend (Rust via escapepod's `FeatureChannel`,
+# Python via `compute_dwell_features`/`compute_signal_features`) knows how to
+# compute. `level_skew`/`level_kurtosis` (escapepod-rs#396) are known but not
+# in the default list -- opt in with `--feature-channels`. `data prepare`
+# refuses any name outside this set before touching a read (issue #358); a
+# typo here would otherwise silently vanish at `merge_feature_channels`
+# instead of raising.
+KNOWN_FEATURE_CHANNELS: frozenset[str] = frozenset(
+    [*DEFAULT_FEATURE_CHANNELS, "level_skew", "level_kurtosis"]
+)
+
+
+def validate_feature_channels(names: Iterable[str]) -> None:
+    """Raise ``ValueError`` naming any channel neither backend can compute.
+
+    Called at ``data prepare`` time (issue #358), before any read is
+    touched, and defensively from
+    :meth:`~leech.configs.SignalConfig.__post_init__` so a config built
+    directly through the Python API (not the CLI) gets the same fail-fast
+    check. Do not rely on ``merge_feature_channels`` to catch this instead --
+    it silently drops a name that matches no computed column, which is
+    exactly how a typo like ``"level_min"`` would vanish rather than raise.
+    """
+    unknown = [n for n in names if n not in KNOWN_FEATURE_CHANNELS]
+    if unknown:
+        raise ValueError(
+            f"Unknown feature channel(s): {unknown}. Known channels: "
+            f"{sorted(KNOWN_FEATURE_CHANNELS)}"
+        )
+
 
 # Signal map refinement defaults.
 #

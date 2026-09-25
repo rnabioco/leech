@@ -81,6 +81,7 @@ def handle_prepare(
     focus_tsv: Path | None = None,
     recover_softclip_signal: bool = False,
     mask_seq_side: str | None = None,
+    feature_channels: list[str] | None = None,
 ) -> dict[str, Any]:
     """
     Handle the prepare command logic.
@@ -112,6 +113,15 @@ def handle_prepare(
             both `sequence` and `sequence_with_kmer_context`, baked into the
             corpus (leech#256). Forces the Python extraction path -- see
             `rust_prepare_unsupported_reason`.
+        feature_channels: Comma-list of feature-channel names selecting and
+            ordering the corpus's feature rows (issue #358). ``None``
+            (default) means :data:`~leech.constants.DEFAULT_FEATURE_CHANNELS`
+            -- the historical twelve, verbatim, so an unset flag reproduces
+            every corpus prepared before this existed byte-identically.
+            Recorded in ``prepare_config.json``; `model train` carries it into
+            the checkpoint's ``config.json`` and `leech predict` extracts
+            exactly that list. Unknown names are refused here, before any
+            read is touched.
 
     Returns:
         Dictionary with extraction statistics
@@ -120,10 +130,23 @@ def handle_prepare(
 
     from leech.chunking import ChunkSpool, default_signal_len_for_bases_context
     from leech.configs import ChunkConfig, LabelConfig, MotifConfig, PrepareConfig, SignalConfig
-    from leech.constants import DEFAULT_SIGNAL_CONTEXT
+    from leech.constants import (
+        DEFAULT_FEATURE_CHANNELS,
+        DEFAULT_SIGNAL_CONTEXT,
+        validate_feature_channels,
+    )
     from leech.io import get_reference_sequences
     from leech.preparation import prepare_training_data_parallel, write_splits
     from leech.seeding import setup_random_seed
+
+    resolved_feature_channels = (
+        list(feature_channels) if feature_channels else list(DEFAULT_FEATURE_CHANNELS)
+    )
+    # Refused here, before any read is touched or any worker is spawned
+    # (issue #358) -- a typo surfacing minutes into a parallel prepare run,
+    # inside a worker, is a much worse failure than a `ValueError` up front.
+    validate_feature_channels(resolved_feature_channels)
+    logger.info(f"Feature channels ({len(resolved_feature_channels)}): {resolved_feature_channels}")
 
     if signal_context_bases is not None and signal_context is not None:
         raise ValueError("--signal-context and --signal-context-bases are mutually exclusive")
@@ -244,6 +267,7 @@ def handle_prepare(
             ),
             signal_refiner=signal_refiner,
             kmer_table_path=kmer_table if refine_signal_map else None,
+            feature_channels=resolved_feature_channels,
         ),
         motif=MotifConfig(
             motif=motif,

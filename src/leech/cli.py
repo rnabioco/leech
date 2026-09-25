@@ -362,6 +362,25 @@ data.command_order = ("prepare", "merge")
         "(unsupported in Rust)."
     ),
 )
+@click.option(
+    "--feature-channels",
+    type=str,
+    default=None,
+    help=(
+        "Comma-separated feature-channel names selecting and ordering the "
+        "corpus's feature rows (e.g. 'dwell,dwell_log,level_mean,level_skew'). "
+        "Default: the historical twelve (dwell, dwell_log, dwell_mean, "
+        "dwell_std, dwell_ratio, level_mean, level_median, level_std, "
+        "level_range, kmer_expected, kmer_residual, kmer_residual_abs), so "
+        "omitting this reproduces every corpus prepared before this flag "
+        "existed byte-identically. 'level_skew'/'level_kurtosis' are also "
+        "available but not in the default list. Recorded in "
+        "prepare_config.json; carried into the trained model's config.json; "
+        "'leech predict' extracts exactly that list. Both extraction "
+        "backends honor it. Unknown names are refused before any read is "
+        "touched."
+    ),
+)
 def prepare(
     pod5,
     bam,
@@ -399,9 +418,14 @@ def prepare(
     focus_tsv,
     recover_softclip_signal,
     mask_seq_side,
+    feature_channels,
 ):
     """Prepare training data from POD5 and BAM files."""
     from leech.commands import handle_prepare
+
+    parsed_feature_channels = (
+        [c.strip() for c in feature_channels.split(",") if c.strip()] if feature_channels else None
+    )
 
     # Validate pa_scaling params
     if signal_norm == "pa_scaling" and (pa_mean is None or pa_stdev is None):
@@ -461,6 +485,7 @@ def prepare(
         focus_tsv=focus_tsv,
         recover_softclip_signal=recover_softclip_signal,
         mask_seq_side=mask_seq_side,
+        feature_channels=parsed_feature_channels,
     )
 
 

@@ -26,11 +26,15 @@ Feature Engineering:
     - dwell_std: Std dev of dwell in sliding window
     - dwell_ratio: Ratio to mean dwell time
 
-    Signal features (4 total):
+    Signal features (6 available, 4 in the default channel list):
     - level_mean: Mean signal level per base
     - level_median: Median signal level per base
     - level_std: Std dev of signal per base
     - level_range: Range (max - min) of signal per base
+    - level_skew: Population skewness of signal per base (opt-in via
+      --feature-channels; not in the default list)
+    - level_kurtosis: Fisher excess kurtosis of signal per base (opt-in via
+      --feature-channels; not in the default list)
 
 Example:
     >>> from leech.features import extract_move_table, compute_dwell_times
@@ -245,13 +249,13 @@ def compute_signal_levels(
     Returns:
         Array of shape (num_bases,) with signal level statistic for each base
     """
-    # Rust fast path: compute all 4 stats at once, return requested one
+    # Rust fast path: compute all 6 stats at once, return requested one
     stat_to_idx = {"mean": 0, "median": 1, "std": 2}
     if HAS_RUST and stat in stat_to_idx:
         assert _rs_compute_signal_stats is not None
         sig = signal.astype(np.float32, copy=False)
         s2s = seq_to_sig_map.astype(np.int64, copy=False)
-        means, medians, stds, ranges = _rs_compute_signal_stats(sig, s2s)
+        means, medians, stds, ranges, skews, kurtoses = _rs_compute_signal_stats(sig, s2s)
         return [np.asarray(means), np.asarray(medians), np.asarray(stds)][stat_to_idx[stat]]
 
     # Vectorized fast path (also the only place the mean is computed)
@@ -825,36 +829,59 @@ def compute_signal_features(
             - 'level_median': median signal level
             - 'level_std': signal standard deviation
             - 'level_range': max - min signal
+            - 'level_skew': population skewness (``scipy.stats.skew`` defaults;
+              ``0.0``, not ``NaN``, for a degenerate -- constant or
+              single-sample -- span)
+            - 'level_kurtosis': Fisher excess kurtosis (``scipy.stats.kurtosis``
+              defaults; same degenerate-span rule as ``level_skew``)
+
+        All six are always computed and returned -- which of them a chunk
+        actually gets is decided later, by the run's recorded
+        ``--feature-channels`` list (see `chunking.merge_feature_channels`).
     """
-    # Rust fast path: compute all 4 stats in one call (avoids Python dispatch overhead)
+    # Rust fast path: compute all 6 stats in one call (avoids Python dispatch overhead)
     if HAS_RUST:
         assert _rs_compute_signal_stats is not None
         sig = signal.astype(np.float32, copy=False)
         s2s = seq_to_sig_map.astype(np.int64, copy=False)
-        means, medians, stds, ranges = _rs_compute_signal_stats(sig, s2s)
+        means, medians, stds, ranges, skews, kurtoses = _rs_compute_signal_stats(sig, s2s)
         return {
             "level_mean": np.asarray(means),
             "level_median": np.asarray(medians),
             "level_std": np.asarray(stds),
             "level_range": np.asarray(ranges),
+            "level_skew": np.asarray(skews),
+            "level_kurtosis": np.asarray(kurtoses),
         }
 
     # Python fallback
     num_bases = len(seq_to_sig_map) - 1
 
     features = {
-        # Vectorized; the loop below covers the three that have no numpy
-        # equivalent. Channel order here is the feature-row order -- see
-        # `LeechRead.feature_channels`.
+        # Vectorized; the loop below covers the ones that have no numpy
+        # equivalent. Channel order here is escapepod's `FeatureChannel::ALL`
+        # order (dwell family lives in a separate dict) -- see
+        # `LeechRead.feature_channels` / `merge_feature_channels`, which
+        # select and reorder from this dict by name, so this order is not
+        # itself load-bearing, only the *names* are.
         "level_mean": _per_base_means(signal, seq_to_sig_map),
         "level_median": np.zeros(num_bases, dtype=np.float32),
         "level_std": np.zeros(num_bases, dtype=np.float32),
         "level_range": np.zeros(num_bases, dtype=np.float32),
+        "level_skew": np.zeros(num_bases, dtype=np.float32),
+        "level_kurtosis": np.zeros(num_bases, dtype=np.float32),
     }
 
     lengths = np.diff(seq_to_sig_map)
 
-    # Loop only for median/std/range (no vectorized numpy equivalent)
+    # Loop only for median/std/range/skew/kurtosis (no vectorized numpy
+    # equivalent). Skew/kurtosis are two-pass central moments in f64,
+    # matching escapepod's `span_stats` convention (rnabioco/leech#358):
+    # population skewness `m3 / m2**1.5` and Fisher excess kurtosis
+    # `m4 / m2**2 - 3`, both 0.0 (not NaN) when m2 == 0 (a constant or
+    # single-sample span) -- the same degenerate-span clamp `level_std`
+    # already has. A NaN inside the span propagates to both, same as
+    # `level_range`.
     for i in range(num_bases):
         if lengths[i] > 0:
             start = seq_to_sig_map[i]
@@ -864,5 +891,19 @@ def compute_signal_features(
                 features["level_median"][i] = np.median(base_sig)
                 features["level_std"][i] = np.std(base_sig)
                 features["level_range"][i] = np.max(base_sig) - np.min(base_sig)
+
+                base_f64 = base_sig.astype(np.float64)
+                centered = base_f64 - base_f64.mean()
+                m2 = np.mean(centered**2)
+                if m2 == 0.0:
+                    skew = 0.0
+                    kurtosis = 0.0
+                else:
+                    m3 = np.mean(centered**3)
+                    m4 = np.mean(centered**4)
+                    skew = m3 / m2**1.5
+                    kurtosis = m4 / m2**2 - 3.0
+                features["level_skew"][i] = np.float32(skew)
+                features["level_kurtosis"][i] = np.float32(kurtosis)
 
     return features

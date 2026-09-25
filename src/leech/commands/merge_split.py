@@ -13,7 +13,7 @@ from typing import Any
 from rich.table import Table
 
 from leech.cli_config import make_console
-from leech.constants import DEFAULT_SEED
+from leech.constants import DEFAULT_FEATURE_CHANNELS, DEFAULT_SEED
 
 logger = logging.getLogger("leech.commands.merge_split")
 console = make_console()
@@ -45,6 +45,12 @@ def _propagate_prepare_config(input_paths: list[Path], output_dir: Path) -> None
 
     If no sidecar is found (old data), silently skips.
     If multiple sidecars disagree on critical fields, logs a warning but writes the first one found.
+    `feature_channels` is the one exception: a mismatch there raises rather
+    than warns (issue #358) -- unlike the other critical fields, it changes
+    the *shape and identity* of every feature row in the merged corpus, not
+    just its provenance metadata, so silently keeping "the first input's"
+    list would train on a tensor that means something different for however
+    many chunks came from the other input(s).
     """
     configs: list[dict] = []
     for p in input_paths:
@@ -55,6 +61,25 @@ def _propagate_prepare_config(input_paths: list[Path], output_dir: Path) -> None
 
     if not configs:
         return
+
+    # A sidecar predating issue #358 carries no `feature_channels` key at
+    # all -- that means the historical twelve, the same fallback pattern as
+    # `DEFAULT_SEQ_ENCODING_FALLBACK`, so an old corpus and a new one that
+    # explicitly used the default list compare equal here rather than
+    # spuriously conflicting.
+    feature_channel_lists = [
+        cfg.get("feature_channels", DEFAULT_FEATURE_CHANNELS) for cfg in configs
+    ]
+    first_channels = feature_channel_lists[0]
+    for i, channels in enumerate(feature_channel_lists[1:], start=1):
+        if channels != first_channels:
+            raise ValueError(
+                f"prepare_config.json mismatch on 'feature_channels': input 0 has "
+                f"{first_channels!r}, input {i} has {channels!r}. Merging corpora "
+                f"prepared with different feature-channel lists would silently "
+                f"misalign the feature tensor -- re-prepare every input with the "
+                f"same --feature-channels before merging."
+            )
 
     # Validate consistency on critical fields
     # Resolved, not requested: `feature_start=None` and `feature_start=-5`

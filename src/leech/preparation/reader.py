@@ -191,6 +191,7 @@ def build_leech_read(
         metadata=meta,
         full_signal=full_norm_signal,
         signal_offset=signal_offset,
+        feature_channel_names=signal_config.feature_channels,
     )
 
 

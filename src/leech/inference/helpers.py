@@ -22,6 +22,7 @@ from leech._rust_accel import (
 from leech.chunking import extraction_sequence, feature_window_from_metadata
 from leech.constants import (
     BELOW_THRESHOLD_LABEL,
+    DEFAULT_FEATURE_CHANNELS,
     DEFAULT_REFINE_HALF_BANDWIDTH,
     DEFAULT_SEQ_ENCODING_FALLBACK,
 )
@@ -237,6 +238,11 @@ class InferenceSpec:
     signal_in_channels: int
     feature_start: int | None
     feature_end: int | None
+    #: The checkpoint's recorded feature-channel list (issue #358). A config
+    #: lacking the key (a checkpoint predating this) means
+    #: :data:`~leech.constants.DEFAULT_FEATURE_CHANNELS` -- the historical
+    #: twelve. `leech predict` extracts exactly this list, never a flag.
+    feature_channels: list[str]
 
     # Motif / anchoring
     motif: str
@@ -425,6 +431,12 @@ class InferenceSpec:
         refine_signal_map = bool(config.get("refine_signal_map", True) or signal_in_channels > 1)
         refine_scale_iters = int(config.get("refine_scale_iters", default_refine_scale_iters))
 
+        # The recorded feature-channel list (issue #358) -- a config lacking
+        # the key (a checkpoint trained before this existed) means the
+        # historical twelve, same fallback pattern as
+        # `DEFAULT_SEQ_ENCODING_FALLBACK` above.
+        feature_channels = list(config.get("feature_channels", DEFAULT_FEATURE_CHANNELS))
+
         return cls(
             signal_len=signal_len,
             kmer_len=kmer_len,
@@ -439,6 +451,7 @@ class InferenceSpec:
             signal_in_channels=signal_in_channels,
             feature_start=feature_start,
             feature_end=feature_end,
+            feature_channels=feature_channels,
             motif=motif,
             motif_offset=motif_offset,
             anchor=anchor,
@@ -1495,6 +1508,7 @@ def build_rust_extraction_kwargs(
     signal_in_channels: int,
     base_justify: str,
     signal_context_bases: tuple[int, int] | None = None,
+    feature_channels: list[str] | None = None,
 ) -> dict:
     """Build the kwargs dict passed to the rust extraction functions.
 
@@ -1518,6 +1532,10 @@ def build_rust_extraction_kwargs(
     to the Rust entry points' ``signal_context_bases_left``/``_right``
     keyword pair -- ``None`` for either leaves both unset, which the Rust
     side reads as "sample-context model" exactly like the training path.
+
+    ``feature_channels`` (issue #358) is the checkpoint's recorded list
+    (``InferenceSpec.feature_channels``) -- ``None`` here leaves the Rust
+    side's own ``None`` default, which resolves to the historical twelve.
     """
     kmer_table_handle = None
     kmer_table_len = 9
@@ -1554,6 +1572,7 @@ def build_rust_extraction_kwargs(
         "signal_context_bases_right": (
             signal_context_bases[1] if signal_context_bases is not None else None
         ),
+        "feature_channels": feature_channels,
     }
 
 

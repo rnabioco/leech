@@ -271,6 +271,7 @@ fn _process_and_convert<'py>(
     base_justify = "center",
     signal_context_bases_left = None,
     signal_context_bases_right = None,
+    feature_channels = None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn extract_inference_chunks<'py>(
@@ -306,6 +307,7 @@ pub fn extract_inference_chunks<'py>(
     base_justify: &str,
     signal_context_bases_left: Option<i64>,
     signal_context_bases_right: Option<i64>,
+    feature_channels: Option<Vec<String>>,
 ) -> PyResult<Vec<InferenceChunkPy>> {
     let signal_context_bases = match (signal_context_bases_left, signal_context_bases_right) {
         (Some(l), Some(r)) => Some((l, r)),
@@ -359,6 +361,7 @@ pub fn extract_inference_chunks<'py>(
         refine_scale_iters,
         signal_in_channels,
         base_justify,
+        feature_channels.as_deref(),
     )?;
 
     // --- Phase 1: POD5 I/O (indexed read lookup + bulk extract), GIL released ---
@@ -428,6 +431,7 @@ pub fn extract_inference_chunks<'py>(
     base_justify = "center",
     signal_context_bases_left = None,
     signal_context_bases_right = None,
+    feature_channels = None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub fn extract_chunks_from_preloaded<'py>(
@@ -463,6 +467,7 @@ pub fn extract_chunks_from_preloaded<'py>(
     base_justify: &str,
     signal_context_bases_left: Option<i64>,
     signal_context_bases_right: Option<i64>,
+    feature_channels: Option<Vec<String>>,
 ) -> PyResult<Vec<InferenceChunkPy>> {
     let signal_context_bases = match (signal_context_bases_left, signal_context_bases_right) {
         (Some(l), Some(r)) => Some((l, r)),
@@ -516,6 +521,7 @@ pub fn extract_chunks_from_preloaded<'py>(
         refine_scale_iters,
         signal_in_channels,
         base_justify,
+        feature_channels.as_deref(),
     )?;
 
     // Skip Phase 1 -- use preloaded signals directly
@@ -655,6 +661,7 @@ mod tests {
             2,
             1,
             "center",
+            None,
         )
         .expect("valid config")
     }
@@ -703,6 +710,7 @@ mod tests {
             2,
             1,
             "center",
+            None,
         )
         .expect("valid config");
         assert_eq!(
@@ -793,6 +801,7 @@ mod tests {
             2,
             1,
             "center",
+            None,
         );
         assert!(result.is_err());
     }
@@ -819,6 +828,7 @@ mod tests {
             2,
             1,
             "center",
+            None,
         );
         assert!(result.is_err());
     }
@@ -875,6 +885,7 @@ mod tests {
             2,
             1,
             "start",
+            None,
         )
         .expect("valid config");
         cfg.spec.signal_len = 4;
@@ -937,6 +948,7 @@ mod tests {
             2,
             1,
             "bogus",
+            None,
         );
         assert!(result.is_err());
     }
