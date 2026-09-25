@@ -10,6 +10,112 @@ New entries are no longer added to this file by hand — see
 
 <!-- towncrier release notes start -->
 
+## [0.14.0] - 2026-09-25
+
+### Added
+
+- **`leech data prepare --feature-channels` records and configures the corpus's feature-channel list, and adds `level_skew`/`level_kurtosis`.**
+  The per-base feature rows a corpus is prepared with -- previously a hard-coded
+  list positioned identically in four places (`merge_feature_channels`,
+  `rust/src/inference_pipeline/{types,inference}.rs`, and a test's own copy) --
+  are now a recorded setting, the way `escapepod_signal::chunk::ChunkSpec.feature_channels`
+  already modeled it upstream. `--feature-channels dwell,dwell_log,...` selects
+  and orders the rows; omitting it uses the historical twelve, verbatim, so
+  every existing corpus and checkpoint behaves byte-identically. The list is
+  recorded in `prepare_config.json`, carried into the trained model's
+  `config.json` by `model train`, and extracted exactly by `leech predict` --
+  never re-chosen at predict time. `data merge` refuses to combine corpora
+  whose lists differ, since merging would silently misalign the feature tensor.
+  Both extraction backends (the Rust pipeline via `FeatureChannel::from_name`,
+  and the Python fallback) honor the configured list; unknown names are
+  refused at prepare time, before any read is touched.
+
+  Two new channels are available (not in the default list): `level_skew`
+  (population skewness) and `level_kurtosis` (Fisher excess kurtosis) of each
+  base's signal span, `scipy.stats.skew`/`kurtosis` at their defaults, `0.0`
+  (not `NaN`) for a degenerate span. Backed by escapepod-signal 0.28.0's
+  `features::span_stats` skew/kurtosis outputs and `chunk::FeatureChannel::LevelSkew`/`LevelKurtosis`
+  on the Rust side, and matching numpy f64 central moments on the Python
+  fallback, with Rust-vs-Python parity tests over both rows.
+
+  `dataset.py`'s time-stretch augmentation, which used to assume the dwell
+  feature family occupied feature rows 0-2 by position, now looks up
+  `dwell`/`dwell_log`/`dwell_mean` by name in the corpus's recorded channel
+  list, so a non-default `--feature-channels` order no longer silently
+  mis-scales the wrong rows.
+
+  **Channel ablation without re-preparing per arm.** `leech data prepare
+  --feature-channels all` expands to every known channel (`leech.constants
+  .ALL_FEATURE_CHANNELS` -- the historical twelve plus `level_skew`/
+  `level_kurtosis`), recorded expanded, never as the literal word `all`.
+  `leech model train --feature-channels a,b,c` (and `model optimize`, which
+  passes it through to every grid point) then selects and orders a *subset* of
+  that corpus's recorded list for one training run -- by name, never by
+  position, and validated against the corpus before training starts (an
+  unknown or absent name is refused, naming the missing channels and the
+  corpus's list). `LeechDataset` applies the selection once, where the feature
+  tensor is loaded, so `num_features`, per-channel standardization stats,
+  feature-noise augmentation and time-stretch's by-name dwell lookup all see
+  the selected rows; a recorded `kmer_*` channel that never actually landed in
+  the corpus (no k-mer level table configured) is reconciled the same way
+  `merge_feature_channels` already treats it, rather than corrupting the
+  selection. The checkpoint's `config.json` records the *selected* list as
+  `feature_channels` (what `leech predict` extracts) and the corpus's full
+  recorded list separately as `corpus_feature_channels`, for provenance.
+  Leaving `--feature-channels` unset at train time is unchanged: every row the
+  corpus has, exactly as before this existed.
+
+  Every place that scores or profiles an already-trained checkpoint against a
+  corpus honors the same selection: `leech eval test`, `leech model calibrate`
+  (both binary Platt scaling and multiclass temperature/matrix/dirichlet
+  scaling), and `leech model benchmark` (via a `feature_channels` key in a
+  `--model-config` snippet) all resolve the checkpoint's declared list against
+  the corpus's own recorded/actual channels
+  (`leech.constants.resolve_corpus_feature_selection`) before building their
+  `LeechDataset`, instead of always taking every row the corpus has. This is
+  what makes ablation-sweep scoring work at all -- every arm is typically
+  evaluated against the SAME all-channel corpus a subset checkpoint was never
+  going to match by row count alone -- and it also lets an OLD checkpoint (no
+  recorded key, so the historical twelve) evaluate correctly against a NEW
+  `--feature-channels all` corpus. When the checkpoint's list already matches
+  the corpus, no selection is applied at all (an unresolvable mismatch, e.g. an
+  old test fixture with a hand-picked reduced channel set, also falls back to
+  no selection rather than a new, surprising failure mode) -- every existing
+  checkpoint/corpus pair is unaffected. ((#358))
+- **A channel-ablation workflow for the Snakemake pipeline (`use_channel_ablation: true`).**
+  Building on #358's feature-channels-as-data work, `pipeline/workflow/rules/ablation.smk`
+  sweeps `leech model train --feature-channels` across configurable arms --
+  `baseline` (the default twelve), leave-one-out per channel, add-one for
+  `level_skew`/`level_kurtosis`, and free-form `custom` lists -- each repeated
+  over several training seeds so a channel's effect can be judged against
+  seed-to-seed noise. The train/val/test corpus is prepared and merged *once*
+  per pairwise comparison with `--feature-channels all`, under a path that
+  names that corpus, and reused by every arm; only the training call varies.
+  The aggregate rule writes one compressed table
+  (`channel_ablation_comparison.tsv.gz`) with a row per (pair, arm, seed),
+  `leech eval test`'s own metrics, and, per (pair, arm), the mean/sd across
+  seeds and the delta against that pair's baseline. Off by default, and not
+  part of `rule all`. `pipeline/config/config.yaml` also gains a top-level
+  `feature_channels` key threaded through `prepare_chunks` and the grid-search
+  re-prepare rules as `--feature-channels`, independent of the ablation
+  workflow. See [Channel ablation](docs/pipeline.md#channel-ablation). ((#361))
+
+### Changed
+
+- **Bumped the pinned `escapepod-signal` crate to v0.28.0** (from v0.27.1), for
+  `features::SpanStatsOut`'s new `skew`/`kurtosis` builder outputs and
+  `chunk::FeatureChannel::{LevelSkew,LevelKurtosis}` (escapepod-rs#396). The
+  crate's `SpanStatsOut` is now `#[non_exhaustive]`, so
+  `rust/src/inference_pipeline/features_stats.rs` moved from a struct literal
+  to `SpanStatsOut::new(..).with_median(..).with_range(..).with_skew(..).with_kurtosis(..)`;
+  `compute_per_base_stats`/`compute_signal_stats` now return six arrays
+  (mean, median, std, range, skew, kurtosis) instead of four. ((#358))
+
+### Fixed
+
+- **The ONNX export contract now describes a multiclass checkpoint's output correctly instead of always claiming a single BCE logit.** `leech model export --format onnx` hardcoded the sidecar's output block to `shape: ["batch", 1]` and a sigmoid convention even for a `num_out > 1` checkpoint (`loss_type: cross_entropy`), whose graph actually emits `(batch, num_out)` and expects a softmax — a consumer trusting the sidecar applied the wrong transform silently. `leech.onnx_export.describe_output` now derives the block from the checkpoint's `num_out`: unchanged for `num_out <= 1`, and for `num_out > 1` a softmax convention with `shape: ["batch", num_out]`, the class order read from `label_map` (`"classes": null` with a warning if the checkpoint has none — refused outright if `label_map`'s length disagrees with `num_out`), and a present calibration's method named (applying it is still the consumer's job). `export_single_model_onnx` also checks the exported graph's actual output width against `num_out` before writing the contract, and raises if they disagree. ((#357))
+
+
 ## [0.13.1] - 2026-09-17
 
 ### Fixed
