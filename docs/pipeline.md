@@ -24,7 +24,8 @@ pipeline/
 │       ├── train.smk
 │       ├── inference.smk
 │       ├── evaluate.smk
-│       └── compare_models.smk
+│       ├── compare_models.smk
+│       └── ablation.smk         # Channel ablation (opt-in, see below)
 └── cluster/                     # Cluster execution profiles
     ├── slurm/
     └── lsf/
@@ -116,6 +117,94 @@ example the pipeline ships configured for -- `comparisons_charged_uncharged.tsv`
 `comparisons_all_pairwise.tsv`, and `comparisons_chemical_properties.tsv`. A
 different task supplies its own TSV of `meta_label	label_set` pairs.
 
+### Feature channels
+
+`feature_channels` in `config.yaml` is passed as `leech data prepare
+--feature-channels` by `prepare_chunks` and the grid-search re-prepare rules
+(`reprepare_chunks_optimized_pairwise`, `reprepare_chunks_optimized_architecture`).
+Unset (the default) omits the flag, so every corpus is prepared with leech's
+own default -- the historical twelve channels
+(`leech.constants.DEFAULT_FEATURE_CHANNELS`) -- and existing runs are
+unaffected. Set it to a YAML list, or the string `"all"` for every known
+channel (the default twelve, then `level_skew`, `level_kurtosis`):
+
+```yaml
+feature_channels: [dwell, dwell_log, level_mean, level_skew]
+```
+
+This key is independent of the channel-ablation workflow below, which always
+prepares its own corpus with every channel and selects a subset per arm at
+train time instead.
+
+## Channel ablation
+
+Does dropping (or adding) a feature channel change the model's held-out
+performance? `pipeline/workflow/rules/ablation.smk` runs that sweep: it
+prepares one train/val/test corpus per pairwise comparison with every known
+feature channel, then trains and evaluates several *arms* -- each a named
+subset of channels -- on that same corpus, repeated over several training
+seeds so a channel's effect can be judged against ordinary run-to-run noise.
+
+It is off by default (`use_channel_ablation: false`) and not part of `rule
+all`/`all_compare_models` -- it trains `len(arms) * len(seeds)` models per
+pairwise comparison on top of the normal run, so enable it deliberately:
+
+```yaml
+use_channel_ablation: true
+
+ablation:
+  leave_one_out:   # default: each of the default twelve
+    - dwell
+    - level_mean
+    # ...
+  add_one:         # default: shown here
+    - [level_skew]
+    - [level_kurtosis]
+    - [level_skew, level_kurtosis]
+  custom: {}       # free-form name -> channel list, e.g.:
+    # motif_only: [dwell, dwell_log, level_mean, level_std]
+  seeds: [1, 2, 3]
+```
+
+```bash
+snakemake --profile ../cluster/slurm all_channel_ablation
+```
+
+**Arms.** `baseline` (the default twelve) is always included. `leave_one_out`
+generates one arm per listed channel, named `loo_<channel>`, training on the
+default twelve minus that channel. `add_one` generates one arm per listed
+group, named `add_<channel>[_<channel>...]`, training on the default twelve
+plus that group. `custom` adds any named channel list verbatim. A name
+collision between `custom` and a generated arm, or a `leave_one_out` channel
+outside the default twelve, fails the workflow at parse time rather than
+silently overwriting or ablating nothing.
+
+**Shared corpus.** The corpus is prepared and merged *once* per pairwise
+comparison, with `--feature-channels all`, under
+`{chunks_dir}/ablation/all_channels/{pair}/...` and
+`{chunks_dir}/merged/pairwise/{pair}/ablation/all_channels/{train,val,test}.npz`
+-- every arm and seed reads the same three files and selects its own channel
+subset at `leech model train --feature-channels` time, from that corpus's
+recorded columns. This is deliberate: a corpus per arm would repeat the same
+large extraction `len(arms)` times over data that is already the pipeline's
+biggest storage cost.
+
+**Output.** `{metrics_dir}/ablation/aggregate/channel_ablation_comparison.tsv.gz`
+has one row per `(pair, arm, seed)`, with the channel list, `leech eval
+test`'s metrics (accuracy, precision, recall, f1, auroc, auprc), and, per
+`(pair, arm)`, that metric's mean and sd across seeds and its delta against
+the pair's `baseline` arm (`<metric>_mean`, `<metric>_sd`,
+`<metric>_delta_vs_baseline`). `channel_ablation_summary.txt` is the
+human-readable version, arms ranked by f1 (or accuracy, if f1 is absent) per
+pair -- the same primary-metric convention `compare_architectures.py` uses
+for architecture comparison.
+
+**Reading the table:** a `<metric>_delta_vs_baseline` smaller in magnitude
+than that arm's own `<metric>_sd` is **not evidence** the channel changed the
+outcome -- it is within the noise the `seeds` list exists to measure. Look
+for deltas that are large relative to both arms' sd, and prefer more seeds
+over trusting a single-seed delta.
+
 ## Running the pipeline
 
 ### SLURM clusters
@@ -166,6 +255,13 @@ snakemake --profile ../cluster/slurm all_prepare                # Prepare data
 snakemake --profile ../cluster/slurm all_grid_search_comparison # Grid search all architectures
 snakemake --profile ../cluster/slurm all_train_comparison       # Train all architectures
 snakemake --profile ../cluster/slurm all_compare_models         # Full comparison
+```
+
+**Channel ablation** (when `use_channel_ablation: true`; see
+[Channel ablation](#channel-ablation) above):
+
+```bash
+snakemake --profile ../cluster/slurm all_channel_ablation
 ```
 
 ## Output structure

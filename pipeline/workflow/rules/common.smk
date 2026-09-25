@@ -274,6 +274,29 @@ def build_signal_context_arg():
     return f"--signal-context {left} {right}"
 
 
+def build_feature_channels_arg():
+    """Render `--feature-channels <list>` from config `feature_channels`, or "".
+
+    `feature_channels` may be a YAML list (joined with commas here) or a
+    string passed straight through -- including the literal "all" (every
+    known channel: the default twelve, then level_skew, level_kurtosis).
+    Unset/empty renders nothing, so `leech data prepare` falls back to its
+    own default (the historical twelve, `leech.constants.DEFAULT_FEATURE_CHANNELS`).
+
+    Shared by prepare_chunks (prepare.smk) and the grid-search re-prepare
+    rules (grid_search.smk, compare_models.smk). The channel-ablation
+    workflow (ablation.smk) does NOT use this helper -- it always prepares
+    its shared corpus with a hardcoded `--feature-channels all`, independent
+    of this config key, and selects a subset per arm at train time instead.
+    """
+    channels = config.get("feature_channels", None)
+    if not channels:
+        return ""
+    if isinstance(channels, (list, tuple)):
+        channels = ",".join(str(c) for c in channels)
+    return f"--feature-channels {channels}"
+
+
 def get_grid_search_setting(key, default):
     """Read a key from the `grid_search:` config block, falling back to default."""
     grid = config.get("grid_search") or {}

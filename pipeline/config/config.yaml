@@ -132,6 +132,28 @@ skip_motif_indels: true   # Skip reads with indels in motif region
 # the code default rather than changed to preserve existing run behavior;
 # raise the value here (not the constant) if a wider window is wanted.
 chunk_context: [225, 225]
+
+# Feature-channel list selecting and ordering the corpus's feature rows,
+# passed as `leech data prepare --feature-channels LIST` by prepare_chunks
+# and the grid-search re-prepare rules (grid_search.smk, compare_models.smk).
+# Unset (null, the default) omits the flag entirely, so `data prepare` falls
+# back to its own default -- the historical twelve
+# (`leech.constants.DEFAULT_FEATURE_CHANNELS`) -- and every existing run is
+# unaffected. May be given as a YAML list (joined with commas for the CLI) or
+# the literal string "all" (every known channel: the default twelve, then
+# level_skew, level_kurtosis).
+#
+# This is independent of the `ablation:` block below: the channel-ablation
+# workflow always prepares its own shared corpus with `--feature-channels
+# all` regardless of this setting, then selects a subset per arm at *train*
+# time.
+#
+# Examples:
+#   feature_channels: null                                  # leech's own default (the twelve)
+#   feature_channels: "all"                                 # every known channel
+#   feature_channels: [dwell, dwell_log, level_mean, level_skew]
+feature_channels: null
+
 train_split: 0.7          # Training set fraction
 val_split: 0.15           # Validation set fraction (test = 1 - train - val)
 
@@ -302,6 +324,59 @@ grid_search:
 
 grid_search_epochs: 20    # Epochs per grid search trial (shorter than full training)
 grid_search_parallel: 1   # Concurrent trials per grid search job
+
+# ============================================================================
+# Channel Ablation Configuration
+# ============================================================================
+# Set to true to run pipeline/workflow/rules/ablation.smk's channel-ablation
+# sweep (target: `snakemake all_channel_ablation`). Off by default -- it is a
+# separate, opt-in workflow, not part of `rule all`/`all_compare_models`,
+# since it trains `len(arms) * len(seeds)` models per pair on top of the
+# normal run.
+#
+# The corpus is prepared ONCE per pair with `--feature-channels all` (see
+# `feature_channels` above -- this workflow ignores that key and always uses
+# "all", independent of it) and reused by every arm; only `leech model train
+# --feature-channels` varies per arm, selecting a subset of that corpus's
+# recorded columns. See docs/pipeline.md#channel-ablation for how to read the
+# output table.
+use_channel_ablation: false
+
+ablation:
+  # Leave-one-out arms: one per channel here, each training on the default
+  # twelve (leech.constants.DEFAULT_FEATURE_CHANNELS) minus that channel.
+  # Default: every channel in the default twelve. Narrow this list to only
+  # ablate the channels you actually suspect matter.
+  leave_one_out:
+    - dwell
+    - dwell_log
+    - dwell_mean
+    - dwell_std
+    - dwell_ratio
+    - level_mean
+    - level_median
+    - level_std
+    - level_range
+    - kmer_expected
+    - kmer_residual
+    - kmer_residual_abs
+
+  # Add-one arms: each entry is a list of channel(s) added on top of the
+  # default twelve. Named "add_<channel>[_<channel>...]".
+  add_one:
+    - [level_skew]
+    - [level_kurtosis]
+    - [level_skew, level_kurtosis]
+
+  # Free-form arms: name -> explicit channel list, for anything the
+  # leave-one-out/add-one generators don't cover. Empty by default.
+  custom: {}
+    # motif_only: [dwell, dwell_log, level_mean, level_std]
+
+  # Training seeds per arm (leech model train --seed). Differences smaller
+  # than the seed-to-seed standard deviation are not evidence a channel
+  # matters -- see docs/pipeline.md#channel-ablation.
+  seeds: [1, 2, 3]
 
 # ============================================================================
 # Cluster-specific settings
