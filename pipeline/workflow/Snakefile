@@ -50,6 +50,8 @@ wildcard_constraints:
     pair="[^/]+",
     architecture="[^/]+",
     sample="[^/]+",
+    arm="[^/]+",
+    seed="[0-9]+",
 
 
 # Include common variables and functions
@@ -64,6 +66,16 @@ include: "rules/train.smk"
 include: "rules/inference.smk"
 include: "rules/evaluate.smk"
 include: "rules/compare_models.smk"
+
+
+# Channel-ablation workflow (pipeline/workflow/rules/ablation.smk) is a
+# separate, opt-in sweep -- off by default since it trains
+# `len(arms) * len(seeds)` models per pair on top of the normal run. Enable
+# with `use_channel_ablation: true` (see config/config.yaml's `ablation:`
+# block) and run the `all_channel_ablation` target.
+if config.get("use_channel_ablation", False):
+
+    include: "rules/ablation.smk"
 
 
 # ============================================================================
@@ -230,3 +242,16 @@ rule all_inspect_pod5:
     input:
         "results/pod5_inspection/pod5_inspection_master_report.tsv.gz",
         "results/pod5_inspection/pod5_inspection_summary.txt",
+
+
+if config.get("use_channel_ablation", False):
+
+    rule all_channel_ablation:
+        """Run the channel-ablation sweep (see config.yaml's `ablation:` block)."""
+        input:
+            METRICS_DIR + "/ablation/aggregate/channel_ablation_comparison.tsv.gz"
+            if AA_PAIRS
+            else [],
+            METRICS_DIR + "/ablation/aggregate/channel_ablation_summary.txt"
+            if AA_PAIRS
+            else [],

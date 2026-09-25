@@ -115,6 +115,18 @@ set-resources:
     mem_mb: 16000
     cpus_per_task: 4
 
+  # Channel-ablation re-prepare/re-merge handoff (ablation.smk, opt-in) --
+  # same shape as the pairwise/architecture ones above.
+  ablation_prepare_chunks:
+    runtime: 240
+    mem_mb: 8000
+    cpus_per_task: 8
+
+  ablation_merge_chunks:
+    runtime: 60
+    mem_mb: 16000
+    cpus_per_task: 4
+
   # ============================================================================
   # Grid Search Rules (CPU)
   # ============================================================================
@@ -146,6 +158,14 @@ set-resources:
     cpus_per_task: 16
     mem_mb: 16000
 
+  # Channel-ablation training (ablation.smk, opt-in) -- same shape as
+  # train_architecture_pairwise.
+  ablation_train:
+    slurm_partition: amilan
+    runtime: 480
+    cpus_per_task: 16
+    mem_mb: 16000
+
   # ============================================================================
   # Inference Rules (CPU)
   # ============================================================================
@@ -170,6 +190,14 @@ set-resources:
     cpus_per_task: 16
     mem_mb: 4000
 
+  # Channel-ablation evaluation (ablation.smk, opt-in) -- same shape as
+  # test_architecture_pairwise.
+  ablation_test:
+    slurm_partition: amilan
+    runtime: 240
+    cpus_per_task: 16
+    mem_mb: 4000
+
   # ============================================================================
   # Comparison and Summary Rules (CPU only, identical in both profiles)
   # ============================================================================
@@ -181,4 +209,11 @@ set-resources:
   summarize_pairwise:
     runtime: 5
     mem_mb: 1000
+    cpus_per_task: 1
+
+  # Channel-ablation aggregate (ablation.smk, opt-in) -- same shape as
+  # compare_architectures_pairwise/summarize_pairwise.
+  ablation_aggregate:
+    runtime: 10
+    mem_mb: 2000
     cpus_per_task: 1

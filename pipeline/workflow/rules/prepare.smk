@@ -38,6 +38,7 @@ rule prepare_chunks:
         skip_indels_arg=build_skip_indels_arg(),
         label_arg=lambda wildcards: build_label_arg(wildcards),
         signal_context_arg=build_signal_context_arg(),
+        feature_channels_arg=build_feature_channels_arg(),
         slurm_extra="",  # No GPU needed for data preparation
     shell:
         """
@@ -52,6 +53,7 @@ rule prepare_chunks:
             {params.skip_indels_arg} \
             {params.label_arg} \
             {params.signal_context_arg} \
+            {params.feature_channels_arg} \
             --workers {params.workers} \
             --chunk-size {params.chunk_size} \
             --no-split \

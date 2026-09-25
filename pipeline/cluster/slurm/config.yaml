@@ -129,6 +129,20 @@ set-resources:
     mem_mb: 16000
     cpus_per_task: 4
 
+  # Channel-ablation re-prepare/re-merge handoff (ablation.smk, opt-in via
+  # use_channel_ablation) -- same shape as the pairwise/architecture ones
+  # above; prepare_chunks re-run with --feature-channels all instead of a
+  # different --signal-context.
+  ablation_prepare_chunks:
+    runtime: 240
+    mem_mb: 8000
+    cpus_per_task: 8
+
+  ablation_merge_chunks:
+    runtime: 60
+    mem_mb: 16000
+    cpus_per_task: 4
+
   # ============================================================================
   # Grid Search Rules (GPU)
   # ============================================================================
@@ -165,6 +179,16 @@ set-resources:
     mem_mb: 16000
     gres: "gpu:1"
 
+  # Channel-ablation training (ablation.smk, opt-in). Always single-GPU, like
+  # train_architecture_pairwise -- there is no per-arm/per-seed reason to
+  # scale mem_mb/gres the way train_pairwise_aa's train_gpus lambda does.
+  ablation_train:
+    slurm_partition: aa100
+    runtime: 480
+    cpus_per_task: 4
+    mem_mb: 16000
+    gres: "gpu:1"
+
   # ============================================================================
   # Inference Rules (GPU)
   # ============================================================================
@@ -192,6 +216,15 @@ set-resources:
     mem_mb: 4000
     gres: "gpu:1"
 
+  # Channel-ablation evaluation (ablation.smk, opt-in) -- same shape as
+  # test_architecture_pairwise.
+  ablation_test:
+    slurm_partition: atesting_a100
+    runtime: 60
+    cpus_per_task: 2
+    mem_mb: 4000
+    gres: "gpu:1"
+
   # ============================================================================
   # Comparison and Summary Rules (CPU only, identical in both profiles)
   # ============================================================================
@@ -203,4 +236,13 @@ set-resources:
   summarize_pairwise:
     runtime: 5
     mem_mb: 1000
+    cpus_per_task: 1
+
+  # Channel-ablation aggregate (ablation.smk, opt-in) -- same shape as
+  # compare_architectures_pairwise/summarize_pairwise; it reads
+  # `len(pairs) * len(arms) * len(seeds)` small JSON files and writes one
+  # compressed table, no GPU or meaningful memory needed.
+  ablation_aggregate:
+    runtime: 10
+    mem_mb: 2000
     cpus_per_task: 1

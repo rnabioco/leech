@@ -100,6 +100,7 @@ rule reprepare_chunks_optimized_pairwise:
         ref_fasta_arg=build_reference_fasta_arg(),
         skip_indels_arg=build_skip_indels_arg(),
         label_arg=lambda wildcards: build_label_arg(wildcards),
+        feature_channels_arg=build_feature_channels_arg(),
     shell:
         """
         LEFT=$(uv run python -c "import json; print(json.load(open('{input.best_params}'))['left_context'])")
@@ -122,6 +123,7 @@ rule reprepare_chunks_optimized_pairwise:
             {params.ref_fasta_arg} \
             {params.skip_indels_arg} \
             {params.label_arg} \
+            {params.feature_channels_arg} \
             --workers {params.workers} \
             --chunk-size {params.chunk_size} \
             --signal-context "$LEFT" "$RIGHT" \
