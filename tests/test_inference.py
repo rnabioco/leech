@@ -1048,6 +1048,130 @@ def _create_pairwise_bundle(tmp_path, pair_names):
     return bundle_path
 
 
+def _write_wide_dwell_template(tmp_path, *, motif_offset=2, name="wide_dwell_template.tsv"):
+    """A dwell-template TSV covering the full ``[-8, 8]`` stored window used
+    by the issue #376 tests below, with a distinct value at every position
+    for both AAs (``base + position``) -- so any column misalignment
+    (issue #376's pool path narrowed a chunk's features, with no template,
+    then appended the template afterward keyed to the *stored* window's
+    origin, off by ``(-kmer_context + dwell_offset) - feature_start``
+    columns) changes the looked-up ratio rather than coincidentally landing
+    on the same value or falling outside the table.
+    """
+    lines = [f"# motif_offset: {motif_offset}", "aa\tposition\tdwell_mean"]
+    for aa, base in [("Ala", 10.0), ("Gly", 20.0)]:
+        for pos in range(-8, 9):
+            lines.append(f"{aa}\t{pos}\t{base + pos}")
+    path = tmp_path / name
+    path.write_text("\n".join(lines) + "\n")
+    return path
+
+
+def _create_pairwise_bundle_with_template(
+    tmp_path,
+    pair_names,
+    table_path,
+    *,
+    feature_start=None,
+    feature_end=None,
+    dwell_offset=0,
+    name="pw_tmpl_bundle.pt",
+):
+    """A pairwise bundle carrying a ``dwell_template_table`` and, optionally,
+    a stored feature window wider than ``kmer_len`` -- the shape
+    ``run_bundle_inference``'s mp.Pool path (issue #376) needs to expose its
+    narrow-then-append bug. Manual bundle dict, same pattern as
+    ``_create_multiclass_bundle``, rather than ``create_bundle``'s on-disk
+    model-dir plumbing (which this doesn't need: no Platt/arch-match checks
+    are exercised here).
+    """
+    from leech.models import get_model
+
+    num_features = _ARCH_CONFIG["num_features"] + 2  # + 2 template AA channels (Ala, Gly)
+    config = {
+        "model_name": "ConvLSTMDwell",
+        **_ARCH_CONFIG,
+        "num_features": num_features,
+        "motif": "CCAGGC",
+        "motif_offset": 2,
+        "dwell_template_table": str(table_path),
+        "dwell_offset": dwell_offset,
+    }
+    if feature_start is not None:
+        config["feature_start"] = feature_start
+    if feature_end is not None:
+        config["feature_end"] = feature_end
+
+    models_dict = {}
+    for pair in pair_names:
+        model = get_model("ConvLSTMDwell", **{**_model_kwargs(), "num_features": num_features})
+        models_dict[pair] = {"state_dict": model.state_dict()}
+
+    bundle = {
+        "metadata": {
+            "format_version": 1,
+            "bundle_version": "0.0.1-test",
+            "architecture": "ConvLSTMDwell",
+            "comparison_type": "pairwise",
+            "num_models": len(models_dict),
+            "pairs": pair_names,
+        },
+        "config": config,
+        "models": models_dict,
+    }
+    bundle_path = tmp_path / name
+    torch.save(bundle, bundle_path)
+    return bundle_path
+
+
+# Driver for TestBundleExtractionPathParity's template test, same shape and
+# same reason as _WORKER_PATH_DRIVER below: runs `--workers 2` FIRST, in one
+# subprocess, because forking an mp.Pool after the sequential path's own
+# thread pools/torch CPU use in the same process can hang (issue #308).
+#
+# `raw=True` -- comparing the float `pp` probability vector, not the
+# rounded/argmax `aa`/`ac` tags -- is deliberate: with only 3 pairwise models
+# voting naively over 20 reads, a wrong (but merely shifted) feature array
+# often still rounds to the same winning class and the same uint8 confidence,
+# so the coarse tags coincidentally agreed even on the unfixed code.
+_BUNDLE_WORKER_PATH_TEMPLATE_DRIVER = """
+import json, sys
+from pathlib import Path
+import pysam
+from leech.inference import run_bundle_inference
+
+bundle, pod5, bam, ref, workdir = sys.argv[1:6]
+work = Path(workdir)
+
+
+def dump(path):
+    with pysam.AlignmentFile(str(path), "rb") as f:
+        return {
+            r.query_name: list(r.get_tag("pp"))
+            for r in f
+            if r.has_tag("pp")
+        }
+
+
+for workers in (2, 0):
+    out_bam = work / ("bw%d.bam" % workers)
+    run_bundle_inference(
+        bundle_path=Path(bundle),
+        pod5_path=Path(pod5),
+        bam_path=Path(bam),
+        output_path=out_bam,
+        device="cpu",
+        batch_size=8,
+        reverse_signal=True,
+        reference_fasta=Path(ref),
+        num_workers=workers,
+        backend="python",
+        raw=True,
+    )
+    (work / ("bw%d.json" % workers)).write_text(json.dumps(dump(out_bam), sort_keys=True))
+"""
+
+
 def _run_multiclass_inference(tmp_path, class_names, *, raw=False, min_confidence=0, min_margin=0):
     """Run multiclass inference on tRNA fixtures and return output reads."""
     from leech.bundling import load_model_from_multiclass_bundle
@@ -1396,6 +1520,55 @@ run_bundle_inference(
         rust = self._predict(tmp_path, bundle_path, "rs2", backend="rust")
         assert serial
         assert rust == serial
+
+    @pytest.mark.timeout(150)
+    def test_parallel_path_matches_serial_with_template_and_narrowing(self, tmp_path):
+        """Issue #376: ``run_bundle_inference``'s own mp.Pool path (the
+        bundle mirror of ``run_inference``'s bug) must apply a bundle's
+        ``dwell_template_table`` inside the worker, before narrowing to the
+        model's k-mer window -- the order training and the serial path
+        (``chunks_for_read``) both use. Needs a stored feature window wider
+        than ``kmer_len`` (``feature_start=-8``, ``feature_end=8`` vs
+        ``kmer_len=11``) plus a nonzero ``dwell_offset=2``: at the default
+        feature window (== the k-mer window, no narrowing needed) the buggy
+        post-hoc append and the fixed in-worker append are keyed to the same
+        origin and agree by coincidence.
+
+        Runs in a fresh subprocess for the same reason
+        ``test_parallel_path_alone_writes_tags`` does: forking ``mp.Pool``
+        after prior in-process torch CPU use can hang.
+        """
+        import json
+        import subprocess
+        import sys
+
+        table_path = _write_wide_dwell_template(tmp_path)
+        bundle_path = _create_pairwise_bundle_with_template(
+            tmp_path,
+            self.PAIR_NAMES,
+            table_path,
+            feature_start=-8,
+            feature_end=8,
+            dwell_offset=2,
+        )
+        subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                _BUNDLE_WORKER_PATH_TEMPLATE_DRIVER,
+                str(bundle_path),
+                str(TRNA_POD5),
+                str(TRNA_BAM),
+                str(TRNA_REF),
+                str(tmp_path),
+            ],
+            check=True,
+            timeout=900,
+        )
+        parallel = json.loads((tmp_path / "bw2.json").read_text())
+        serial = json.loads((tmp_path / "bw0.json").read_text())
+        assert serial
+        assert parallel == serial
 
 
 # ---------------------------------------------------------------------------
@@ -1838,9 +2011,27 @@ class TestSingleModelDwellTemplate:
         path.write_text("\n".join(lines) + "\n")
         return path
 
-    def _create_bundle_with_template(self, tmp_path, table_path, *, name="tmpl_bundle.pt"):
+    def _create_bundle_with_template(
+        self,
+        tmp_path,
+        table_path,
+        *,
+        name="tmpl_bundle.pt",
+        feature_start=None,
+        feature_end=None,
+        dwell_offset=0,
+    ):
         """Same shape as ``_create_multiclass_bundle``, plus a wider feature
-        branch and a ``dwell_template_table`` naming ``table_path``."""
+        branch and a ``dwell_template_table`` naming ``table_path``.
+
+        ``feature_start``/``feature_end``/``dwell_offset`` are ``None``/``0``
+        by default, giving the same config every existing caller of this
+        method already relies on (a stored feature window equal to the
+        k-mer window, no narrowing). Passing a wider window plus a nonzero
+        offset is what issue #376's tests need: only then does the pool
+        path's narrow-then-append order actually disagree with the correct
+        append-then-narrow order.
+        """
         from leech.models import get_model
 
         num_out = len(self.CLASS_NAMES)
@@ -1857,7 +2048,12 @@ class TestSingleModelDwellTemplate:
             "motif": "CCAGGC",
             "motif_offset": 2,
             "dwell_template_table": str(table_path),
+            "dwell_offset": dwell_offset,
         }
+        if feature_start is not None:
+            config["feature_start"] = feature_start
+        if feature_end is not None:
+            config["feature_end"] = feature_end
         label_map = {aa: i for i, aa in enumerate(self.CLASS_NAMES)}
         bundle = {
             "metadata": {
@@ -1933,6 +2129,53 @@ class TestSingleModelDwellTemplate:
 
         with pytest.raises(ValueError, match="motif_offset"):
             self._predict(tmp_path, bundle_path, "out.bam", backend="python")
+
+    def test_worker_path_matches_sequential_path_with_template(self, tmp_path):
+        """Issue #376: ``--workers N`` (the ``mp.Pool`` path, ``_inference_worker``)
+        must apply a checkpoint's dwell template inside the worker, before
+        narrowing to the model's k-mer window -- the same order training and
+        the sequential path use. Needs a stored feature window wider than
+        ``kmer_len`` (``feature_start=-8``, ``feature_end=8`` vs
+        ``kmer_len=11``) plus a nonzero ``dwell_offset=2``: at the default
+        feature window (== the k-mer window, no narrowing needed) the buggy
+        post-hoc append and the fixed in-worker append are keyed to the same
+        origin and agree by coincidence, which is why
+        ``TestExtractionPathParity::test_worker_path_matches_sequential_path``
+        and #375's own template test never caught this.
+
+        Runs in a fresh interpreter (see ``_WORKER_PATH_DRIVER``).
+        """
+        import json
+        import subprocess
+        import sys
+
+        table_path = _write_wide_dwell_template(tmp_path)
+        bundle_path = self._create_bundle_with_template(
+            tmp_path,
+            table_path,
+            name="wide_tmpl_bundle.pt",
+            feature_start=-8,
+            feature_end=8,
+            dwell_offset=2,
+        )
+        subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                _WORKER_PATH_DRIVER,
+                str(bundle_path),
+                str(TRNA_POD5),
+                str(TRNA_BAM),
+                str(TRNA_REF),
+                str(tmp_path),
+            ],
+            check=True,
+            timeout=900,
+        )
+        parallel = json.loads((tmp_path / "w2.json").read_text())
+        sequential = json.loads((tmp_path / "w0.json").read_text())
+        assert any("aa" in r for r in sequential)
+        assert parallel == sequential
 
 
 @pytest.mark.skipif(not TRNA_FIXTURES_AVAILABLE, reason="tRNA fixtures not available")

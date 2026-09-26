@@ -18,6 +18,7 @@ from leech.features import encode_signal_kmer_batch, extract_move_table, sequenc
 from leech.inference.helpers import (
     BatchAccumulator,
     GpuBatchRunner,
+    InferenceDwellTemplate,
     InferenceSpec,
     _run_batch,
     _run_batch_multiclass,
@@ -45,12 +46,22 @@ logger = logging.getLogger("leech.inference")
 
 
 def _inference_worker(
-    args: tuple[list, InferenceConfig],
+    args: tuple[list, InferenceConfig, InferenceDwellTemplate | None],
 ) -> list[tuple[str, int, np.ndarray, np.ndarray, np.ndarray | None, int, bool]]:
     """
     Worker for parallel chunk extraction during inference.
 
     Extracts chunks from reads and optionally pre-computes signal_kmer encoding.
+
+    A model's dwell template (if any) is threaded in as ``args[2]`` and
+    applied here, inside the worker, before the feature array is narrowed to
+    the model's k-mer window -- the same order training used
+    (``LeechDataset._prepare_features``) and every other extraction path
+    already followed. Before this the worker narrowed with no template
+    knowledge at all, and the caller appended the template afterward keyed to
+    the *stored* window's origin -- wrong by
+    ``(-kmer_context + dwell_offset) - feature_start`` columns whenever the
+    stored window was wider than ``kmer_len`` (issue #376).
 
     Returns:
         List of (read_id, base_idx, signal, encoded_sequence, features_or_none,
@@ -61,7 +72,12 @@ def _inference_worker(
     from leech.io.pod5_reader import read_pod5_signals_batch_cached
     from leech.preparation.reader import build_leech_read
 
-    read_infos, config = args
+    read_infos, config, dwell_template = args
+    dwell_templates_arr: np.ndarray | None = (
+        dwell_template.templates if dwell_template is not None else None
+    )
+    dwell_template_min_pos: int = dwell_template.min_pos if dwell_template is not None else 0
+    dwell_row: int | None = dwell_template.dwell_row if dwell_template is not None else None
 
     results: list[tuple[str, int, np.ndarray, np.ndarray, np.ndarray | None, int, bool]] = []
     _shape_validated = False
@@ -178,6 +194,9 @@ def _inference_worker(
                             feature_start=chunk.get("feature_start"),
                             dwell_offset=config.dwell_offset,
                             wide_features=config.wide_features,
+                            dwell_templates=dwell_templates_arr,
+                            template_min_pos=dwell_template_min_pos,
+                            dwell_row=dwell_row,
                         )
 
                 if not _shape_validated:
@@ -706,33 +725,16 @@ def run_inference(
                         read_infos[i : i + chunk_size]
                         for i in range(0, len(read_infos), chunk_size)
                     ]
-                    worker_args = [(wb, inf_config) for wb in worker_batches]
+                    worker_args = [(wb, inf_config, dwell_template) for wb in worker_batches]
 
                     pending: dict[str, list] = {}
                     accumulator = BatchAccumulator(batch_size, _run_worker_batch)
                     for worker_results in pool.imap_unordered(_inference_worker, worker_args):
                         for read_id, base_idx, sig, enc_seq, feat, ji, jm in worker_results:
-                            # `_inference_worker` builds features with no
-                            # knowledge of dwell templates (its InferenceConfig
-                            # carries none), so the append happens here in the
-                            # main process instead -- the same split
-                            # `run_bundle_inference`'s own mp.Pool path uses.
-                            if (
-                                requires_features
-                                and feat is not None
-                                and dwell_templates_arr is not None
-                            ):
-                                from leech.dataset import append_dwell_template_channels
-
-                                feat = append_dwell_template_channels(
-                                    feat,
-                                    feat_start=_feature_start
-                                    if _feature_start is not None
-                                    else -kmer_context,
-                                    dwell_templates=dwell_templates_arr,
-                                    template_min_pos=dwell_template_min_pos,
-                                    dwell_row=dwell_row,
-                                )
+                            # The template, if any, is already applied inside
+                            # the worker -- before it narrowed the feature
+                            # window to the model's k-mer width, the same
+                            # order training used (issue #376).
                             accumulator.add(sig, enc_seq, feat, (read_id, base_idx, ji, jm))
                         # One worker's results never share a batch with the
                         # next worker's -- imap_unordered hands them back
