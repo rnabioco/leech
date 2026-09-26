@@ -819,7 +819,7 @@ def run_bundle_inference(
                         read_infos[i : i + _worker_chunk_size]
                         for i in range(0, len(read_infos), _worker_chunk_size)
                     ]
-                    worker_args = [(wb, inf_config) for wb in worker_batches]
+                    worker_args = [(wb, inf_config, dwell_template) for wb in worker_batches]
 
                     # Dedupe: bundle uses only the first chunk per read
                     seen_in_batch: set[str] = set()
@@ -838,25 +838,10 @@ def run_bundle_inference(
                                 continue
                             seen_in_batch.add(read_id)
 
-                            if (
-                                needs_features
-                                and feat is not None
-                                and dwell_templates_arr is not None
-                            ):
-                                from leech.dataset import (
-                                    append_dwell_template_channels,
-                                )
-
-                                feat = append_dwell_template_channels(
-                                    feat,
-                                    feat_start=_feature_start
-                                    if _feature_start is not None
-                                    else -kmer_context,
-                                    dwell_templates=dwell_templates_arr,
-                                    template_min_pos=dwell_template_min_pos,
-                                    dwell_row=dwell_row,
-                                )
-
+                            # The template, if any, is already applied inside
+                            # the worker -- before it narrowed the feature
+                            # window to the model's k-mer width, the same
+                            # order training used (issue #376).
                             if not _shape_validated:
                                 validate_inference_shapes(sig, feat, config)
                                 _shape_validated = True
