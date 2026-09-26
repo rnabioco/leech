@@ -131,16 +131,121 @@ def _byte_matrix(column: np.ndarray | None) -> np.ndarray | None:
 # =============================================================================
 
 
+#: The motif_offset every --dwell-template-table was implicitly built
+#: against before the table recorded its own (issue #364). Used only to
+#: decide whether an *unlabelled* table is worth a warning.
+_LEGACY_DWELL_TEMPLATE_MOTIF_OFFSET = 2
+
+
+def _read_dwell_template_header(table_path: Path) -> tuple[int | None, str | None]:
+    """Parse leading ``# key: value`` comment lines for build provenance.
+
+    A table built with knowledge of issue #364 records the ``motif_offset``
+    (and optionally ``motif``) its ``position`` column is counted from, e.g.::
+
+        # motif: CCAGGC
+        # motif_offset: 2
+        aa\tposition\tdwell_mean
+        ...
+
+    Returns ``(None, None)`` for a table with no such header -- an
+    "unlabelled" table predating this convention, not an error by itself.
+    """
+    motif_offset: int | None = None
+    motif: str | None = None
+    with open(table_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            if not line.startswith("#"):
+                break
+            key, _, value = line[1:].partition(":")
+            key = key.strip().lower()
+            value = value.strip()
+            if key == "motif_offset":
+                try:
+                    motif_offset = int(value)
+                except ValueError:
+                    logger.warning(
+                        "Could not parse motif_offset from %s header line %r",
+                        table_path,
+                        line,
+                    )
+            elif key == "motif":
+                motif = value
+    return motif_offset, motif
+
+
+def check_dwell_template_motif_offset(
+    table_path: Path | str,
+    table_motif_offset: int | None,
+    table_motif: str | None,
+    motif_offset: int,
+) -> None:
+    """Guard the position/motif_offset pairing a dwell-template table assumes.
+
+    ``append_dwell_template_channels`` looks each feature column up by a
+    signed offset from the focus base -- i.e. counted from ``motif_offset`` --
+    but nothing about the TSV's bare ``aa, position, dwell_mean`` columns
+    records which focus it was built against. A table built at one
+    motif_offset silently misaligns every lookup against a run at another:
+    every row still produces a finite ratio, so nothing raises on its own
+    (issue #364).
+
+    Args:
+        table_path: The TSV path, for the error/warning message only.
+        table_motif_offset: The table's own recorded motif_offset (see
+            :func:`_read_dwell_template_header`), or None for an unlabelled
+            table.
+        table_motif: The table's own recorded motif, or None.
+        motif_offset: This run's motif_offset -- the training corpus's
+            ``prepare_config.json`` value, or the checkpoint's recorded value
+            at predict/eval/calibrate time.
+
+    Raises:
+        ValueError: The table records a motif_offset and it disagrees with
+            ``motif_offset``.
+    """
+    if table_motif_offset is not None:
+        if table_motif_offset != motif_offset:
+            motif_note = f" (motif={table_motif!r})" if table_motif else ""
+            raise ValueError(
+                f"dwell-template-table {table_path} was built at "
+                f"motif_offset={table_motif_offset}{motif_note}, but this run's "
+                f"motif_offset is {motif_offset}. The table's `position` column "
+                "is counted from the focus base (motif_offset); a mismatch "
+                "silently misaligns every template lookup (issue #364). Rebuild "
+                "the table at this motif_offset, or pair it with a run that "
+                "matches the one it was built at."
+            )
+        return
+    if motif_offset != _LEGACY_DWELL_TEMPLATE_MOTIF_OFFSET:
+        logger.warning(
+            "dwell-template-table %s does not record which motif_offset it was "
+            "built against (add a '# motif_offset: N' header line). This run's "
+            "motif_offset is %d, not the historical default of %d -- confirm "
+            "the table's `position` column is counted from the same focus base, "
+            "or template lookups may be silently misaligned (issue #364).",
+            table_path,
+            motif_offset,
+            _LEGACY_DWELL_TEMPLATE_MOTIF_OFFSET,
+        )
+
+
 def load_dwell_template_table(
     table_path: Path,
-) -> tuple[np.ndarray, int, list[str]]:
+) -> tuple[np.ndarray, int, list[str], int | None, str | None]:
     """Load per-AA per-position expected dwell from a TSV.
 
     Args:
         table_path: Path to TSV with columns ``aa``, ``position``, ``dwell_mean``.
+            May be preceded by ``# key: value`` header lines recording the
+            ``motif``/``motif_offset`` the table was built against -- see
+            :func:`_read_dwell_template_header` and issue #364.
 
     Returns:
-        (template, template_min_pos, aa_order) where:
+        (template, template_min_pos, aa_order, table_motif_offset, table_motif) where:
           - template: ndarray of shape (n_aa, n_positions), indexed by
             ``[aa_idx, pos - template_min_pos]``.
           - template_min_pos: integer offset such that column 0 corresponds to
@@ -148,8 +253,13 @@ def load_dwell_template_table(
           - aa_order: list of amino-acid three-letter codes, sorted
             alphabetically. Index into this list to interpret the first axis of
             ``template``.
+          - table_motif_offset: the table's recorded motif_offset, or None for
+            an unlabelled table. Pass to :func:`check_dwell_template_motif_offset`
+            along with the run's own motif_offset before trusting the table.
+          - table_motif: the table's recorded motif, or None.
     """
-    df = pl.read_csv(table_path, separator="\t")
+    table_motif_offset, table_motif = _read_dwell_template_header(table_path)
+    df = pl.read_csv(table_path, separator="\t", comment_prefix="#")
     aa_list = sorted(df["aa"].unique().to_list())
     n_aa = len(aa_list)
     aa_to_idx = {aa: i for i, aa in enumerate(aa_list)}
@@ -179,7 +289,7 @@ def load_dwell_template_table(
         f"Loaded dwell template table: {n_aa} AAs, "
         f"positions {min_pos} to {max_pos} from {table_path}"
     )
-    return template, min_pos, aa_list
+    return template, min_pos, aa_list, table_motif_offset, table_motif
 
 
 def append_dwell_template_channels(
@@ -629,6 +739,7 @@ class LeechDataset(Dataset):
         feature_noise_scale: float = 0.0,
         time_stretch_range: tuple[float, float] | None = None,
         dwell_template_table: str | Path | None = None,
+        motif_offset: int | None = None,
         standardize_features: bool = False,
         feature_channel_names: Sequence[str] | None = None,
         selected_feature_channels: Sequence[str] | None = None,
@@ -706,7 +817,16 @@ class LeechDataset(Dataset):
                 dwell times. When provided, 20 dwell ratio channels are appended
                 to features: ``dwell / expected_dwell[AA_i, pos]`` for each of
                 20 AAs. The correct AA's channel has ratio closest to 1.0.
-                TSV columns: aa, position, dwell_mean, ...
+                TSV columns: aa, position, dwell_mean, ... -- see
+                :func:`load_dwell_template_table` for the optional header lines
+                recording the motif_offset the table was built against.
+            motif_offset: This run's motif_offset, used only to guard
+                ``dwell_template_table`` against issue #364 -- a table whose
+                ``position`` column was counted from a different focus base.
+                Checked via :func:`check_dwell_template_motif_offset` when
+                both this and ``dwell_template_table`` are given; ``None``
+                (default) skips the check, e.g. for callers that do not yet
+                know their own motif_offset.
             standardize_features: Compute corpus-wide per-channel feature
                 mean/std once (see :attr:`feature_mean`/:attr:`feature_std`)
                 for ``--standardize-features``. This dataset never applies
@@ -794,6 +914,9 @@ class LeechDataset(Dataset):
         # Load dwell template table for 20-channel AA template features
         self._dwell_templates: np.ndarray | None = None
         self._template_aa_order: list[str] = []
+        self.motif_offset = motif_offset
+        self.dwell_template_motif_offset: int | None = None
+        self.dwell_template_motif: str | None = None
         if dwell_template_table is not None:
             self._load_dwell_templates(Path(dwell_template_table))
 
@@ -1988,11 +2111,23 @@ class LeechDataset(Dataset):
         return torch.from_numpy(np.ascontiguousarray(signal))
 
     def _load_dwell_templates(self, table_path: Path) -> None:
-        """Instance wrapper: load templates via the module-level helper."""
-        template, template_min_pos, aa_order = load_dwell_template_table(table_path)
+        """Instance wrapper: load templates via the module-level helper.
+
+        Also guards the position/motif_offset pairing the table assumes
+        (issue #364) whenever the caller passed its own ``motif_offset``.
+        """
+        template, template_min_pos, aa_order, table_motif_offset, table_motif = (
+            load_dwell_template_table(table_path)
+        )
         self._dwell_templates = template
         self._template_min_pos = template_min_pos
         self._template_aa_order = aa_order
+        self.dwell_template_motif_offset = table_motif_offset
+        self.dwell_template_motif = table_motif
+        if self.motif_offset is not None:
+            check_dwell_template_motif_offset(
+                table_path, table_motif_offset, table_motif, self.motif_offset
+            )
 
     def _append_template_channels(self, features: np.ndarray, chunk: dict) -> np.ndarray:
         """Instance wrapper: delegate to the module-level helper.

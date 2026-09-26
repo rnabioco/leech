@@ -904,7 +904,13 @@ def merge(
     "--dwell-template-table",
     type=click.Path(exists=True, path_type=Path),
     default=None,
-    help="TSV with per-AA per-position expected dwell for 20-channel template features.",
+    help=(
+        "TSV with per-AA per-position expected dwell for 20-channel template features. "
+        "`position` is counted from the focus base (--motif-offset); precede the table "
+        "with '# motif_offset: N' (and optionally '# motif: ...') header lines recording "
+        "what it was built against -- a mismatch with this run's --motif-offset raises, "
+        "and an unlabelled table warns if this run's is not the historical default of 2."
+    ),
 )
 @click.option(
     "--checkpoint-metric",

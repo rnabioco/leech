@@ -1678,5 +1678,124 @@ class TestTimeStretch:
             )
 
 
+class TestDwellTemplateMotifOffset:
+    """#364: a bare aa/position/dwell_mean TSV never records which
+    motif_offset its `position` column counts from, so a table built at one
+    motif_offset silently misaligns every lookup against a run at another --
+    every row still produces a finite ratio, so nothing raises on its own.
+    """
+
+    @staticmethod
+    def _write_table(tmp_path, *, motif_offset=None, motif=None, name="dwell_template.tsv"):
+        lines = []
+        if motif is not None:
+            lines.append(f"# motif: {motif}")
+        if motif_offset is not None:
+            lines.append(f"# motif_offset: {motif_offset}")
+        lines.append("aa\tposition\tdwell_mean")
+        for aa, pos, val in [
+            ("Ala", -2, 10.0),
+            ("Ala", -1, 11.0),
+            ("Gly", -2, 9.0),
+            ("Gly", -1, 12.0),
+        ]:
+            lines.append(f"{aa}\t{pos}\t{val}")
+        path = tmp_path / name
+        path.write_text("\n".join(lines) + "\n")
+        return path
+
+    def test_load_parses_header_metadata(self, tmp_path):
+        from leech.dataset import load_dwell_template_table
+
+        table_path = self._write_table(tmp_path, motif_offset=2, motif="CCAGGC")
+        _, _, aa_order, table_motif_offset, table_motif = load_dwell_template_table(table_path)
+
+        assert table_motif_offset == 2
+        assert table_motif == "CCAGGC"
+        assert aa_order == ["Ala", "Gly"]
+
+    def test_load_unlabelled_table_returns_none(self, tmp_path):
+        from leech.dataset import load_dwell_template_table
+
+        table_path = self._write_table(tmp_path)
+        _, _, _, table_motif_offset, table_motif = load_dwell_template_table(table_path)
+
+        assert table_motif_offset is None
+        assert table_motif is None
+
+    def test_check_raises_on_recorded_mismatch(self):
+        from leech.dataset import check_dwell_template_motif_offset
+
+        with pytest.raises(ValueError, match="motif_offset"):
+            check_dwell_template_motif_offset("table.tsv", 2, "CCAGGC", 8)
+
+    def test_check_passes_on_recorded_match(self):
+        from leech.dataset import check_dwell_template_motif_offset
+
+        check_dwell_template_motif_offset("table.tsv", 2, "CCAGGC", 2)  # does not raise
+
+    def test_check_warns_on_unlabelled_nondefault_offset(self, caplog):
+        from leech.dataset import check_dwell_template_motif_offset
+
+        with caplog.at_level("WARNING", logger="leech.dataset"):
+            check_dwell_template_motif_offset("table.tsv", None, None, 8)
+
+        assert any("does not record" in r.getMessage() for r in caplog.records)
+
+    def test_check_silent_on_unlabelled_default_offset(self, caplog):
+        from leech.dataset import check_dwell_template_motif_offset
+
+        with caplog.at_level("WARNING", logger="leech.dataset"):
+            check_dwell_template_motif_offset("table.tsv", None, None, 2)
+
+        assert not any("does not record" in r.getMessage() for r in caplog.records)
+
+    def test_leech_dataset_raises_on_mismatch(self, temp_chunks_file, tmp_path):
+        table_path = self._write_table(tmp_path, motif_offset=2)
+
+        with pytest.raises(ValueError, match="motif_offset"):
+            LeechDataset(
+                temp_chunks_file,
+                signal_len=400,
+                kmer_len=11,
+                model_type="ConvLSTMDwell",
+                seq_encoding="base_onehot",
+                dwell_template_table=table_path,
+                motif_offset=8,
+            )
+
+    def test_leech_dataset_accepts_match(self, temp_chunks_file, tmp_path):
+        table_path = self._write_table(tmp_path, motif_offset=2)
+
+        dataset = LeechDataset(
+            temp_chunks_file,
+            signal_len=400,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding="base_onehot",
+            dwell_template_table=table_path,
+            motif_offset=2,
+        )
+
+        assert dataset.dwell_template_motif_offset == 2
+
+    def test_leech_dataset_skips_check_without_motif_offset(self, temp_chunks_file, tmp_path):
+        """motif_offset=None (the default) means the caller doesn't know its
+        own motif_offset -- e.g. a call site not yet updated for #364 -- and
+        must stay backward compatible rather than raise."""
+        table_path = self._write_table(tmp_path, motif_offset=8)
+
+        dataset = LeechDataset(
+            temp_chunks_file,
+            signal_len=400,
+            kmer_len=11,
+            model_type="ConvLSTMDwell",
+            seq_encoding="base_onehot",
+            dwell_template_table=table_path,
+        )
+
+        assert dataset.dwell_template_motif_offset == 8
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
