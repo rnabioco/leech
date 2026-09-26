@@ -414,10 +414,16 @@ def run_bundle_inference(
     dwell_template_min_pos: int = 0
     bundle_dwell_template_table = spec.dwell_template_table
     if bundle_dwell_template_table:
-        from leech.dataset import load_dwell_template_table
+        from leech.dataset import check_dwell_template_motif_offset, load_dwell_template_table
 
-        dwell_templates_arr, dwell_template_min_pos, _ = load_dwell_template_table(
-            Path(bundle_dwell_template_table)
+        dwell_templates_arr, dwell_template_min_pos, _, table_motif_offset, table_motif = (
+            load_dwell_template_table(Path(bundle_dwell_template_table))
+        )
+        # Re-checked here, not just at training time: this reloads the TSV
+        # from disk, so it also catches a table whose content changed at the
+        # same path since the checkpoint was trained (issue #364).
+        check_dwell_template_motif_offset(
+            bundle_dwell_template_table, table_motif_offset, table_motif, motif_offset
         )
         logger.info(
             f"Dwell template append enabled at inference "

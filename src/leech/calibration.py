@@ -206,6 +206,10 @@ def calibrate_model(
         allow_encoding_fallback=False,
         signal_mode=config.get("signal_mode", "both"),
         dwell_template_table=dwell_template_table,
+        # The checkpoint's own recorded motif_offset -- guards a
+        # dwell_template_table whose content changed on disk since training
+        # against the position/motif_offset pairing it was trained on (#364).
+        motif_offset=config.get("motif_offset", 0),
         feature_channel_names=corpus_feature_channels,
         selected_feature_channels=feature_channels_selection,
     )
@@ -569,6 +573,10 @@ def calibrate_model_multiclass(
         allow_encoding_fallback=False,
         signal_mode=config.get("signal_mode", "both"),
         dwell_template_table=dwell_template_table,
+        # The checkpoint's own recorded motif_offset -- guards a
+        # dwell_template_table whose content changed on disk since training
+        # against the position/motif_offset pairing it was trained on (#364).
+        motif_offset=config.get("motif_offset", 0),
         feature_channel_names=corpus_feature_channels,
         selected_feature_channels=feature_channels_selection,
     )

@@ -2668,12 +2668,19 @@ def train_model(
     # decisions this function makes in between) -- duplicating one dict
     # lookup is cheaper and lower-risk than reordering a multi-hundred-line
     # function.
+    # The corpus's OWN motif_offset (not the possibly-unrelated --motif-offset
+    # CLI value) is what a --dwell-template-table's `position` column has to
+    # agree with (issue #364); falls back to the CLI value for a corpus
+    # prepared before prepare_config.json existed.
     _train_feature_channels: list[str] | None = None
+    _corpus_motif_offset = motif_offset
     if train_data_path is not None:
         _fc_sidecar_path = train_data_path.parent / "prepare_config.json"
         if _fc_sidecar_path.exists():
             with open(_fc_sidecar_path) as f:
-                _train_feature_channels = json.load(f).get("feature_channels")
+                _prepare_sidecar = json.load(f)
+            _train_feature_channels = _prepare_sidecar.get("feature_channels")
+            _corpus_motif_offset = _prepare_sidecar.get("motif_offset", motif_offset)
 
     # Channel ablation (issue #358 follow-up): validate a requested
     # `--feature-channels` subset against the corpus's *recorded* list right
@@ -2721,6 +2728,7 @@ def train_model(
         feature_noise_scale=augment_feature_noise_scale,
         time_stretch_range=augment_time_stretch,
         dwell_template_table=dwell_template_table,
+        motif_offset=_corpus_motif_offset,
         standardize_features=standardize_features,
         feature_channel_names=_train_feature_channels,
         selected_feature_channels=feature_channels,
@@ -2746,6 +2754,7 @@ def train_model(
             cl_regression=cl_regression,
             signal_mode=signal_mode,
             dwell_template_table=dwell_template_table,
+            motif_offset=_corpus_motif_offset,
             feature_channel_names=_train_feature_channels,
             selected_feature_channels=feature_channels,
         )
@@ -3240,6 +3249,14 @@ def train_model(
         "feature_mean": feature_mean_list,
         "feature_std": feature_std_list,
         "dwell_template_table": str(dwell_template_table) if dwell_template_table else None,
+        # The table's OWN recorded build provenance (issue #364), not this
+        # run's motif/motif_offset above -- None when the table predates that
+        # convention. `check_dwell_template_motif_offset` already refused a
+        # recorded mismatch before training started; recording it here lets
+        # predict re-check it against a table that may have changed on disk
+        # since, and lets an old checkpoint be audited without the TSV at hand.
+        "dwell_template_motif_offset": train_dataset.dwell_template_motif_offset,
+        "dwell_template_motif": train_dataset.dwell_template_motif,
         # Preparation metadata (from prepare_config.json sidecar)
         "reference_fasta": prepare_metadata.get("reference_fasta"),
         "anchor": prepare_metadata.get("anchor", "reference"),
