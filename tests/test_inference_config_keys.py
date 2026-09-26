@@ -198,6 +198,33 @@ class TestPrepareInferenceFeatures:
         # columns here instead.
         np.testing.assert_allclose(out[3], np.ones(kmer_len, dtype=np.float32))
 
+    def test_prepare_inference_features_uses_named_dwell_row(self):
+        """#366: the dwell row must be resolved by NAME (``dwell_row``), not
+        assumed to be row 0 -- a checkpoint's recorded ``feature_channels``
+        can put `dwell` anywhere."""
+        width, kmer_len, feat_start = 21, 11, -10
+        # Row 0 (not dwell) is 100 everywhere; row 1 (dwell) is 10 everywhere.
+        feats = np.stack(
+            [
+                np.full(width, 100.0, dtype=np.float32),
+                np.full(width, 10.0, dtype=np.float32),
+            ]
+        )
+        templates = np.full((1, width), 5.0, dtype=np.float32)
+        out = prepare_inference_features(
+            feats,
+            kmer_len=kmer_len,
+            feature_start=feat_start,
+            dwell_offset=0,
+            wide_features=False,
+            dwell_templates=templates,
+            template_min_pos=feat_start,
+            dwell_row=1,
+        )
+        assert out.shape == (3, kmer_len)
+        # 10 / 5 = 2.0 -- row 0 (100) divided by mistake would give 20.0.
+        np.testing.assert_allclose(out[2], np.full(kmer_len, 2.0, dtype=np.float32))
+
 
 class TestExtractionSequence:
     """Motif positions index the sequence chunks are cut from.

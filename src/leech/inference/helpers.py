@@ -537,6 +537,7 @@ def prepare_inference_features(
     wide_features: bool = False,
     dwell_templates: np.ndarray | None = None,
     template_min_pos: int = 0,
+    dwell_row: int = 0,
 ) -> np.ndarray | None:
     """Put a chunk's feature array into the shape the model was trained on.
 
@@ -568,6 +569,11 @@ def prepare_inference_features(
         wide_features: Model consumes the full window; skip step 2.
         dwell_templates: ``(n_aa, n_positions)`` template table, or None.
         template_min_pos: First position covered by ``dwell_templates``.
+        dwell_row: Row of ``features`` holding raw dwell -- resolve this by
+            name (``spec.feature_channels.index("dwell")``) rather than
+            assume row 0, since a checkpoint's recorded ``feature_channels``
+            can be a reordered subset (issue #366). Unused when
+            ``dwell_templates`` is None.
 
     Returns:
         The prepared array, or ``features`` unchanged when there is nothing to
@@ -593,6 +599,7 @@ def prepare_inference_features(
             feat_start=start_offset,
             dwell_templates=dwell_templates,
             template_min_pos=template_min_pos,
+            dwell_row=dwell_row,
         )
 
     if wide_features or features.shape[1] <= kmer_len:
@@ -823,6 +830,7 @@ def chunks_for_read(
     wide_features: bool,
     dwell_templates: np.ndarray | None = None,
     template_min_pos: int = 0,
+    dwell_row: int = 0,
 ) -> list[tuple[np.ndarray, np.ndarray, np.ndarray | None, int]]:
     """Extract ready-to-batch ``(signal, sequence, features, base_idx)`` tuples
     from an already-built :class:`~leech.chunking.LeechRead` at each of
@@ -883,6 +891,7 @@ def chunks_for_read(
                     wide_features=wide_features,
                     dwell_templates=dwell_templates,
                     template_min_pos=template_min_pos,
+                    dwell_row=dwell_row,
                 )
 
             results.append((sig, seq_arr, feat, base_idx))
@@ -914,6 +923,7 @@ def chunks_for_read(
                 wide_features=wide_features,
                 dwell_templates=dwell_templates,
                 template_min_pos=template_min_pos,
+                dwell_row=dwell_row,
             )
 
         pending.append((sig, feat, base_idx, sequence_to_int(seq_ctx), seq_to_sig))

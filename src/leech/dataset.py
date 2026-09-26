@@ -54,6 +54,7 @@ from leech.chunking import (
     load_seq_to_sig_csr,
     npz_array_members,
     npz_member_names,
+    resolve_feature_window,
 )
 from leech.constants import (
     AUTO_DATALOADER_WORKERS,
@@ -137,8 +138,8 @@ def _byte_matrix(column: np.ndarray | None) -> np.ndarray | None:
 _LEGACY_DWELL_TEMPLATE_MOTIF_OFFSET = 2
 
 
-def _read_dwell_template_header(table_path: Path) -> tuple[int | None, str | None]:
-    """Parse leading ``# key: value`` comment lines for build provenance.
+def _read_dwell_template_header(table_path: Path) -> dict[str, str]:
+    """Parse leading ``# key: value`` comment lines, verbatim (issue #367).
 
     A table built with knowledge of issue #364 records the ``motif_offset``
     (and optionally ``motif``) its ``position`` column is counted from, e.g.::
@@ -148,11 +149,17 @@ def _read_dwell_template_header(table_path: Path) -> tuple[int | None, str | Non
         aa\tposition\tdwell_mean
         ...
 
-    Returns ``(None, None)`` for a table with no such header -- an
-    "unlabelled" table predating this convention, not an error by itself.
+    Any other ``# key: value`` lines a builder chose to add (source corpus,
+    feature window, min_cl, builder, ...) are recorded too -- every line is
+    kept, not just the two this module reads back itself -- so provenance
+    survives copying the TSV into a model directory even though there is no
+    sidecar. Returns ``{}`` for a table with no header at all -- an
+    "unlabelled" table predating the #364 convention, not an error by itself.
+
+    Keys are lower-cased and values are stripped; a malformed line (no ``:``,
+    or an empty key) is skipped.
     """
-    motif_offset: int | None = None
-    motif: str | None = None
+    header: dict[str, str] = {}
     with open(table_path) as f:
         for line in f:
             line = line.strip()
@@ -160,21 +167,12 @@ def _read_dwell_template_header(table_path: Path) -> tuple[int | None, str | Non
                 continue
             if not line.startswith("#"):
                 break
-            key, _, value = line[1:].partition(":")
+            key, sep, value = line[1:].partition(":")
             key = key.strip().lower()
             value = value.strip()
-            if key == "motif_offset":
-                try:
-                    motif_offset = int(value)
-                except ValueError:
-                    logger.warning(
-                        "Could not parse motif_offset from %s header line %r",
-                        table_path,
-                        line,
-                    )
-            elif key == "motif":
-                motif = value
-    return motif_offset, motif
+            if key and sep:
+                header[key] = value
+    return header
 
 
 def check_dwell_template_motif_offset(
@@ -233,9 +231,37 @@ def check_dwell_template_motif_offset(
         )
 
 
-def load_dwell_template_table(
-    table_path: Path,
-) -> tuple[np.ndarray, int, list[str], int | None, str | None]:
+@dataclass
+class DwellTemplate:
+    """The parsed result of :func:`load_dwell_template_table` (issue #367).
+
+    Replaces the 5-tuple #365 introduced -- every field is now named, and
+    ``header`` carries every ``# key: value`` header line the table had, not
+    just the two (``motif``/``motif_offset``) this module reads back itself.
+    """
+
+    #: (n_aa, n_positions) array, indexed by ``[aa_idx, pos - min_pos]``.
+    template: np.ndarray
+    #: Position of column 0 of ``template``.
+    min_pos: int
+    #: Position of the last column of ``template`` (inclusive).
+    max_pos: int
+    #: Amino-acid three-letter codes, sorted alphabetically; indexes the
+    #: first axis of ``template``.
+    aa_order: list[str]
+    #: The table's recorded motif_offset, or None for an unlabelled table.
+    #: Pass to :func:`check_dwell_template_motif_offset` along with the run's
+    #: own motif_offset before trusting the table.
+    motif_offset: int | None
+    #: The table's recorded motif, or None.
+    motif: str | None
+    #: Every ``# key: value`` header line, verbatim (lower-cased keys,
+    #: stripped values) -- source corpus, feature window, min_cl, builder,
+    #: whatever a builder chose to record. ``{}`` for an unlabelled table.
+    header: dict[str, str]
+
+
+def load_dwell_template_table(table_path: Path) -> DwellTemplate:
     """Load per-AA per-position expected dwell from a TSV.
 
     Args:
@@ -245,20 +271,21 @@ def load_dwell_template_table(
             :func:`_read_dwell_template_header` and issue #364.
 
     Returns:
-        (template, template_min_pos, aa_order, table_motif_offset, table_motif) where:
-          - template: ndarray of shape (n_aa, n_positions), indexed by
-            ``[aa_idx, pos - template_min_pos]``.
-          - template_min_pos: integer offset such that column 0 corresponds to
-            position ``template_min_pos``.
-          - aa_order: list of amino-acid three-letter codes, sorted
-            alphabetically. Index into this list to interpret the first axis of
-            ``template``.
-          - table_motif_offset: the table's recorded motif_offset, or None for
-            an unlabelled table. Pass to :func:`check_dwell_template_motif_offset`
-            along with the run's own motif_offset before trusting the table.
-          - table_motif: the table's recorded motif, or None.
+        A :class:`DwellTemplate`.
     """
-    table_motif_offset, table_motif = _read_dwell_template_header(table_path)
+    header = _read_dwell_template_header(table_path)
+    table_motif = header.get("motif")
+    table_motif_offset: int | None = None
+    if "motif_offset" in header:
+        try:
+            table_motif_offset = int(header["motif_offset"])
+        except ValueError:
+            logger.warning(
+                "Could not parse motif_offset from %s header (%r)",
+                table_path,
+                header["motif_offset"],
+            )
+
     df = pl.read_csv(table_path, separator="\t", comment_prefix="#")
     aa_list = sorted(df["aa"].unique().to_list())
     n_aa = len(aa_list)
@@ -289,7 +316,15 @@ def load_dwell_template_table(
         f"Loaded dwell template table: {n_aa} AAs, "
         f"positions {min_pos} to {max_pos} from {table_path}"
     )
-    return template, min_pos, aa_list, table_motif_offset, table_motif
+    return DwellTemplate(
+        template=template,
+        min_pos=min_pos,
+        max_pos=max_pos,
+        aa_order=aa_list,
+        motif_offset=table_motif_offset,
+        motif=table_motif,
+        header=header,
+    )
 
 
 def append_dwell_template_channels(
@@ -298,13 +333,13 @@ def append_dwell_template_channels(
     feat_start: int,
     dwell_templates: np.ndarray,
     template_min_pos: int,
+    dwell_row: int,
 ) -> np.ndarray:
     """Append N_AA dwell ratio channels to a feature array.
 
     For each of the AAs in ``dwell_templates`` computes
-    ``dwell / expected_dwell[AA_i, pos]`` at each feature position, where
-    raw dwell is expected to be channel 0 of ``features``. Positions not
-    covered by the template use 1.0 (unit ratio, no information).
+    ``dwell / expected_dwell[AA_i, pos]`` at each feature position. Positions
+    not covered by the template use 1.0 (unit ratio, no information).
 
     Args:
         features: Base features of shape ``(num_features, feat_width)``.
@@ -314,11 +349,17 @@ def append_dwell_template_channels(
         dwell_templates: (n_aa, n_template_positions) array from
             ``load_dwell_template_table``.
         template_min_pos: ``template_min_pos`` from ``load_dwell_template_table``.
+        dwell_row: Row of ``features`` holding raw dwell. Required, with no
+            default: since #358's ``--feature-channels``, a corpus/checkpoint's
+            feature rows can be a reordered subset, so "dwell is row 0" is only
+            a convention, not a guarantee -- the caller must resolve this by
+            name (``effective_feature_channels.index("dwell")``) rather than
+            let this function assume it (issue #366).
 
     Returns:
         Expanded feature array of shape ``(num_features + n_aa, feat_width)``.
     """
-    raw_dwell = features[0]  # (feat_width,)
+    raw_dwell = features[dwell_row]  # (feat_width,)
     feat_width = features.shape[1]
     n_aa = dwell_templates.shape[0]
     template_channels = np.ones((n_aa, feat_width), dtype=np.float32)
@@ -336,6 +377,76 @@ def append_dwell_template_channels(
         # else: outside transit table range, leave as 1.0
 
     return np.concatenate([features, template_channels], axis=0)
+
+
+def check_dwell_template_coverage(
+    table_path: Path | str,
+    min_pos: int,
+    max_pos: int,
+    feat_start: int,
+    feat_end: int,
+) -> int:
+    """Check how much of a run's feature window a dwell-template table covers.
+
+    ``append_dwell_template_channels`` leaves every feature column outside
+    the table's ``[min_pos, max_pos]`` range at a constant ratio of 1.0, and
+    says nothing about it (issue #367) -- a ``--feature-end`` wider than the
+    table trains some channels that are constant over part of their width,
+    invisibly.
+
+    Args:
+        table_path: The TSV path, for the log/error message only.
+        min_pos: The table's first covered position (``DwellTemplate.min_pos``).
+        max_pos: The table's last covered position (``DwellTemplate.max_pos``).
+        feat_start: The run's feature window start (signed offset from focus).
+        feat_end: The run's feature window end (signed offset from focus,
+            inclusive).
+
+    Returns:
+        The number of feature-window columns the table does not cover.
+
+    Raises:
+        ValueError: The table and the feature window do not overlap at all --
+            every appended channel would be a constant 1.0.
+    """
+    width = feat_end - feat_start + 1
+    overlap = max(0, min(feat_end, max_pos) - max(feat_start, min_pos) + 1)
+    uncovered = width - overlap
+
+    logger.info(
+        "dwell template covers positions [%d, %d]; feature window [%d, %d]; "
+        "%d of %d columns uncovered (ratio 1.0)",
+        min_pos,
+        max_pos,
+        feat_start,
+        feat_end,
+        uncovered,
+        width,
+    )
+
+    if uncovered >= width:
+        raise ValueError(
+            f"dwell-template-table {table_path} covers positions "
+            f"[{min_pos}, {max_pos}], which does not overlap this run's feature "
+            f"window [{feat_start}, {feat_end}] at all -- every appended "
+            "dwell-template channel would be a constant 1.0 (issue #367). Rebuild "
+            "the table to cover this window, or use a different one."
+        )
+    if uncovered > 0:
+        logger.warning(
+            "dwell-template-table %s covers positions [%d, %d] but the feature "
+            "window is [%d, %d]: %d of %d columns (%.1f%%) fall outside the "
+            "table and get a constant ratio of 1.0.",
+            table_path,
+            min_pos,
+            max_pos,
+            feat_start,
+            feat_end,
+            uncovered,
+            width,
+            100.0 * uncovered / width,
+        )
+    return uncovered
 
 
 # Rows per block when expanding the CSR base-to-signal maps. Keeps the gather
@@ -819,7 +930,17 @@ class LeechDataset(Dataset):
                 20 AAs. The correct AA's channel has ratio closest to 1.0.
                 TSV columns: aa, position, dwell_mean, ... -- see
                 :func:`load_dwell_template_table` for the optional header lines
-                recording the motif_offset the table was built against.
+                recording the motif_offset the table was built against. The
+                ``dwell`` row to divide is resolved by name from
+                :attr:`effective_feature_channels`, not assumed to be row 0
+                (issue #366) -- raises ``ValueError`` at construction if
+                ``dwell`` is not an effective channel. The table's covered
+                position range is also checked against the corpus's feature
+                window (issue #367; see :func:`check_dwell_template_coverage`
+                and :attr:`dwell_template_positions`/
+                :attr:`dwell_template_uncovered_columns`). Incompatible with
+                ``time_stretch_range`` (issue #368): the template ratios are
+                computed once here and are not rescaled by time-stretch.
             motif_offset: This run's motif_offset, used only to guard
                 ``dwell_template_table`` against issue #364 -- a table whose
                 ``position`` column was counted from a different focus base.
@@ -910,13 +1031,33 @@ class LeechDataset(Dataset):
                     "(they draw one offset per sample and fall back to the per-sample "
                     "__getitem__ path). Disable one or the other."
                 )
+            if dwell_template_table is not None:
+                # The 20 template ratio rows are computed once, at
+                # construction, as dwell / expected -- time-stretch then
+                # rescales `dwell` per sample without touching them, so under
+                # stretch they silently stop equalling dwell / expected
+                # (issue #368). Refuse the combination rather than accept it
+                # quietly, same shape as the shift_max_bases/time_mask_bases
+                # refusal just above.
+                raise ValueError(
+                    "time_stretch_range is incompatible with dwell_template_table: "
+                    "the precomputed dwell-template ratio channels are not rescaled "
+                    "by time-stretch, so they would silently disagree with a "
+                    "stretched 'dwell' channel. Disable one or the other."
+                )
 
         # Load dwell template table for 20-channel AA template features
         self._dwell_templates: np.ndarray | None = None
+        self._template_min_pos: int = 0
+        self._template_max_pos: int = 0
         self._template_aa_order: list[str] = []
+        self._dwell_template_table_path: Path | None = None
         self.motif_offset = motif_offset
         self.dwell_template_motif_offset: int | None = None
         self.dwell_template_motif: str | None = None
+        self.dwell_template_positions: tuple[int, int] | None = None
+        self.dwell_template_header: dict[str, str] = {}
+        self.dwell_template_uncovered_columns: int | None = None
         if dwell_template_table is not None:
             self._load_dwell_templates(Path(dwell_template_table))
 
@@ -992,6 +1133,43 @@ class LeechDataset(Dataset):
                 self.effective_feature_channels = effective_names
             else:
                 self.effective_feature_channels = _fc_names
+
+        # Resolve the dwell-template append's row index by NAME, not by
+        # convention (issue #366): a --feature-channels reorder can put
+        # `dwell` at any row, and dividing row 0 regardless silently computes
+        # nonsense ratios for every non-default channel order. Also check the
+        # table's position coverage of the corpus's feature window, once,
+        # here rather than per chunk (issue #367).
+        self._dwell_template_row: int | None = None
+        if self._dwell_templates is not None:
+            if self.effective_feature_channels is None or (
+                "dwell" not in self.effective_feature_channels
+            ):
+                raise ValueError(
+                    "dwell_template_table requires a 'dwell' feature channel, but "
+                    f"the effective feature channels are "
+                    f"{self.effective_feature_channels!r}"
+                )
+            self._dwell_template_row = self.effective_feature_channels.index("dwell")
+            logger.info(
+                "dwell-template append resolved dwell channel to row %d of %s",
+                self._dwell_template_row,
+                self.effective_feature_channels,
+            )
+
+            kmer_context = self.kmer_len // 2
+            fw_source = self.chunks if isinstance(self.chunks, ChunkTable) else self.chunks[0]
+            raw_feat_start, raw_feat_end = feature_window_from_metadata(fw_source, kmer_context)
+            feat_start, feat_end, _ = resolve_feature_window(
+                raw_feat_start, raw_feat_end, kmer_context
+            )
+            self.dwell_template_uncovered_columns = check_dwell_template_coverage(
+                self._dwell_template_table_path,
+                self._template_min_pos,
+                self._template_max_pos,
+                feat_start,
+                feat_end,
+            )
 
         # Pre-tensorize: encode sequences, labels, signals, and features once.
         # Each accumulator fills one preallocated contiguous tensor — see
@@ -2114,19 +2292,22 @@ class LeechDataset(Dataset):
         """Instance wrapper: load templates via the module-level helper.
 
         Also guards the position/motif_offset pairing the table assumes
-        (issue #364) whenever the caller passed its own ``motif_offset``.
+        (issue #364) whenever the caller passed its own ``motif_offset``, and
+        records the table's own range/header for provenance (issue #367).
         """
-        template, template_min_pos, aa_order, table_motif_offset, table_motif = (
-            load_dwell_template_table(table_path)
-        )
-        self._dwell_templates = template
-        self._template_min_pos = template_min_pos
-        self._template_aa_order = aa_order
-        self.dwell_template_motif_offset = table_motif_offset
-        self.dwell_template_motif = table_motif
+        dt = load_dwell_template_table(table_path)
+        self._dwell_templates = dt.template
+        self._template_min_pos = dt.min_pos
+        self._template_max_pos = dt.max_pos
+        self._template_aa_order = dt.aa_order
+        self._dwell_template_table_path = table_path
+        self.dwell_template_motif_offset = dt.motif_offset
+        self.dwell_template_motif = dt.motif
+        self.dwell_template_header = dt.header
+        self.dwell_template_positions = (dt.min_pos, dt.max_pos)
         if self.motif_offset is not None:
             check_dwell_template_motif_offset(
-                table_path, table_motif_offset, table_motif, self.motif_offset
+                table_path, dt.motif_offset, dt.motif, self.motif_offset
             )
 
     def _append_template_channels(self, features: np.ndarray, chunk: dict) -> np.ndarray:
@@ -2140,11 +2321,14 @@ class LeechDataset(Dataset):
         if self._dwell_templates is None:
             return features
         feat_start = int(chunk.get("feature_start", 0))
+        # Resolved in __init__ whenever a template is configured.
+        assert self._dwell_template_row is not None
         return append_dwell_template_channels(
             features,
             feat_start=feat_start,
             dwell_templates=self._dwell_templates,
             template_min_pos=self._template_min_pos,
+            dwell_row=self._dwell_template_row,
         )
 
     def _prepare_features(

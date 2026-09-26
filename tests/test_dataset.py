@@ -1630,6 +1630,25 @@ class TestTimeStretch:
                 time_mask_bases=3,
             )
 
+    def test_refuses_dwell_template(self, temp_chunks_file, tmp_path):
+        """#368: the precomputed template ratio rows are not rescaled by
+        time-stretch, so the combination silently disagrees with a stretched
+        'dwell' channel -- refuse it, same shape as the shift/time-mask
+        refusals above."""
+        table_path = tmp_path / "templates.tsv"
+        table_path.write_text("aa\tposition\tdwell_mean\nAla\t0\t5.0\nGly\t0\t6.0\n")
+
+        with pytest.raises(ValueError, match="dwell_template_table"):
+            LeechDataset(
+                temp_chunks_file,
+                signal_len=400,
+                kmer_len=11,
+                model_type="ConvLSTMDwell",
+                seq_encoding="base_onehot",
+                time_stretch_range=(0.8, 1.25),
+                dwell_template_table=table_path,
+            )
+
     @pytest.mark.parametrize("bad_range", [(1.2, 0.8), (0.0, 1.2), (-0.5, 1.2)])
     def test_invalid_range_raises(self, temp_chunks_file, bad_range):
         with pytest.raises(ValueError, match="time_stretch_range"):
@@ -1708,20 +1727,22 @@ class TestDwellTemplateMotifOffset:
         from leech.dataset import load_dwell_template_table
 
         table_path = self._write_table(tmp_path, motif_offset=2, motif="CCAGGC")
-        _, _, aa_order, table_motif_offset, table_motif = load_dwell_template_table(table_path)
+        dt = load_dwell_template_table(table_path)
 
-        assert table_motif_offset == 2
-        assert table_motif == "CCAGGC"
-        assert aa_order == ["Ala", "Gly"]
+        assert dt.motif_offset == 2
+        assert dt.motif == "CCAGGC"
+        assert dt.aa_order == ["Ala", "Gly"]
+        assert dt.header == {"motif": "CCAGGC", "motif_offset": "2"}
 
     def test_load_unlabelled_table_returns_none(self, tmp_path):
         from leech.dataset import load_dwell_template_table
 
         table_path = self._write_table(tmp_path)
-        _, _, _, table_motif_offset, table_motif = load_dwell_template_table(table_path)
+        dt = load_dwell_template_table(table_path)
 
-        assert table_motif_offset is None
-        assert table_motif is None
+        assert dt.motif_offset is None
+        assert dt.motif is None
+        assert dt.header == {}
 
     def test_check_raises_on_recorded_mismatch(self):
         from leech.dataset import check_dwell_template_motif_offset
@@ -1795,6 +1816,192 @@ class TestDwellTemplateMotifOffset:
         )
 
         assert dataset.dwell_template_motif_offset == 8
+
+
+class TestDwellTemplateDwellRow:
+    """#366: ``append_dwell_template_channels``/``LeechDataset`` must resolve
+    the dwell row by NAME, not assume row 0 -- since #358's
+    ``--feature-channels``, a corpus/checkpoint's feature rows can be a
+    reordered subset, so "dwell is row 0" is only a convention.
+    """
+
+    @staticmethod
+    def _make_chunk(features, *, feature_start=-1, feature_end=1, i=0):
+        import numpy as np
+
+        return {
+            "signal": np.zeros(80, dtype=np.float32),
+            "sequence": "A" * features.shape[1],
+            "dwell": np.ones(features.shape[1], dtype=np.float32),
+            "features": features.astype(np.float32),
+            "label": "pos",
+            "label_int": i % 2,
+            "read_id": f"read_{i}",
+            "base_idx": 5,
+            "feature_start": feature_start,
+            "feature_end": feature_end,
+        }
+
+    @staticmethod
+    def _write_template(tmp_path):
+        rows = ["aa\tposition\tdwell_mean"]
+        for aa in ("Ala", "Gly"):
+            rows.append(f"{aa}\t-1\t2.0")
+            rows.append(f"{aa}\t0\t4.0")
+            rows.append(f"{aa}\t1\t8.0")
+        path = tmp_path / "templates.tsv"
+        path.write_text("\n".join(rows) + "\n")
+        return path
+
+    def test_reordered_channels_divide_dwell_not_row0(self, tmp_path):
+        import numpy as np
+
+        # Row 0 = level_mean (what the pre-#366 bug would wrongly divide),
+        # row 1 = dwell (the row that must actually be divided).
+        level_mean_row = np.array([100.0, 200.0, 300.0])
+        dwell_row_vals = np.array([2.0, 4.0, 6.0])
+        features = np.stack([level_mean_row, dwell_row_vals])
+        chunk = self._make_chunk(features)
+
+        table_path = self._write_template(tmp_path)
+        ds = LeechDataset(
+            chunks=[chunk],
+            signal_len=80,
+            kmer_len=3,
+            model_type="ConvLSTMDwell",
+            seq_encoding="base_onehot",
+            feature_channel_names=["level_mean", "dwell"],
+            dwell_template_table=table_path,
+        )
+        assert ds.effective_feature_channels == ["level_mean", "dwell"]
+        assert ds._dwell_template_row == 1
+
+        template_divisors = np.array([2.0, 4.0, 8.0])
+        expected_ratio = torch.tensor(dwell_row_vals / template_divisors, dtype=torch.float32)
+        wrong_ratio = torch.tensor(level_mean_row / template_divisors, dtype=torch.float32)
+
+        out = ds._features_tensor[0]  # (4, 3): level_mean, dwell, Ala-ratio, Gly-ratio
+        for aa_row in (2, 3):
+            torch.testing.assert_close(out[aa_row], expected_ratio)
+            assert not torch.allclose(out[aa_row], wrong_ratio)
+
+    def test_template_without_dwell_channel_raises(self, tmp_path):
+        import numpy as np
+
+        features = np.zeros((2, 3), dtype=np.float32)
+        chunk = self._make_chunk(features)
+        table_path = self._write_template(tmp_path)
+
+        with pytest.raises(ValueError, match="dwell"):
+            LeechDataset(
+                chunks=[chunk],
+                signal_len=80,
+                kmer_len=3,
+                model_type="ConvLSTMDwell",
+                seq_encoding="base_onehot",
+                feature_channel_names=["level_mean", "level_std"],
+                dwell_template_table=table_path,
+            )
+
+
+class TestDwellTemplateCoverage:
+    """#367: coverage of the corpus's feature window by the template's
+    ``[min_pos, max_pos]`` range is checked once at construction -- logged,
+    warned on partial coverage, and raised on none at all."""
+
+    @staticmethod
+    def _make_chunk(width, *, feature_start, feature_end, i=0):
+        import numpy as np
+
+        return {
+            "signal": np.zeros(80, dtype=np.float32),
+            "sequence": "A" * width,
+            "dwell": np.ones(width, dtype=np.float32),
+            "features": np.full((2, width), 4.0, dtype=np.float32),
+            "label": "pos",
+            "label_int": i % 2,
+            "read_id": f"read_{i}",
+            "base_idx": 5,
+            "feature_start": feature_start,
+            "feature_end": feature_end,
+        }
+
+    @staticmethod
+    def _write_template(tmp_path, positions, header_lines=()):
+        lines = list(header_lines)
+        lines.append("aa\tposition\tdwell_mean")
+        for pos in positions:
+            lines.append(f"Ala\t{pos}\t4.0")
+        path = tmp_path / "templates.tsv"
+        path.write_text("\n".join(lines) + "\n")
+        return path
+
+    def test_partial_coverage_warns_and_counts(self, tmp_path, caplog):
+        chunk = self._make_chunk(5, feature_start=-2, feature_end=2)
+        table_path = self._write_template(tmp_path, [-2, -1])  # covers 2 of 5 columns
+
+        with caplog.at_level("WARNING", logger="leech.dataset"):
+            ds = LeechDataset(
+                chunks=[chunk],
+                signal_len=80,
+                kmer_len=5,
+                model_type="ConvLSTMDwell",
+                seq_encoding="base_onehot",
+                feature_channel_names=["level_mean", "dwell"],
+                dwell_template_table=table_path,
+            )
+
+        assert ds.dwell_template_positions == (-2, -1)
+        assert ds.dwell_template_uncovered_columns == 3
+        assert any("fall outside the table" in r.getMessage() for r in caplog.records)
+
+    def test_no_overlap_raises(self, tmp_path):
+        chunk = self._make_chunk(5, feature_start=-2, feature_end=2)
+        table_path = self._write_template(tmp_path, [10, 11])  # nowhere near [-2, 2]
+
+        with pytest.raises(ValueError, match="does not overlap"):
+            LeechDataset(
+                chunks=[chunk],
+                signal_len=80,
+                kmer_len=5,
+                model_type="ConvLSTMDwell",
+                seq_encoding="base_onehot",
+                feature_channel_names=["level_mean", "dwell"],
+                dwell_template_table=table_path,
+            )
+
+    def test_header_lines_are_all_recorded(self, tmp_path):
+        chunk = self._make_chunk(3, feature_start=-1, feature_end=1)
+        table_path = self._write_template(
+            tmp_path,
+            [-1, 0, 1],
+            header_lines=[
+                "# motif: CCAGGC",
+                "# motif_offset: 2",
+                "# source_corpus: some/path.npz",
+                "# builder: jhessel",
+            ],
+        )
+
+        ds = LeechDataset(
+            chunks=[chunk],
+            signal_len=80,
+            kmer_len=3,
+            model_type="ConvLSTMDwell",
+            seq_encoding="base_onehot",
+            feature_channel_names=["level_mean", "dwell"],
+            dwell_template_table=table_path,
+            motif_offset=2,
+        )
+
+        assert ds.dwell_template_header == {
+            "motif": "CCAGGC",
+            "motif_offset": "2",
+            "source_corpus": "some/path.npz",
+            "builder": "jhessel",
+        }
+        assert ds.dwell_template_positions == (-1, 1)
+        assert ds.dwell_template_uncovered_columns == 0
 
 
 if __name__ == "__main__":

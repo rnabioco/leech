@@ -11,6 +11,7 @@ import pysam
 import torch
 from rich.progress import Progress
 
+from leech.chunking import resolve_feature_window
 from leech.configs import ChunkConfig, InferenceConfig, MotifConfig, SignalConfig
 from leech.features import extract_move_table
 from leech.inference.aggregation import (
@@ -412,23 +413,44 @@ def run_bundle_inference(
     # verbatim at inference time.
     dwell_templates_arr: np.ndarray | None = None
     dwell_template_min_pos: int = 0
+    dwell_row: int = 0
     bundle_dwell_template_table = spec.dwell_template_table
     if bundle_dwell_template_table:
-        from leech.dataset import check_dwell_template_motif_offset, load_dwell_template_table
-
-        dwell_templates_arr, dwell_template_min_pos, _, table_motif_offset, table_motif = (
-            load_dwell_template_table(Path(bundle_dwell_template_table))
+        from leech.dataset import (
+            check_dwell_template_coverage,
+            check_dwell_template_motif_offset,
+            load_dwell_template_table,
         )
+        from leech.inference.helpers import InferenceConfigError
+
+        dt = load_dwell_template_table(Path(bundle_dwell_template_table))
+        dwell_templates_arr = dt.template
+        dwell_template_min_pos = dt.min_pos
         # Re-checked here, not just at training time: this reloads the TSV
         # from disk, so it also catches a table whose content changed at the
         # same path since the checkpoint was trained (issue #364).
         check_dwell_template_motif_offset(
-            bundle_dwell_template_table, table_motif_offset, table_motif, motif_offset
+            bundle_dwell_template_table, dt.motif_offset, dt.motif, motif_offset
+        )
+        # Resolve the dwell row by name, not by convention (issue #366): a
+        # bundle's recorded feature_channels can put `dwell` at any row.
+        if "dwell" not in spec.feature_channels:
+            raise InferenceConfigError(
+                f"dwell_template_table is set but 'dwell' is not in this "
+                f"bundle's feature_channels: {spec.feature_channels!r}"
+            )
+        dwell_row = spec.feature_channels.index("dwell")
+        # Coverage of the run's feature window (issue #367), resolved with
+        # kmer_context the same way prepare_inference_features resolves
+        # feature_start.
+        _cov_start, _cov_end, _ = resolve_feature_window(_feature_start, _feature_end, kmer_context)
+        check_dwell_template_coverage(
+            bundle_dwell_template_table, dt.min_pos, dt.max_pos, _cov_start, _cov_end
         )
         logger.info(
             f"Dwell template append enabled at inference "
             f"(+{dwell_templates_arr.shape[0]} channels from "
-            f"{bundle_dwell_template_table})"
+            f"{bundle_dwell_template_table}, dwell_row={dwell_row})"
         )
 
     # -- Setup vmap forward for format_version 4, else use sequential wrappers --
@@ -700,6 +722,7 @@ def run_bundle_inference(
                                 wide_features=wide_features,
                                 dwell_templates=dwell_templates_arr,
                                 template_min_pos=dwell_template_min_pos,
+                                dwell_row=dwell_row,
                             )
 
                         if not _shape_validated:
@@ -850,6 +873,7 @@ def run_bundle_inference(
                                     else -kmer_context,
                                     dwell_templates=dwell_templates_arr,
                                     template_min_pos=dwell_template_min_pos,
+                                    dwell_row=dwell_row,
                                 )
 
                             if not _shape_validated:
@@ -1002,6 +1026,7 @@ def run_bundle_inference(
                         wide_features=wide_features,
                         dwell_templates=dwell_templates_arr,
                         template_min_pos=dwell_template_min_pos,
+                        dwell_row=dwell_row,
                     ):
                         n_chunks += 1
                         signal_t = torch.from_numpy(sig)
