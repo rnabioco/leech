@@ -3257,6 +3257,17 @@ def train_model(
         # since, and lets an old checkpoint be audited without the TSV at hand.
         "dwell_template_motif_offset": train_dataset.dwell_template_motif_offset,
         "dwell_template_motif": train_dataset.dwell_template_motif,
+        # The table's own covered [min_pos, max_pos] range, how many of this
+        # run's feature-window columns fall outside it (constant ratio 1.0),
+        # and every "# key: value" header line the table carried, verbatim --
+        # issue #367. All None/{} when no template is configured.
+        "dwell_template_positions": (
+            list(train_dataset.dwell_template_positions)
+            if train_dataset.dwell_template_positions is not None
+            else None
+        ),
+        "dwell_template_uncovered_columns": train_dataset.dwell_template_uncovered_columns,
+        "dwell_template_header": train_dataset.dwell_template_header or None,
         # Preparation metadata (from prepare_config.json sidecar)
         "reference_fasta": prepare_metadata.get("reference_fasta"),
         "anchor": prepare_metadata.get("anchor", "reference"),

@@ -289,6 +289,52 @@ class TestTrainModel:
         assert config["epochs"] == 1
         assert config["seed"] == 42
 
+    def test_config_records_dwell_template_provenance(self, temp_chunks_file, tmp_path):
+        """#367: the table's covered [min_pos, max_pos] range, the count of
+        uncovered feature-window columns, and every header line reach
+        config.json, alongside #365's motif_offset/motif fields."""
+        table_path = tmp_path / "templates.tsv"
+        table_path.write_text(
+            "\n".join(
+                [
+                    "# motif_offset: 0",
+                    "# motif: CCAGGC",
+                    "# builder: jhessel",
+                    "aa\tposition\tdwell_mean",
+                    *[f"Ala\t{p}\t4.0" for p in range(-5, 6)],
+                ]
+            )
+            + "\n"
+        )
+
+        output_dir = tmp_path / "training"
+        train_model(
+            train_data_path=temp_chunks_file,
+            val_data_path=None,
+            model_name="ConvLSTMDwell",
+            output_dir=output_dir,
+            epochs=1,
+            batch_size=2,
+            device="cpu",
+            motif="CCAGGC",
+            motif_offset=0,
+            seed=42,
+            dwell_template_table=table_path,
+        )
+
+        with open(output_dir / "config.json") as f:
+            config = json.load(f)
+
+        assert config["dwell_template_motif_offset"] == 0
+        assert config["dwell_template_motif"] == "CCAGGC"
+        assert config["dwell_template_positions"] == [-5, 5]
+        assert config["dwell_template_uncovered_columns"] == 0
+        assert config["dwell_template_header"] == {
+            "motif_offset": "0",
+            "motif": "CCAGGC",
+            "builder": "jhessel",
+        }
+
     def test_train_model_saves_checkpoints(self, temp_chunks_file, tmp_path):
         """Test that train_model saves checkpoints."""
         output_dir = tmp_path / "training"
