@@ -227,6 +227,20 @@ def handle_train(
         "cl_lambda",
         "signal_mode",
         "dwell_template_table",
+        # config.json's provenance-only record of the ORIGINAL source path
+        # and content hash (issue #369) -- never a model constructor arg, so
+        # reusing a checkpoint's config.json via --model-config must strip
+        # these the same way dwell_template_table itself is stripped, or
+        # they survive into **extra_kwargs and then into get_model(...)'s
+        # init kwargs, raising TypeError (the exact #281 shape of bug).
+        # config.json's provenance-only record of the ORIGINAL source path
+        # and content hash (issue #369) -- never a model constructor arg, so
+        # reusing a checkpoint's config.json via --model-config must strip
+        # these the same way dwell_template_table itself is stripped, or
+        # they survive into **extra_kwargs and then into get_model(...)'s
+        # init kwargs, raising TypeError (the exact #281 shape of bug).
+        "dwell_template_table_source",
+        "dwell_template_table_sha256",
         "checkpoint_metric",
         # gridsearch's best_params.json (leech model optimize) records this
         # for provenance -- it's pure selection bookkeeping, not a model

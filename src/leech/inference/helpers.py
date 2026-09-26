@@ -3,6 +3,7 @@
 import array
 import json
 import logging
+import tempfile
 import threading
 from collections.abc import Callable, Hashable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -19,7 +20,11 @@ from leech._rust_accel import (
     rust_supports_norm_method,
     rust_supports_softclip_recovery,
 )
-from leech.chunking import extraction_sequence, feature_window_from_metadata
+from leech.chunking import (
+    extraction_sequence,
+    feature_window_from_metadata,
+    resolve_feature_window,
+)
 from leech.constants import (
     BELOW_THRESHOLD_LABEL,
     DEFAULT_FEATURE_CHANNELS,
@@ -27,7 +32,7 @@ from leech.constants import (
     DEFAULT_SEQ_ENCODING_FALLBACK,
 )
 from leech.features import encode_signal_kmer, encode_signal_kmer_batch, sequence_to_int
-from leech.model_loading import load_model_from_checkpoint
+from leech.model_loading import load_model_from_checkpoint, resolve_dwell_template_path
 from leech.models import requires_features as _requires_features
 from leech.models import wide_features as _wide_features
 from leech.models.inference_wrapper import ModelInferenceWrapper, TracedModelWrapper
@@ -268,6 +273,12 @@ class InferenceSpec:
     calibration: dict | None
     cl_regression: bool
     dwell_template_table: str | None
+    #: The checkpoint (or bundle) directory passed in as ``base_dir``, kept
+    #: on the spec so a caller that needs a second, authoritative resolution
+    #: later (e.g. bundle.py's embedded-bytes-vs-resolver fallback, issue
+    #: #369) does not have to thread its own copy of the same path alongside
+    #: the spec.
+    base_dir: Path | None
 
     @classmethod
     def from_config(
@@ -284,6 +295,7 @@ class InferenceSpec:
         parameter_sources: Mapping[str, bool] | None = None,
         strict_model_type: bool = False,
         model_dwell_margin: Callable[[], int] | None = None,
+        base_dir: Path | None = None,
     ) -> "InferenceSpec":
         """Resolve one :class:`InferenceSpec` from a model/bundle config dict.
 
@@ -332,6 +344,15 @@ class InferenceSpec:
                 reading it needs the model itself -- lazy because building
                 one (bundle.py's caller has to ``_instantiate_model(config)``)
                 is wasted work on every call that never reaches this branch.
+            base_dir: The checkpoint (or bundle) directory to resolve
+                ``dwell_template_table`` against, via
+                :func:`leech.model_loading.resolve_dwell_template_path`
+                (issue #369) -- ``None`` (default) leaves the recorded value
+                unresolved, e.g. for a caller with no directory of its own to
+                offer. A resolution failure here is caught and logged rather
+                than raised: an embedded-bytes caller (bundle.py) has a
+                second source of truth this function cannot see, so only
+                that caller is positioned to decide a missing file is fatal.
         """
         sources = parameter_sources or {}
 
@@ -437,6 +458,28 @@ class InferenceSpec:
         # `DEFAULT_SEQ_ENCODING_FALLBACK` above.
         feature_channels = list(config.get("feature_channels", DEFAULT_FEATURE_CHANNELS))
 
+        # Resolved against base_dir when given (issue #369); a resolution
+        # failure is swallowed here rather than raised -- bundle.py's caller
+        # may have the table embedded as bytes instead, a source of truth
+        # this function can't see, so only that caller can decide a missing
+        # file is fatal. Falls back to the raw recorded value either way
+        # (None if unset, exactly the pre-#369 behavior for a caller that
+        # never passes base_dir).
+        resolved_dwell_template_table = config.get("dwell_template_table") or None
+        if resolved_dwell_template_table is not None and base_dir is not None:
+            try:
+                resolved = resolve_dwell_template_path(config, base_dir)
+            except FileNotFoundError as exc:
+                logger.debug(
+                    "InferenceSpec.from_config: dwell_template_table not found under "
+                    "base_dir=%s (%s); leaving it unresolved.",
+                    base_dir,
+                    exc,
+                )
+            else:
+                if resolved is not None:
+                    resolved_dwell_template_table = str(resolved)
+
         return cls(
             signal_len=signal_len,
             kmer_len=kmer_len,
@@ -472,8 +515,143 @@ class InferenceSpec:
             label_map=label_map,
             calibration=config.get("calibration") if num_out > 1 else None,
             cl_regression=bool(config.get("cl_regression", False)),
-            dwell_template_table=config.get("dwell_template_table") or None,
+            dwell_template_table=resolved_dwell_template_table,
+            base_dir=base_dir,
         )
+
+
+@dataclass(frozen=True)
+class InferenceDwellTemplate:
+    """The result of :func:`load_inference_dwell_template`, ready to thread
+    into :func:`prepare_inference_features` / :func:`chunks_for_read`.
+
+    Replaces the parallel trio of local variables (``dwell_templates_arr``,
+    ``dwell_template_min_pos``, ``dwell_row``) that ``run_bundle_inference``
+    used to carry, and gives ``run_inference`` the same three without a
+    second copy of the loading block (issue #370).
+    """
+
+    #: ``(n_aa, n_positions)`` template table -- ``DwellTemplate.template``.
+    templates: np.ndarray
+    #: Position of column 0 of ``templates`` -- ``DwellTemplate.min_pos``.
+    min_pos: int
+    #: Row of the feature array holding raw dwell, resolved by name against
+    #: ``spec.feature_channels`` (issue #366).
+    dwell_row: int
+    #: Where the table came from, for logging -- a path, or a fixed string
+    #: for a bundle's embedded bytes.
+    source: str
+
+
+def load_inference_dwell_template(
+    spec: InferenceSpec,
+    base_dir: Path | None,
+    *,
+    embedded_bytes: bytes | None = None,
+) -> InferenceDwellTemplate | None:
+    """Load and validate a model's per-AA dwell-template table, if it has one.
+
+    The one definition of "does this model use a dwell template, and if so
+    what does inference need to append it": path resolution (#369's
+    :func:`~leech.model_loading.resolve_dwell_template_path`), loading the
+    TSV, the motif_offset guard (#364), resolving ``dwell_row`` by name
+    (#366) and the coverage check (#367). ``run_bundle_inference`` used to
+    carry this block itself; ``run_inference`` had no equivalent at all,
+    which is issue #370 -- a template checkpoint failed shape validation on
+    predict's first chunk. Both now call this and thread the same three
+    fields into every extraction path.
+
+    Args:
+        spec: The resolved :class:`InferenceSpec`. ``spec.dwell_template_table``
+            is used when ``embedded_bytes`` is not given;
+            ``spec.motif_offset``/``spec.feature_channels``/
+            ``spec.feature_start``/``spec.feature_end``/``spec.kmer_context``
+            drive the two checks below.
+        base_dir: The checkpoint (or bundle) directory to resolve a relative
+            ``dwell_template_table`` against -- passed to
+            :func:`~leech.model_loading.resolve_dwell_template_path`
+            independently of whatever ``spec`` was built with, so a caller
+            that only has the directory at this point (rather than back when
+            it built ``spec``) still gets a correct resolution. Idempotent
+            against an already-resolved (absolute) ``spec.dwell_template_table``.
+        embedded_bytes: A bundle's embedded ``dwell_template_table_bytes``
+            (issue #369), when present -- takes priority over
+            ``spec.dwell_template_table`` since a bundle is a single file
+            with no directory of its own for that path to survive in.
+            Spilled to a temporary file for :func:`load_dwell_template_table`
+            to read, then removed.
+
+    Returns:
+        ``None`` when the model was not trained with a dwell template
+        (nothing to append). Otherwise an :class:`InferenceDwellTemplate`.
+
+    Raises:
+        ValueError: The table's recorded motif_offset disagrees with
+            ``spec.motif_offset`` (#364), or the table does not overlap this
+            run's feature window at all (#367).
+        InferenceConfigError: ``spec.feature_channels`` has no ``dwell`` row.
+    """
+    tmp_path: Path | None = None
+    try:
+        if embedded_bytes is not None:
+            with tempfile.NamedTemporaryFile(mode="wb", suffix=".tsv", delete=False) as tmp:
+                tmp.write(embedded_bytes)
+                tmp_path = Path(tmp.name)
+            table_path = tmp_path
+            source = "<embedded in bundle>"
+        elif spec.dwell_template_table:
+            resolved = resolve_dwell_template_path(
+                {"dwell_template_table": spec.dwell_template_table}, base_dir
+            )
+            if resolved is None:
+                return None
+            table_path = resolved
+            source = str(table_path)
+        else:
+            return None
+
+        from leech.dataset import (
+            check_dwell_template_coverage,
+            check_dwell_template_motif_offset,
+            load_dwell_template_table,
+        )
+
+        dt = load_dwell_template_table(table_path)
+        # Re-checked here, not just at training time: this reloads the TSV
+        # from disk, so it also catches a table whose content changed at the
+        # same path since the checkpoint was trained (issue #364).
+        check_dwell_template_motif_offset(table_path, dt.motif_offset, dt.motif, spec.motif_offset)
+
+        # Resolve the dwell row by name, not by convention (issue #366): a
+        # checkpoint's recorded feature_channels can put `dwell` at any row.
+        if "dwell" not in spec.feature_channels:
+            raise InferenceConfigError(
+                f"dwell_template_table is set but 'dwell' is not in this "
+                f"model's feature_channels: {spec.feature_channels!r}"
+            )
+        dwell_row = spec.feature_channels.index("dwell")
+
+        # Coverage of the run's feature window (issue #367), resolved with
+        # kmer_context the same way prepare_inference_features resolves
+        # feature_start.
+        cov_start, cov_end, _ = resolve_feature_window(
+            spec.feature_start, spec.feature_end, spec.kmer_context
+        )
+        check_dwell_template_coverage(table_path, dt.min_pos, dt.max_pos, cov_start, cov_end)
+
+        logger.info(
+            f"Dwell template append enabled at inference "
+            f"(+{dt.template.shape[0]} channels from {source}, dwell_row={dwell_row})"
+        )
+        return InferenceDwellTemplate(
+            templates=dt.template,
+            min_pos=dt.min_pos,
+            dwell_row=dwell_row,
+            source=source,
+        )
+    finally:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
 
 
 def validate_inference_shapes(

@@ -337,6 +337,63 @@ class TestAugmentTimeStretchProvenance:
         # confirm the second run actually completed and wrote its own config.
         assert (second_dir / "config.json").exists()
 
+    def test_dwell_template_provenance_keys_survive_model_config(self, temp_chunks_file, tmp_path):
+        """config.json's `dwell_template_table_source`/`_sha256` (issue #369)
+        are provenance, never model constructor args -- reusing a
+        checkpoint's config.json via --model-config must strip both, the
+        same #281 shape of bug `dwell_template_table` itself and
+        augment_time_stretch_min/_max above are already guarded against."""
+        from leech.commands.train import handle_train
+
+        model_config = tmp_path / "dwell_template_model_config.json"
+        model_config.write_text(
+            json.dumps(
+                {
+                    "dwell_template_table_source": "/some/original/path.tsv",
+                    "dwell_template_table_sha256": "deadbeef" * 8,
+                }
+            )
+        )
+
+        output_dir = tmp_path / "dwell_template_reuse"
+        handle_train(
+            train_data=temp_chunks_file,
+            val_data=None,
+            model_name="ConvLSTMDwell",
+            model_config=model_config,
+            output_dir=output_dir,
+            epochs=1,
+            batch_size=2,
+            learning_rate=0.001,
+            device="cpu",
+            seed=42,
+            early_stopping=0,
+            use_class_weights=True,
+            pos_weight=None,
+            resume=None,
+            weight_decay=0.0,
+            max_grad_norm=0.0,
+            scheduler="none",
+            scheduler_patience=5,
+            scheduler_factor=0.5,
+            warmup_epochs=0,
+            loss_type="bce",
+            focal_gamma=2.0,
+            label_smoothing=0.0,
+            mixed_precision=False,
+            augment_jitter=0.0,
+            augment_scale_min=1.0,
+            augment_scale_max=1.0,
+            augment_time_mask_bases=0,
+            augment_time_mask_count=1,
+            augment_shift_max_bases=0.0,
+            augment_feature_noise_scale=0.0,
+            num_workers=0,
+            motif="CCAGGC",
+        )
+        # No TypeError from get_model(...) is the regression check.
+        assert (output_dir / "config.json").exists()
+
 
 # ---------------------------------------------------------------------------
 # handle_train's cfg must not silently revert --model-config values (#270)

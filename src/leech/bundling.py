@@ -1,5 +1,6 @@
 """Model bundling: package multiple trained models into versioned .pt files."""
 
+import hashlib
 import json
 import logging
 import os
@@ -15,6 +16,7 @@ from leech.model_loading import (
     _architecture_config,
     _instantiate_model,
     _migrate_state_dict_keys,
+    resolve_dwell_template_path,
 )
 
 logger = logging.getLogger("leech.bundling")
@@ -163,6 +165,32 @@ def _atomic_save(obj: object, output_path: Path) -> Path:
     return output_path
 
 
+def _load_dwell_template_bytes(config: dict, base_dir: Path) -> tuple[bytes | None, str | None]:
+    """Read the dwell-template TSV a bundle's source checkpoint depends on.
+
+    Resolves the config's recorded ``dwell_template_table`` against the
+    source checkpoint directory via
+    :func:`leech.model_loading.resolve_dwell_template_path`, so the bundle
+    can embed its own copy (issue #369) instead of depending on that
+    checkpoint directory -- or the CWD -- still existing at inference time.
+
+    Returns ``(None, None)`` when the config has no ``dwell_template_table``.
+    Propagates ``FileNotFoundError`` when it has one but the file can't be
+    found: a checkpoint that depends on a dwell template and a bundle that
+    silently ships without it is exactly the kind of gap this issue exists
+    to close, so this fails loudly rather than producing a bundle that will
+    only fail later, at inference, with a channel-count mismatch that names
+    neither the checkpoint nor the missing table.
+    """
+    if not config.get("dwell_template_table"):
+        return None, None
+    table_path = resolve_dwell_template_path(config, base_dir)
+    if table_path is None:
+        return None, None
+    data = table_path.read_bytes()
+    return data, hashlib.sha256(data).hexdigest()
+
+
 def _bundle_metadata_base(architecture: str, version: str) -> dict:
     """Common metadata keys shared across every bundle format."""
     return {
@@ -223,6 +251,10 @@ def create_bundle(
 
         models_dict[pair] = model_entry
 
+    dwell_template_table_bytes, dwell_template_table_sha256 = _load_dwell_template_bytes(
+        ref_arch_config, Path(model_dirs[pairs[0]])
+    )
+
     bundle = {
         "metadata": {
             "format_version": 1,
@@ -231,10 +263,17 @@ def create_bundle(
             "num_models": len(models_dict),
             "pairs": pairs,
             "pair_labels": _collect_pair_labels(pairs, pair_configs),
+            **(
+                {"dwell_template_table_sha256": dwell_template_table_sha256}
+                if dwell_template_table_bytes is not None
+                else {}
+            ),
         },
         "config": ref_arch_config,
         "models": models_dict,
     }
+    if dwell_template_table_bytes is not None:
+        bundle["dwell_template_table_bytes"] = dwell_template_table_bytes
 
     output_path = _atomic_save(bundle, output_path)
     logger.info(f"Bundle saved to {output_path} ({len(models_dict)} models, version {version})")
@@ -292,6 +331,10 @@ def create_multiclass_bundle(
                 f"Skipping calibration ({cal_method}, ECE {ece_before:.4f} -> {ece_after:.4f}, no improvement)"
             )
 
+    dwell_template_table_bytes, dwell_template_table_sha256 = _load_dwell_template_bytes(
+        arch_config, model_dir
+    )
+
     bundle = {
         "metadata": {
             "format_version": 1,
@@ -302,10 +345,17 @@ def create_multiclass_bundle(
             "label_map": label_map,
             "pairs": sorted(label_map.keys()),
             "cl_regression": full_config.get("cl_regression", False),
+            **(
+                {"dwell_template_table_sha256": dwell_template_table_sha256}
+                if dwell_template_table_bytes is not None
+                else {}
+            ),
         },
         "config": arch_config,
         "model": model_entry,
     }
+    if dwell_template_table_bytes is not None:
+        bundle["dwell_template_table_bytes"] = dwell_template_table_bytes
 
     output_path = _atomic_save(bundle, output_path)
     logger.info(
@@ -399,6 +449,10 @@ def create_torchscript_bundle(
             "best_epoch": checkpoint.get("best_epoch"),
         }
 
+    dwell_template_table_bytes, dwell_template_table_sha256 = _load_dwell_template_bytes(
+        ref_arch_config, Path(model_dirs[pairs[0]])
+    )
+
     bundle = {
         "metadata": {
             "format_version": 3,
@@ -409,10 +463,17 @@ def create_torchscript_bundle(
             "pair_labels": _collect_pair_labels(pairs, pair_configs),
             "torchscript": True,
             "requires_features": requires_features,
+            **(
+                {"dwell_template_table_sha256": dwell_template_table_sha256}
+                if dwell_template_table_bytes is not None
+                else {}
+            ),
         },
         "config": ref_arch_config,
         "models": models_dict,
     }
+    if dwell_template_table_bytes is not None:
+        bundle["dwell_template_table_bytes"] = dwell_template_table_bytes
 
     output_path = _atomic_save(bundle, output_path)
     logger.info(
@@ -493,6 +554,10 @@ def create_vmap_bundle(
 
     stacked_params, stacked_buffers = torch.func.stack_module_state(models_list)
 
+    dwell_template_table_bytes, dwell_template_table_sha256 = _load_dwell_template_bytes(
+        ref_arch_config, Path(model_dirs[pairs[0]])
+    )
+
     bundle = {
         "metadata": {
             "format_version": 4,
@@ -503,6 +568,11 @@ def create_vmap_bundle(
             "pair_labels": _collect_pair_labels(pairs, pair_configs),
             "vmap": True,
             "requires_features": requires_features,
+            **(
+                {"dwell_template_table_sha256": dwell_template_table_sha256}
+                if dwell_template_table_bytes is not None
+                else {}
+            ),
         },
         "config": ref_arch_config,
         "stacked_params": stacked_params,
@@ -510,6 +580,8 @@ def create_vmap_bundle(
         "platt_a": torch.tensor(platt_a_list, dtype=torch.float32),
         "platt_b": torch.tensor(platt_b_list, dtype=torch.float32),
     }
+    if dwell_template_table_bytes is not None:
+        bundle["dwell_template_table_bytes"] = dwell_template_table_bytes
 
     output_path = _atomic_save(bundle, output_path)
     logger.info(f"vmap bundle saved to {output_path} ({len(pairs)} models, version {version})")

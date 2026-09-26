@@ -3,6 +3,7 @@
 import inspect
 import json
 import logging
+from collections.abc import Mapping
 from pathlib import Path
 
 import torch
@@ -19,6 +20,73 @@ from leech.models import MODEL_REGISTRY, get_model
 from leech.seeding import setup_random_seed  # noqa: F401
 
 logger = logging.getLogger("leech.model_loading")
+
+
+def resolve_dwell_template_path(config: Mapping, base_dir: Path | None) -> Path | None:
+    """Resolve a checkpoint's recorded ``dwell_template_table`` to a real path.
+
+    ``train_model`` (issue #369) copies the TSV into ``<output_dir>/
+    dwell_template_table.tsv`` and records that bare name in ``config.json``,
+    so the checkpoint directory is the first place to look -- not the
+    process's current working directory, which has no reason to relate to
+    wherever training happened to run. A checkpoint trained before #369
+    still records whatever string the CLI got (often a repo-relative path,
+    e.g. ``report/data/legacy/aa_transit_table.tsv``); that only ever
+    resolved against the CWD, so it stays supported as a fallback.
+
+    Args:
+        config: A checkpoint's ``config.json``, or a bundle's ``config``.
+        base_dir: The checkpoint (or bundle) directory to resolve a relative
+            path against. ``None`` skips straight to the CWD-relative
+            fallback -- e.g. a caller with no directory of its own, such as
+            a bundle that embeds the table and never needs this at all.
+
+    Returns:
+        ``None`` when the config has no ``dwell_template_table``. An
+        absolute recorded path, returned as-is (no existence check -- the
+        caller finds out when it tries to open it). Otherwise
+        ``base_dir / dwell_template_table`` when that exists; failing that,
+        the bare CWD-relative path when THAT exists (with a one-line
+        warning naming both, since this is exactly the legacy shape #369
+        fixes for new checkpoints).
+
+    Raises:
+        FileNotFoundError: The config records a relative
+            ``dwell_template_table`` and neither candidate exists.
+    """
+    raw = config.get("dwell_template_table")
+    if not raw:
+        return None
+    raw_path = Path(raw)
+    if raw_path.is_absolute():
+        return raw_path
+
+    model_dir_candidate = (Path(base_dir) / raw_path) if base_dir is not None else None
+    if model_dir_candidate is not None and model_dir_candidate.exists():
+        return model_dir_candidate
+
+    cwd_candidate = raw_path
+    if cwd_candidate.exists():
+        if model_dir_candidate is not None:
+            logger.warning(
+                "dwell_template_table %r not found at %s; falling back to the "
+                "CWD-relative path %s (resolved: %s). This checkpoint predates "
+                "issue #369's copy-into-model-dir behavior -- re-train, or copy "
+                "the table into %s, to make this model directory self-contained "
+                "and silence this warning.",
+                raw,
+                model_dir_candidate,
+                cwd_candidate,
+                cwd_candidate.resolve(),
+                base_dir,
+            )
+        return cwd_candidate
+
+    candidates = [str(c) for c in (model_dir_candidate, cwd_candidate) if c is not None]
+    raise FileNotFoundError(
+        f"dwell_template_table {raw!r} recorded in config not found. Tried: "
+        + ", ".join(candidates)
+    )
 
 
 def load_model_from_checkpoint(

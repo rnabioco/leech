@@ -30,7 +30,7 @@ from leech.constants import (
 from leech.dataset import LeechDataset, collate_fn, resolve_dataloader_workers
 from leech.inference.helpers import is_multiclass as _is_multiclass_config
 from leech.metrics import compute_metrics, print_metrics, save_metrics
-from leech.model_loading import load_model_from_checkpoint
+from leech.model_loading import load_model_from_checkpoint, resolve_dwell_template_path
 from leech.models.inference_wrapper import ModelInferenceWrapper
 
 logger = logging.getLogger("leech.evaluation")
@@ -215,9 +215,11 @@ def evaluate_model(
     # Load test dataset. Forward dwell_template_table from training config so
     # the feature tensor has the same channel count as training — otherwise
     # the feature-branch Conv1d crashes with a channel mismatch on models
-    # that were trained with per-AA dwell templates.
+    # that were trained with per-AA dwell templates. Resolved against the
+    # model directory, not the CWD (issue #369) -- `train_model` copies the
+    # table there and records the bare filename.
     logger.info(f"\nLoading test data from {test_data_path}")
-    dwell_template_table = config.get("dwell_template_table") or None
+    dwell_template_table = resolve_dwell_template_path(config, base_dir=Path(model_path))
     # Channel ablation (issue #358 follow-up): the checkpoint may have been
     # trained on a SUBSET of this corpus's channels -- e.g. every arm of an
     # ablation sweep scored against the same all-channel corpus. `None` when

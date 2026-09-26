@@ -11,7 +11,6 @@ import pysam
 import torch
 from rich.progress import Progress
 
-from leech.chunking import resolve_feature_window
 from leech.configs import ChunkConfig, InferenceConfig, MotifConfig, SignalConfig
 from leech.features import extract_move_table
 from leech.inference.aggregation import (
@@ -30,6 +29,7 @@ from leech.inference.helpers import (
     check_rust_extraction_available,
     chunks_for_read,
     collect_bam_metadata_for_rust,
+    load_inference_dwell_template,
     prepare_inference_features,
     validate_inference_shapes,
 )
@@ -245,6 +245,11 @@ def run_bundle_inference(
         parameter_sources=parameter_sources,
         strict_model_type=True,
         model_dwell_margin=lambda: getattr(_instantiate_model(config), "dwell_margin", 0),
+        # The bundle's own directory -- the closest analogue to a checkpoint
+        # directory a single .pt file has -- for resolving a non-embedded
+        # dwell_template_table (issue #369). Bundles built after this fix
+        # embed the table as bytes instead and never need this fallback.
+        base_dir=bundle_path.parent,
     )
     signal_len = spec.signal_len
     kmer_len = spec.kmer_len
@@ -411,47 +416,23 @@ def run_bundle_inference(
     # the same template-append that the training dataset did. This is
     # label-independent (computes dwell/expected for all AAs), so it works
     # verbatim at inference time.
-    dwell_templates_arr: np.ndarray | None = None
-    dwell_template_min_pos: int = 0
-    dwell_row: int | None = None
-    bundle_dwell_template_table = spec.dwell_template_table
-    if bundle_dwell_template_table:
-        from leech.dataset import (
-            check_dwell_template_coverage,
-            check_dwell_template_motif_offset,
-            load_dwell_template_table,
-        )
-        from leech.inference.helpers import InferenceConfigError
-
-        dt = load_dwell_template_table(Path(bundle_dwell_template_table))
-        dwell_templates_arr = dt.template
-        dwell_template_min_pos = dt.min_pos
-        # Re-checked here, not just at training time: this reloads the TSV
-        # from disk, so it also catches a table whose content changed at the
-        # same path since the checkpoint was trained (issue #364).
-        check_dwell_template_motif_offset(
-            bundle_dwell_template_table, dt.motif_offset, dt.motif, motif_offset
-        )
-        # Resolve the dwell row by name, not by convention (issue #366): a
-        # bundle's recorded feature_channels can put `dwell` at any row.
-        if "dwell" not in spec.feature_channels:
-            raise InferenceConfigError(
-                f"dwell_template_table is set but 'dwell' is not in this "
-                f"bundle's feature_channels: {spec.feature_channels!r}"
-            )
-        dwell_row = spec.feature_channels.index("dwell")
-        # Coverage of the run's feature window (issue #367), resolved with
-        # kmer_context the same way prepare_inference_features resolves
-        # feature_start.
-        _cov_start, _cov_end, _ = resolve_feature_window(_feature_start, _feature_end, kmer_context)
-        check_dwell_template_coverage(
-            bundle_dwell_template_table, dt.min_pos, dt.max_pos, _cov_start, _cov_end
-        )
-        logger.info(
-            f"Dwell template append enabled at inference "
-            f"(+{dwell_templates_arr.shape[0]} channels from "
-            f"{bundle_dwell_template_table}, dwell_row={dwell_row})"
-        )
+    #
+    # Embedded at bundle time (issue #369) takes priority: a bundle is a
+    # single .pt file with no directory of its own, so `create_bundle`/etc.
+    # embed the source checkpoint's table as bytes rather than depending on
+    # that checkpoint directory still existing at inference time. Only a
+    # bundle built before this fix (or one whose source checkpoint had no
+    # table) falls back to `spec.dwell_template_table`, which
+    # `InferenceSpec.from_config` already tried to resolve against the
+    # bundle's own directory (`base_dir=bundle_path.parent` above).
+    dwell_template = load_inference_dwell_template(
+        spec, bundle_path.parent, embedded_bytes=bundle.get("dwell_template_table_bytes")
+    )
+    dwell_templates_arr: np.ndarray | None = (
+        dwell_template.templates if dwell_template is not None else None
+    )
+    dwell_template_min_pos: int = dwell_template.min_pos if dwell_template is not None else 0
+    dwell_row: int | None = dwell_template.dwell_row if dwell_template is not None else None
 
     # -- Setup vmap forward for format_version 4, else use sequential wrappers --
     is_vmap = format_version == 4

@@ -1802,6 +1802,140 @@ class TestExtractionPathParity:
 
 
 @pytest.mark.skipif(not TRNA_FIXTURES_AVAILABLE, reason="tRNA fixtures not available")
+class TestSingleModelDwellTemplate:
+    """Issue #370: ``run_inference`` (single-model predict) must apply a
+    checkpoint's ``dwell_template_table`` the same way ``run_bundle_inference``
+    always has. Before this, ``run_inference`` had no equivalent at all, so a
+    template checkpoint (``num_features = base + n_aa``) failed
+    ``validate_inference_shapes`` on the first chunk of a
+    ``leech predict --model`` run -- only bundle predict, ``eval test`` and
+    ``model calibrate`` applied the template.
+
+    Train-free: the model is a randomly initialized ``ConvLSTMDwell`` built
+    directly from a config dict (same pattern as ``_create_multiclass_bundle``
+    above), with ``num_features`` sized for the base channels plus the
+    template's amino acids.
+    """
+
+    CLASS_NAMES = ["Ala", "Gly", "Met"]
+    TEMPLATE_AAS = ["Ala", "Gly"]
+    # _ARCH_CONFIG's num_features (9) already accounts for refine_signal_map
+    # being off (the 3 kmer-residual DEFAULT_FEATURE_CHANNELS entries drop
+    # out) -- the template adds one channel per TEMPLATE_AAS entry on top.
+    BASE_NUM_FEATURES = _ARCH_CONFIG["num_features"]
+
+    @staticmethod
+    def _write_template(tmp_path, *, motif_offset=2, name="dwell_template.tsv"):
+        lines = [f"# motif_offset: {motif_offset}", "aa\tposition\tdwell_mean"]
+        for aa, pos, val in [
+            ("Ala", -2, 10.0),
+            ("Ala", -1, 11.0),
+            ("Gly", -2, 9.0),
+            ("Gly", -1, 12.0),
+        ]:
+            lines.append(f"{aa}\t{pos}\t{val}")
+        path = tmp_path / name
+        path.write_text("\n".join(lines) + "\n")
+        return path
+
+    def _create_bundle_with_template(self, tmp_path, table_path, *, name="tmpl_bundle.pt"):
+        """Same shape as ``_create_multiclass_bundle``, plus a wider feature
+        branch and a ``dwell_template_table`` naming ``table_path``."""
+        from leech.models import get_model
+
+        num_out = len(self.CLASS_NAMES)
+        num_features = self.BASE_NUM_FEATURES + len(self.TEMPLATE_AAS)
+        model = get_model(
+            "ConvLSTMDwell", num_out=num_out, **{**_model_kwargs(), "num_features": num_features}
+        )
+
+        config = {
+            "model_name": "ConvLSTMDwell",
+            **_ARCH_CONFIG,
+            "num_features": num_features,
+            "num_out": num_out,
+            "motif": "CCAGGC",
+            "motif_offset": 2,
+            "dwell_template_table": str(table_path),
+        }
+        label_map = {aa: i for i, aa in enumerate(self.CLASS_NAMES)}
+        bundle = {
+            "metadata": {
+                "format_version": 1,
+                "bundle_version": "0.0.1-test",
+                "architecture": "ConvLSTMDwell",
+                "comparison_type": "multiclass",
+                "num_classes": num_out,
+                "label_map": label_map,
+                "pairs": list(label_map.values()),
+            },
+            "config": config,
+            "model": {"state_dict": model.state_dict()},
+        }
+        bundle_path = tmp_path / name
+        torch.save(bundle, bundle_path)
+        return bundle_path
+
+    def _predict(self, tmp_path, bundle_path, out_name, *, backend="python"):
+        from leech.bundling import load_model_from_multiclass_bundle
+        from leech.inference import run_inference
+
+        model, config = load_model_from_multiclass_bundle(bundle_path, device="cpu")
+        out = tmp_path / out_name
+        run_inference(
+            model_and_config=(model, config),
+            pod5_path=TRNA_POD5,
+            bam_path=TRNA_BAM,
+            output_path=out,
+            device="cpu",
+            batch_size=8,
+            reverse_signal=True,
+            reference_fasta=TRNA_REF,
+            backend=backend,
+        )
+        return out
+
+    def test_predict_applies_template_channels(self, tmp_path):
+        """A template checkpoint completes predict and writes predictions --
+        before the fix this raised ``InferenceConfigError`` (feature-count
+        mismatch) on the first chunk."""
+        table_path = self._write_template(tmp_path)
+        bundle_path = self._create_bundle_with_template(tmp_path, table_path)
+
+        out = self._predict(tmp_path, bundle_path, "out.bam", backend="python")
+
+        rows = _dump_prediction_tags(out)
+        assert rows
+        assert any("aa" in r for r in rows)
+
+    def test_rust_and_python_paths_agree_with_template(self, tmp_path):
+        """Same shape as ``TestExtractionPathParity.test_rust_and_python_extraction_agree``,
+        with a dwell-template model: whichever path extracted (and
+        template-appended) the chunks, the predictions must agree."""
+        pytest.importorskip("leech_core")
+        table_path = self._write_template(tmp_path)
+        bundle_path = self._create_bundle_with_template(tmp_path, table_path)
+
+        py_out = self._predict(tmp_path, bundle_path, "py.bam", backend="python")
+        rs_out = self._predict(tmp_path, bundle_path, "rs.bam", backend="rust")
+
+        py_rows = _dump_prediction_tags(py_out)
+        rs_rows = _dump_prediction_tags(rs_out)
+        assert py_rows
+        assert any("aa" in r for r in py_rows)
+        assert py_rows == rs_rows
+
+    def test_mismatched_template_frame_raises(self, tmp_path):
+        """A table recorded at a different motif_offset than the run's must
+        raise rather than silently misalign every lookup (issue #364)."""
+        table_path = self._write_template(tmp_path, motif_offset=8)  # model's is 2
+        bundle_path = self._create_bundle_with_template(tmp_path, table_path)
+
+        with pytest.raises(ValueError, match="motif_offset"):
+            self._predict(tmp_path, bundle_path, "out.bam", backend="python")
+
+
+@pytest.mark.skipif(not TRNA_FIXTURES_AVAILABLE, reason="tRNA fixtures not available")
 class TestChunksForReadSharedBySingleAndBundle:
     """``chunks_for_read`` is the one function both ``run_inference``'s and
     ``run_bundle_inference``'s Python serial extraction paths call to turn a

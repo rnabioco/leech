@@ -1025,6 +1025,50 @@ class TestModelBundle:
         with pytest.raises(ValueError, match="Architecture config mismatch"):
             create_bundle(model_dirs, bundle_path, "pairwise", "0.1.0")
 
+    def test_bundle_embeds_dwell_template(self, tmp_path, model_config):
+        """#369: ``leech model bundle`` embeds the source checkpoint's
+        dwell-template TSV as bytes, so a bundle -- a single ``.pt`` file,
+        not a directory -- does not depend on the model directory it was
+        built from still existing at inference time."""
+        import hashlib
+
+        pairs = ["Ala_Gly"]
+        model_dirs = self._create_fake_model_dirs(tmp_path, model_config, pairs)
+
+        table_bytes = (
+            b"# motif_offset: 0\naa\tposition\tdwell_mean\n"
+            b"Ala\t-2\t10.0\nAla\t-1\t11.0\nGly\t-2\t9.0\nGly\t-1\t12.0\n"
+        )
+        for pair_dir in model_dirs.values():
+            (pair_dir / "dwell_template_table.tsv").write_bytes(table_bytes)
+            config_path = pair_dir / "config.json"
+            with open(config_path) as f:
+                config = json.load(f)
+            config["dwell_template_table"] = "dwell_template_table.tsv"
+            with open(config_path, "w") as f:
+                json.dump(config, f)
+
+        bundle_path = tmp_path / "dwell_template_bundle.pt"
+        create_bundle(model_dirs, bundle_path, "pairwise", "1.0.0")
+
+        bundle = torch.load(bundle_path, map_location="cpu", weights_only=False)
+        assert bundle["dwell_template_table_bytes"] == table_bytes
+
+        expected_sha256 = hashlib.sha256(table_bytes).hexdigest()
+        metadata = list_bundle_models(bundle_path)
+        assert metadata["dwell_template_table_sha256"] == expected_sha256
+
+    def test_bundle_without_dwell_template_embeds_nothing(self, tmp_path, model_config):
+        """The common case (no --dwell-template-table) must not gain a key."""
+        model_dirs = self._create_fake_model_dirs(tmp_path, model_config, ["Ala_Gly"])
+
+        bundle_path = tmp_path / "no_dwell_template_bundle.pt"
+        create_bundle(model_dirs, bundle_path, "pairwise", "1.0.0")
+
+        bundle = torch.load(bundle_path, map_location="cpu", weights_only=False)
+        assert "dwell_template_table_bytes" not in bundle
+        assert "dwell_template_table_sha256" not in bundle["metadata"]
+
 
 class TestAggregatePairwise:
     """Test pairwise voting aggregation."""

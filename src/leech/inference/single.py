@@ -28,6 +28,7 @@ from leech.inference.helpers import (
     chunks_for_read,
     collect_bam_metadata_for_rust,
     junction_lookup_from_rs_meta,
+    load_inference_dwell_template,
     load_model_auto,
     prepare_inference_features,
     prepare_signal_channels,
@@ -329,6 +330,18 @@ def run_inference(
     else:
         model_wrapper = ModelInferenceWrapper(wrapper_or_model, config["model_name"])
 
+    # The checkpoint's own directory, for resolving a non-absolute
+    # dwell_template_table (issue #369) -- a checkpoint is a directory
+    # (config.json + model_best.pt); a Remora/leech-exported model is a
+    # single .pt file, so its containing directory is the closest analogue.
+    # None when the caller passed a pre-loaded (model, config) with no
+    # model_path of its own -- the recorded value (if any) then stays
+    # whatever it was, and only resolves if it happens to be absolute.
+    model_dir: Path | None = None
+    if model_path is not None:
+        _model_path = Path(model_path)
+        model_dir = _model_path if _model_path.is_dir() else _model_path.parent
+
     spec = InferenceSpec.from_config(
         config,
         model_type=getattr(model_wrapper, "model_type", ""),
@@ -344,6 +357,7 @@ def run_inference(
             if hasattr(model_wrapper, "model")
             else 0
         ),
+        base_dir=model_dir,
     )
     signal_len = spec.signal_len
     kmer_len = spec.kmer_len
@@ -363,6 +377,19 @@ def run_inference(
     base_justify = spec.base_justify
     anchor = spec.anchor
     reference_fasta = spec.reference_fasta
+
+    # Load per-AA dwell templates if this checkpoint was trained with them
+    # (issue #370). `run_bundle_inference` has always done this;
+    # `run_inference` had no equivalent, so a template checkpoint
+    # (num_features = base + n_aa) failed shape validation on the first
+    # chunk. `load_inference_dwell_template` is the one definition of this
+    # load, shared with bundle.py.
+    dwell_template = load_inference_dwell_template(spec, model_dir)
+    dwell_templates_arr: np.ndarray | None = (
+        dwell_template.templates if dwell_template is not None else None
+    )
+    dwell_template_min_pos: int = dwell_template.min_pos if dwell_template is not None else 0
+    dwell_row: int | None = dwell_template.dwell_row if dwell_template is not None else None
 
     int_to_label = {v: k for k, v in spec.label_map.items()} if spec.label_map else None
 
@@ -685,6 +712,27 @@ def run_inference(
                     accumulator = BatchAccumulator(batch_size, _run_worker_batch)
                     for worker_results in pool.imap_unordered(_inference_worker, worker_args):
                         for read_id, base_idx, sig, enc_seq, feat, ji, jm in worker_results:
+                            # `_inference_worker` builds features with no
+                            # knowledge of dwell templates (its InferenceConfig
+                            # carries none), so the append happens here in the
+                            # main process instead -- the same split
+                            # `run_bundle_inference`'s own mp.Pool path uses.
+                            if (
+                                requires_features
+                                and feat is not None
+                                and dwell_templates_arr is not None
+                            ):
+                                from leech.dataset import append_dwell_template_channels
+
+                                feat = append_dwell_template_channels(
+                                    feat,
+                                    feat_start=_feature_start
+                                    if _feature_start is not None
+                                    else -kmer_context,
+                                    dwell_templates=dwell_templates_arr,
+                                    template_min_pos=dwell_template_min_pos,
+                                    dwell_row=dwell_row,
+                                )
                             accumulator.add(sig, enc_seq, feat, (read_id, base_idx, ji, jm))
                         # One worker's results never share a batch with the
                         # next worker's -- imap_unordered hands them back
@@ -898,6 +946,9 @@ def run_inference(
                     kmer_len=kmer_len,
                     dwell_offset=dwell_offset,
                     wide_features=wide_features,
+                    dwell_templates=dwell_templates_arr,
+                    template_min_pos=dwell_template_min_pos,
+                    dwell_row=dwell_row,
                 )
             ]
 
@@ -1009,6 +1060,9 @@ def run_inference(
                     feature_start=_feature_start,
                     dwell_offset=dwell_offset,
                     wide_features=wide_features,
+                    dwell_templates=dwell_templates_arr,
+                    template_min_pos=dwell_template_min_pos,
+                    dwell_row=dwell_row,
                 )
                 if not _shape_validated:
                     validate_inference_shapes(sig, feat, config)
