@@ -5,6 +5,7 @@ Tests Trainer class and train_model function.
 """
 
 import copy
+import hashlib
 import json
 import logging
 import os
@@ -523,6 +524,90 @@ class TestTrainModel:
             f"num_features={config['num_features']!r}, expected 5 -- degraded list "
             f"storage must not silently fall back to 1"
         )
+
+
+class TestDwellTemplateTablePersistence:
+    """#369: the dwell-template TSV is an input the checkpoint depends on at
+    eval/calibrate/predict time. ``train_model`` must copy it into the model
+    directory rather than record the CLI's (often repo-relative) path, so
+    every downstream loader can find it without depending on the process's
+    current working directory.
+    """
+
+    @staticmethod
+    def _write_table(directory, name="dwell_template.tsv"):
+        lines = [
+            "# motif_offset: 0",
+            "aa\tposition\tdwell_mean",
+        ]
+        for aa, pos, val in [
+            ("Ala", -2, 10.0),
+            ("Ala", -1, 11.0),
+            ("Gly", -2, 9.0),
+            ("Gly", -1, 12.0),
+        ]:
+            lines.append(f"{aa}\t{pos}\t{val}")
+        path = directory / name
+        path.write_text("\n".join(lines) + "\n")
+        return path
+
+    def test_train_copies_dwell_template_into_output_dir(self, temp_chunks_file, tmp_path):
+        source_dir = tmp_path / "source"
+        source_dir.mkdir()
+        table_path = self._write_table(source_dir)
+        output_dir = tmp_path / "training"
+
+        train_model(
+            train_data_path=temp_chunks_file,
+            val_data_path=None,
+            model_name="ConvLSTMDwell",
+            output_dir=output_dir,
+            epochs=1,
+            batch_size=2,
+            device="cpu",
+            motif="CCAGGC",
+            motif_offset=0,
+            seed=42,
+            dwell_template_table=table_path,
+        )
+
+        copied = output_dir / "dwell_template_table.tsv"
+        assert copied.exists()
+        assert copied.read_bytes() == table_path.read_bytes()
+
+        with open(output_dir / "config.json") as f:
+            config = json.load(f)
+
+        assert config["dwell_template_table"] == "dwell_template_table.tsv"
+        assert config["dwell_template_table_source"] == str(table_path.resolve())
+        assert (
+            config["dwell_template_table_sha256"]
+            == hashlib.sha256(table_path.read_bytes()).hexdigest()
+        )
+
+    def test_train_without_dwell_template_records_nothing(self, temp_chunks_file, tmp_path):
+        output_dir = tmp_path / "training"
+
+        train_model(
+            train_data_path=temp_chunks_file,
+            val_data_path=None,
+            model_name="ConvLSTMDwell",
+            output_dir=output_dir,
+            epochs=1,
+            batch_size=2,
+            device="cpu",
+            motif="CCAGGC",
+            seed=42,
+        )
+
+        assert not (output_dir / "dwell_template_table.tsv").exists()
+
+        with open(output_dir / "config.json") as f:
+            config = json.load(f)
+
+        assert config["dwell_template_table"] is None
+        assert config["dwell_template_table_source"] is None
+        assert config["dwell_template_table_sha256"] is None
 
 
 def _build_ablation_train_chunks(channel_names, n=24, feat_width=11):

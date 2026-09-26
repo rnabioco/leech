@@ -326,6 +326,68 @@ class TestParametricCheckpointMetricReporting:
         )
 
 
+class TestDwellTemplateTablePathResolution:
+    """#369: ``eval test`` must resolve ``config["dwell_template_table"]``
+    against the model directory, not the process's current working
+    directory -- ``train_model`` now copies its own TSV into the checkpoint
+    directory, and that copy is what eval must find regardless of the
+    original CLI-supplied source or the CWD a later ``eval test`` happens to
+    run from.
+    """
+
+    def test_eval_resolves_template_relative_to_model_dir(
+        self, temp_chunks_file, tmp_path, monkeypatch
+    ):
+        from leech.evaluation import evaluate_model
+        from leech.training import train_model
+
+        source_dir = tmp_path / "source"
+        source_dir.mkdir()
+        table_path = source_dir / "dwell_template.tsv"
+        table_path.write_text(
+            "# motif_offset: 0\n"
+            "aa\tposition\tdwell_mean\n"
+            "Ala\t-2\t10.0\n"
+            "Ala\t-1\t11.0\n"
+            "Gly\t-2\t9.0\n"
+            "Gly\t-1\t12.0\n"
+        )
+
+        model_dir = tmp_path / "model"
+        train_model(
+            train_data_path=temp_chunks_file,
+            val_data_path=None,
+            model_name="ConvLSTMDwell",
+            output_dir=model_dir,
+            epochs=1,
+            batch_size=2,
+            device="cpu",
+            motif="CCAGGC",
+            motif_offset=0,
+            seed=42,
+            dwell_template_table=table_path,
+        )
+        assert (model_dir / "dwell_template_table.tsv").exists()
+
+        # The original CLI-supplied source is gone, and a CWD-relative
+        # lookup of the bare recorded name has nothing to find either --
+        # only the model directory's own copy can satisfy this.
+        table_path.unlink()
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.chdir(elsewhere)
+
+        metrics = evaluate_model(
+            model_path=model_dir,
+            test_data_path=temp_chunks_file,
+            output_path=tmp_path / "test_metrics.json",
+            device="cpu",
+            batch_size=2,
+        )
+
+        assert metrics is not None
+
+
 def _build_ablation_corpus(tmp_path, channel_names, n=24, feat_width=11):
     """Write a small npz corpus (+ matching ``prepare_config.json`` sidecar)
     whose ``features`` rows are named ``channel_names``, each a distinct,

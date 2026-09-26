@@ -216,6 +216,8 @@ def handle_bundle_info(bundle: Path) -> dict[str, Any]:
     table.add_row("Architecture", metadata.get("architecture", "unknown"))
     table.add_row("Comparison type", metadata.get("comparison_type", "unknown"))
     table.add_row("Number of models", str(metadata.get("num_models", 0)))
+    dwell_template_sha256 = metadata.get("dwell_template_table_sha256")
+    table.add_row("Dwell template embedded", "yes" if dwell_template_sha256 else "no")
     table.add_row("Created at", metadata.get("created_at", "unknown"))
     size_mb = Path(bundle).stat().st_size / (1024 * 1024)
     table.add_row("File size", f"{size_mb:.1f} MB")

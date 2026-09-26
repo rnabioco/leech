@@ -27,7 +27,7 @@ from leech.constants import (
     DEFAULT_SEQ_ENCODING_FALLBACK,
 )
 from leech.features import encode_signal_kmer, encode_signal_kmer_batch, sequence_to_int
-from leech.model_loading import load_model_from_checkpoint
+from leech.model_loading import load_model_from_checkpoint, resolve_dwell_template_path
 from leech.models import requires_features as _requires_features
 from leech.models import wide_features as _wide_features
 from leech.models.inference_wrapper import ModelInferenceWrapper, TracedModelWrapper
@@ -268,6 +268,12 @@ class InferenceSpec:
     calibration: dict | None
     cl_regression: bool
     dwell_template_table: str | None
+    #: The checkpoint (or bundle) directory passed in as ``base_dir``, kept
+    #: on the spec so a caller that needs a second, authoritative resolution
+    #: later (e.g. bundle.py's embedded-bytes-vs-resolver fallback, issue
+    #: #369) does not have to thread its own copy of the same path alongside
+    #: the spec.
+    base_dir: Path | None
 
     @classmethod
     def from_config(
@@ -284,6 +290,7 @@ class InferenceSpec:
         parameter_sources: Mapping[str, bool] | None = None,
         strict_model_type: bool = False,
         model_dwell_margin: Callable[[], int] | None = None,
+        base_dir: Path | None = None,
     ) -> "InferenceSpec":
         """Resolve one :class:`InferenceSpec` from a model/bundle config dict.
 
@@ -332,6 +339,15 @@ class InferenceSpec:
                 reading it needs the model itself -- lazy because building
                 one (bundle.py's caller has to ``_instantiate_model(config)``)
                 is wasted work on every call that never reaches this branch.
+            base_dir: The checkpoint (or bundle) directory to resolve
+                ``dwell_template_table`` against, via
+                :func:`leech.model_loading.resolve_dwell_template_path`
+                (issue #369) -- ``None`` (default) leaves the recorded value
+                unresolved, e.g. for a caller with no directory of its own to
+                offer. A resolution failure here is caught and logged rather
+                than raised: an embedded-bytes caller (bundle.py) has a
+                second source of truth this function cannot see, so only
+                that caller is positioned to decide a missing file is fatal.
         """
         sources = parameter_sources or {}
 
@@ -437,6 +453,28 @@ class InferenceSpec:
         # `DEFAULT_SEQ_ENCODING_FALLBACK` above.
         feature_channels = list(config.get("feature_channels", DEFAULT_FEATURE_CHANNELS))
 
+        # Resolved against base_dir when given (issue #369); a resolution
+        # failure is swallowed here rather than raised -- bundle.py's caller
+        # may have the table embedded as bytes instead, a source of truth
+        # this function can't see, so only that caller can decide a missing
+        # file is fatal. Falls back to the raw recorded value either way
+        # (None if unset, exactly the pre-#369 behavior for a caller that
+        # never passes base_dir).
+        resolved_dwell_template_table = config.get("dwell_template_table") or None
+        if resolved_dwell_template_table is not None and base_dir is not None:
+            try:
+                resolved = resolve_dwell_template_path(config, base_dir)
+            except FileNotFoundError as exc:
+                logger.debug(
+                    "InferenceSpec.from_config: dwell_template_table not found under "
+                    "base_dir=%s (%s); leaving it unresolved.",
+                    base_dir,
+                    exc,
+                )
+            else:
+                if resolved is not None:
+                    resolved_dwell_template_table = str(resolved)
+
         return cls(
             signal_len=signal_len,
             kmer_len=kmer_len,
@@ -472,7 +510,8 @@ class InferenceSpec:
             label_map=label_map,
             calibration=config.get("calibration") if num_out > 1 else None,
             cl_regression=bool(config.get("cl_regression", False)),
-            dwell_template_table=config.get("dwell_template_table") or None,
+            dwell_template_table=resolved_dwell_template_table,
+            base_dir=base_dir,
         )
 
 

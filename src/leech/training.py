@@ -5,11 +5,13 @@ Training loop and utilities for leech models.
 import contextlib
 import copy
 import dataclasses
+import hashlib
 import json
 import logging
 import math
 import os
 import random
+import shutil
 from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
@@ -2578,6 +2580,28 @@ def train_model(
     dwell_offset = model_kwargs.pop("dwell_offset", 0)
     dwell_template_table = model_kwargs.pop("dwell_template_table", None)
 
+    # The dwell-template TSV is an input the checkpoint depends on at eval/
+    # calibrate/predict time, but until now `config.json` recorded whatever
+    # string the CLI got -- usually a repo-relative path -- and every loader
+    # opened it relative to its OWN current working directory, not wherever
+    # training happened to run. Copying it into the model directory (rank 0
+    # only -- `output_dir` already exists from the seed-save above) makes the
+    # checkpoint self-contained; `dwell_template_table_source`/`_sha256` keep
+    # the original absolute path and a content fingerprint for provenance
+    # even after the copy (issue #369). `LeechDataset` below still reads from
+    # the CLI-given `dwell_template_table` (guaranteed to exist -- the CLI's
+    # `click.Path(exists=True)` already checked it), not the copy; only what
+    # `config.json` records changes.
+    dwell_template_table_source: str | None = None
+    dwell_template_table_sha256: str | None = None
+    if dwell_template_table is not None and dist_ctx.is_main:
+        _dwell_table_src = Path(dwell_template_table)
+        dwell_template_table_source = str(_dwell_table_src.resolve())
+        dwell_template_table_sha256 = hashlib.sha256(_dwell_table_src.read_bytes()).hexdigest()
+        _dwell_table_dest = output_dir / "dwell_template_table.tsv"
+        if _dwell_table_src.resolve() != _dwell_table_dest.resolve():
+            shutil.copy2(_dwell_table_src, _dwell_table_dest)
+
     # Build augmentation config for training dataset.
     # Per-channel dicts (e.g. {"signal": 0.02, "signal_residual": 0.001})
     # can be provided via --model-config JSON; CLI flags give uniform scalars.
@@ -3248,7 +3272,12 @@ def train_model(
         # and config_loader.resolve_params).
         "feature_mean": feature_mean_list,
         "feature_std": feature_std_list,
-        "dwell_template_table": str(dwell_template_table) if dwell_template_table else None,
+        # The bare filename inside output_dir (issue #369), not the CLI's
+        # original path -- every loader resolves this against the checkpoint
+        # directory via `model_loading.resolve_dwell_template_path`.
+        "dwell_template_table": "dwell_template_table.tsv" if dwell_template_table else None,
+        "dwell_template_table_source": dwell_template_table_source,
+        "dwell_template_table_sha256": dwell_template_table_sha256,
         # The table's OWN recorded build provenance (issue #364), not this
         # run's motif/motif_offset above -- None when the table predates that
         # convention. `check_dwell_template_motif_offset` already refused a

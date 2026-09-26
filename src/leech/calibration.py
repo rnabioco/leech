@@ -30,6 +30,7 @@ from leech.constants import (
     resolve_corpus_feature_selection,
 )
 from leech.dataset import LeechDataset, collate_fn, resolve_val_dataloader_workers
+from leech.model_loading import resolve_dwell_template_path
 from leech.models.inference_wrapper import ModelInferenceWrapper
 
 logger = logging.getLogger("leech.calibration")
@@ -182,7 +183,9 @@ def calibrate_model(
     # crashes with "expected N channels, but got M channels".
     # chunk_path (not pre-loaded chunks) so the dataset streams the arrays out
     # of the npz instead of holding a second full copy of them (#211).
-    dwell_template_table = config.get("dwell_template_table") or None
+    # Resolved against the model directory, not the CWD (issue #369) --
+    # `train_model` copies the table there and records the bare filename.
+    dwell_template_table = resolve_dwell_template_path(config, base_dir=model_dir)
     # Channel ablation (issue #358 follow-up): the checkpoint may have been
     # trained on a SUBSET of this corpus's channels -- `None` (no-op) when
     # the checkpoint's declared list already matches the corpus, which is
@@ -549,7 +552,9 @@ def calibrate_model_multiclass(
     # crashes with "expected N channels, but got M channels".
     # chunk_path (not pre-loaded chunks) so the dataset streams the arrays out
     # of the npz instead of holding a second full copy of them (#211).
-    dwell_template_table = config.get("dwell_template_table") or None
+    # Resolved against the model directory, not the CWD (issue #369) --
+    # `train_model` copies the table there and records the bare filename.
+    dwell_template_table = resolve_dwell_template_path(config, base_dir=model_dir)
     # Channel ablation (issue #358 follow-up): the checkpoint may have been
     # trained on a SUBSET of this corpus's channels -- `None` (no-op) when
     # the checkpoint's declared list already matches the corpus, which is
