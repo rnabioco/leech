@@ -413,7 +413,7 @@ def run_bundle_inference(
     # verbatim at inference time.
     dwell_templates_arr: np.ndarray | None = None
     dwell_template_min_pos: int = 0
-    dwell_row: int = 0
+    dwell_row: int | None = None
     bundle_dwell_template_table = spec.dwell_template_table
     if bundle_dwell_template_table:
         from leech.dataset import (

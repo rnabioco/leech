@@ -537,7 +537,7 @@ def prepare_inference_features(
     wide_features: bool = False,
     dwell_templates: np.ndarray | None = None,
     template_min_pos: int = 0,
-    dwell_row: int = 0,
+    dwell_row: int | None = None,
 ) -> np.ndarray | None:
     """Put a chunk's feature array into the shape the model was trained on.
 
@@ -572,8 +572,11 @@ def prepare_inference_features(
         dwell_row: Row of ``features`` holding raw dwell -- resolve this by
             name (``spec.feature_channels.index("dwell")``) rather than
             assume row 0, since a checkpoint's recorded ``feature_channels``
-            can be a reordered subset (issue #366). Unused when
-            ``dwell_templates`` is None.
+            can be a reordered subset (issue #366). Required whenever
+            ``dwell_templates`` is given -- ``None`` (the default) is only
+            valid for a call that passes no templates, so a future caller
+            cannot silently reintroduce the "row 0 is dwell" assumption by
+            omitting it.
 
     Returns:
         The prepared array, or ``features`` unchanged when there is nothing to
@@ -581,9 +584,10 @@ def prepare_inference_features(
 
     Raises:
         InferenceConfigError: The requested window falls outside the stored
-            one. Training raises for the same condition rather than sliding the
-            window to fit, because a window that does not fit means the model
-            config and the corpus disagree about the feature geometry.
+            one (training raises for the same condition rather than sliding
+            the window to fit, because a window that does not fit means the
+            model config and the corpus disagree about the feature geometry),
+            or ``dwell_templates`` was given without ``dwell_row``.
     """
     if features is None or features.size == 0:
         return features
@@ -592,6 +596,9 @@ def prepare_inference_features(
     start_offset = feature_start if feature_start is not None else -kmer_context
 
     if dwell_templates is not None:
+        if dwell_row is None:
+            raise InferenceConfigError("dwell_row is required when dwell_templates is given")
+
         from leech.dataset import append_dwell_template_channels
 
         features = append_dwell_template_channels(
@@ -830,7 +837,7 @@ def chunks_for_read(
     wide_features: bool,
     dwell_templates: np.ndarray | None = None,
     template_min_pos: int = 0,
-    dwell_row: int = 0,
+    dwell_row: int | None = None,
 ) -> list[tuple[np.ndarray, np.ndarray, np.ndarray | None, int]]:
     """Extract ready-to-batch ``(signal, sequence, features, base_idx)`` tuples
     from an already-built :class:`~leech.chunking.LeechRead` at each of

@@ -172,6 +172,7 @@ class TestPrepareInferenceFeatures:
             wide_features=False,
             dwell_templates=templates,
             template_min_pos=feat_start,
+            dwell_row=0,
         )
         assert out.shape == (4, kmer_len)
         # All template positions were covered, so no column fell back to 1.0.
@@ -191,6 +192,7 @@ class TestPrepareInferenceFeatures:
             wide_features=False,
             dwell_templates=templates,
             template_min_pos=feat_start,
+            dwell_row=0,
         )
         # The k-mer window starts at stored column 5, i.e. position -5 -- just
         # past the template's coverage -- so every kept column is the 1.0
@@ -224,6 +226,25 @@ class TestPrepareInferenceFeatures:
         assert out.shape == (3, kmer_len)
         # 10 / 5 = 2.0 -- row 0 (100) divided by mistake would give 20.0.
         np.testing.assert_allclose(out[2], np.full(kmer_len, 2.0, dtype=np.float32))
+
+    def test_templates_without_dwell_row_raises(self):
+        """#366 follow-up: omitting ``dwell_row`` must not silently fall back
+        to row 0 -- a caller that passes ``dwell_templates`` is required to
+        say which row is `dwell`."""
+        width, kmer_len, feat_start = 21, 11, -10
+        feats = np.full((3, width), 10.0, dtype=np.float32)
+        templates = np.full((1, width), 5.0, dtype=np.float32)
+
+        with pytest.raises(InferenceConfigError, match="dwell_row"):
+            prepare_inference_features(
+                feats,
+                kmer_len=kmer_len,
+                feature_start=feat_start,
+                dwell_offset=0,
+                wide_features=False,
+                dwell_templates=templates,
+                template_min_pos=feat_start,
+            )
 
 
 class TestExtractionSequence:
