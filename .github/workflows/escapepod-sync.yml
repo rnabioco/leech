@@ -6,6 +6,9 @@ name: escapepod pin sync
 # its own and cannot know the PyPI package has to follow, so merging one of its
 # PRs leaves main skewed with nothing red.
 #
+# The same run also catches both pins sitting together on an old release:
+# agreement is not currency, and a release should never ship behind upstream.
+#
 # Daily rather than on-PR on purpose: failing dependabot's PR would leave a
 # human to do the second half by hand, where this proposes it already done.
 
@@ -25,22 +28,23 @@ concurrency:
 
 jobs:
   sync:
-    name: Check the escapepod pins agree
+    name: Check the escapepod pins agree and are current
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
       - name: Compare the pins
         id: check
-        # Exits 1 when they disagree, which is the signal rather than a failure.
+        # Exits 1 when they disagree or trail the latest upstream release, which
+        # is the signal rather than a failure.
         run: python .github/scripts/escapepod_sync.py --check || true
 
       - name: Install uv
-        if: steps.check.outputs.skewed == 'true' && steps.check.outputs.actionable == 'true'
+        if: steps.check.outputs.needs_bump == 'true' && steps.check.outputs.actionable == 'true'
         uses: astral-sh/setup-uv@v10.2.0
 
       - name: Move both pins to ${{ steps.check.outputs.target }}
-        if: steps.check.outputs.skewed == 'true' && steps.check.outputs.actionable == 'true'
+        if: steps.check.outputs.needs_bump == 'true' && steps.check.outputs.actionable == 'true'
         run: |
           set -euo pipefail
           # Rewrites both manifests and uv.lock's escapepod entry. It does NOT
@@ -52,7 +56,7 @@ jobs:
           cargo update --manifest-path rust/Cargo.toml --package escapepod-signal
 
       - name: Verify the rewritten lock resolves to the target
-        if: steps.check.outputs.skewed == 'true' && steps.check.outputs.actionable == 'true'
+        if: steps.check.outputs.needs_bump == 'true' && steps.check.outputs.actionable == 'true'
         env:
           TARGET: ${{ steps.check.outputs.target }}
         # The guard on the hand-written entry. Deliberately not `uv lock
@@ -68,7 +72,7 @@ jobs:
           grep -q "^escapepod==${TARGET} " /tmp/requirements.txt
 
       - name: Open or update the pull request
-        if: steps.check.outputs.skewed == 'true' && steps.check.outputs.actionable == 'true'
+        if: steps.check.outputs.needs_bump == 'true' && steps.check.outputs.actionable == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET: ${{ steps.check.outputs.target }}

@@ -440,8 +440,8 @@ dependencies = [
 
 [[package]]
 name = "escapepod-pod5"
-version = "0.30.0"
-source = "git+https://github.com/rnabioco/escapepod-rs?tag=v0.30.0#b9b57c181eed75e3f2b0798dfc935fd27634ee1d"
+version = "0.31.0"
+source = "git+https://github.com/rnabioco/escapepod-rs?tag=v0.31.0#9c7703ebb820d3712e8bdccfa02e152a90b2f218"
 dependencies = [
  "anyhow",
  "arrow",
@@ -461,8 +461,8 @@ dependencies = [
 
 [[package]]
 name = "escapepod-signal"
-version = "0.30.0"
-source = "git+https://github.com/rnabioco/escapepod-rs?tag=v0.30.0#b9b57c181eed75e3f2b0798dfc935fd27634ee1d"
+version = "0.31.0"
+source = "git+https://github.com/rnabioco/escapepod-rs?tag=v0.31.0#9c7703ebb820d3712e8bdccfa02e152a90b2f218"
 dependencies = [
  "anyhow",
  "escapepod-pod5",

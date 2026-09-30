@@ -31,6 +31,12 @@ def _load():
 sync = _load()
 
 
+@pytest.fixture(autouse=True)
+def _offline(monkeypatch):
+    """No test reaches the network; currency tests set ``latest_upstream`` themselves."""
+    monkeypatch.setattr(sync, "latest_upstream", lambda: None)
+
+
 @pytest.fixture
 def manifests(tmp_path: Path) -> Path:
     """A miniature repo carrying only the two lines the check reads."""
@@ -234,3 +240,36 @@ def test_an_unreleased_target_is_reported_but_not_proposed(manifests, monkeypatc
     monkeypatch.setattr(sync, "released_upstream", lambda version: (False, True))
 
     assert sync.main(["--check", "--root", str(manifests)]) == 1
+
+
+def test_agreeing_pins_that_trail_upstream_need_a_bump(manifests, monkeypatch, capsys):
+    """Agreement is not currency: both pins on an old release still fail the check."""
+    sync.apply_version("0.21.0", manifests)
+    monkeypatch.setattr(sync, "released_upstream", lambda version: (True, True))
+    monkeypatch.setattr(sync, "latest_upstream", lambda: "0.22.0")
+
+    assert sync.main(["--check", "--root", str(manifests)]) == 1
+    out = capsys.readouterr().out
+    assert "needs_bump=true" in out
+    assert "target=0.22.0" in out
+
+
+def test_current_pins_pass_even_when_upstream_is_unreachable(manifests, capsys):
+    sync.apply_version("0.21.0", manifests)  # _offline: latest_upstream() is None
+
+    assert sync.main(["--check", "--root", str(manifests)]) == 0
+    assert "needs_bump=false" in capsys.readouterr().out
+
+
+def test_pins_ahead_of_upstream_are_never_downgraded(manifests, monkeypatch):
+    sync.apply_version("0.23.0", manifests)
+    monkeypatch.setattr(sync, "latest_upstream", lambda: "0.22.0")
+
+    assert sync.main(["--check", "--root", str(manifests)]) == 0
+
+
+def test_fix_to_moves_both_pins_to_an_explicit_version(manifests, monkeypatch):
+    monkeypatch.setattr(sync, "apply_uv_lock", lambda *a, **k: False)  # needs uv.lock + PyPI
+    sync.apply_version("0.21.0", manifests)
+    assert sync.main(["--fix", "--to", "0.22.0", "--root", str(manifests)]) == 0
+    assert set(sync.read_pins(manifests).values()) == {"v0.22.0", "0.22.0"}
