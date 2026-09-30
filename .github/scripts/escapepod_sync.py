@@ -18,8 +18,14 @@ move with it, so merging it leaves main skewed.
 
 Used by `.github/workflows/escapepod-sync.yml`:
 
-    escapepod_sync.py --check          report; exit 1 when the pins disagree
-    escapepod_sync.py --fix            rewrite both to the higher version
+    escapepod_sync.py --check          report; exit 1 when the pins disagree or
+                                       trail the latest upstream release
+    escapepod_sync.py --fix            rewrite both to the target version
+    escapepod_sync.py --fix --to X.Y.Z rewrite both to an explicit version
+
+The target is the highest of the two pins and the latest upstream release that
+exists on *both* PyPI and as a git tag. Agreement alone is not currency: both
+pins can sit together on a release that is several behind, and nothing said so.
 
 Standard library only: it runs before any dependency is installed.
 """
@@ -221,6 +227,23 @@ def released_upstream(version: str) -> tuple[bool, bool]:
     return on_pypi, tagged
 
 
+def latest_upstream() -> str | None:
+    """The newest escapepod release present on both PyPI and as a git tag.
+
+    None when PyPI cannot be reached or the newest release has not reached both
+    sides yet -- "no information" must never read as "already current", but it
+    must not propose a bump that cannot build either.
+    """
+    try:
+        with urllib.request.urlopen("https://pypi.org/pypi/escapepod/json", timeout=30) as resp:
+            version = json.load(resp)["info"]["version"]
+        parse_version(version)
+    except (OSError, KeyError, ValueError, PinError):
+        return None
+    on_pypi, tagged = released_upstream(version)
+    return version if (on_pypi and tagged) else None
+
+
 def _emit(name: str, value: str) -> None:
     """Publish a step output when running under Actions; print either way."""
     print(f"{name}={value}")
@@ -233,8 +256,9 @@ def _emit(name: str, value: str) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--check", action="store_true", help="report; exit 1 when skewed")
-    mode.add_argument("--fix", action="store_true", help="rewrite both to the higher pin")
+    mode.add_argument("--check", action="store_true", help="report; exit 1 when a bump is due")
+    mode.add_argument("--fix", action="store_true", help="rewrite both pins to the target")
+    parser.add_argument("--to", metavar="X.Y.Z", help="with --fix: use this version as the target")
     parser.add_argument("--root", type=Path, default=REPO_ROOT)
     args = parser.parse_args(argv)
 
@@ -242,13 +266,18 @@ def main(argv: list[str] | None = None) -> int:
     for manifest, version in pins.items():
         print(f"{manifest}: escapepod {version}")
 
-    if in_sync(pins):
-        _emit("skewed", "false")
-        print("pins agree")
-        return 0
-
     target = target_version(pins)
-    _emit("skewed", "true")
+    latest = args.to if args.fix and args.to else latest_upstream()
+    if latest is not None and parse_version(latest) > parse_version(target):
+        target = ".".join(str(part) for part in parse_version(latest))
+    skewed = not in_sync(pins)
+    behind = any(parse_version(v) < parse_version(target) for v in pins.values())
+
+    _emit("skewed", "true" if skewed else "false")
+    _emit("needs_bump", "true" if behind else "false")
+    if not behind:
+        print("pins agree and are current" if latest else "pins agree (upstream unreachable)")
+        return 0
     _emit("target", target)
 
     if args.check:
@@ -256,12 +285,13 @@ def main(argv: list[str] | None = None) -> int:
         _emit("actionable", "true" if (on_pypi and tagged) else "false")
         if not (on_pypi and tagged):
             print(
-                f"::warning::escapepod pins disagree but {target} is not released on "
-                f"both sides (pypi={on_pypi}, git tag={tagged}); not proposing a bump",
+                f"::warning::escapepod pins are due to move to {target} but it is not "
+                f"released on both sides (pypi={on_pypi}, git tag={tagged}); not proposing",
                 file=sys.stderr,
             )
             return 1
-        print(f"::error::escapepod pins disagree; both should be {target}", file=sys.stderr)
+        why = "disagree" if skewed else f"trail upstream ({latest})"
+        print(f"::error::escapepod pins {why}; both should be {target}", file=sys.stderr)
         return 1
 
     changed = apply_version(target, args.root)
