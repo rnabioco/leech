@@ -236,7 +236,6 @@ class TestTransformerDwell:
             signal_len=model_config["signal_len"],
             kmer_len=model_config["kmer_len"],
             num_features=model_config["num_features"],
-            dwell_margin=dwell_margin,
             d_model=64,
             nhead=4,
             num_layers=2,
@@ -290,7 +289,6 @@ class TestConvOnly:
             signal_len=model_config["signal_len"],
             kmer_len=model_config["kmer_len"],
             num_features=model_config["num_features"],
-            dwell_margin=dwell_margin,
             base_channels=8,
             num_blocks=2,
         )
@@ -345,7 +343,6 @@ class TestTCNDwell:
             signal_len=model_config["signal_len"],
             kmer_len=model_config["kmer_len"],
             num_features=model_config["num_features"],
-            dwell_margin=dwell_margin,
             hidden_channels=16,
             num_layers=4,
             kernel_size=3,
@@ -386,7 +383,6 @@ class TestResNetDwell:
             signal_len=model_config["signal_len"],
             kmer_len=model_config["kmer_len"],
             num_features=model_config["num_features"],
-            dwell_margin=dwell_margin,
             base_channels=8,
         )
         model.eval()
