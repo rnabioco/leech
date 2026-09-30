@@ -86,6 +86,7 @@ class TransformerDwell(BaseModel):
         num_layers: Number of transformer encoder layers (default: 4)
         dim_feedforward: Dimension of feedforward network (default: 1024)
         dropout: Dropout probability (default: 0.1)
+        num_out: Output logits (1 = single BCE logit, >1 = multiclass)
     """
 
     WIDE_FEATURES = True
@@ -103,9 +104,10 @@ class TransformerDwell(BaseModel):
         seq_encoding: str = "base_onehot",
         signal_kmer_context: tuple[int, int] = DEFAULT_SIGNAL_KMER_CONTEXT,
         signal_in_channels: int = 1,
-        **kwargs,
+        num_out: int = 1,
     ):
         super().__init__()
+        self.num_out = num_out
 
         self.signal_len = signal_len
         self.kmer_len = kmer_len
@@ -162,15 +164,19 @@ class TransformerDwell(BaseModel):
         )
 
         # Transformer encoder for signal and sequence branches
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=d_model,
-            nhead=nhead,
-            dim_feedforward=dim_feedforward,
-            dropout=dropout,
-            batch_first=True,
-        )
-        self.signal_transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-        self.seq_transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        # One layer instance per tower: nn.TransformerEncoder deep-copies it, so
+        # sharing one would start both towers from identical weights (#287).
+        def _encoder_layer() -> nn.TransformerEncoderLayer:
+            return nn.TransformerEncoderLayer(
+                d_model=d_model,
+                nhead=nhead,
+                dim_feedforward=dim_feedforward,
+                dropout=dropout,
+                batch_first=True,
+            )
+
+        self.signal_transformer = nn.TransformerEncoder(_encoder_layer(), num_layers=num_layers)
+        self.seq_transformer = nn.TransformerEncoder(_encoder_layer(), num_layers=num_layers)
 
         # Cross-attention: merged signal+seq (Q) attends to wide dwell features (K/V)
         # Q dim = d_model*2 (signal + sequence concatenated)
@@ -197,7 +203,7 @@ class TransformerDwell(BaseModel):
             nn.Linear(512, 128),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(128, 1),
+            nn.Linear(128, num_out),
         )
 
     def forward(
@@ -213,7 +219,7 @@ class TransformerDwell(BaseModel):
                 (batch, num_features, kmer_len + margin_left + margin_right)
 
         Returns:
-            Logits for binary classification (batch, 1)
+            Logits (batch, num_out)
         """
         # Signal branch
         if signal.dim() == 2:

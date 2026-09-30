@@ -23,9 +23,14 @@ class SignalCNN(nn.Module):
         signal_in_channels: int = 1,
         kernel_size: int = 7,
         seq_encoding: str = "base_onehot",
+        num_out: int | None = None,
         **_: object,
     ) -> None:
         super().__init__()
+        # ``num_out`` is the registry-wide name; it aliases ``num_classes``.
+        if num_out is not None:
+            num_classes = num_out
+        self.num_out = num_classes
         self.signal_len = signal_len
         # Stored for registry-contract compatibility; SignalCNN ignores sequence
         # input, so the encoding only affects models that consume it.

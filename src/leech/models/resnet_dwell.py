@@ -195,9 +195,10 @@ class ResNetDwell(BaseModel):
         seq_encoding: str = "base_onehot",
         signal_kmer_context: tuple[int, int] = DEFAULT_SIGNAL_KMER_CONTEXT,
         signal_in_channels: int = 1,
-        **kwargs,
+        num_out: int = 1,
     ):
         super().__init__()
+        self.num_out = num_out
 
         self.signal_len = signal_len
         self.kmer_len = kmer_len
@@ -267,7 +268,7 @@ class ResNetDwell(BaseModel):
             nn.ReLU(),
             nn.BatchNorm1d(128),
             nn.Dropout(dropout),
-            nn.Linear(128, 1),
+            nn.Linear(128, num_out),
         )
 
     def forward(
