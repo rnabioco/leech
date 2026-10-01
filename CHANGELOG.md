@@ -10,6 +10,18 @@ New entries are no longer added to this file by hand — see
 
 <!-- towncrier release notes start -->
 
+## [0.15.0] - 2026-09-30
+
+### Changed
+
+- **`TransformerDwell`, `TransformerDwellResidual`, `ResNetDwell` and `ConvOnly` reject unknown constructor keyword arguments.** A misspelled or unsupported name now raises `TypeError` at construction instead of being ignored. A registry-wide test asserts every architecture's output width equals `num_out`. ((#387))
+- **escapepod pins bumped to 0.31.0** (the `escapepod` PyPI floor and the `escapepod-signal` crate tag, together). The daily pin-sync check now also opens the bump when both pins agree but trail the latest upstream release, not only when they disagree. ((#388))
+
+### Fixed
+
+- **`TransformerDwell`, `TransformerDwellResidual`, `ResNetDwell`, `ConvOnly` and `SignalCNN` now honor `num_out`.** Each hard-coded a single-logit head and silently absorbed `num_out`, so multiclass training crashed with `IndexError: Target N is out of bounds`. `SignalCNN`'s `num_out` aliases `num_classes`; under training it now gets one logit instead of two. `TransformerDwell`'s signal and sequence encoder towers also start from independent weights instead of identical copies (state-dict keys are unchanged). ((#387))
+
+
 ## [0.14.1] - 2026-09-26
 
 ### Fixed
