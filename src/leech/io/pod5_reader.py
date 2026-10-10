@@ -65,18 +65,74 @@ def _sample_rate_for(read, run_infos: list) -> int:
     return run_infos[0].sample_rate if run_infos else 0
 
 
-def _extract_pod5_metadata(read, run_infos: list) -> dict:
+# Per-source, per-file ``Reader`` handles, built only for a source spanning
+# more than one run (see :func:`_run_ids_for_reads`).
+_FILE_READERS: dict[str, list] = {}
+
+
+def _run_identity(run_info) -> tuple[str, str]:
+    """``(run_id, flow_cell_id)`` of a RunInfo: acquisition id, flow cell id."""
+    return str(run_info.acquisition_id or ""), str(run_info.flow_cell_id or "")
+
+
+def _run_ids_for_reads(
+    ds: DatasetReader, run_infos: list, reads: list
+) -> dict[str, tuple[str, str]]:
+    """``read_id -> (run_id, flow_cell_id)`` for ``reads`` of an open dataset.
+
+    ``ReadData.run_info_index`` indexes the run-info table of the *file* that
+    holds the read, while ``ds.run_infos`` is deduplicated across files, so the
+    two only line up when the source has a single run. In that (usual) case
+    the answer is constant. A source spanning several runs is resolved through
+    each file's own ``Reader`` instead -- indexing the deduplicated list would
+    silently label reads with the wrong run, which is the very leak run-held-out
+    splitting exists to prevent. A read whose run cannot be resolved gets
+    ``("", "")`` rather than a guess.
+    """
+    if not run_infos:
+        return {}
+    if len(run_infos) == 1:
+        ident = _run_identity(run_infos[0])
+        return {r.read_id: ident for r in reads}
+
+    from escapepod import Reader
+
+    key = "\0".join(ds.paths)
+    readers = _FILE_READERS.get(key)
+    if readers is None:
+        readers = [Reader(path).__enter__() for path in ds.paths]  # warms each id index
+        _FILE_READERS[key] = readers
+    ids = [r.read_id for r in reads]
+    out: dict[str, tuple[str, str]] = {}
+    for reader in readers:
+        infos = reader.run_infos
+        for rd in reader.reads(ids, missing_ok=True):
+            idx = rd.run_info_index
+            if 0 <= idx < len(infos):
+                out[rd.read_id] = _run_identity(infos[idx])
+    return out
+
+
+def _extract_pod5_metadata(
+    read, run_infos: list, run_identity: tuple[str, str] | None = None
+) -> dict:
     """
     Extract standard metadata dict from an escapepod ReadData object.
 
     Args:
         read: An escapepod ReadData object
         run_infos: List of RunInfo objects from the dataset/reader
+        run_identity: ``(run_id, flow_cell_id)`` already resolved for this read
+            by its owning file. When omitted it is taken from ``run_infos``
+            only if that list holds a single run; otherwise both are ``""``.
 
     Returns:
         Dictionary with read_id, channel, well, pore_type,
-        calibration_offset, calibration_scale, and sample_rate.
+        calibration_offset, calibration_scale, sample_rate, run_id and
+        flow_cell_id (empty strings when the POD5 carries no run info).
     """
+    if run_identity is None:
+        run_identity = _run_identity(run_infos[0]) if len(run_infos) == 1 else ("", "")
     return {
         "read_id": read.read_id,
         "channel": read.channel,
@@ -85,6 +141,8 @@ def _extract_pod5_metadata(read, run_infos: list) -> dict:
         "calibration_offset": read.calibration_offset,
         "calibration_scale": read.calibration_scale,
         "sample_rate": _sample_rate_for(read, run_infos),
+        "run_id": run_identity[0],
+        "flow_cell_id": run_identity[1],
     }
 
 
@@ -100,11 +158,15 @@ def _batch_from_dataset(
     run_infos = ds.run_infos
     reads = ds.reads(list(read_ids), missing_ok=True)
     sig_by_id = dict(ds.get_signals(reads))
+    runs = _run_ids_for_reads(ds, run_infos, reads)
     results: dict[str, tuple[np.ndarray, dict]] = {}
     for read_data in reads:
         signal = sig_by_id.get(read_data.read_id)
         if signal is not None:
-            results[read_data.read_id] = (signal, _extract_pod5_metadata(read_data, run_infos))
+            results[read_data.read_id] = (
+                signal,
+                _extract_pod5_metadata(read_data, run_infos, runs.get(read_data.read_id, ("", ""))),
+            )
 
     if warn_missing:
         missing = len(set(read_ids)) - len(results)
@@ -153,7 +215,10 @@ def read_pod5_signal(pod5_path: Path, read_id: str) -> tuple[np.ndarray, dict]:
         raise ValueError(f"read_id {read_id!r} not found under {pod5_path}")
     read_data = reads[0]
     signal = ds.get_signal(read_data)
-    return signal, _extract_pod5_metadata(read_data, run_infos)
+    runs = _run_ids_for_reads(ds, run_infos, reads)
+    return signal, _extract_pod5_metadata(
+        read_data, run_infos, runs.get(read_data.read_id, ("", ""))
+    )
 
 
 class POD5Reader:
@@ -227,12 +292,15 @@ class POD5Reader:
         self._cache.clear()
         reads = self._ds.reads(list(read_ids), missing_ok=True)
         sig_by_id = dict(self._ds.get_signals(reads))
+        runs = _run_ids_for_reads(self._ds, self._run_infos, reads)
         for read_data in reads:
             signal = sig_by_id.get(read_data.read_id)
             if signal is not None:
                 self._cache[read_data.read_id] = (
                     signal,
-                    _extract_pod5_metadata(read_data, self._run_infos),
+                    _extract_pod5_metadata(
+                        read_data, self._run_infos, runs.get(read_data.read_id, ("", ""))
+                    ),
                 )
 
         loaded = len(self._cache)
@@ -266,4 +334,7 @@ class POD5Reader:
             raise ValueError(f"read_id {read_id!r} not found under {self.pod5_path}")
         read_data = reads[0]
         signal = self._ds.get_signal(read_data)
-        return signal, _extract_pod5_metadata(read_data, self._run_infos)
+        runs = _run_ids_for_reads(self._ds, self._run_infos, reads)
+        return signal, _extract_pod5_metadata(
+            read_data, self._run_infos, runs.get(read_data.read_id, ("", ""))
+        )

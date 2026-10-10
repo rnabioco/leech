@@ -33,6 +33,11 @@ pub(crate) struct BulkSignal {
     pub(crate) signal: Vec<i16>,
     pub(crate) calibration_offset: f32,
     pub(crate) calibration_scale: f32,
+    /// The read's acquisition id (`RunInfoData::acquisition_id`) -- leech's
+    /// `run_id`. Empty when the read's run-info index points nowhere.
+    pub(crate) run_id: String,
+    /// The read's flow cell id (`RunInfoData::flow_cell_id`); empty if absent.
+    pub(crate) flow_cell_id: String,
 }
 
 /// Resolve `read_ids` against the shared indexed dataset and bulk-extract
@@ -72,11 +77,29 @@ pub(crate) fn read_signals_by_ids(
         .reads_by_ids(&target_uuids)
         .map_err(|e| format!("Failed to look up reads: {e}"))?;
 
-    let mut calibrations: HashMap<String, (f32, f32)> = HashMap::with_capacity(matched_reads.len());
+    // `run_info_index` indexes the run-info table of the FILE that owns the
+    // read, not `dataset.run_infos()` (which is deduplicated across files), so
+    // resolve it through the owning reader. A directory spanning two runs would
+    // otherwise label reads with the wrong run.
+    let mut calibrations: HashMap<String, (f32, f32, String, String)> =
+        HashMap::with_capacity(matched_reads.len());
     for read in &matched_reads {
+        let (run_id, flow_cell_id) = match dataset
+            .owning_reader(&read.read_id)
+            .map_err(|e| format!("Failed to resolve owning file: {e}"))?
+            .and_then(|r| r.run_infos().get(read.run_info_index as usize))
+        {
+            Some(ri) => (ri.acquisition_id.clone(), ri.flow_cell_id.clone()),
+            None => (String::new(), String::new()),
+        };
         calibrations.insert(
             read.read_id.to_string(),
-            (read.calibration_offset, read.calibration_scale),
+            (
+                read.calibration_offset,
+                read.calibration_scale,
+                run_id,
+                flow_cell_id,
+            ),
         );
     }
 
@@ -88,13 +111,17 @@ pub(crate) fn read_signals_by_ids(
         .into_iter()
         .map(|(read_id, signal)| {
             let rid = read_id.to_string();
-            let (calibration_offset, calibration_scale) =
-                calibrations.get(&rid).copied().unwrap_or((0.0, 1.0));
+            let (calibration_offset, calibration_scale, run_id, flow_cell_id) = calibrations
+                .get(&rid)
+                .cloned()
+                .unwrap_or((0.0, 1.0, String::new(), String::new()));
             BulkSignal {
                 read_id: rid,
                 signal,
                 calibration_offset,
                 calibration_scale,
+                run_id,
+                flow_cell_id,
             }
         })
         .collect())
@@ -112,6 +139,24 @@ pub(crate) fn read_signal_map_by_ids(
         .collect())
 }
 
+/// Per-read run identity: `read_id -> (run_id, flow_cell_id)`.
+pub(crate) type RunIdMap = HashMap<String, (String, String)>;
+
+/// [`read_signal_map_by_ids`] plus each read's run identity, from the same
+/// single dataset lookup (the training path records it on every chunk).
+pub(crate) fn read_signal_map_and_runs_by_ids(
+    pod5_path: &str,
+    read_ids: &[String],
+) -> Result<(HashMap<String, Vec<i16>>, RunIdMap), String> {
+    let mut signals = HashMap::new();
+    let mut runs = HashMap::new();
+    for b in read_signals_by_ids(pod5_path, read_ids)? {
+        runs.insert(b.read_id.clone(), (b.run_id, b.flow_cell_id));
+        signals.insert(b.read_id, b.signal);
+    }
+    Ok((signals, runs))
+}
+
 #[cfg(test)]
 mod tests {
     //! `Dataset::open`'s directory scan and `decode_bulk`'s owning-file
@@ -126,7 +171,7 @@ mod tests {
     use escapepod_signal::{EndReason, ReadData, RunInfoData, Uuid, Writer, WriterOptions};
     use tempfile::TempDir;
 
-    use super::{read_signal_map_by_ids, read_signals_by_ids};
+    use super::{read_signal_map_and_runs_by_ids, read_signal_map_by_ids, read_signals_by_ids};
 
     fn make_run_info(acq_id: &str) -> RunInfoData {
         RunInfoData {
@@ -218,6 +263,28 @@ mod tests {
         }
         writer.finish().expect("writer.finish");
         ids
+    }
+
+    #[test]
+    fn directory_input_labels_each_read_with_its_own_files_run() {
+        // Two files, two acquisitions: `run_info_index` is 0 in both, so
+        // indexing the dataset's deduplicated list would give every read the
+        // first file's run.
+        let tmp = TempDir::new().unwrap();
+        let ids_a = write_fixture(&tmp.path().join("a.pod5"), "acq_a", 2, 400);
+        let ids_b = write_fixture(&tmp.path().join("b.pod5"), "acq_b", 2, 400);
+        let all_ids: Vec<String> = ids_a.iter().chain(ids_b.iter()).cloned().collect();
+
+        let (signals, runs) =
+            read_signal_map_and_runs_by_ids(tmp.path().to_str().unwrap(), &all_ids)
+                .expect("directory read");
+        assert_eq!(signals.len(), all_ids.len());
+        for id in &ids_a {
+            assert_eq!(runs[id], ("acq_a".to_string(), "FAK_LEECH".to_string()));
+        }
+        for id in &ids_b {
+            assert_eq!(runs[id], ("acq_b".to_string(), "FAK_LEECH".to_string()));
+        }
     }
 
     #[test]

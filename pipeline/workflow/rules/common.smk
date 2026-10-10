@@ -6,6 +6,7 @@ import itertools
 from pathlib import Path
 
 from snakemake.exceptions import WorkflowError
+from snakemake.logging import logger
 
 
 def get_project_path(base_dir):
@@ -126,6 +127,45 @@ def get_samples_for_aa_pair(pair):
         all_labels = [aa1, aa2]
 
     return [s for s in SAMPLES if config["samples"][s].get("label") in all_labels]
+
+
+SPLIT_MODES = ("run_holdout", "read")
+
+
+def merge_split_flags():
+    """Extra `leech data merge` flags selecting how train/val/test are split.
+
+    The default holds out a whole sequencing run as the test split
+    (`--split-by run_id`). A read-level split puts every flowcell on both sides
+    of the train/test line, so any run-level property that correlates with the
+    class (loading, pore chemistry, basecaller drift) is scored as accuracy;
+    in a one-run-per-class design that is perfectly label-predictive.
+
+    Config:
+        split_mode: "run_holdout" (default) or "read". "read" restores the old
+            behaviour and logs a warning.
+        allow_single_run_classes: false (default). A run-held-out split refuses
+            a class with fewer than 2 runs; true splits those classes at read
+            level instead (run effects uncontrolled for them).
+    """
+    mode = config.get("split_mode", "run_holdout")
+    if mode not in SPLIT_MODES:
+        raise WorkflowError(f"split_mode must be one of {SPLIT_MODES}, got {mode!r}")
+    if mode == "read":
+        logger.warning(
+            "split_mode=read: train/val/test share sequencing runs, so run-level "
+            "effects are not controlled for and test scores may be inflated "
+            "(rnabioco/leech#394). Use split_mode=run_holdout for a cross-run estimate."
+        )
+        return ""
+    flags = "--split-by run_id"
+    if config.get("allow_single_run_classes", False):
+        logger.warning(
+            "allow_single_run_classes=true: classes with fewer than 2 runs are split "
+            "at read level; their test scores are not cross-run."
+        )
+        flags += " --allow-single-run-classes"
+    return flags
 
 
 def build_merge_input_args(pair, chunk_files):

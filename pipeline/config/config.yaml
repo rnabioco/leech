@@ -157,6 +157,18 @@ feature_channels: null
 train_split: 0.7          # Training set fraction
 val_split: 0.15           # Validation set fraction (test = 1 - train - val)
 
+# How train/val/test are assigned (rnabioco/leech#394).
+#   run_holdout (default): a whole sequencing run is held out as the test split,
+#       so run-level properties (flowcell, loading, basecaller drift) cannot
+#       masquerade as accuracy. Needs >= 2 runs per class; the merge refuses a
+#       class with fewer, naming it.
+#   read: split at read level. Every run is on both sides of the train/test
+#       line, so test scores are NOT a cross-run estimate. Logs a warning.
+split_mode: run_holdout
+# With run_holdout, split classes that have fewer than 2 runs at read level
+# instead of refusing. Their test scores are not cross-run.
+allow_single_run_classes: false
+
 # Parallel processing for data preparation
 # Workers will be automatically matched to cpus_per_task from cluster config
 workers: 8                # Number of parallel workers (default: 8, matches cluster cpus_per_task)

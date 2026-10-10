@@ -137,6 +137,211 @@ def _split_by_group(
     return train_ids, val_ids, test_ids
 
 
+# ``--split-by run_id`` is the user-facing spelling of the npz member.
+RUN_MEMBER = "run_ids"
+_RUN_SPLIT_ALIASES = frozenset({"run_id", "run_ids"})
+
+#: Sidecar written next to run-held-out splits; ``eval test`` reads it to tell
+#: within-run test reads from cross-run ones.
+SPLIT_RUNS_FILENAME = "split_runs.json"
+
+
+def is_run_split(split_by: str | None, holdout_runs: Collection[str] | None) -> bool:
+    """Whether a merge request asks for a run-level (rather than read-level) split."""
+    return bool(holdout_runs) or (split_by is not None and split_by in _RUN_SPLIT_ALIASES)
+
+
+def _split_reads_by_fraction(
+    read_ids: Collection[str], train_frac: float, val_frac: float, *, test: bool
+) -> dict[str, set[str]]:
+    """Read-level split of one class's reads.
+
+    With ``test=False`` the reads are only divided between train and val, in
+    the proportion ``val_frac / (train_frac + val_frac)`` -- the test split of
+    that class is a held-out run's job.
+    """
+    ordered = sorted(read_ids)
+    random.shuffle(ordered)
+    n = len(ordered)
+    if test:
+        n_train = int(n * train_frac)
+        n_val = int(n * val_frac)
+    else:
+        denom = train_frac + val_frac
+        n_val = int(n * val_frac / denom) if denom > 0 else 0
+        n_train = n - n_val
+    return {
+        "train": set(ordered[:n_train]),
+        "val": set(ordered[n_train : n_train + n_val]),
+        "test": set(ordered[n_train + n_val :]),
+    }
+
+
+def _split_by_run(
+    read_to_run: dict[str, str],
+    read_to_label: dict[str, str],
+    *,
+    train_frac: float = 0.7,
+    val_frac: float = 0.15,
+    holdout_runs: Collection[str] | None = None,
+    allow_single_run_classes: bool = False,
+) -> tuple[dict[str, set[str]], dict[str, Any]]:
+    """Hold out whole sequencing runs as the test split.
+
+    A read-level split puts the same flowcell on both sides of the train/test
+    line, so any run-level property (loading, pore chemistry, basecaller
+    drift) that correlates with the label is scored as accuracy. Here the
+    test split is made of reads from runs the training split never saw.
+
+    Per class (label): the held-out run(s) go entirely to test; the class's
+    remaining reads are divided between train and val at read level, so val
+    stays a within-run signal for checkpoint selection while test measures
+    cross-run generalisation. A run is held out for *every* class it appears
+    in (one run can carry several multiplexed classes).
+
+    Args:
+        read_to_run: ``read_id -> run id``. An empty run id is refused: an
+            unknown run cannot be held out, and silently pooling unknowns into
+            one pseudo-run would reproduce the leak this exists to prevent.
+        read_to_label: ``read_id -> class``.
+        holdout_runs: Run ids to hold out. Default: one run per class, picked
+            with the (already seeded) module RNG.
+        allow_single_run_classes: A class that cannot be run-split (fewer than
+            two runs, or none of its runs held out / none left to train on)
+            raises by default. With this set it falls back to a read-level
+            split for that class instead, loudly.
+
+    Returns:
+        ``(split_read_ids, info)`` where ``info`` records the held-out and
+        training runs per class and the classes that fell back, for the
+        ``split_runs.json`` sidecar.
+
+    Raises:
+        ValueError: On an unknown (empty) run id, a ``holdout_runs`` entry no
+            class contains, or a class that cannot be run-split.
+    """
+    from collections import defaultdict
+
+    unknown = sorted({lab for rid, lab in read_to_label.items() if read_to_run[rid] == ""})
+    if unknown:
+        raise ValueError(
+            f"Reads of class(es) {unknown} carry no run id (empty run_ids), so a run-held-out "
+            "split is impossible. The corpus was prepared before run ids were recorded or "
+            "from a POD5 without run info: re-prepare it, or split at read level instead "
+            "(not recommended: the same flowcell then lands in train and test)."
+        )
+
+    label_run_reads: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
+    for rid, run in read_to_run.items():
+        label_run_reads[read_to_label[rid]][run].add(rid)
+    all_runs = {run for runs in label_run_reads.values() for run in runs}
+
+    held: set[str] = set(holdout_runs or ())
+    missing = sorted(held - all_runs)
+    if missing:
+        present = {lab: sorted(runs) for lab, runs in sorted(label_run_reads.items())}
+        raise ValueError(f"--holdout-run {missing} matches no run in the inputs. Runs: {present}")
+
+    if not holdout_runs:
+        # One run per class, the same run for classes that share one.
+        for label in sorted(label_run_reads):
+            runs = sorted(label_run_reads[label])
+            if len(runs) < 2 or (set(runs) & held and set(runs) - held):
+                continue
+            held.add(random.choice([r for r in runs if r not in held]))
+
+    problems: dict[str, str] = {}
+    for label in sorted(label_run_reads):
+        runs = set(label_run_reads[label])
+        if len(runs) < 2:
+            problems[label] = f"only {len(runs)} run(s) {sorted(runs)}; need at least 2"
+        elif not runs & held:
+            problems[label] = f"none of its runs {sorted(runs)} is held out"
+        elif not runs - held:
+            problems[label] = f"all of its runs {sorted(runs)} are held out; none left to train on"
+    if problems and not allow_single_run_classes:
+        detail = "; ".join(f"{label}: {why}" for label, why in problems.items())
+        raise ValueError(
+            "Cannot hold out a whole run for every class -- " + detail + ". A run-held-out test "
+            "set needs at least 2 runs per class. Collect a replicate run, or pass "
+            "--allow-single-run-classes (allow_single_run_classes=True) to split those classes "
+            "at read level, where a run-level confound is NOT controlled for."
+        )
+
+    splits: dict[str, set[str]] = {sname: set() for sname in _SPLITS}
+    info: dict[str, Any] = {
+        "mode": "run_holdout",
+        "holdout_runs": {},
+        "train_runs": {},
+        "read_level_classes": sorted(problems),
+    }
+    for label in sorted(label_run_reads):
+        runs = label_run_reads[label]
+        if label in problems:
+            logger.warning(
+                f"  {label}: split at READ level ({problems[label]}); run-level effects are "
+                "not controlled for this class"
+            )
+            part = _split_reads_by_fraction(
+                [r for reads in runs.values() for r in reads], train_frac, val_frac, test=True
+            )
+            for sname in _SPLITS:
+                splits[sname] |= part[sname]
+            info["train_runs"][label] = sorted(runs)
+            continue
+        test_runs = sorted(set(runs) & held)
+        train_runs = sorted(set(runs) - held)
+        info["holdout_runs"][label] = test_runs
+        info["train_runs"][label] = train_runs
+        logger.info(f"  {label}: held-out run(s) {test_runs} -> test; train/val from {train_runs}")
+        for run in test_runs:
+            splits["test"] |= runs[run]
+        part = _split_reads_by_fraction(
+            [r for run in train_runs for r in runs[run]], train_frac, val_frac, test=False
+        )
+        splits["train"] |= part["train"]
+        splits["val"] |= part["val"]
+
+    logger.info(
+        "Run-held-out split: "
+        + ", ".join(f"{len(splits[sname])} {sname}" for sname in _SPLITS)
+        + " reads"
+    )
+    return splits, info
+
+
+def _write_split_runs(output_dir: Path, info: dict[str, Any]) -> None:
+    """Record which runs were held out, for ``eval test``'s cross-run report."""
+    with open(output_dir / SPLIT_RUNS_FILENAME, "w") as f:
+        json.dump(info, f, indent=2)
+
+
+def _run_split_plan(
+    input_paths: list[Path],
+    labels: list[str],
+    output_dir: Path,
+    *,
+    train_frac: float,
+    val_frac: float,
+    holdout_runs: Collection[str] | None,
+    allow_single_run_classes: bool,
+) -> dict[str, set[str]]:
+    """Pass 1 + split assignment for a run-held-out merge; writes the sidecar."""
+    _all, read_to_run, read_to_label = _collect_read_index(
+        input_paths, split_by=RUN_MEMBER, labels=labels
+    )
+    split_read_ids, info = _split_by_run(
+        read_to_run,
+        read_to_label,
+        train_frac=train_frac,
+        val_frac=val_frac,
+        holdout_runs=holdout_runs,
+        allow_single_run_classes=allow_single_run_classes,
+    )
+    _write_split_runs(output_dir, info)
+    return split_read_ids
+
+
 def _split_codes(read_ids: np.ndarray, split_read_ids: dict[str, set[str]]) -> np.ndarray:
     """Per-row split index for a file's ``read_ids`` column (-1 = no split).
 
@@ -625,6 +830,11 @@ def _collect_read_index(
             logger.info(f"    Found {len(read_ids)} chunks")
             if split_by is None:
                 continue
+            if split_by not in data and split_by == RUN_MEMBER:
+                raise ValueError(
+                    f"{chunk_path} has no '{RUN_MEMBER}' member: it was prepared before run ids "
+                    "were recorded. Re-prepare it to hold out whole runs."
+                )
             if split_by not in data:
                 raise ValueError(
                     f"--split-by field '{split_by}' not found in {chunk_path}. "
@@ -937,9 +1147,18 @@ def merge_and_split_chunks(
     seed: int | None = None,
     relabel_pairwise: tuple[str | list[str], str | list[str]] | None = None,
     relabel_by_file: dict[Path, tuple[int, str]] | None = None,
+    split_by: str | None = None,
+    holdout_runs: Collection[str] | None = None,
+    allow_single_run_classes: bool = False,
 ) -> tuple[list[dict], list[dict], list[dict]] | dict[str, Any]:
     """
     Merge multiple chunk files and split at read level to prevent data leakage.
+
+    ``split_by="run_id"`` and/or ``holdout_runs`` switch to a run-held-out
+    split instead (see :func:`_split_by_run`): whole sequencing runs become the
+    test split, so run-level properties cannot masquerade as accuracy. That
+    mode needs ``output_dir`` and ``relabel_by_file`` (or neither relabel
+    argument, in which case a file's class is its parent directory name).
 
     This implements the correct workflow for multi-sample datasets:
     1. Load and merge all chunks from different samples
@@ -1028,12 +1247,38 @@ def merge_and_split_chunks(
 
     # First pass: collect only read IDs from all files (minimal memory)
     logger.info("Pass 1: Collecting read IDs for split assignment")
-    all_read_ids, _groups, _labels = _collect_read_index(input_paths)
-
-    # Determine read-level splits
+    run_split = is_run_split(split_by, holdout_runs)
+    if split_by is not None and not run_split:
+        raise ValueError(
+            f"split_by={split_by!r} is only supported here for run-level splits "
+            "('run_id'); other group splits go through merge_and_split_multiclass"
+        )
+    if run_split and (output_dir is None or relabel_pairwise is not None):
+        raise ValueError(
+            "A run-held-out split needs output_dir and cannot be combined with relabel_pairwise "
+            "(use relabel_by_file)"
+        )
     if seed is not None:
         random.seed(seed)
-    split_read_ids = _assign_splits(all_read_ids, train_frac, val_frac)
+    if run_split:
+        assert output_dir is not None
+        if relabel_by_file is not None:
+            file_labels = [relabel_by_file[p][1] for p in input_paths]
+        else:
+            file_labels = [_source_group_from_path(p) for p in input_paths]
+        split_read_ids = _run_split_plan(
+            input_paths,
+            file_labels,
+            output_dir,
+            train_frac=train_frac,
+            val_frac=val_frac,
+            holdout_runs=holdout_runs,
+            allow_single_run_classes=allow_single_run_classes,
+        )
+    else:
+        all_read_ids, _groups, _labels = _collect_read_index(input_paths)
+        # Determine read-level splits
+        split_read_ids = _assign_splits(all_read_ids, train_frac, val_frac)
 
     # If output_dir provided, use fast array-level merge
     if output_dir is not None:
@@ -1208,6 +1453,8 @@ def merge_and_split_multiclass(
     val_frac: float = 0.15,
     seed: int | None = None,
     split_by: str | None = None,
+    holdout_runs: Collection[str] | None = None,
+    allow_single_run_classes: bool = False,
 ) -> dict[str, Any]:
     """Merge N chunk files into a multi-class dataset with label_int 0..N-1.
 
@@ -1225,6 +1472,11 @@ def merge_and_split_multiclass(
             by group instead of by read.  All reads sharing a group value are
             assigned to the same split.  Groups are allocated per-label so that
             each label with ≥2 groups has at least one group in test.
+            ``"run_id"`` instead holds out whole sequencing runs as test (see
+            :func:`_split_by_run`).
+        holdout_runs: Run ids to hold out as test (implies the run-level split).
+        allow_single_run_classes: Let a class with fewer than two runs fall
+            back to a read-level split instead of raising.
 
     Returns:
         Statistics dict with n_total, n_train, n_val, n_test, label_map.
@@ -1241,17 +1493,26 @@ def merge_and_split_multiclass(
 
     label_to_int = _build_label_map(labels, output_dir)
 
-    # First pass: collect read IDs (and group values if split_by is set)
-    logger.info("Pass 1: Collecting read IDs")
-    all_read_ids, read_to_group, read_to_label = _collect_read_index(
-        input_paths, split_by=split_by, labels=labels
-    )
-
     # Split reads
     if seed is not None:
         random.seed(seed)
 
-    if split_by is not None:
+    if is_run_split(split_by, holdout_runs):
+        logger.info("Pass 1: Collecting read IDs and run ids")
+        split_read_ids = _run_split_plan(
+            input_paths,
+            labels,
+            output_dir,
+            train_frac=train_frac,
+            val_frac=val_frac,
+            holdout_runs=holdout_runs,
+            allow_single_run_classes=allow_single_run_classes,
+        )
+    elif split_by is not None:
+        logger.info("Pass 1: Collecting read IDs and group values")
+        _all, read_to_group, read_to_label = _collect_read_index(
+            input_paths, split_by=split_by, labels=labels
+        )
         # Group-level split: assign entire groups to splits, stratified per label
         train_read_ids, val_read_ids, test_read_ids = _split_by_group(
             read_to_group=read_to_group,
@@ -1265,6 +1526,8 @@ def merge_and_split_multiclass(
             "test": test_read_ids,
         }
     else:
+        logger.info("Pass 1: Collecting read IDs")
+        all_read_ids, _groups, _labels = _collect_read_index(input_paths)
         split_read_ids = _assign_splits(all_read_ids, train_frac, val_frac)
 
     # Second pass: array-level merge with label overrides

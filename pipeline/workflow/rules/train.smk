@@ -5,15 +5,19 @@ All comparisons are defined in TSV spec files and handled uniformly.
 
 
 rule merge_chunks_pairwise:
-    """Merge pairwise amino acid chunks and split at read level to prevent data leakage.
+    """Merge pairwise amino acid chunks and hold out a whole run as the test split.
 
     This rule implements the correct workflow:
     1. Merge all chunks from the two amino acid samples
     2. Relabel chunks for pairwise comparison (aa1=0, aa2=1)
-    3. Split merged data at the READ level into train/val/test
+    3. Hold out one sequencing run per class as test (`split_mode: run_holdout`,
+       the default); the rest is split at read level into train/val
 
-    This prevents data leakage that occurs when splitting each sample independently
-    and then merging the splits.
+    A read-level split puts every flowcell on both sides of the train/test line,
+    so a run-level property that tracks the class scores as accuracy
+    (rnabioco/leech#394). `split_mode: read` restores it, with a warning. The
+    merge refuses a class with fewer than 2 runs unless
+    `allow_single_run_classes: true`.
     """
     input:
         chunks=lambda wildcards: expand(
@@ -30,6 +34,7 @@ rule merge_chunks_pairwise:
         output_dir=CHUNKS_DIR + "/merged/pairwise/{pair}",
         train_split=config.get("train_split", 0.7),
         val_split=config.get("val_split", 0.15),
+        split_flags=merge_split_flags(),
         # Build input arguments with label=file format
         input_args=lambda wildcards, input: build_merge_input_args(
             wildcards.pair, input.chunks
@@ -41,6 +46,7 @@ rule merge_chunks_pairwise:
             --output-dir {params.output_dir} \
             --train-split {params.train_split} \
             --val-split {params.val_split} \
+            {params.split_flags} \
             2>&1 | tee {log}
         """
 

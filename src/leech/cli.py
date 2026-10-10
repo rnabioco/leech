@@ -668,10 +668,36 @@ def train_crf(corpus, output_dir, arch_config, **options):
     "--split-by",
     type=str,
     default=None,
-    help="NPZ field name to split by group instead of by read (e.g., 'reference_names'). All reads sharing a group value are assigned to the same split.",
+    help="NPZ field name to split by group instead of by read (e.g., 'reference_names'). All reads sharing a group value are assigned to the same split. "
+    "'run_id' holds out whole sequencing runs as the test split (see --holdout-run).",
+)
+@click.option(
+    "--holdout-run",
+    "holdout_runs",
+    type=str,
+    multiple=True,
+    help="Run id (POD5 acquisition id) to hold out entirely as the test split; repeatable. "
+    "Implies --split-by run_id. Without it, --split-by run_id picks one run per class. "
+    "Refuses a class with fewer than 2 runs unless --allow-single-run-classes is given.",
+)
+@click.option(
+    "--allow-single-run-classes",
+    is_flag=True,
+    default=False,
+    help="With a run-held-out split, split a class that has fewer than 2 runs at read level "
+    "(run-level effects are then NOT controlled for that class) instead of refusing.",
 )
 def merge(
-    input_chunks, output_dir, train_split, val_split, seed, k_fold, comparison_spec, split_by
+    input_chunks,
+    output_dir,
+    train_split,
+    val_split,
+    seed,
+    k_fold,
+    comparison_spec,
+    split_by,
+    holdout_runs,
+    allow_single_run_classes,
 ):
     """Merge multiple chunk files and split at read level to prevent data leakage.
 
@@ -697,7 +723,13 @@ def merge(
 
         # Split by isodecoder (group-level split)
         leech data merge -i Ala=ala.npz -i Gly=gly.npz -o merged/ --split-by reference_names
+
+        # Hold out a whole sequencing run as the test split
+        leech data merge -i Cys=cys_r1.npz -i Cys=cys_r2.npz -i Ala=ala.npz -o merged/ \\
+            --split-by run_id --holdout-run <acquisition_id>
     """
+    if k_fold > 1 and (split_by is not None or holdout_runs):
+        raise click.UsageError("--split-by / --holdout-run are not supported with --k-fold")
     if k_fold > 1:
         from leech.commands import handle_merge_and_split_kfold
 
@@ -718,6 +750,8 @@ def merge(
             seed=seed,
             comparison_spec=comparison_spec,
             split_by=split_by,
+            holdout_runs=holdout_runs,
+            allow_single_run_classes=allow_single_run_classes,
         )
 
 

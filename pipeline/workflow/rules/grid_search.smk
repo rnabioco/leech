@@ -153,6 +153,7 @@ rule merge_chunks_optimized_pairwise:
         output_dir=CHUNKS_DIR + "/merged/pairwise/{pair}/optimized",
         train_split=config.get("train_split", 0.7),
         val_split=config.get("val_split", 0.15),
+        split_flags=merge_split_flags(),
         input_args=lambda wildcards, input: build_merge_input_args(
             wildcards.pair, input.chunks
         ),
@@ -163,5 +164,6 @@ rule merge_chunks_optimized_pairwise:
             --output-dir {params.output_dir} \
             --train-split {params.train_split} \
             --val-split {params.val_split} \
+            {params.split_flags} \
             2>&1 | tee {log}
         """

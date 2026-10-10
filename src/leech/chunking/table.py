@@ -47,6 +47,9 @@ _TEXT_FIELDS: tuple[tuple[str, str, bool], ...] = (
     # An absent reference name reads back as "" rather than None, matching
     # load_chunks — callers concatenate it into report keys.
     ("reference_names", "reference_name", False),
+    # POD5 run identity; "" = unknown (issue #394). Absent on older corpora.
+    ("run_ids", "run_id", False),
+    ("flow_cell_ids", "flow_cell_id", False),
     ("sequences_with_kmer_context", "sequence_with_kmer_context", True),
 )
 

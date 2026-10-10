@@ -292,6 +292,7 @@ fn process_one_read_training(
 fn _process_and_convert_training<'py>(
     py: Python<'py>,
     signal_map: &HashMap<String, Vec<i16>>,
+    run_map: &crate::pod5_cache::RunIdMap,
     read_ids: &[String],
     sequences: &[String],
     mv_arrays: &[&[u8]],
@@ -362,6 +363,16 @@ fn _process_and_convert_training<'py>(
             dict.set_item("read_id", &c.read_id)?;
             dict.set_item("base_idx", c.base_idx)?;
             dict.set_item("focus_signal_pos", c.focus_signal_pos)?;
+
+            // Run identity from the POD5 run_info of the file that owns the
+            // read; "" when the POD5 carries none, never absent, so the two
+            // backends emit the same key set.
+            let (run_id, flow_cell_id) = run_map
+                .get(c.read_id.as_str())
+                .map(|(r, f)| (r.as_str(), f.as_str()))
+                .unwrap_or(("", ""));
+            dict.set_item("run_id", run_id)?;
+            dict.set_item("flow_cell_id", flow_cell_id)?;
 
             // Dwell array
             dict.set_item("dwell", c.dwell.into_pyarray(py))?;
@@ -554,13 +565,14 @@ pub fn extract_training_chunks<'py>(
     // every caller thread against the slowest network read in the batch,
     // making it impossible to overlap batches (issue #176).
     // Shared, already-indexed reader; see `pod5_cache::read_signals_by_ids`.
-    let signal_map: HashMap<String, Vec<i16>> = py
-        .detach(|| crate::pod5_cache::read_signal_map_by_ids(pod5_path, &read_ids))
+    let (signal_map, run_map) = py
+        .detach(|| crate::pod5_cache::read_signal_map_and_runs_by_ids(pod5_path, &read_ids))
         .map_err(pyo3::exceptions::PyIOError::new_err)?;
 
     _process_and_convert_training(
         py,
         &signal_map,
+        &run_map,
         &read_ids,
         &sequences,
         &mv_slices,
