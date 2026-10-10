@@ -13,7 +13,7 @@ from pathlib import Path
 import pandas as pd
 
 # Snakemake injects the 'snakemake' object at runtime
-snakemake = snakemake  # type: ignore # noqa: F821
+snakemake = globals().get("snakemake")  # type: ignore # injected by Snakemake at runtime
 
 
 def discover_expected_combinations(metrics_dir):
@@ -42,6 +42,32 @@ def discover_expected_combinations(metrics_dir):
                     models.add(model_dir.name)
 
     return pairs, models, has_pairwise
+
+
+def flatten_junction_strata(data):
+    """Lift the junction strata of one metrics dict into flat columns (issue #395).
+
+    ``leech eval test`` writes ``junction_stratified: {exact: {...},
+    disrupted: {...}}`` whenever the test corpus carries ``junction_indels``.
+    The ``disrupted`` stratum is the population the junction gate used to
+    discard, so it is reported as ``junction_disrupted_*`` columns beside
+    ``junction_exact_*``, and ``junction_status`` says whether it can be
+    trusted: ``ok``, ``absent`` (no stratification in the metrics, e.g. an
+    older corpus) or ``disrupted_empty`` (stratified, but no disrupted reads
+    were scored). Absence is a status, never a silent blank.
+    """
+    strata = data.pop("junction_stratified", None)
+    if not isinstance(strata, dict) or not strata:
+        data["junction_status"] = "absent"
+        return data
+    for name in ("exact", "disrupted"):
+        stratum = strata.get(name) or {}
+        for key, value in stratum.items():
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                data[f"junction_{name}_{key}"] = value
+    disrupted = strata.get("disrupted") or {}
+    data["junction_status"] = "ok" if disrupted.get("n", 0) > 0 else "disrupted_empty"
+    return data
 
 
 def load_metrics(metrics_dir):
@@ -83,7 +109,7 @@ def load_metrics(metrics_dir):
                     sample = json_file.stem.replace("_metrics", "")
                     data["sample"] = sample
 
-                metrics_list.append(data)
+                metrics_list.append(flatten_junction_strata(data))
 
             except Exception as e:
                 print(f"Warning: Could not load {json_file}: {e}", file=sys.stderr)
@@ -154,6 +180,22 @@ def main():
                 print(
                     f"\nAdded {len(missing_rows)} placeholder rows for failed jobs", file=sys.stderr
                 )
+
+    # Flag runs without a usable disrupted stratum. The gate that used to hide
+    # these reads is off by default now, so a missing stratum means the score
+    # is for an unstratified (or all-exact) test set -- say so.
+    if "junction_status" in df.columns:
+        # Placeholder rows for failed jobs have no status; that is their own story.
+        flagged = df[df["junction_status"].notna() & (df["junction_status"] != "ok")]
+        if len(flagged):
+            print(
+                f"\nWarning: {len(flagged)} metric row(s) have no usable 'disrupted' "
+                "junction stratum (see junction_status column):",
+                file=sys.stderr,
+            )
+            for _, row in flagged.iterrows():
+                label = row.get("model", row.get("sample"))
+                print(f"  - {label}: {row['junction_status']}", file=sys.stderr)
 
     # Sort columns for better readability
     # Put metadata columns first

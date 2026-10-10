@@ -136,6 +136,20 @@ leech data prepare \
 Use `--skip-motif-indels` to discard reads with insertions or deletions in the
 motif region, where coordinate mapping is unreliable.
 
+!!! warning "These gates are class-selective"
+
+    `--skip-motif-indels` and the default `--require-query-mapping` drop reads
+    by junction disruption, and disruption is not evenly spread across
+    classes: in charged-vs-uncharged tRNA data about half of charged reads
+    (51.9% measured) carry a junction indel against a few percent (2.4%) of
+    uncharged. The gate therefore removes much of one class, changes the class
+    prior `pos_weight` is computed from, and leaves the test set scored on
+    easy reads. The Snakemake pipeline defaults both gates off
+    (`skip_motif_indels: false`, `require_query_mapping: false`). `data
+    prepare` logs read attrition per class by cause (`no_motif`, `indel`,
+    `unmapped_junction`, `length`, `no_chunks`, `missing_from_pod5`, `failed`)
+    and records it under `attrition` in `prepare_config.json`.
+
 Every chunk also records `junction_indel` (the CIGAR-measured indel length at
 the motif junction; `0` means exact) and `junction_mapped` (whether the
 junction mapped to the reference at all) automatically -- no flag needed to

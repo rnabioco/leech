@@ -354,6 +354,14 @@ def handle_prepare(
         )
         n_chunks = stats["total_chunks"]
 
+        # Per-class read attrition (issue #395) is only known once extraction
+        # has run, so it is appended to the sidecar written before it.
+        with open(prepare_config_path) as f:
+            _cfg_json = _json.load(f)
+        _cfg_json["attrition"] = stats.get("attrition", {})
+        with open(prepare_config_path, "w") as f:
+            _json.dump(_cfg_json, f, indent=2)
+
         if n_chunks == 0:
             reads_processed = stats.get("total_reads", 0)
             console.print(

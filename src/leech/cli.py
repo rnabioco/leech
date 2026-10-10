@@ -145,7 +145,12 @@ data.command_order = ("prepare", "merge")
 @click.option(
     "--skip-motif-indels/--no-skip-motif-indels",
     default=False,
-    help="Skip reads with indels in motif region (for motif-reference=fasta)",
+    help=(
+        "Skip reads with indels in motif region (for motif-reference=fasta). "
+        "Class-selective: charged tRNAs carry junction indels far more often "
+        "than uncharged, so this removes more of one class and shifts the "
+        "class prior; see the per-class attrition `data prepare` logs."
+    ),
 )
 @click.option(
     "--require-query-mapping/--no-require-query-mapping",
@@ -158,7 +163,8 @@ data.command_order = ("prepare", "merge")
         "keeps reads whose motif basecalled badly without moving any chunk. Use "
         "it when the modification under study mis-calls the motif itself, "
         "otherwise those reads are dropped for carrying the very signal being "
-        "measured."
+        "measured. Class-selective for the same reason: the dropped reads "
+        "are mostly one class (see the per-class attrition `data prepare` logs)."
     ),
 )
 @click.option(

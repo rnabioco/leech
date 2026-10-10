@@ -218,6 +218,18 @@ class MotifSearcher(ABC):
         """
         pass
 
+    def rejection_cause(
+        self, read_id: str, sequence: str, alignment: pysam.AlignedSegment | None, motif: str
+    ) -> str:
+        """Why :meth:`find_motif_positions` returned nothing for this read.
+
+        One of ``no_motif``, ``indel``, ``unmapped_junction`` or ``length``.
+        Meant to be called only for a read that produced no positions, so the
+        hot path pays nothing. The default says ``no_motif``, which is right
+        for any searcher that has no gate between "found" and "kept".
+        """
+        return "no_motif"
+
 
 class BasecalledMotifSearcher(MotifSearcher):
     """
@@ -508,6 +520,48 @@ class ReferenceMotifSearcher(MotifSearcher):
                 )
 
         return query_positions
+
+    def rejection_cause(
+        self, read_id: str, sequence: str, alignment: pysam.AlignedSegment | None, motif: str
+    ) -> str:
+        """Why this read yielded no focus base (see the base class).
+
+        Mirrors the acceptance gate in :meth:`find_motif_positions` without
+        its bookkeeping. The first reference motif site decides the cause: a
+        read whose motif is absent from its aligned reference span is
+        ``no_motif``; otherwise ``unmapped_junction`` when the CIGAR cannot map
+        the motif span at all, ``indel`` when ``skip_indels`` refused it, and
+        ``length`` for the mapped-length sanity check.
+        """
+        if alignment is None or alignment.reference_name not in self.reference_sequences:
+            return "no_motif"
+        ref_end = alignment.reference_end
+        if ref_end is None:
+            return "no_motif"
+        sites = find_motif_in_sequence(
+            self.reference_sequences[alignment.reference_name],
+            motif,
+            alignment.reference_start,
+            ref_end,
+        )
+        if not sites:
+            return "no_motif"
+        start = sites[0]
+        measured = map_reference_to_query_coords(
+            alignment, start, start + len(motif), skip_indels=False
+        )
+        if measured is None:
+            return "unmapped_junction"
+        if self.skip_indels:
+            strict = map_reference_to_query_coords(
+                alignment,
+                start,
+                start + len(motif),
+                skip_indels=True,
+                allow_edge_indels=self.allow_edge_indels,
+            )
+            return "indel" if strict is None else "length"
+        return "length"
 
 
 def get_motif_searcher(

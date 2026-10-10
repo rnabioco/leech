@@ -30,11 +30,11 @@ import logging
 import multiprocessing as mp
 import sys
 import time
-from collections import deque
+from collections import Counter, deque
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 import numpy as np
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
@@ -114,6 +114,10 @@ class BatchOutcome(NamedTuple):
     n_failed_reads: int = 0
     batch_failed: bool = False
     n_reads_missing_from_pod5: int = 0
+    #: Reads that yielded no chunk, by cause (issue #395): ``no_motif``,
+    #: ``indel``, ``unmapped_junction``, ``length``, ``no_chunks``. Empty when
+    #: the dispatcher did not collect it.
+    attrition: dict[str, int] = {}
 
 
 def _process_read_chunk_worker(
@@ -177,10 +181,41 @@ def _process_read_chunk_worker_with_failures(
     return _process_read_infos(read_infos, config, motif_searcher)
 
 
+def _note_attrition(
+    attrition: Counter,
+    read_info: ReadInfo,
+    config: PrepareConfig,
+    motif_searcher: MotifSearcher | None,
+    *,
+    positions_known_empty: bool,
+) -> None:
+    """Record why a read that reached extraction contributed no chunk (#395).
+
+    Called only for reads that produced nothing, so the hot path is untouched.
+    ``no_motif`` / ``indel`` / ``unmapped_junction`` / ``length`` come from the
+    searcher's own gate (:meth:`MotifSearcher.rejection_cause`); ``no_chunks``
+    is a read that had focus bases and still yielded nothing (signal bounds).
+    """
+    if motif_searcher is None or config.motif.motif is None:
+        attrition["no_chunks"] += 1
+        return
+    if not positions_known_empty and _find_motif_positions(read_info, motif_searcher, config):
+        attrition["no_chunks"] += 1
+        return
+    alignment = None
+    if config.motif.motif_reference == "fasta" and config.motif.reference_sequences is not None:
+        alignment = read_info.to_mock_alignment()
+    cause = motif_searcher.rejection_cause(
+        read_info.read_id, _extraction_sequence(read_info, config), alignment, config.motif.motif
+    )
+    attrition[cause] += 1
+
+
 def _process_read_infos(
     read_infos: list[ReadInfo],
     config: PrepareConfig,
     motif_searcher: MotifSearcher | None,
+    attrition: Counter | None = None,
 ) -> tuple[list[dict[str, np.ndarray | str | int | None]], int, int]:
     """Core per-batch extraction loop, given an already-resolved motif searcher.
 
@@ -276,6 +311,10 @@ def _process_read_infos(
             )
 
             all_chunks.extend(read_chunks)
+            if not read_chunks and attrition is not None:
+                _note_attrition(
+                    attrition, read_info, config, motif_searcher, positions_known_empty=False
+                )
 
         except Exception as e:
             logger.warning(f"Worker failed to process read {read_info.read_id}: {e}")
@@ -341,7 +380,7 @@ def _init_worker(config: PrepareConfig) -> None:
 
 def _process_pooled_batch(
     args: tuple[int, list[ReadInfo]],
-) -> tuple[int, list[dict[str, np.ndarray | str | int | None]], int, int]:
+) -> tuple[int, list[dict[str, np.ndarray | str | int | None]], int, int, dict[str, int]]:
     """``mp.Pool`` task entry point: read config/searcher from worker globals.
 
     Tasks carry ``(seq, read_batch)`` only -- everything else was resolved
@@ -360,10 +399,11 @@ def _process_pooled_batch(
             f"mp.Pool worker failed to initialize: {_worker_init_error}"
         ) from _worker_init_error
     seq, read_infos = args
+    attrition: Counter = Counter()
     chunks, n_failed, n_missing = _process_read_infos(
-        read_infos, _worker_config, _worker_motif_searcher
+        read_infos, _worker_config, _worker_motif_searcher, attrition
     )
-    return seq, chunks, n_failed, n_missing
+    return seq, chunks, n_failed, n_missing, dict(attrition)
 
 
 # ---------------------------------------------------------------------------
@@ -464,6 +504,7 @@ def _prepare_batch_rust_with_failures(
     config: PrepareConfig,
     motif_searcher: MotifSearcher | None,
     kmer_levels=None,
+    attrition: Counter | None = None,
 ) -> tuple[list[dict[str, np.ndarray | str | int | None]], int, int, int]:
     """``_prepare_batch_rust``, plus failure/submission counts (issue #265).
 
@@ -523,6 +564,8 @@ def _prepare_batch_rust_with_failures(
             n_failed += 1
             continue
         if not positions:
+            if attrition is not None:
+                _note_attrition(attrition, ri, config, motif_searcher, positions_known_empty=True)
             continue
 
         read_ids.append(ri.read_id)
@@ -803,7 +846,7 @@ def _iter_rust_batches(
     window = 2 * max_in_flight
 
     with ThreadPoolExecutor(max_workers=max_in_flight, thread_name_prefix="leech-rust") as pool:
-        pending: deque[tuple[int, Future]] = deque()
+        pending: deque[tuple[int, Counter, Future]] = deque()
         exhausted = False
 
         while True:
@@ -813,15 +856,18 @@ def _iter_rust_batches(
                 except StopIteration:
                     exhausted = True
                     break
+                batch_attrition: Counter = Counter()
                 pending.append(
                     (
                         len(read_batch),
+                        batch_attrition,
                         pool.submit(
                             _prepare_batch_rust_with_failures,
                             read_batch,
                             config,
                             motif_searcher,
                             kmer_levels,
+                            batch_attrition,
                         ),
                     )
                 )
@@ -829,7 +875,7 @@ def _iter_rust_batches(
             if not pending:
                 return
 
-            n_reads, future = pending.popleft()
+            n_reads, batch_attrition, future = pending.popleft()
             try:
                 chunks, n_failed, n_submitted, n_missing = future.result()
             except Exception as e:
@@ -860,6 +906,7 @@ def _iter_rust_batches(
                 chunks,
                 n_failed_reads=n_failed,
                 n_reads_missing_from_pod5=n_missing,
+                attrition=dict(batch_attrition),
             )
 
 
@@ -897,7 +944,7 @@ def _iter_python_batches(
             yield (seq, read_batch)
 
     with mp.Pool(processes=num_workers, initializer=_init_worker, initargs=(config,)) as pool:
-        for seq, chunk_results, n_failed, n_missing in pool.imap_unordered(
+        for seq, chunk_results, n_failed, n_missing, attrition in pool.imap_unordered(
             _process_pooled_batch, _worker_arg_stream()
         ):
             yield BatchOutcome(
@@ -905,7 +952,56 @@ def _iter_python_batches(
                 chunk_results,
                 n_failed_reads=n_failed,
                 n_reads_missing_from_pod5=n_missing,
+                attrition=attrition,
             )
+
+
+#: Causes a read can be lost to between the BAM and the corpus (issue #395).
+ATTRITION_CAUSES = (
+    "no_motif",
+    "indel",
+    "unmapped_junction",
+    "length",
+    "no_chunks",
+    "missing_from_pod5",
+    "failed",
+)
+
+
+def _attrition_summary(
+    label: str | None,
+    total_reads: int,
+    reads_with_chunks: int,
+    missing_from_pod5: int,
+    failed: int,
+    causes: Counter,
+) -> dict:
+    """Per-class read attrition by cause, as logged and written to ``prepare_config.json``.
+
+    ``prepare`` runs one label at a time, so the class is the run's ``--label``
+    (``""`` when unset). The ``indel`` and ``unmapped_junction`` rows are the
+    ones ``--skip-motif-indels`` / ``require_query_mapping`` act on, and they
+    fall unevenly on classes -- which is why this is reported per class.
+    """
+    counts = {c: int(causes.get(c, 0)) for c in ATTRITION_CAUSES}
+    counts["missing_from_pod5"] = missing_from_pod5
+    counts["failed"] = failed
+    cls = label or ""
+    summary = {cls: {"reads": total_reads, "reads_with_chunks": reads_with_chunks, "lost": counts}}
+    lost = ", ".join(f"{k}={v}" for k, v in counts.items())
+    logger.info(
+        f"Read attrition [class={cls or '<unlabelled>'}]: {reads_with_chunks}/{total_reads} "
+        f"reads kept; lost: {lost}"
+    )
+    gated = counts["indel"] + counts["unmapped_junction"]
+    if gated:
+        logger.warning(
+            f"{gated} read(s) of class {cls or '<unlabelled>'} were dropped by the junction "
+            f"gate (indel={counts['indel']}, unmapped_junction={counts['unmapped_junction']}). "
+            f"This is class-selective: compare against the other classes' attrition before "
+            f"training, since it shifts the class prior and selects easier reads."
+        )
+    return summary
 
 
 def _count_reads_with_chunks(batch_chunks: list[dict]) -> int:
@@ -994,7 +1090,7 @@ def prepare_training_data_parallel(
     min_mapq: int = 0,
     chunk_sink: Callable[[list[dict]], None] | None = None,
     backend_choice: str = "auto",
-) -> tuple[list[dict[str, np.ndarray | str | int | None]], dict[str, int]]:
+) -> tuple[list[dict[str, np.ndarray | str | int | None]], dict[str, Any]]:
     """
     Prepare training data from BAM and POD5 files using multiprocessing.
 
@@ -1061,6 +1157,7 @@ def prepare_training_data_parallel(
     total_failed_reads = 0
     total_missing_from_pod5 = 0
     failed_batches = 0
+    total_attrition: Counter = Counter()
 
     use_progress_bar = sys.stdout.isatty()
     monitor = _ThroughputMonitor(backend)
@@ -1132,6 +1229,7 @@ def prepare_training_data_parallel(
                 total_chunks += len(outcome.chunks)
                 total_failed_reads += outcome.n_failed_reads
                 total_missing_from_pod5 += outcome.n_reads_missing_from_pod5
+                total_attrition.update(outcome.attrition)
                 failed_batches += int(outcome.batch_failed)
                 if chunk_sink is None:
                     all_chunks.extend(outcome.chunks)
@@ -1156,6 +1254,7 @@ def prepare_training_data_parallel(
             total_chunks += len(outcome.chunks)
             total_failed_reads += outcome.n_failed_reads
             total_missing_from_pod5 += outcome.n_reads_missing_from_pod5
+            total_attrition.update(outcome.attrition)
             failed_batches += int(outcome.batch_failed)
             if chunk_sink is None:
                 all_chunks.extend(outcome.chunks)
@@ -1174,6 +1273,7 @@ def prepare_training_data_parallel(
             "total_chunks": 0,
             "failed_reads": 0,
             "failed_batches": 0,
+            "attrition": {},
         }
 
     # `reads_with_motif` counts READS that yielded at least one chunk, the same
@@ -1199,6 +1299,14 @@ def prepare_training_data_parallel(
         "total_chunks": total_chunks,
         "failed_reads": total_failed_reads,
         "failed_batches": failed_batches,
+        "attrition": _attrition_summary(
+            getattr(getattr(config, "labeling", None), "label", None),
+            total_reads,
+            reads_with_chunks,
+            total_missing_from_pod5,
+            total_failed_reads,
+            total_attrition,
+        ),
     }
 
     logger.info(

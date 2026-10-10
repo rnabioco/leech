@@ -154,7 +154,7 @@ are discarded.
 When using reference-based motif search, leech maps motif positions from the
 reference to query coordinates via the CIGAR string. If the alignment contains
 insertions or deletions within the motif region, the mapping may be unreliable.
-The `--skip-motif-indels` flag filters out such reads.
+The `--skip-motif-indels` flag filters out such reads. This is class-selective (disrupted junctions are far more common in charged tRNAs), so it biases the class balance; check the per-class attrition `data prepare` reports.
 
 ### Stride variations
 
