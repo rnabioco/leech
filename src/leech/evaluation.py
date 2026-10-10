@@ -2,6 +2,7 @@
 Model evaluation and testing utilities.
 """
 
+import json
 import logging
 from pathlib import Path
 
@@ -140,6 +141,98 @@ def _junction_stratified_multiclass_metrics(
             "macro_f1": sk_f1_score(labels[mask], preds[mask], average="macro", zero_division=0.0),
         }
     return strata
+
+
+def _read_cross_run_mask(test_data_path: Path, n: int) -> np.ndarray | None:
+    """Boolean per-chunk mask: True where the chunk's run never appeared in training.
+
+    Which runs training saw comes from the ``split_runs.json`` sidecar a
+    run-held-out ``data merge`` writes next to the splits; failing that, from
+    the ``run_ids`` of a sibling ``train.npz``. Returns None when the test
+    corpus has no run ids or neither source says which runs trained -- there
+    is then nothing honest to stratify by. Same row-order contract as
+    :func:`_read_junction_indels`.
+    """
+    from leech.splitting.splitter import SPLIT_RUNS_FILENAME
+
+    try:
+        with np.load(test_data_path, allow_pickle=False) as data:
+            if "run_ids" not in data:
+                return None
+            test_runs = np.asarray(data["run_ids"]).astype(str)
+        if len(test_runs) != n:
+            logger.warning(
+                f"Scored {n} chunks but {test_data_path} holds {len(test_runs)} run_ids; "
+                "skipping run-stratified metrics."
+            )
+            return None
+
+        train_runs: set[str] | None = None
+        sidecar = test_data_path.parent / SPLIT_RUNS_FILENAME
+        train_npz = test_data_path.parent / "train.npz"
+        if sidecar.exists():
+            with open(sidecar) as f:
+                info = json.load(f)
+            # A read-level fallback class has no held-out runs: its runs are
+            # "seen" by training, so its test reads count as within-run.
+            seen = {r for runs in info.get("train_runs", {}).values() for r in runs}
+            train_runs = seen
+        elif train_npz.exists():
+            with np.load(train_npz, allow_pickle=False) as train:
+                if "run_ids" in train:
+                    train_runs = set(np.unique(np.asarray(train["run_ids"]).astype(str)).tolist())
+    except (OSError, ValueError) as exc:
+        logger.warning(f"Could not read run ids from {test_data_path}: {exc}")
+        return None
+
+    if not train_runs:
+        return None
+    return ~np.isin(test_runs, sorted(train_runs))
+
+
+def _run_stratified_metrics(
+    cross_run: np.ndarray,
+    labels: np.ndarray,
+    preds: np.ndarray,
+    probs: np.ndarray | None,
+) -> dict:
+    """Metrics split into ``cross_run`` (run unseen in training) and ``within_run``.
+
+    Binary when ``probs`` is given (full :func:`compute_metrics`), multiclass
+    accuracy/macro-F1 otherwise. A stratum whose labels are a single class
+    cannot support AUROC, so it falls back to accuracy alone rather than raising.
+    """
+    strata: dict = {}
+    for name, mask in (("cross_run", cross_run), ("within_run", ~cross_run)):
+        n = int(mask.sum())
+        if n == 0:
+            strata[name] = {"n": 0}
+            continue
+        if probs is not None:
+            try:
+                strata[name] = {"n": n, **compute_metrics(labels[mask], preds[mask], probs[mask])}
+            except ValueError:
+                strata[name] = {
+                    "n": n,
+                    "accuracy": float(accuracy_score(labels[mask], preds[mask])),
+                }
+        else:
+            strata[name] = {
+                "n": n,
+                "accuracy": accuracy_score(labels[mask], preds[mask]),
+                "macro_f1": sk_f1_score(
+                    labels[mask], preds[mask], average="macro", zero_division=0.0
+                ),
+            }
+    return strata
+
+
+def _log_run_strata(strata: dict) -> None:
+    for name, stratum in strata.items():
+        if stratum["n"]:
+            logger.info(
+                f"Run {name}: n={stratum['n']}, accuracy={stratum.get('accuracy', float('nan')):.4f}"
+            )
 
 
 def evaluate_model(
@@ -409,6 +502,14 @@ def evaluate_model(
                         f"accuracy={stratum['accuracy']:.4f}, macro_f1={stratum['macro_f1']:.4f}"
                     )
 
+        # Cross-run vs within-run, when the split recorded which runs trained.
+        cross_run = _read_cross_run_mask(test_data_path, len(all_labels_arr))
+        if cross_run is not None:
+            metrics["run_stratified"] = _run_stratified_metrics(
+                cross_run, all_labels_arr, all_preds_arr, None
+            )
+            _log_run_strata(metrics["run_stratified"])
+
         # Add metadata
         metrics["model_path"] = str(model_path)
         metrics["test_data_path"] = str(test_data_path)
@@ -515,6 +616,15 @@ def evaluate_model(
                     f"Junction {name}: n={stratum['n']}, "
                     f"accuracy={stratum.get('accuracy', float('nan')):.4f}"
                 )
+
+    # Cross-run vs within-run, when the split recorded which runs trained --
+    # a run-held-out test split is the only honest cross-run number.
+    cross_run = _read_cross_run_mask(test_data_path, len(all_labels_arr))
+    if cross_run is not None:
+        metrics["run_stratified"] = _run_stratified_metrics(
+            cross_run, all_labels_arr, all_preds_arr, all_probs_arr
+        )
+        _log_run_strata(metrics["run_stratified"])
 
     if emit_scores is not None:
         _save_scores(emit_scores, test_data_path, all_labels_arr, all_probs_arr)

@@ -560,6 +560,24 @@ and a training loop contends with its own forward/backward for that pool, while
 grid search runs N such processes. `LeechDataset`'s block fill and
 `__getitems__` gather go through numpy for this reason.
 
+### Run identity and the run-held-out split (issue #394)
+
+Every chunk carries `run_id` (the POD5 `acquisition_id`) and `flow_cell_id`,
+written by both prepare backends as the npz members `run_ids`/`flow_cell_ids`
+(`""` = unknown, via `_text()`; absent on older corpora, which still load).
+**`run_info_index` is per FILE, not an index into the dataset's deduplicated
+`run_infos()`**: Rust resolves it through `Dataset::owning_reader`, Python through
+per-file `Reader`s when the source spans more than one run. Indexing the
+deduplicated list labels reads with the wrong run, silently.
+
+`leech data merge --split-by run_id` (or `--holdout-run`) holds out a whole run
+per class as test, and the pipeline does so by default (`split_mode:
+run_holdout`; `read` restores read-level splitting with a warning). A class
+with fewer than 2 runs is refused by name unless `--allow-single-run-classes`.
+The merge writes `split_runs.json`, which `eval test` uses to report
+`run_stratified` (cross-run vs within-run) metrics. `tests/test_leakage_canary.py`
+fails if the pipeline default returns to a read-level split.
+
 ### Multi-GPU training: what shards, what stays global, what rank 0 owns
 
 `leech model train --gpus N` runs N data-parallel ranks on one node

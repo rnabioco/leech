@@ -88,6 +88,9 @@ EXACT_FIELDS = {
     "focus_signal_pos",
     "junction_indels",
     "junction_mappeds",
+    # POD5 run identity (issue #394): strings, so exact.
+    "run_ids",
+    "flow_cell_ids",
 }
 
 #: Absolute/relative tolerance for float fields. Comfortably above float32
@@ -331,6 +334,26 @@ class TestBackendFieldParity:
         parity property that was previously only reachable through
         ``--backend python``.
         """
+        py, rs = _run_both_backends(_config(pod5_path=FIXTURES_DIR), tmp_path)
+        _assert_npz_parity(py, rs)
+
+    def test_run_identity_recorded_and_equal(self, _rust_available, tmp_path):
+        """Both backends stamp the POD5 run's acquisition id and flow cell id on
+        every chunk (issue #394), and neither leaves them blank on a POD5 that
+        carries run info -- a blank run is indistinguishable from an unknown one
+        and makes the corpus un-splittable by run."""
+        py, rs = _run_both_backends(_config(), tmp_path)
+        _assert_npz_parity(py, rs)
+        for npz in (py, rs):
+            assert set(npz["run_ids"]) != {""}, "run_ids were not recorded"
+            assert "" not in set(npz["run_ids"])
+            assert "None" not in set(npz["run_ids"])
+            assert "" not in set(npz["flow_cell_ids"])
+
+    def test_run_identity_in_a_multi_run_directory(self, _rust_available, tmp_path):
+        """A directory spanning several runs: ``run_info_index`` is per FILE, so
+        resolving it against the dataset's deduplicated run list would mislabel
+        reads. Both backends must agree chunk for chunk."""
         py, rs = _run_both_backends(_config(pod5_path=FIXTURES_DIR), tmp_path)
         _assert_npz_parity(py, rs)
 

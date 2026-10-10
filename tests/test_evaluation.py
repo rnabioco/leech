@@ -693,3 +693,54 @@ class TestValLoaderWorkers:
         monkeypatch.setattr(dataset, "_usable_cpus", lambda: 32)
 
         assert resolve_val_dataloader_workers(_ListFallback(), 3, "cuda") == 0
+
+
+class TestRunStratifiedMetrics:
+    """Cross-run vs within-run metrics (issue #394)."""
+
+    def _write(self, tmp_path, train_runs, test_runs, sidecar=None):
+        import json
+
+        np.savez(tmp_path / "train.npz", run_ids=np.array(train_runs, dtype=str))
+        np.savez(tmp_path / "test.npz", run_ids=np.array(test_runs, dtype=str))
+        if sidecar is not None:
+            (tmp_path / "split_runs.json").write_text(json.dumps(sidecar))
+        return tmp_path / "test.npz"
+
+    def test_mask_from_sidecar_marks_unseen_runs_as_cross_run(self, tmp_path):
+        from leech.evaluation import _read_cross_run_mask
+
+        test = self._write(
+            tmp_path,
+            ["r1", "r2"],
+            ["r1", "r3", "r3"],
+            sidecar={"train_runs": {"A": ["r1", "r2"]}, "holdout_runs": {"A": ["r3"]}},
+        )
+        np.testing.assert_array_equal(_read_cross_run_mask(test, 3), [False, True, True])
+
+    def test_mask_falls_back_to_sibling_train_npz(self, tmp_path):
+        from leech.evaluation import _read_cross_run_mask
+
+        test = self._write(tmp_path, ["r1", "r2"], ["r2", "r9"])
+        np.testing.assert_array_equal(_read_cross_run_mask(test, 2), [False, True])
+
+    def test_mask_is_none_without_run_information(self, tmp_path):
+        from leech.evaluation import _read_cross_run_mask
+
+        np.savez(tmp_path / "test.npz", labels=np.array(["A"]))
+        assert _read_cross_run_mask(tmp_path / "test.npz", 1) is None
+        # run ids present but nothing records which runs trained
+        np.savez(tmp_path / "test.npz", run_ids=np.array(["r1"]))
+        assert _read_cross_run_mask(tmp_path / "test.npz", 1) is None
+
+    def test_strata_report_both_when_both_exist(self):
+        from leech.evaluation import _run_stratified_metrics
+
+        cross = np.array([True, True, False, False])
+        labels = np.array([0, 1, 0, 1])
+        preds = np.array([1, 1, 0, 1])
+        strata = _run_stratified_metrics(cross, labels, preds, None)
+        assert strata["cross_run"]["n"] == 2
+        assert strata["within_run"]["n"] == 2
+        assert strata["cross_run"]["accuracy"] == 0.5
+        assert strata["within_run"]["accuracy"] == 1.0

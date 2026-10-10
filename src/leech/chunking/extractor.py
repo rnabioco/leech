@@ -917,6 +917,10 @@ def extract_training_chunks(
     # Extract chunks
     cl_value = leech_read.metadata.get("cl_value")
     reference_name = leech_read.metadata.get("reference_name", "")
+    # POD5 run identity (acquisition id / flow cell id); "" when the source
+    # carries none. Same keys the Rust backend emits.
+    run_id = leech_read.metadata.get("run_id") or ""
+    flow_cell_id = leech_read.metadata.get("flow_cell_id") or ""
     for match in focus_bases:
         chunk = leech_read.get_chunk(match.position, config=chunk_config)
         if chunk is not None:
@@ -929,6 +933,8 @@ def extract_training_chunks(
             chunk["cl_value"] = cl_value
             # Add alignment reference name (e.g., tRNA isodecoder identity)
             chunk["reference_name"] = reference_name
+            chunk["run_id"] = run_id
+            chunk["flow_cell_id"] = flow_cell_id
             # Junction disruption at this focus base's motif span (issue
             # #282): mapped_len - len(motif) through the CIGAR, and whether
             # that measurement was possible at all. A sampling/abstention

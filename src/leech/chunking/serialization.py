@@ -439,6 +439,8 @@ def iter_chunk_columns(chunks: list[dict]) -> Iterator[tuple[str, np.ndarray | l
     focus_signal_pos_list = []
     junction_indels = []
     junction_mappeds = []
+    run_ids = []
+    flow_cell_ids = []
     has_signal_residual = "signal_residual" in chunks[0]
     has_focus_signal_pos = "focus_signal_pos" in chunks[0]
 
@@ -457,6 +459,10 @@ def iter_chunk_columns(chunks: list[dict]) -> Iterator[tuple[str, np.ndarray | l
         feature_ends.append(chunk.get("feature_end", 5))
         source_groups.append(_text(chunk.get("source_group")))
         reference_names.append(_text(chunk.get("reference_name")))
+        # POD5 run identity. `_text` so a missing/None value is "", never the
+        # string "None" -- a run called "None" would be a real split group.
+        run_ids.append(_text(chunk.get("run_id")))
+        flow_cell_ids.append(_text(chunk.get("flow_cell_id")))
         # Charging level: sentinel -1 for missing
         cl_val = chunk.get("cl_value")
         cl_values.append(cl_val if cl_val is not None else -1)
@@ -524,6 +530,10 @@ def iter_chunk_columns(chunks: list[dict]) -> Iterator[tuple[str, np.ndarray | l
     del junction_indels
     yield "junction_mappeds", np.array(junction_mappeds, dtype=bool)
     del junction_mappeds
+    yield "run_ids", np.array(run_ids, dtype=str)
+    del run_ids
+    yield "flow_cell_ids", np.array(flow_cell_ids, dtype=str)
+    del flow_cell_ids
 
     if has_focus_signal_pos:
         yield "focus_signal_pos", np.array(focus_signal_pos_list, dtype=np.int64)
@@ -1155,6 +1165,13 @@ def load_chunks(input_path: Path, *, defer: Collection[str] = ()) -> list[dict]:
         if has_reference_names:
             reference_names_loaded = data["reference_names"]
 
+        # POD5 run identity (backward compatible -- absent before issue #394).
+        # Empty string means unknown, matching reference_name; never None.
+        has_run_ids = "run_ids" in data
+        if has_run_ids:
+            run_ids_loaded = data["run_ids"]
+            flow_cell_ids_loaded = data["flow_cell_ids"]
+
         # Charging level (backward compatible)
         has_cl_values = "cl_values" in data
         if has_cl_values:
@@ -1215,6 +1232,9 @@ def load_chunks(input_path: Path, *, defer: Collection[str] = ()) -> list[dict]:
             if has_reference_names:
                 rn = _intern(reference_names_loaded[i])
                 chunk["reference_name"] = rn if rn else ""
+            if has_run_ids:
+                chunk["run_id"] = _intern(run_ids_loaded[i])
+                chunk["flow_cell_id"] = _intern(flow_cell_ids_loaded[i])
             if has_cl_values:
                 cl_val = int(cl_values_loaded[i])
                 chunk["cl_value"] = cl_val if cl_val >= 0 else None

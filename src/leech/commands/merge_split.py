@@ -126,6 +126,8 @@ def handle_merge_and_split(
     seed: int | None = DEFAULT_SEED,
     comparison_spec: Path | None = None,
     split_by: str | None = None,
+    holdout_runs: tuple[str, ...] = (),
+    allow_single_run_classes: bool = False,
 ) -> dict[str, Any]:
     """
     Handle the merge-and-split command logic.
@@ -137,12 +139,20 @@ def handle_merge_and_split(
         val_split: Fraction of reads for validation
         seed: Random seed for reproducibility
         comparison_spec: Optional TSV file with comparison specifications
-        split_by: Optional NPZ field name to split by group instead of by read
+        split_by: Optional NPZ field name to split by group instead of by read.
+            ``run_id`` holds out whole sequencing runs as the test split.
+        holdout_runs: Run ids to hold out as the test split (implies ``run_id``).
+        allow_single_run_classes: Let a class with fewer than two runs fall back
+            to a read-level split instead of refusing the run-held-out split.
 
     Returns:
         Dictionary with merge and split statistics
     """
     from leech.splitting import merge_and_split_chunks, process_comparison_spec
+    from leech.splitting.splitter import is_run_split
+
+    if comparison_spec and is_run_split(split_by, holdout_runs):
+        raise ValueError("--comparison-spec does not support run-held-out splitting yet")
 
     # Batch processing mode with comparison spec
     if comparison_spec:
@@ -193,6 +203,8 @@ def handle_merge_and_split(
             val_frac=val_split,
             seed=seed,
             split_by=split_by,
+            holdout_runs=holdout_runs or None,
+            allow_single_run_classes=allow_single_run_classes,
         )
         _display_single_comparison_results(result)
         console.print("[bold green]Multi-class merge and split complete![/bold green]")
@@ -215,6 +227,9 @@ def handle_merge_and_split(
         val_frac=val_split,
         seed=seed,
         relabel_by_file=relabel_by_file,
+        split_by=split_by,
+        holdout_runs=holdout_runs or None,
+        allow_single_run_classes=allow_single_run_classes,
     )
 
     # Type narrowing: result is always a dict when output_dir is provided
