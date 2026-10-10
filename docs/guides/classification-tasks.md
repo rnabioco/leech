@@ -18,13 +18,19 @@ can be used to simplify the amino acid problem.
 ## Charged vs. uncharged classification
 
 The simpler task is distinguishing charged (aminoacylated) from uncharged tRNAs.
-Aminoacylation produces a ~15 pA shift in signal amplitude at the CCA tail,
-which is large enough for signal-only models to detect with reasonable accuracy.
+Aminoacylation is expected to shift signal amplitude at the CCA tail, which
+should be large enough for signal-only models to detect with reasonable
+accuracy.
 
-| Model         | Expected accuracy | Key signal         |
+!!! warning "Illustrative, not measured"
+    The accuracy ranges in the table below are expectations used to frame the
+    task, not results. No results file in this repository backs them. Measure
+    your own with `leech eval test`.
+
+| Model         | Expected accuracy (illustrative) | Key signal         |
 |---------------|-------------------|--------------------|
-| ConvLSTMBase  | 75--80%           | Signal amplitude   |
-| ConvLSTMDwell | 85--90%           | Amplitude + dwell  |
+| ConvLSTMBase  | ~75--80% (unmeasured) | Signal amplitude   |
+| ConvLSTMDwell | ~85--90% (unmeasured) | Amplitude + dwell  |
 
 Dwell features still improve performance on this task because they capture
 translocation kinetics that amplitude alone misses, but the binary task is
@@ -38,28 +44,31 @@ classifying which of the 20 standard amino acids is attached to a charged
 tRNA. This is substantially harder than binary classification because the
 signal differences between amino acids are small.
 
-Consider three amino acids:
+Consider three amino acids. The values below are **illustrative numbers
+chosen to show the shape of the problem, not measurements**:
 
-| Amino acid | Signal amplitude (pA) | Dwell (samples) |
+| Amino acid | Signal amplitude (pA, illustrative) | Dwell (samples, illustrative) |
 |------------|----------------------|------------------|
 | Ala        | 94                   | 8                |
 | Gly        | 93                   | 6                |
 | Trp        | 98                   | 15               |
 
 While Trp is distinguishable by amplitude, Ala and Gly differ by only 1 pA --
-within read-to-read noise. Their dwell times, however, differ by 25%, making
-dwell features critical for discrimination. More broadly, amino acid physical
-properties correlate with dwell time:
+within read-to-read noise. In this illustration their dwell times differ
+substantially, which is why dwell features are hypothesized to help. More
+broadly, amino acid physical properties are hypothesized to relate to dwell
+time:
 
-| Property         | Correlation with dwell |
-|------------------|------------------------|
-| Molecular weight | Strong (r = 0.6--0.8)  |
-| Volume           | Strong (r = 0.7--0.9)  |
-| Charge           | Moderate (r = 0.3--0.5)|
+| Property         | Hypothesized relation to dwell |
+|------------------|--------------------------------|
+| Molecular weight | Positive                       |
+| Volume           | Positive                       |
+| Charge           | Weaker                         |
 
-These correlations reflect the physical basis for dwell-based discrimination:
-larger amino acids cause more drag during translocation, increasing dwell time
-at the CCA tail.
+This is the expected physical basis for dwell-based discrimination: larger
+amino acids may cause more drag during translocation, increasing dwell time at
+the CCA tail. No correlation coefficients have been measured or recorded in
+this repository.
 
 ### Expected confusion patterns
 
@@ -153,6 +162,10 @@ representations. The shared encoder benefits from both objectives.
 
 ## Expected performance
 
+!!! warning "Illustrative, not measured"
+    The ranges in the table below are expectations, not findings. No results
+    file in this repository backs them.
+
 Performance depends on data source. Synthetic data (purified tRNAs charged
 with individual amino acids) provides clean training signal. Biological data
 introduces variability from cellular context, mixed populations, and post-
@@ -160,15 +173,15 @@ transcriptional modifications.
 
 | Model           | Synthetic 20-way | Bio zero-shot | Bio fine-tuned |
 |-----------------|------------------|---------------|----------------|
-| ConvLSTMBase    | 55--65%          | --            | --             |
-| ConvLSTMDwell   | 72--82%          | 42--58%       | 62--72%        |
-| tRNA-conditional| 90--97%          | 80--90%       | 90--95%        |
+| ConvLSTMBase    | ~55--65%         | --            | --             |
+| ConvLSTMDwell   | ~72--82%         | ~42--58%      | ~62--72%       |
+| tRNA-conditional| ~90--97%         | ~80--90%      | ~90--95%       |
 
-The large gap between 20-way and tRNA-conditional performance demonstrates the
+The expected gap between 20-way and tRNA-conditional performance motivates the
 value of incorporating biological knowledge about aaRS specificity.
 
 !!! note
-    These ranges reflect the inherent difficulty of the task. Performance on
+    These ranges are rough expectations of the task's difficulty. Performance on
     biological data depends on how well synthetic training data represents
     in vivo conditions. Fine-tuning on a small amount of biological data
-    substantially closes the domain gap.
+    is expected to close much of the domain gap.
