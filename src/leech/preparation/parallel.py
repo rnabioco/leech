@@ -34,7 +34,7 @@ from collections import Counter, deque
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 import numpy as np
 from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
@@ -1090,7 +1090,7 @@ def prepare_training_data_parallel(
     min_mapq: int = 0,
     chunk_sink: Callable[[list[dict]], None] | None = None,
     backend_choice: str = "auto",
-) -> tuple[list[dict[str, np.ndarray | str | int | None]], dict[str, int]]:
+) -> tuple[list[dict[str, np.ndarray | str | int | None]], dict[str, Any]]:
     """
     Prepare training data from BAM and POD5 files using multiprocessing.
 
