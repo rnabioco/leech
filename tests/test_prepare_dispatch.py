@@ -54,7 +54,7 @@ class TestRustBatchDispatchIsConcurrent:
         peak = 0
         release = threading.Event()
 
-        def work(read_batch, config, motif_searcher, kmer_levels=None):
+        def work(read_batch, config, motif_searcher, kmer_levels=None, attrition=None):
             nonlocal live, peak
             with lock:
                 live += 1
@@ -86,7 +86,7 @@ class TestRustBatchDispatchIsConcurrent:
     def test_yields_in_bam_order_with_read_counts(self, monkeypatch):
         """Results arrive in submission order, each tagged with its read count."""
 
-        def work(read_batch, config, motif_searcher, kmer_levels=None):
+        def work(read_batch, config, motif_searcher, kmer_levels=None, attrition=None):
             return [{"n": len(read_batch)}], 0, 1, 0
 
         results = _drive(monkeypatch, work, num_workers=4, n_batches=5, batch_size=3)
@@ -102,7 +102,7 @@ class TestRustBatchDispatchIsConcurrent:
         calls = {"n": 0}
         lock = threading.Lock()
 
-        def work(read_batch, config, motif_searcher, kmer_levels=None):
+        def work(read_batch, config, motif_searcher, kmer_levels=None, attrition=None):
             with lock:
                 calls["n"] += 1
                 n = calls["n"]
@@ -133,7 +133,7 @@ class TestRustBatchDispatchIsConcurrent:
         driver has to "Rust silently dropped every read" -- it must not read
         as a clean no-motif batch either."""
 
-        def work(read_batch, config, motif_searcher, kmer_levels=None):
+        def work(read_batch, config, motif_searcher, kmer_levels=None, attrition=None):
             return [], 0, 2, 0  # 2 found in the POD5, Rust returned nothing
 
         (outcome,) = _drive(monkeypatch, work, num_workers=1, n_batches=1)
@@ -146,7 +146,7 @@ class TestRustBatchDispatchIsConcurrent:
         """The other half of the same corner: nothing submitted (no read in
         the batch had a motif match) is a legitimate, non-failure outcome."""
 
-        def work(read_batch, config, motif_searcher, kmer_levels=None):
+        def work(read_batch, config, motif_searcher, kmer_levels=None, attrition=None):
             return [], 0, 0, 0  # nothing submitted -- no motif anywhere in the batch
 
         (outcome,) = _drive(monkeypatch, work, num_workers=1, n_batches=1)
@@ -165,7 +165,7 @@ class TestRustBatchDispatchIsConcurrent:
         such a run, so treating it as failure aborts the whole thing.
         """
 
-        def work(read_batch, config, motif_searcher, kmer_levels=None):
+        def work(read_batch, config, motif_searcher, kmer_levels=None, attrition=None):
             return [], 0, 3, 3  # 3 submitted, all 3 absent from the POD5
 
         (outcome,) = _drive(monkeypatch, work, num_workers=1, n_batches=1)
@@ -183,7 +183,7 @@ class TestRustBatchDispatchIsConcurrent:
         those two count.
         """
 
-        def work(read_batch, config, motif_searcher, kmer_levels=None):
+        def work(read_batch, config, motif_searcher, kmer_levels=None, attrition=None):
             return [], 0, 3, 1
 
         (outcome,) = _drive(monkeypatch, work, num_workers=1, n_batches=1)
@@ -195,7 +195,7 @@ class TestRustBatchDispatchIsConcurrent:
     def test_absent_reads_are_reported_even_when_chunks_come_back(self, monkeypatch):
         """A productive batch still reports what the POD5 was missing."""
 
-        def work(read_batch, config, motif_searcher, kmer_levels=None):
+        def work(read_batch, config, motif_searcher, kmer_levels=None, attrition=None):
             return [{"read_id": "x"}], 0, 3, 2
 
         (outcome,) = _drive(monkeypatch, work, num_workers=1, n_batches=1)
@@ -212,7 +212,7 @@ class TestRustBatchDispatchIsConcurrent:
         proceed = threading.Event()
         consumed = {"n": 0}
 
-        def work(read_batch, config, motif_searcher, kmer_levels=None):
+        def work(read_batch, config, motif_searcher, kmer_levels=None, attrition=None):
             started.release()
             proceed.wait(timeout=20.0)
             return [], 0, 0, 0

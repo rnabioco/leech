@@ -285,8 +285,19 @@ def build_reference_fasta_arg():
 
 
 def build_skip_indels_arg():
-    """Render `--skip-motif-indels` when configured (default: enabled)."""
-    return "--skip-motif-indels" if config.get("skip_motif_indels", True) else ""
+    """Render the junction-gate flags from config (rnabioco/leech#395).
+
+    Both gates default to OFF, matching the CLI: they are class-selective
+    (charged reads carry junction indels far more often than uncharged), so
+    they are opt-in. `skip_motif_indels: true` -> `--skip-motif-indels`;
+    `require_query_mapping: false` -> `--no-require-query-mapping`.
+    """
+    args = []
+    if config.get("skip_motif_indels", False):
+        args.append("--skip-motif-indels")
+    if not config.get("require_query_mapping", False):
+        args.append("--no-require-query-mapping")
+    return " ".join(args)
 
 
 def build_label_arg(wildcards):

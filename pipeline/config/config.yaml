@@ -122,7 +122,21 @@ motif: "CCATGGC"          # tRNA 3' end motif (CCA + TGG + C adaptor)
 motif_offset: 3           # Focus on the position where amino acid is attached (0-indexed)
 motif_reference: "fasta"  # Search motif in reference ("fasta") or basecalled ("bam") sequence
 reference_fasta: "pipeline/resources/references/synthetic-trna.fa"  # External reference FASTA
-skip_motif_indels: true   # Skip reads with indels in motif region
+# Junction gates (rnabioco/leech#395). Both default to OFF here, because both
+# are CLASS-SELECTIVE: charged tRNAs carry a junction indel far more often than
+# uncharged ones (measured in escapepod-models: 51.9% of charged reads vs 2.4%
+# of uncharged), so a gate discards about half of one class, shifts the class
+# prior that pos_weight is computed from, and leaves the test set scored on
+# easy (exact-junction) reads only. Turn one on only knowing that. The
+# `data prepare` log and prepare_config.json ("attrition") report, per class,
+# how many reads each gate removed; `eval test` reports the "disrupted" stratum.
+#   skip_motif_indels: true       -> --skip-motif-indels (drops reads with ANY
+#                                    indel in the motif span)
+#   require_query_mapping: false  -> --no-require-query-mapping (keeps reads
+#                                    whose motif does not map through the
+#                                    CIGAR; needs anchor=reference, the default)
+skip_motif_indels: false
+require_query_mapping: false
 # Signal context (left, right) in raw samples, passed to
 # `leech data prepare --signal-context LEFT RIGHT` by prepare_chunks and the
 # grid-search re-prepare rules. Set to match the leech CLI's own default,

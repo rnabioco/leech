@@ -29,7 +29,7 @@ rule prepare_chunks:
         motif_offset=config.get("motif_offset", 0),
         motif_reference=config.get("motif_reference", "fasta"),
         reference_fasta=config.get("reference_fasta", None),
-        skip_motif_indels=config.get("skip_motif_indels", True),
+        skip_motif_indels=config.get("skip_motif_indels", False),
         workers=config.get("workers", 4),
         chunk_size=config.get("chunk_size", 100),
         # Shared with the grid-search re-prepare rules (grid_search.smk,

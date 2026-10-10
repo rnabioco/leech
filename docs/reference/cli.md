@@ -57,7 +57,7 @@ leech data prepare --pod5 FILE --bam FILE --output-dir DIR [OPTIONS]
 | `--motif-offset INT` | `0` | Focus base within motif (0-indexed) |
 | `--motif-reference STR` | `fasta` | Search in `fasta` (reference) or `bam` (basecalled sequence) |
 | `--reference-fasta FILE` | -- | Reference FASTA if not in BAM header |
-| `--skip-motif-indels` | `False` | Skip motif sites with indels in alignment |
+| `--skip-motif-indels` | `False` | Skip motif sites with indels in alignment. Class-selective: removes far more charged than uncharged reads; see per-class attrition in the log and `prepare_config.json`. |
 | `--require-query-mapping / --no-require-query-mapping` | enabled | Require a reference motif to also map cleanly to query coordinates (`--motif-reference fasta`, `--anchor reference`). See note below. |
 
 !!! note "When to use `--no-require-query-mapping`"
