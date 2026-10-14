@@ -41,7 +41,7 @@ jobs:
 
       - name: Install uv
         if: steps.check.outputs.needs_bump == 'true' && steps.check.outputs.actionable == 'true'
-        uses: astral-sh/setup-uv@v10.2.0
+        uses: astral-sh/setup-uv@v10.3.0
 
       - name: Move both pins to ${{ steps.check.outputs.target }}
         if: steps.check.outputs.needs_bump == 'true' && steps.check.outputs.actionable == 'true'
