@@ -10,6 +10,19 @@ New entries are no longer added to this file by hand — see
 
 <!-- towncrier release notes start -->
 
+## [0.16.0] - 2026-10-16
+
+### Added
+
+- **Per-class read attrition in `data prepare`.** Reads lost to no motif, indel, unmapped junction, length, missing POD5 or failure are logged and written to `prepare_config.json` under `attrition`; `summarize_metrics.py` flattens junction-stratified metrics. (#414)
+- **Run identity per chunk and run-held-out splits.** Every chunk records `run_id` (POD5 `acquisition_id`) and `flow_cell_id`; `leech data merge --split-by run_id` / `--holdout-run` hold out whole runs as test and write `split_runs.json`, and `leech eval test` reports `run_stratified` (cross-run vs within-run) metrics. (#415)
+
+### Changed
+
+- **The pipeline no longer drops disrupted-junction reads by default** (`skip_motif_indels: false`, new `require_query_mapping: false`), since the gate is class-selective. (#414)
+- **Pipeline splits default to `split_mode: run_holdout`.** A class with fewer than 2 runs is refused by name; set `allow_single_run_classes: true` or `split_mode: read` (which warns) to keep read-level splitting. (#415)
+
+
 ## [0.15.0] - 2026-09-30
 
 ### Changed
