@@ -90,7 +90,11 @@ jobs:
           git switch -C "$BRANCH"
           git add pyproject.toml uv.lock rust/Cargo.toml rust/Cargo.lock
           git commit -m "build: move both escapepod pins to v${TARGET}"
-          git push --force-with-lease origin "$BRANCH"
+          # Plain --force: the branch is bot-owned and rebuilt from main every
+          # run. --force-with-lease needs a remote-tracking ref this fresh
+          # checkout never fetched, so it rejected every push as "stale info"
+          # once the branch outlived its first PR.
+          git push --force origin "$BRANCH"
 
           # One long-lived branch, so a superseded proposal is updated in place
           # rather than left open beside its replacement.
