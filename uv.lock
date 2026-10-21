@@ -852,7 +852,7 @@ wheels = [
 
 [[package]]
 name = "great-tables"
-version = "1.0.0"
+version = "1.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "babel" },
@@ -864,9 +864,9 @@ dependencies = [
     { name = "nokap" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/8b/eb/815148ae97a09bde651877260b609bf2d31bc3348bc3f9f5c518af269373/great_tables-1.0.0.tar.gz", hash = "sha256:d0d4a05f6cc15bd553c4654dc9e7a8b38288b1f7219444056bb68b698f0791c7", size = 27638269, upload-time = "2026-09-25T19:47:23.864Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/54/41/323c0ed560f95c948dbbe3a9dc0fc6056bf518e25dd3daa4367db0d6986d/great_tables-1.1.0.tar.gz", hash = "sha256:847ae518a21f982c19ba6d2b495932bef766241068eded0d6a788a364acdb07d", size = 27857749, upload-time = "2026-10-15T15:44:09.386Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/44/7a/f30cf6a8f046e97a0b7eb2c273d1ff63b0d40f118c50700e7876644d2303/great_tables-1.0.0-py3-none-any.whl", hash = "sha256:bbe12456b3c6f3c29da94aa6931973d03cee957d790ea4d9bcad679b5f3e9d94", size = 1638623, upload-time = "2026-09-25T19:47:22.015Z" },
+    { url = "https://files.pythonhosted.org/packages/48/4d/c58385ec1e841a833753c3b61840efa0f3e216b411cd713a52bb2a0b0823/great_tables-1.1.0-py3-none-any.whl", hash = "sha256:4e22cd6918d0bb6681d27fca19bb6a73e881b69165e35be303f45cb67824f595", size = 1683654, upload-time = "2026-10-15T15:44:07.483Z" },
 ]
 
 [[package]]
