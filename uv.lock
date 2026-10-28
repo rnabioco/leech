@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.12"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform != 'emscripten'",
@@ -664,14 +664,14 @@ wheels = [
 name = "escapepod"
 version = "0.33.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/38/a9/0b86c99ef423cab16277e26bbe5f44834bfd2d7986d52aa20600a419c2ab/escapepod-0.33.0.tar.gz", hash = "sha256:77512daf7a2e91583804a3fa49f4e2fa019a2c8ecca67489da62dcb5a52215e5", size = 1378952, upload-time = "2026-10-12T01:48:37.755858Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/38/a9/0b86c99ef423cab16277e26bbe5f44834bfd2d7986d52aa20600a419c2ab/escapepod-0.33.0.tar.gz", hash = "sha256:77512daf7a2e91583804a3fa49f4e2fa019a2c8ecca67489da62dcb5a52215e5", size = 1378952, upload-time = "2026-10-12T01:48:37.755Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e1/09/32de4f4e12e465ea78aba01144986148a991fbd366c52339cdfe7c3ba49e/escapepod-0.33.0-cp39-abi3-macosx_10_12_x86_64.whl", hash = "sha256:5c3a7bc829997ae0baffd4bdc324b59021a43223c0d53c2621ac7ef5cf3a749a", size = 2043933, upload-time = "2026-10-12T01:48:27.440209Z" },
-    { url = "https://files.pythonhosted.org/packages/83/b4/907d484f6984b1f2aef4fade1dfa2c9a33d6f58979a7430e02c3dc3d7269/escapepod-0.33.0-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:79dc86e091c2496e770af3ca4b3d25c43aea4064012557e8250893c3fb04e97c", size = 1786316, upload-time = "2026-10-12T01:48:29.354219Z" },
-    { url = "https://files.pythonhosted.org/packages/c7/cf/b6316692b127846b0413832c6f8a9838de175a01b1dddf76d57ae92337a6/escapepod-0.33.0-cp39-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:fe8f601c199abe7733caa5253667abedf16b58944a8cd105d05d5cb608171707", size = 1985429, upload-time = "2026-10-12T01:48:30.897111Z" },
-    { url = "https://files.pythonhosted.org/packages/6f/84/de734d38d91459da267e0a09da450a63e71c291d864e8765b206ac6f4851/escapepod-0.33.0-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:1d99904b28ad9a958c77c8b1125b52d9ed2b895f2a331e7fc3170aeb934d884d", size = 2220693, upload-time = "2026-10-12T01:48:32.433649Z" },
-    { url = "https://files.pythonhosted.org/packages/4c/51/c1ff3d16e57d14febe7750c483b0ee1eb56b371052a8ca5498995bfc9958/escapepod-0.33.0-cp39-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:6d75001a2db926a713def529775fafe1408339e005b58fc2dbafec801a49e074", size = 2194791, upload-time = "2026-10-12T01:48:34.134414Z" },
-    { url = "https://files.pythonhosted.org/packages/af/b1/fb492a84bf17187c38df01a98679bb8dd9545354ff1b162cb239e0f92bea/escapepod-0.33.0-cp39-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:2cc83c411c89f68a1be300015b27a625545e8517effbed1cb82f98c7b17d0b82", size = 2405953, upload-time = "2026-10-12T01:48:35.757211Z" },
+    { url = "https://files.pythonhosted.org/packages/e1/09/32de4f4e12e465ea78aba01144986148a991fbd366c52339cdfe7c3ba49e/escapepod-0.33.0-cp39-abi3-macosx_10_12_x86_64.whl", hash = "sha256:5c3a7bc829997ae0baffd4bdc324b59021a43223c0d53c2621ac7ef5cf3a749a", size = 2043933, upload-time = "2026-10-12T01:48:27.44Z" },
+    { url = "https://files.pythonhosted.org/packages/83/b4/907d484f6984b1f2aef4fade1dfa2c9a33d6f58979a7430e02c3dc3d7269/escapepod-0.33.0-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:79dc86e091c2496e770af3ca4b3d25c43aea4064012557e8250893c3fb04e97c", size = 1786316, upload-time = "2026-10-12T01:48:29.354Z" },
+    { url = "https://files.pythonhosted.org/packages/c7/cf/b6316692b127846b0413832c6f8a9838de175a01b1dddf76d57ae92337a6/escapepod-0.33.0-cp39-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:fe8f601c199abe7733caa5253667abedf16b58944a8cd105d05d5cb608171707", size = 1985429, upload-time = "2026-10-12T01:48:30.897Z" },
+    { url = "https://files.pythonhosted.org/packages/6f/84/de734d38d91459da267e0a09da450a63e71c291d864e8765b206ac6f4851/escapepod-0.33.0-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:1d99904b28ad9a958c77c8b1125b52d9ed2b895f2a331e7fc3170aeb934d884d", size = 2220693, upload-time = "2026-10-12T01:48:32.433Z" },
+    { url = "https://files.pythonhosted.org/packages/4c/51/c1ff3d16e57d14febe7750c483b0ee1eb56b371052a8ca5498995bfc9958/escapepod-0.33.0-cp39-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:6d75001a2db926a713def529775fafe1408339e005b58fc2dbafec801a49e074", size = 2194791, upload-time = "2026-10-12T01:48:34.134Z" },
+    { url = "https://files.pythonhosted.org/packages/af/b1/fb492a84bf17187c38df01a98679bb8dd9545354ff1b162cb239e0f92bea/escapepod-0.33.0-cp39-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:2cc83c411c89f68a1be300015b27a625545e8517effbed1cb82f98c7b17d0b82", size = 2405953, upload-time = "2026-10-12T01:48:35.757Z" },
 ]
 
 [[package]]
@@ -3121,16 +3121,16 @@ wheels = [
 
 [[package]]
 name = "snakefmt"
-version = "2.0.3"
+version = "2.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "black" },
     { name = "click" },
     { name = "shfmt-py" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/da/9b/c3dce69468a32d9b2dd9366c41c472b59ecafa28971761e8620466fb288f/snakefmt-2.0.3.tar.gz", hash = "sha256:1aecfed46d631eaae8179e4bedd09450c8c306d221cfd4b3594e35a8dccd0618", size = 167576, upload-time = "2026-06-26T02:39:00.701Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/13/d3/c414af23ff5377ee4203efb0a080c2954be232a121c8bb04b13ceaf46abe/snakefmt-2.1.0.tar.gz", hash = "sha256:6a6ce79ff5b0ee18888896cb1660eb888a41592dbc36dccfd2c4f2a161d6dd7f", size = 190061, upload-time = "2026-10-14T04:44:39.245Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/bc/47/7bdd7176fb76b17ce935092f004440c0de649af17f1a0d9c24ab61593a87/snakefmt-2.0.3-py3-none-any.whl", hash = "sha256:a8a88407f3226b2db31fb12ff787f0e9d9ca617ea77e86791967e24d3b65e381", size = 44206, upload-time = "2026-06-26T02:38:59.737Z" },
+    { url = "https://files.pythonhosted.org/packages/c3/5b/befabe163eb6b25b08f5e667c011f7489d70f4b6fe50c094de53e6a5c05c/snakefmt-2.1.0-py3-none-any.whl", hash = "sha256:0b40e563d21b09e6ea7224f260145b2f2061ace9ada2a4cbdf1deb8c8ce5592d", size = 49033, upload-time = "2026-10-14T04:44:37.976Z" },
 ]
 
 [[package]]
@@ -3943,7 +3943,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/20/b3/0e3f822ab105f503504a0149a9cce6da59fa9626e9c68243c66b02e51efb/zensical-0.0.71-cp311-abi3-macosx_10_12_x86_64.whl", hash = "sha256:57cad23c56a98d87a5eefa7948a98b6ecb479dc99fd7af312cd146555f55f060", size = 18136451, upload-time = "2026-10-16T14:19:12.764Z" },
     { url = "https://files.pythonhosted.org/packages/5a/75/71dbdc5106a4153b8daed4b0161965dce9e3333b9e27bd9cf4470dac07bf/zensical-0.0.71-cp311-abi3-macosx_11_0_arm64.whl", hash = "sha256:81c069cc667946e0a505cc01b99d5ba44883c57f51b95bd5a38003007c5cb6cd", size = 17670227, upload-time = "2026-10-16T14:19:15.679Z" },
     { url = "https://files.pythonhosted.org/packages/84/bd/86f0d0ae73ce27d72bb49575c2a91da9d686916cf06980b03b2b480ab688/zensical-0.0.71-cp311-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:bcae388415698cac874e662e667fc0683833cec747607c89037b7e9ad9828830", size = 18167627, upload-time = "2026-10-16T14:19:18.043Z" },
-    { url = "https://files.pythonhosted.org/packages/5d/31/ce1812644068b0080fa3be630a6d10411867af5557b0c7dda7d5d3ae7cc7/zensical-0.0.71-cp311-abi3-manylinux_2_17_armv7l.manylinux2014_armv7l.whl", hash = "sha256:0b34f58a7f565d956651baf90389aafca5c37a407a72768f30293e415589b932", size = 18108972, upload-time = "2026-10-16T14:19:20.88Z" },
     { url = "https://files.pythonhosted.org/packages/d2/f4/4f341c2dfd6fc7cf79c87287b835916570a4333e9dfef19374ba0ed8d842/zensical-0.0.71-cp311-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:fc8ed534717b61f285dc217f165f901f8b8a6142ef37cdd5544976cd99b5720c", size = 18651322, upload-time = "2026-10-16T14:19:23.773Z" },
     { url = "https://files.pythonhosted.org/packages/2e/12/4e3c0430d5646509967e82340df51d9d83c5a5fc232302fd094d938171d5/zensical-0.0.71-cp311-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:1e9e39aefdca4b3383b43014e117b27a1ca9f9ac4b25eefa9195099e5a566e2f", size = 18341323, upload-time = "2026-10-16T14:19:26.505Z" },
     { url = "https://files.pythonhosted.org/packages/61/14/797afbdbeaadd671c44cd3d9740d1f67ecda70a931133c155542a4d6b5cf/zensical-0.0.71-cp311-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:d22b8924e5145d94bf85b81bd2a8afaeb32e78c8a1ddeb7f4201fc8902547221", size = 18908964, upload-time = "2026-10-16T14:19:29.382Z" },
