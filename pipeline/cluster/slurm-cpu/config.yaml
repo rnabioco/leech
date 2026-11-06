@@ -90,9 +90,11 @@ set-resources:
     mem_mb: 8000
     cpus_per_task: 8
 
+  # Merge mem_mb: _merge_arrays_by_split preallocates the merged payload,
+  # measured at 41-43 GB on the production corpus (#289); 64000 leaves headroom.
   merge_chunks_pairwise:
     runtime: 60
-    mem_mb: 16000
+    mem_mb: 64000
     cpus_per_task: 4
 
   reprepare_chunks_optimized_pairwise:
@@ -102,7 +104,7 @@ set-resources:
 
   merge_chunks_optimized_pairwise:
     runtime: 60
-    mem_mb: 16000
+    mem_mb: 64000
     cpus_per_task: 4
 
   reprepare_chunks_optimized_architecture:
@@ -112,7 +114,7 @@ set-resources:
 
   merge_chunks_optimized_architecture:
     runtime: 60
-    mem_mb: 16000
+    mem_mb: 64000
     cpus_per_task: 4
 
   # Channel-ablation re-prepare/re-merge handoff (ablation.smk, opt-in) --
@@ -124,7 +126,7 @@ set-resources:
 
   ablation_merge_chunks:
     runtime: 60
-    mem_mb: 16000
+    mem_mb: 64000
     cpus_per_task: 4
 
   # ============================================================================

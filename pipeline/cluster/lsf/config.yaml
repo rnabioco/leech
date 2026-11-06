@@ -47,7 +47,8 @@ set-resources:
 
   - merge_chunks_charged:mem_mb=16
 
-  - merge_chunks_pairwise:mem_mb=16
+  # GB; merge peaks at 41-43 GB on the production corpus (#289)
+  - merge_chunks_pairwise:mem_mb=64
 
   # ============================================================================
   # Grid Search Rules (GPU)
