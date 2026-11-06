@@ -206,7 +206,7 @@ indent-style = "space"
 # Ignore PyTorch nn.Module attribute assignment false positives
 # PyTorch uses custom __setattr__ which ty doesn't understand
 unresolved-attribute = "ignore"
-unresolved-import = "ignore"
+import-not-found = "ignore"
 # Ignore false positives from PyTorch Dataset iteration and numpy arrays
 possibly-missing-attribute = "ignore"
 invalid-argument-type = "ignore"
