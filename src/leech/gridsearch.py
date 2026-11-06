@@ -12,6 +12,7 @@ import json
 import logging
 import multiprocessing
 import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -364,6 +365,31 @@ def run_grid_point(
     return result
 
 
+_WORKER_DEVICE: str | None = None
+
+
+def assign_worker_devices(device: str, n_workers: int) -> list[str]:
+    """Return one device string per pool worker.
+
+    ``"cuda"`` is spread round-robin over the visible GPUs; an explicit
+    ``cuda:K`` or ``cpu`` is passed through unchanged for every worker.
+    """
+    if device != "cuda":
+        return [device] * n_workers
+    import torch
+
+    n_gpus = torch.cuda.device_count()
+    if n_gpus < 1:
+        return [device] * n_workers
+    return [f"cuda:{i % n_gpus}" for i in range(n_workers)]
+
+
+def _init_grid_worker(device_queue) -> None:
+    """Pool initializer: claim this worker's fixed device."""
+    global _WORKER_DEVICE
+    _WORKER_DEVICE = device_queue.get()
+
+
 def _grid_point_worker(args: dict) -> dict:
     """Run a single grid point.
 
@@ -382,6 +408,8 @@ def _grid_point_worker(args: dict) -> dict:
     reaches both dispatchers, so a key present there can no longer go missing
     in just one of them.
     """
+    if _WORKER_DEVICE is not None:
+        args = {**args, "device": _WORKER_DEVICE}
     result = run_grid_point(**args)
     # Free CUDA memory between grid points to prevent accumulation
     if args.get("device", "cpu") != "cpu":
@@ -531,8 +559,36 @@ def run_grid_search(config: GridSearchConfig) -> Path:
         )
         # CUDA does not support fork; use spawn to avoid hangs with multiple GPU workers
         ctx = multiprocessing.get_context("spawn" if config.device != "cpu" else "fork")
-        with ctx.Pool(processes=config.n_parallel) as pool:
-            for i, result in enumerate(pool.imap_unordered(_grid_point_worker, grid_args), 1):
+        worker_devices = assign_worker_devices(config.device, config.n_parallel)
+        logger.info(
+            "Worker -> device mapping: "
+            + ", ".join(f"worker {i}: {d}" for i, d in enumerate(worker_devices))
+        )
+        device_queue = ctx.Queue()
+        for d in worker_devices:
+            device_queue.put(d)
+        # ProcessPoolExecutor workers are not daemonic, so a grid point may
+        # start DataLoader workers (and --gpus > 1).
+        with ProcessPoolExecutor(
+            max_workers=config.n_parallel,
+            mp_context=ctx,
+            initializer=_init_grid_worker,
+            initargs=(device_queue,),
+        ) as pool:
+            futures = {pool.submit(_grid_point_worker, a): a for a in grid_args}
+            for i, fut in enumerate(as_completed(futures), 1):
+                try:
+                    result = fut.result()
+                except Exception as e:
+                    a = futures[fut]
+                    logger.error(f"Grid point failed: {e}")
+                    result = {
+                        "left_context": a["left_context"],
+                        "right_context": a["right_context"],
+                        "dwell_offset": a["dwell_offset"],
+                        "status": "failed",
+                        "error": str(e),
+                    }
                 results.append(result)
                 logger.info(f"Completed grid point {i}/{len(grid_points)}")
                 save_grid_summary(results, summary_path)
