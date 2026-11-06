@@ -59,6 +59,20 @@ it. It is not advisory on either path.
 
 If you run into memory issues, reduce `--chunk-size` or `--workers`.
 
+### Where the spill goes
+
+While chunks are extracted they are spooled to temporary files, and the `.npz`
+is assembled from them at the end, so the corpus is written twice. By default
+the spill lives in `--output-dir`, which therefore needs room for the corpus
+twice over. `--spill-dir PATH` moves the spill elsewhere (created if missing);
+the final `.npz` still lands in `--output-dir`. Node-local `$TMPDIR` is a good
+choice when the node has room for the corpus: the spill is many small appends
+and does not need the shared filesystem. A single `prepare` process runs on one
+node, so `--workers` never splits the spill across nodes, but a `--spill-dir`
+on node-local disk is invisible to any other job. The spill files are
+anonymous temporary files and vanish on exit or crash. `prepare` logs the
+spill directory and its free space at start.
+
 ### Backends, and checking which one you got
 
 `prepare` runs on one of two interchangeable backends. If the optional

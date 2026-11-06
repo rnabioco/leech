@@ -543,6 +543,17 @@ corpus is written twice (spill, then `.npz`) — that disk cost is the trade, an
 both prepare paths log it at the start of a run. (`ChunkNpzWriter`, a thin
 one-shot wrapper around `ChunkSpool` used only by tests, was removed in #277.)
 
+**Where the spill lives (#444).** `--spill-dir PATH` (pipeline config
+`prepare_spill_dir`) sends the `ChunkSpool`'s temp files somewhere other than
+`--output-dir`; created if missing, default unchanged, and the final `.npz`
+still lands in `--output-dir`. Node-local `$TMPDIR` is an option when the node
+has room for the corpus. A single prepare process runs on one node, so
+`--workers` never spans nodes (documentation note only), but node-local disk is
+invisible to every other job. `handle_prepare` logs the directory and its free
+space; `_check_spill_space` raises when a corpus-size estimate is known to
+exceed it (none is known today, so it warns). The spill is
+`tempfile.TemporaryFile`-backed, so no new cleanup logic exists or is needed.
+
 **`None` is written as `""`, never as the string "None".** `chunk.get(field, "")`
 returns the default only when the key is *missing*; a key present with the value
 `None` — what `--label` gives when it is not passed, and what `load_chunks`

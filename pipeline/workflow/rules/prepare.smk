@@ -39,6 +39,7 @@ rule prepare_chunks:
         label_arg=lambda wildcards: build_label_arg(wildcards),
         signal_context_arg=build_signal_context_arg(),
         feature_channels_arg=build_feature_channels_arg(),
+        spill_dir_arg=build_spill_dir_arg(),
         slurm_extra="",  # No GPU needed for data preparation
     shell:
         """
@@ -54,6 +55,7 @@ rule prepare_chunks:
             {params.label_arg} \
             {params.signal_context_arg} \
             {params.feature_channels_arg} \
+            {params.spill_dir_arg} \
             --workers {params.workers} \
             --chunk-size {params.chunk_size} \
             --no-split \

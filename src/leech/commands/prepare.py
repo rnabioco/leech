@@ -44,6 +44,32 @@ def _load_focus_tsv(path: Path) -> dict[str, tuple[int, int]]:
     return mapping
 
 
+def _check_spill_space(spill_dir: Path, estimated_bytes: int | None = None) -> None:
+    """Log the spill directory and its free space; refuse if it cannot hold the corpus.
+
+    The spill needs the corpus once, and the final .npz needs it again in the
+    output directory. The corpus size is rarely knowable before extraction, so
+    without an estimate this only warns that it cannot check.
+    """
+    import shutil
+
+    free = shutil.disk_usage(spill_dir).free
+    logger.info(
+        f"Chunks are spooled to temporary files in {spill_dir} ({free / 2**30:.1f} GiB free) "
+        f"while they are extracted; the .npz is then written to the output directory, "
+        f"so that needs room for the corpus as well"
+    )
+    if estimated_bytes is None:
+        logger.warning(
+            f"Corpus size is not known up front; cannot check that {spill_dir} has room for it"
+        )
+    elif free < estimated_bytes:
+        raise RuntimeError(
+            f"Spill directory {spill_dir} has {free / 2**30:.1f} GiB free but the corpus is "
+            f"estimated at {estimated_bytes / 2**30:.1f} GiB; pass --spill-dir to a larger volume"
+        )
+
+
 def handle_prepare(
     pod5: Path,
     bam: Path,
@@ -82,6 +108,7 @@ def handle_prepare(
     recover_softclip_signal: bool = False,
     mask_seq_side: str | None = None,
     feature_channels: list[str] | None = None,
+    spill_dir: Path | None = None,
 ) -> dict[str, Any]:
     """
     Handle the prepare command logic.
@@ -90,6 +117,10 @@ def handle_prepare(
         pod5: Path to POD5 file with raw signal
         bam: Path to BAM file with alignments and mv tags
         output_dir: Output directory for training chunks
+        spill_dir: Directory for the ChunkSpool's temporary files (default:
+            ``output_dir``). Created if missing; the final .npz still lands in
+            ``output_dir``. Node-local ``$TMPDIR`` is a good choice when the
+            node has room for the corpus.
         motif: Sequence motif to extract (e.g., "CCAGGC")
         motif_offset: Offset within motif for focus base
         motif_reference: Where to search for motif ("fasta" or "bam")
@@ -338,11 +369,10 @@ def handle_prepare(
     # dicts — the corpus plus its stacked copy is what made `prepare` peak at
     # several times the size of the file it writes (#211).
     logger.info("Extracting chunks...")
-    logger.info(
-        f"Chunks are spooled to temporary files in {output_dir} while they are "
-        f"extracted; that directory needs room for the corpus twice over"
-    )
-    with ChunkSpool(output_dir, compressed=compress) as spool:
+    spool_dir = Path(spill_dir) if spill_dir is not None else output_dir
+    spool_dir.mkdir(parents=True, exist_ok=True)
+    _check_spill_space(spool_dir)
+    with ChunkSpool(spool_dir, compressed=compress) as spool:
         _chunks, stats = prepare_training_data_parallel(
             bam_path=bam,
             config=config,

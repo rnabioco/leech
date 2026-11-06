@@ -125,6 +125,7 @@ whenever the test corpus carries the field.
 | `--workers INT` | `8` | Parallel workers |
 | `--chunk-size INT` | `100` | Reads per batch |
 | `--min-mapq INT` | `0` | Minimum mapping quality |
+| `--spill-dir PATH` | `--output-dir` | Directory for the temporary spill files written during extraction (created if missing). The final `.npz` still lands in `--output-dir` |
 | `--seed INT` | *(none)* | Random seed |
 
 **Examples:**
