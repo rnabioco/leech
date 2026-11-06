@@ -348,6 +348,17 @@ def build_feature_channels_arg():
     return f"--feature-channels {channels}"
 
 
+def build_spill_dir_arg():
+    """Render `--spill-dir <path>` from config `prepare_spill_dir`, or "".
+
+    Unset renders nothing, so `leech data prepare` spills into its output
+    directory. Point it at node-local scratch (e.g. "$TMPDIR") when the
+    compute node has room for the corpus.
+    """
+    spill = config.get("prepare_spill_dir", None)
+    return f"--spill-dir {spill}" if spill else ""
+
+
 def get_grid_search_setting(key, default):
     """Read a key from the `grid_search:` config block, falling back to default."""
     grid = config.get("grid_search") or {}

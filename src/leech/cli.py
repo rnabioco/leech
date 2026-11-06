@@ -119,6 +119,17 @@ data.command_order = ("prepare", "merge")
     help="Output directory for training chunks",
 )
 @click.option(
+    "--spill-dir",
+    type=click.Path(path_type=Path),
+    default=None,
+    help=(
+        "Directory for the temporary spill files written while chunks are "
+        "extracted (default: --output-dir). Created if missing. Point it at "
+        "node-local $TMPDIR when the node has room for the corpus; the final "
+        ".npz still lands in --output-dir."
+    ),
+)
+@click.option(
     "--motif",
     type=str,
     default=None,
@@ -393,6 +404,7 @@ def prepare(
     pod5,
     bam,
     output_dir,
+    spill_dir,
     motif,
     motif_offset,
     motif_reference,
@@ -460,6 +472,7 @@ def prepare(
         pod5=pod5,
         bam=bam,
         output_dir=output_dir,
+        spill_dir=spill_dir,
         motif=motif,
         motif_offset=motif_offset,
         motif_reference=motif_reference,
