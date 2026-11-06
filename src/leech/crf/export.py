@@ -135,7 +135,11 @@ def export_crf_onnx(
     load_crf_state_dict(model, torch.load(checkpoint, map_location="cpu"))
     model.eval()
 
-    example = (torch.randn(1, 1, cfg.chunk),)
+    # Batch 2, not 1: torch.export specialises a size-1 example dimension, so
+    # under torch 2.15 a batch-1 example bakes N=1 into the graph's reshapes
+    # even though `dynamic_axes` declares the axis dynamic, and the export then
+    # fails at any other batch. The example's size is otherwise irrelevant.
+    example = (torch.randn(2, 1, cfg.chunk),)
     onnx_path = out_dir / "crf_encoder.onnx"
     export_onnx(
         model,
