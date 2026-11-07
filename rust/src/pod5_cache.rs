@@ -17,7 +17,7 @@
 //! a single-file `--pod5` still shares its `Arc<Reader>` with any other path
 //! that names the same file directly.
 //!
-//! **Always go through [`read_signals_by_ids`] or [`escapepod_signal::cached_dataset`];
+//! **Always go through [`read_signals_by_ids`] or [`escapepod_signal::pod5::cached_dataset`];
 //! never call `Reader::open` or `Dataset::open` directly.** There is
 //! deliberately no file/directory branch anywhere in this module — a
 //! single-file `Dataset` costs nothing over a bare `Reader`, so one code path
@@ -25,7 +25,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use escapepod_signal::cached_dataset;
+use escapepod_signal::pod5::cached_dataset;
 
 /// One read's signal plus the calibration needed to convert it to pA.
 pub(crate) struct BulkSignal {
@@ -44,9 +44,9 @@ pub(crate) struct BulkSignal {
 /// their signals.
 ///
 /// `pod5_path` is a single POD5 file, a directory of them, or (via
-/// [`escapepod_signal::cached_dataset`]'s single-root convenience form) a
+/// [`escapepod_signal::pod5::cached_dataset`]'s single-root convenience form) a
 /// mix — the same call handles all three, since every file a [`Dataset`]
-/// touches is opened through the *same* per-file [`escapepod_signal::cached_reader`]
+/// touches is opened through the *same* per-file [`escapepod_signal::pod5::cached_reader`]
 /// this module used before #384, which is the thing that must not be gotten
 /// wrong here: reopening a file per call throws away its read-id index and
 /// re-pays for it, the ~10-80x regression in issue #176.
@@ -60,14 +60,14 @@ pub(crate) struct BulkSignal {
 /// result; an unparseable read id is skipped rather than failing the batch,
 /// since a BAM can carry query names that are not POD5 UUIDs at all.
 ///
-/// [`Dataset`]: escapepod_signal::Dataset
+/// [`Dataset`]: escapepod_signal::pod5::Dataset
 pub(crate) fn read_signals_by_ids(
     pod5_path: &str,
     read_ids: &[String],
 ) -> Result<Vec<BulkSignal>, String> {
-    let target_uuids: HashSet<escapepod_signal::Uuid> = read_ids
+    let target_uuids: HashSet<escapepod_signal::pod5::Uuid> = read_ids
         .iter()
-        .filter_map(|s| escapepod_signal::Uuid::parse_str(s).ok())
+        .filter_map(|s| escapepod_signal::pod5::Uuid::parse_str(s).ok())
         .collect();
 
     let dataset = cached_dataset(pod5_path)
@@ -168,7 +168,7 @@ mod tests {
     use std::collections::HashMap;
     use std::path::Path;
 
-    use escapepod_signal::{EndReason, ReadData, RunInfoData, Uuid, Writer, WriterOptions};
+    use escapepod_signal::pod5::{EndReason, ReadData, RunInfoData, Uuid, Writer, WriterOptions};
     use tempfile::TempDir;
 
     use super::{read_signal_map_and_runs_by_ids, read_signal_map_by_ids, read_signals_by_ids};
