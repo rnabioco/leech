@@ -10,6 +10,22 @@ New entries are no longer added to this file by hand — see
 
 <!-- towncrier release notes start -->
 
+## [0.17.0] - 2026-11-07
+
+### Added
+
+- **`leech data prepare --spill-dir PATH`** puts the `ChunkSpool` temp files somewhere other than `--output-dir` (default unchanged; the final `.npz` still lands in `--output-dir`). The spill directory and its free space are logged at the start of a run, and the pipeline takes an optional `prepare_spill_dir` config key. (#451)
+
+### Changed
+
+- **Requires `escapepod>=0.34.0`**, with the Rust extension built against escapepod-signal v0.34.0 (which moved its POD5 types under `escapepod_signal::pod5`). (#454)
+
+### Fixed
+
+- **`run_grid_search --parallel N` now uses one GPU per worker.** Every worker used to get `device="cuda"`, so all N ran on `cuda:0`, and the daemonic pool forced zero DataLoader workers. `cuda` is now assigned round-robin over visible GPUs (explicit `cuda:K` / `cpu` pass through), workers are non-daemonic, and a grid point that raises is recorded as `status: failed` while the search continues. (#449)
+- **Cluster profile defaults fit the production corpus.** The SLURM `train_pairwise_aa` walltime goes from 60 to 480 minutes, and the merge rules' memory from 16 GB to 64 GB (LSF `merge_chunks_pairwise` likewise), matching measured use. (#450)
+
+
 ## [0.16.0] - 2026-10-16
 
 ### Added
