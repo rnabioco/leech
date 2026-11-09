@@ -684,7 +684,8 @@ def validate_inference_shapes(
         raise InferenceConfigError(
             f"Signal has {actual_channels} channel(s), but model expects "
             f"signal_in_channels={expected_channels}. "
-            f"This usually means signal_residual is missing (model trained with 2-channel input)."
+            f"Extraction must stack signal_residual only for a 2-channel model "
+            f"(got {actual_channels}, expected {expected_channels})."
         )
 
     expected_signal_len = config.get("signal_len")
@@ -1013,6 +1014,7 @@ def chunks_for_read(
     kmer_len: int,
     dwell_offset: int,
     wide_features: bool,
+    signal_in_channels: int = 1,
     dwell_templates: np.ndarray | None = None,
     template_min_pos: int = 0,
     dwell_row: int | None = None,
@@ -1055,7 +1057,7 @@ def chunks_for_read(
             if chunk is None:
                 continue
 
-            sig = prepare_signal_channels(chunk, signal_len)
+            sig = prepare_signal_channels(chunk, signal_len, signal_in_channels)
 
             seq_enc = _encode_sequence_for_inference(
                 chunk, seq_encoding, signal_len, signal_kmer_context
@@ -1094,7 +1096,7 @@ def chunks_for_read(
         if seq_ctx is None or seq_to_sig is None:
             continue
 
-        sig = prepare_signal_channels(chunk, signal_len)
+        sig = prepare_signal_channels(chunk, signal_len, signal_in_channels)
 
         feat = None
         if requires_features:
@@ -1318,14 +1320,24 @@ class BatchAccumulator:
             self.flush()
 
 
-def prepare_signal_channels(chunk: dict, signal_len: int) -> np.ndarray:
+def prepare_signal_channels(chunk: dict, signal_len: int, n_channels: int = 1) -> np.ndarray:
     """Pad/crop a chunk's signal to ``signal_len`` and stack the residual channel.
 
-    Returns ``(signal_len,)`` for a single-channel model, or
-    ``(2, signal_len)`` when the chunk carries a k-mer residual channel. Shared
-    by both Python extraction paths in ``single.py``; they had byte-identical
-    copies of this.
+    Returns ``(signal_len,)`` for a single-channel model (``n_channels == 1``),
+    or ``(2, signal_len)`` for a two-channel one. The residual is stacked
+    because the *model* asks for it, never merely because the chunk carries
+    one: a chunk carries a residual whenever features were computed, which a
+    1-channel model with a feature branch also needs (issue #456).
+
+    Raises:
+        InferenceConfigError: ``n_channels`` is not 1 or 2, or a 2-channel
+            model is given a chunk with no residual.
     """
+    if n_channels not in (1, 2):
+        raise InferenceConfigError(
+            f"Model declares signal_in_channels={n_channels}; only 1 (signal) or "
+            f"2 (signal + signal_residual) are supported."
+        )
     signal_array = chunk["signal"]
     sig = signal_array.astype(np.float32)
     sig_residual = chunk.get("signal_residual")
@@ -1342,10 +1354,15 @@ def prepare_signal_channels(chunk: dict, signal_len: int) -> np.ndarray:
         sig = sig[start : start + signal_len]
         if sig_residual is not None:
             sig_residual = sig_residual.astype(np.float32)[start : start + signal_len]
-    if sig_residual is not None:
-        sig_residual = sig_residual.astype(np.float32)
-        sig = np.stack([sig, sig_residual], axis=0)
-    return sig
+    if n_channels == 1:
+        return sig
+    if sig_residual is None:
+        raise InferenceConfigError(
+            "Model declares signal_in_channels=2 (signal + signal_residual) but the "
+            "chunk carries only 1 channel: no signal_residual was computed. Check that "
+            "signal-map refinement is enabled and a k-mer level table is available."
+        )
+    return np.stack([sig, sig_residual.astype(np.float32)], axis=0)
 
 
 # Per-thread pinned staging buffers for host->device batch copies.

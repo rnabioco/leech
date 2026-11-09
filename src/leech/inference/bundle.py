@@ -990,6 +990,7 @@ def run_bundle_inference(
                         kmer_len=kmer_len,
                         dwell_offset=dwell_offset,
                         wide_features=wide_features,
+                        signal_in_channels=bundle_signal_in_channels,
                         dwell_templates=dwell_templates_arr,
                         template_min_pos=dwell_template_min_pos,
                         dwell_row=dwell_row,
