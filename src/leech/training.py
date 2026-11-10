@@ -1482,6 +1482,7 @@ class Trainer:
                             )
                         if num_splits > 1:
                             loss = loss / num_splits
+                        assert self.scaler is not None  # created whenever mixed precision is on
                         self.scaler.scale(loss).backward()
                     else:
                         logits, labels, main_loss, loss, adv, cl_loss = self._compute_batch_loss(
@@ -1530,6 +1531,7 @@ class Trainer:
             needs_clip = self.clip_grad_fn is not None or self.max_grad_norm > 0
             if needs_clip:
                 if self.use_mixed_precision:
+                    assert self.scaler is not None
                     self.scaler.unscale_(self.optimizer)
                 if self.clip_grad_fn is not None:
                     self.clip_grad_fn(self.model.parameters())
@@ -1537,6 +1539,7 @@ class Trainer:
                     torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
 
             if self.use_mixed_precision:
+                assert self.scaler is not None
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
             else:
