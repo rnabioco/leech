@@ -547,6 +547,7 @@ class _TensorFill:
         self._items.extend(batch[i].clone() for i in range(int(batch.shape[0])))
 
     def _start_list(self, shape: tuple[int, ...]) -> None:
+        assert self._tensor is not None  # only reached once a tensor exists
         logger.warning(
             "%s shapes differ (%s vs %s), falling back to list access",
             self.name,
@@ -1331,6 +1332,7 @@ class LeechDataset(Dataset):
                     padded_seq_ints[i, : si.shape[0]] = si
                 self._seq_ints_tensor = torch.from_numpy(padded_seq_ints)
                 self._seq_ints = []
+            assert self._seq_ints_tensor is not None  # set by one of the two fills above
             n = int(self._seq_ints_tensor.shape[0])
 
             if self._s2s_csr is not None:

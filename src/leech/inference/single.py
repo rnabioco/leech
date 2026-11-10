@@ -186,7 +186,7 @@ def _inference_worker(
                 # Features
                 feat = None
                 if config.requires_features:
-                    feat_arr = chunk["features"]
+                    feat_arr = np.asarray(chunk["features"])
                     if feat_arr.size > 0:
                         feat = prepare_inference_features(
                             feat_arr.astype(np.float32),
@@ -479,6 +479,8 @@ def run_inference(
         )
 
     # Create output writer (BAM or TSV)
+    if output_path is None:
+        raise ValueError("run_inference requires output_path")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     tsv_writer = None
     bam_out = None
@@ -886,6 +888,7 @@ def run_inference(
 
             try:
                 move_table = extract_move_table(aln)
+                assert pod5_reader is not None  # Python extraction opens the reader
                 raw_signal, pod5_metadata = pod5_reader.get_signal(read_id)
 
                 ref_seq = None
@@ -1330,6 +1333,7 @@ def run_inference(
                                 if aln.query_name is not None and aln.query_sequence is not None
                             ]
                             if batch_read_ids:
+                                assert pod5_reader is not None  # Python extraction path
                                 pod5_reader.preload(batch_read_ids)
 
                             logger.info(

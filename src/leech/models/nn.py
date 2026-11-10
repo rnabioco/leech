@@ -45,8 +45,8 @@ layers: dict[str, type] = {}
 
 def register[LayerT: type](layer: LayerT) -> LayerT:
     """Register a layer class under its lower-cased class name."""
-    layer.name = layer.__name__.lower()  # ty: ignore[unresolved-attribute]
-    layers[layer.name] = layer  # ty: ignore[unresolved-attribute]
+    layer.name = layer.__name__.lower()  # ty: ignore[missing-attribute]
+    layers[layer.name] = layer  # ty: ignore[missing-attribute]
     return layer
 
 

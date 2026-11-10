@@ -158,6 +158,8 @@ def build_leech_read(
     # Kmer residual features and signal-level residual
     sig_residual = None
     if signal_config.compute_features and expected_levels is not None:
+        # expected_levels is only set from a refiner carrying a level table.
+        assert signal_config.signal_refiner is not None
         # `center_idx` matters here, not just in refinement: it decides which
         # base of each k-mer window the expected level is attributed to, so
         # leaving it at extract_levels' default while the refiner used its own

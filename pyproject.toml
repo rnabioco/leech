@@ -205,12 +205,12 @@ indent-style = "space"
 [tool.ty.rules]
 # Ignore PyTorch nn.Module attribute assignment false positives
 # PyTorch uses custom __setattr__ which ty doesn't understand
-unresolved-attribute = "ignore"
+missing-attribute = "ignore"
 import-not-found = "ignore"
 # Ignore false positives from PyTorch Dataset iteration and numpy arrays
 possibly-missing-attribute = "ignore"
 invalid-argument-type = "ignore"
-invalid-method-override = "ignore"
+incompatible-method-override = "ignore"
 not-subscriptable = "ignore"
 no-matching-overload = "ignore"
 # Union function call narrowing false positives (signal_refine.py core_func dispatch)
