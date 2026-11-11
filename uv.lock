@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.12"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform != 'emscripten'",
@@ -57,7 +57,7 @@ name = "autopep8"
 version = "2.3.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pycodestyle", marker = "sys_platform != 'emscripten'" },
+    { name = "pycodestyle" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/50/d8/30873d2b7b57dee9263e53d142da044c4600a46f2d28374b3e38b023df16/autopep8-2.3.2.tar.gz", hash = "sha256:89440a4f969197b69a995e4ce0661b031f455a9f776d2c5ba3dbd83466931758", size = 92210, upload-time = "2025-01-14T14:46:18.454Z" }
 wheels = [
@@ -78,12 +78,12 @@ name = "black"
 version = "26.10.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "click", marker = "sys_platform != 'emscripten'" },
-    { name = "mypy-extensions", marker = "sys_platform != 'emscripten'" },
-    { name = "packaging", marker = "sys_platform != 'emscripten'" },
-    { name = "pathspec", marker = "sys_platform != 'emscripten'" },
-    { name = "platformdirs", marker = "sys_platform != 'emscripten'" },
-    { name = "pytokens", marker = "sys_platform != 'emscripten'" },
+    { name = "click" },
+    { name = "mypy-extensions" },
+    { name = "packaging" },
+    { name = "pathspec" },
+    { name = "platformdirs" },
+    { name = "pytokens" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/f8/65/a9611a6ec0a8c88d86e59385da02d68d9533f7e86a05913d20c67be54029/black-26.10.1.tar.gz", hash = "sha256:5f9f83beae62437e060dafd53d7f1fc327e3d3494f74d72ee5c2b73eb90fc4e7", size = 741979, upload-time = "2026-10-10T04:13:40.776Z" }
 wheels = [
@@ -119,7 +119,7 @@ name = "cffi"
 version = "2.1.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pycparser", marker = "implementation_name != 'PyPy' and sys_platform != 'emscripten'" },
+    { name = "pycparser", marker = "implementation_name != 'PyPy'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/9e/ef/008a1939e372c06329a3fce4279c02f328488f3526744906eeec3da7ad5f/cffi-2.1.1.tar.gz", hash = "sha256:dd31f52ea1086513bb9df30f8fcee9b8918323ae067a3d5b78bc826a000712be", size = 530807, upload-time = "2026-08-03T21:21:18.939Z" }
 wheels = [
@@ -362,7 +362,7 @@ name = "conda-inject"
 version = "1.3.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pyyaml", marker = "sys_platform != 'emscripten'" },
+    { name = "pyyaml" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/b1/a8/8dc86113c65c949cc72d651461d6e4c544b3302a85ed14a5298829e6a419/conda_inject-1.3.2.tar.gz", hash = "sha256:0b8cde8c47998c118d8ff285a04977a3abcf734caf579c520fca469df1cd0aac", size = 3635, upload-time = "2024-05-27T12:20:58.873Z" }
 wheels = [
@@ -389,7 +389,7 @@ name = "contourpy"
 version = "1.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", marker = "sys_platform != 'emscripten'" },
+    { name = "numpy" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/83/5a/a55177dd22553a277388e8a1b3220e92de91bacb28356cdc73caa240121d/contourpy-1.4.0.tar.gz", hash = "sha256:20156f5a1ac4f8ce02656e39a61e82164a3d359796dc8026f75b062783d500e1", size = 13323726, upload-time = "2026-09-11T19:05:05.808Z" }
 wheels = [
@@ -580,7 +580,7 @@ name = "cuda-bindings"
 version = "13.5.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cuda-pathfinder", marker = "sys_platform != 'emscripten'" },
+    { name = "cuda-pathfinder" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b9/a6/13d14600381bdbfe55dfc35564e4bf4a208f169ee9f6cbeb356564268aff/cuda_bindings-13.5.0-cp312-cp312-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:40eadfad6ae1554f8c1aa456620a85a49a275fc902f2c6dd93ee8c488b2c5e9f", size = 7354398, upload-time = "2026-11-05T12:06:03.542Z" },
@@ -615,40 +615,40 @@ wheels = [
 
 [package.optional-dependencies]
 cublas = [
-    { name = "nvidia-cublas", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
-    { name = "nvidia-cuda-nvrtc", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
+    { name = "nvidia-cublas", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
+    { name = "nvidia-cuda-nvrtc", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
 ]
 cudart = [
-    { name = "nvidia-cuda-runtime", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
+    { name = "nvidia-cuda-runtime", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
 ]
 cufft = [
-    { name = "nvidia-cufft", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
-    { name = "nvidia-nvjitlink", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
+    { name = "nvidia-cufft", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
+    { name = "nvidia-nvjitlink", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
 ]
 cufile = [
-    { name = "nvidia-cufile", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "nvidia-cufile", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
 ]
 cupti = [
-    { name = "nvidia-cuda-cupti", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
+    { name = "nvidia-cuda-cupti", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
 ]
 cusolver = [
-    { name = "nvidia-cublas", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
-    { name = "nvidia-cusolver", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
-    { name = "nvidia-cusparse", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
-    { name = "nvidia-nvjitlink", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
+    { name = "nvidia-cublas", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
+    { name = "nvidia-cusolver", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
+    { name = "nvidia-cusparse", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
+    { name = "nvidia-nvjitlink", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
 ]
 cusparse = [
-    { name = "nvidia-cusparse", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
-    { name = "nvidia-nvjitlink", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
+    { name = "nvidia-cusparse", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
+    { name = "nvidia-nvjitlink", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
 ]
 nvjitlink = [
-    { name = "nvidia-nvjitlink", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
+    { name = "nvidia-nvjitlink", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
 ]
 nvrtc = [
-    { name = "nvidia-cuda-nvrtc", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
+    { name = "nvidia-cuda-nvrtc", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
 ]
 nvtx = [
-    { name = "nvidia-nvtx", marker = "(platform_machine == 'aarch64' and sys_platform == 'linux') or (platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine == 'AMD64' and sys_platform == 'win32')" },
+    { name = "nvidia-nvtx", marker = "platform_machine == 'aarch64' or platform_machine == 'x86_64'" },
 ]
 
 [[package]]
@@ -715,7 +715,7 @@ name = "faicons"
 version = "0.2.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "htmltools", marker = "sys_platform != 'emscripten'" },
+    { name = "htmltools" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/06/e8/c12ef85c4444616ab1c1e96d5ecbadc8046d40b34797308846a2cfc06c80/faicons-0.2.2.tar.gz", hash = "sha256:6b7d7b19180179b6b83783f91bf6c9311c0f00ae0f97d41be1d24d9942361659", size = 604434, upload-time = "2024-01-16T23:27:21.634Z" }
 wheels = [
@@ -816,13 +816,13 @@ name = "formulaic"
 version = "1.2.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "interface-meta", marker = "sys_platform != 'emscripten'" },
-    { name = "narwhals", marker = "sys_platform != 'emscripten'" },
-    { name = "numpy", marker = "sys_platform != 'emscripten'" },
-    { name = "pandas", marker = "sys_platform != 'emscripten'" },
-    { name = "scipy", marker = "sys_platform != 'emscripten'" },
-    { name = "typing-extensions", marker = "sys_platform != 'emscripten'" },
-    { name = "wrapt", marker = "sys_platform != 'emscripten'" },
+    { name = "interface-meta" },
+    { name = "narwhals" },
+    { name = "numpy" },
+    { name = "pandas" },
+    { name = "scipy" },
+    { name = "typing-extensions" },
+    { name = "wrapt" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/f1/87/e7b9b39d218793f159d7425e264c0ac196da07f1decc333001502fac02fb/formulaic-1.2.2.tar.gz", hash = "sha256:c99e8f11ff7d327eaecaf63855ca69b7fa0da100ad6c0041ef80912fbac667e6", size = 657522, upload-time = "2026-06-02T18:24:42.632Z" }
 wheels = [
@@ -843,7 +843,7 @@ name = "ghp-import"
 version = "2.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "python-dateutil", marker = "sys_platform != 'emscripten'" },
+    { name = "python-dateutil" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/d9/29/d40217cbe2f6b1359e00c6c307bb3fc876ba74068cbab3dde77f03ca0dc4/ghp-import-2.1.0.tar.gz", hash = "sha256:9c535c4c61193c2df8871222567d7fd7e5014d835f97dc7b7439069e2413d343", size = 10943, upload-time = "2022-05-02T15:47:16.11Z" }
 wheels = [
@@ -855,7 +855,7 @@ name = "gitdb"
 version = "4.0.12"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "smmap", marker = "sys_platform != 'emscripten'" },
+    { name = "smmap" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/72/94/63b0fc47eb32792c7ba1fe1b694daec9a63620db1e313033d18140c2320a/gitdb-4.0.12.tar.gz", hash = "sha256:5ef71f855d191a3326fcfbc0d5da835f26b13fbcba60c32c21091c349ffdb571", size = 394684, upload-time = "2025-01-02T07:20:46.413Z" }
 wheels = [
@@ -867,7 +867,7 @@ name = "gitpython"
 version = "3.2.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "gitdb", marker = "sys_platform != 'emscripten'" },
+    { name = "gitdb" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/c0/ff/fee293f1ec3e1b64db6eb270e00964f29c086d769201474cedb8d1608930/gitpython-3.2.1.tar.gz", hash = "sha256:0f1229ec5c057bdabdeeda8bda4f17bda679ab33dbccc00f24e6a480553c8613", size = 241688, upload-time = "2026-10-14T12:20:20.589Z" }
 wheels = [
@@ -879,14 +879,14 @@ name = "great-tables"
 version = "1.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "babel", marker = "sys_platform != 'emscripten'" },
-    { name = "faicons", marker = "sys_platform != 'emscripten'" },
-    { name = "htmltools", marker = "sys_platform != 'emscripten'" },
-    { name = "importlib-metadata", marker = "sys_platform != 'emscripten'" },
-    { name = "importlib-resources", marker = "sys_platform != 'emscripten'" },
-    { name = "multimark", marker = "sys_platform != 'emscripten'" },
-    { name = "nokap", marker = "sys_platform != 'emscripten'" },
-    { name = "typing-extensions", marker = "sys_platform != 'emscripten'" },
+    { name = "babel" },
+    { name = "faicons" },
+    { name = "htmltools" },
+    { name = "importlib-metadata" },
+    { name = "importlib-resources" },
+    { name = "multimark" },
+    { name = "nokap" },
+    { name = "typing-extensions" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/54/41/323c0ed560f95c948dbbe3a9dc0fc6056bf518e25dd3daa4367db0d6986d/great_tables-1.1.0.tar.gz", hash = "sha256:847ae518a21f982c19ba6d2b495932bef766241068eded0d6a788a364acdb07d", size = 27857749, upload-time = "2026-10-15T15:44:09.386Z" }
 wheels = [
@@ -962,8 +962,8 @@ name = "htmltools"
 version = "0.7.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "packaging", marker = "sys_platform != 'emscripten'" },
-    { name = "typing-extensions", marker = "sys_platform != 'emscripten'" },
+    { name = "packaging" },
+    { name = "typing-extensions" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/a4/54/e1a0ea0b8db8460fdedf584b4136a5b9e7f9d7072ee008f825f29b103660/htmltools-0.7.0.tar.gz", hash = "sha256:b95f922b7038f1b935ce24691ae74cb1ab9526d9c9cf1c2e2f329c38ef227a10", size = 105807, upload-time = "2026-05-21T15:02:33.357Z" }
 wheels = [
@@ -1020,7 +1020,7 @@ name = "importlib-metadata"
 version = "10.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "zipp", marker = "sys_platform != 'emscripten'" },
+    { name = "zipp" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/98/f6/4eda8458eb00ec03e715c376c6b23b3def69687924c68d36d1c4003d3bc4/importlib_metadata-10.1.0.tar.gz", hash = "sha256:82b04047fa09792c1a8cfeddfe08bec79e4b13c29c8469b0d3949860f61017e8", size = 67761, upload-time = "2026-10-24T00:01:44.856Z" }
 wheels = [
@@ -1060,15 +1060,15 @@ version = "9.18.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "colorama", marker = "sys_platform == 'win32'" },
-    { name = "ipython-pygments-lexers", marker = "sys_platform != 'emscripten'" },
-    { name = "jedi", marker = "sys_platform != 'emscripten'" },
-    { name = "matplotlib-inline", marker = "sys_platform != 'emscripten'" },
-    { name = "pexpect", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
-    { name = "prompt-toolkit", marker = "sys_platform != 'emscripten'" },
-    { name = "psutil", marker = "sys_platform != 'android' and sys_platform != 'cygwin' and sys_platform != 'emscripten'" },
-    { name = "pygments", marker = "sys_platform != 'emscripten'" },
-    { name = "stack-data", marker = "sys_platform != 'emscripten'" },
-    { name = "traitlets", marker = "sys_platform != 'emscripten'" },
+    { name = "ipython-pygments-lexers" },
+    { name = "jedi" },
+    { name = "matplotlib-inline" },
+    { name = "pexpect", marker = "sys_platform != 'win32'" },
+    { name = "prompt-toolkit" },
+    { name = "psutil", marker = "sys_platform != 'android' and sys_platform != 'cygwin'" },
+    { name = "pygments" },
+    { name = "stack-data" },
+    { name = "traitlets" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/38/04/0d945c72d5b77527273ecb4c66aa2436de7a3b3bbe3da345bf053232b886/ipython-9.18.1.tar.gz", hash = "sha256:6319c0f5372c196397899479e6db1783dd7937abae06815d1317e8d5d51aaaaf", size = 4437314, upload-time = "2026-11-02T09:19:55.55Z" }
 wheels = [
@@ -1080,7 +1080,7 @@ name = "ipython-pygments-lexers"
 version = "1.1.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pygments", marker = "sys_platform != 'emscripten'" },
+    { name = "pygments" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/ef/4c/5dd1d8af08107f88c7f741ead7a40854b8ac24ddf9ae850afbcf698aa552/ipython_pygments_lexers-1.1.1.tar.gz", hash = "sha256:09c0138009e56b6854f9535736f4171d855c8c08a563a0dcd8022f78355c7e81", size = 8393, upload-time = "2025-01-17T11:24:34.505Z" }
 wheels = [
@@ -1092,7 +1092,7 @@ name = "jedi"
 version = "0.20.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "parso", marker = "sys_platform != 'emscripten'" },
+    { name = "parso" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/a3/a4/4692ecd7fa700ac1066b1c1f6cadef60aa2e01e5e364710235137d823e0a/jedi-0.20.1.tar.gz", hash = "sha256:2f71208c3f9c1bca057c0e90d3f272aba44ace88fc4067d7587e9e069331b7e5", size = 3121738, upload-time = "2026-10-12T17:42:24.361Z" }
 wheels = [
@@ -1104,7 +1104,7 @@ name = "jinja2"
 version = "3.1.6"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "markupsafe", marker = "sys_platform != 'emscripten'" },
+    { name = "markupsafe" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/df/bf/f7da0350254c0ed7c72f3e33cef02e048281fec7ecec5f032d4aac52226b/jinja2-3.1.6.tar.gz", hash = "sha256:0137fb05990d35f1275a587e9aee6d56da821fc83491a0fb838183be43f66d6d", size = 245115, upload-time = "2025-03-05T20:05:02.478Z" }
 wheels = [
@@ -1116,7 +1116,7 @@ name = "joblib"
 version = "1.6.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cloudpickle", marker = "sys_platform != 'emscripten'" },
+    { name = "cloudpickle" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/d5/1d/537ab090f302b838943a1b56497dd53059b9a9b46a074936470173a2e207/joblib-1.6.0.tar.gz", hash = "sha256:2ccc96785b12046c08fd6d55839c12857831b54a3c1673ffadd2f04bfc4eda03", size = 327903, upload-time = "2026-08-31T09:39:04.122Z" }
 wheels = [
@@ -1128,10 +1128,10 @@ name = "jsonschema"
 version = "4.26.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "attrs", marker = "sys_platform != 'emscripten'" },
-    { name = "jsonschema-specifications", marker = "sys_platform != 'emscripten'" },
-    { name = "referencing", marker = "sys_platform != 'emscripten'" },
-    { name = "rpds-py", marker = "sys_platform != 'emscripten'" },
+    { name = "attrs" },
+    { name = "jsonschema-specifications" },
+    { name = "referencing" },
+    { name = "rpds-py" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/b3/fc/e067678238fa451312d4c62bf6e6cf5ec56375422aee02f9cb5f909b3047/jsonschema-4.26.0.tar.gz", hash = "sha256:0c26707e2efad8aa1bfc5b7ce170f3fccc2e4918ff85989ba9ffa9facb2be326", size = 366583, upload-time = "2026-01-07T13:41:07.246Z" }
 wheels = [
@@ -1143,7 +1143,7 @@ name = "jsonschema-specifications"
 version = "2025.9.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "referencing", marker = "sys_platform != 'emscripten'" },
+    { name = "referencing" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/19/74/a633ee74eb36c44aa6d1095e7cc5569bebf04342ee146178e2d36600708b/jsonschema_specifications-2025.9.1.tar.gz", hash = "sha256:b540987f239e745613c7a9176f3edb72b832a4ac465cf02712288397832b5e8d", size = 32855, upload-time = "2025-09-08T01:34:59.186Z" }
 wheels = [
@@ -1155,8 +1155,8 @@ name = "jupyter-core"
 version = "5.9.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "platformdirs", marker = "sys_platform != 'emscripten'" },
-    { name = "traitlets", marker = "sys_platform != 'emscripten'" },
+    { name = "platformdirs" },
+    { name = "traitlets" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/02/49/9d1284d0dc65e2c757b74c6687b6d319b02f822ad039e5c512df9194d9dd/jupyter_core-5.9.1.tar.gz", hash = "sha256:4d09aaff303b9566c3ce657f580bd089ff5c91f5f89cf7d8846c3cdf465b5508", size = 89814, upload-time = "2025-10-16T19:19:18.444Z" }
 wheels = [
@@ -1278,68 +1278,68 @@ name = "leech"
 version = "0.17.0"
 source = { editable = "." }
 dependencies = [
-    { name = "click", marker = "sys_platform != 'emscripten'" },
-    { name = "escapepod", marker = "sys_platform != 'emscripten'" },
-    { name = "numpy", marker = "sys_platform != 'emscripten'" },
-    { name = "polars", marker = "sys_platform != 'emscripten'" },
-    { name = "pysam", marker = "sys_platform != 'emscripten'" },
-    { name = "pyyaml", marker = "sys_platform != 'emscripten'" },
-    { name = "rich", marker = "sys_platform != 'emscripten'" },
-    { name = "rich-click", marker = "sys_platform != 'emscripten'" },
-    { name = "scikit-learn", marker = "sys_platform != 'emscripten'" },
-    { name = "torch", marker = "sys_platform != 'emscripten'" },
+    { name = "click" },
+    { name = "escapepod" },
+    { name = "numpy" },
+    { name = "polars" },
+    { name = "pysam" },
+    { name = "pyyaml" },
+    { name = "rich" },
+    { name = "rich-click" },
+    { name = "scikit-learn" },
+    { name = "torch" },
 ]
 
 [package.optional-dependencies]
 dev = [
-    { name = "nbqa", marker = "sys_platform != 'emscripten'" },
-    { name = "onnx", marker = "sys_platform != 'emscripten'" },
-    { name = "onnxruntime", marker = "sys_platform != 'emscripten'" },
-    { name = "onnxscript", marker = "sys_platform != 'emscripten'" },
-    { name = "pytest", marker = "sys_platform != 'emscripten'" },
-    { name = "pytest-cov", marker = "sys_platform != 'emscripten'" },
-    { name = "pytest-timeout", marker = "sys_platform != 'emscripten'" },
-    { name = "pytest-xdist", marker = "sys_platform != 'emscripten'" },
-    { name = "ruff", marker = "sys_platform != 'emscripten'" },
-    { name = "towncrier", marker = "sys_platform != 'emscripten'" },
-    { name = "ty", marker = "sys_platform != 'emscripten'" },
-    { name = "vulture", marker = "sys_platform != 'emscripten'" },
+    { name = "nbqa" },
+    { name = "onnx" },
+    { name = "onnxruntime" },
+    { name = "onnxscript" },
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "pytest-timeout" },
+    { name = "pytest-xdist" },
+    { name = "ruff" },
+    { name = "towncrier" },
+    { name = "ty" },
+    { name = "vulture" },
 ]
 notebook = [
-    { name = "great-tables", marker = "sys_platform != 'emscripten'" },
-    { name = "plotnine", marker = "sys_platform != 'emscripten'" },
-    { name = "statsmodels", marker = "sys_platform != 'emscripten'" },
-    { name = "tabulate", marker = "sys_platform != 'emscripten'" },
+    { name = "great-tables" },
+    { name = "plotnine" },
+    { name = "statsmodels" },
+    { name = "tabulate" },
 ]
 onnx = [
-    { name = "onnx", marker = "sys_platform != 'emscripten'" },
-    { name = "onnxruntime", marker = "sys_platform != 'emscripten'" },
-    { name = "onnxscript", marker = "sys_platform != 'emscripten'" },
+    { name = "onnx" },
+    { name = "onnxruntime" },
+    { name = "onnxscript" },
 ]
 pipeline = [
-    { name = "snakefmt", marker = "sys_platform != 'emscripten'" },
-    { name = "snakemake", marker = "sys_platform != 'emscripten'" },
-    { name = "snakemake-executor-plugin-lsf", marker = "sys_platform != 'emscripten'" },
-    { name = "snakemake-executor-plugin-slurm", marker = "sys_platform != 'emscripten'" },
+    { name = "snakefmt" },
+    { name = "snakemake" },
+    { name = "snakemake-executor-plugin-lsf" },
+    { name = "snakemake-executor-plugin-slurm" },
 ]
 rust = [
-    { name = "leech-core", marker = "sys_platform != 'emscripten'" },
+    { name = "leech-core" },
 ]
 test = [
-    { name = "pytest", marker = "sys_platform != 'emscripten'" },
-    { name = "pytest-cov", marker = "sys_platform != 'emscripten'" },
-    { name = "pytest-timeout", marker = "sys_platform != 'emscripten'" },
-    { name = "pytest-xdist", marker = "sys_platform != 'emscripten'" },
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "pytest-timeout" },
+    { name = "pytest-xdist" },
 ]
 
 [package.dev-dependencies]
 dev = [
-    { name = "maturin", marker = "sys_platform != 'emscripten'" },
+    { name = "maturin" },
 ]
 docs = [
-    { name = "matplotlib", marker = "sys_platform != 'emscripten'" },
-    { name = "mkdocstrings", extra = ["python"], marker = "sys_platform != 'emscripten'" },
-    { name = "zensical", marker = "sys_platform != 'emscripten'" },
+    { name = "matplotlib" },
+    { name = "mkdocstrings", extra = ["python"] },
+    { name = "zensical" },
 ]
 
 [package.metadata]
@@ -1406,7 +1406,7 @@ name = "markdown-it-py"
 version = "4.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "mdurl", marker = "sys_platform != 'emscripten'" },
+    { name = "mdurl" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/06/ff/7841249c247aa650a76b9ee4bbaeae59370dc8bfd2f6c01f3630c35eb134/markdown_it_py-4.2.0.tar.gz", hash = "sha256:04a21681d6fbb623de53f6f364d352309d4094dd4194040a10fd51833e418d49", size = 82454, upload-time = "2026-05-07T12:08:28.36Z" }
 wheels = [
@@ -1531,15 +1531,15 @@ name = "matplotlib"
 version = "3.11.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "contourpy", marker = "sys_platform != 'emscripten'" },
-    { name = "cycler", marker = "sys_platform != 'emscripten'" },
-    { name = "fonttools", marker = "sys_platform != 'emscripten'" },
-    { name = "kiwisolver", marker = "sys_platform != 'emscripten'" },
-    { name = "numpy", marker = "sys_platform != 'emscripten'" },
-    { name = "packaging", marker = "sys_platform != 'emscripten'" },
-    { name = "pillow", marker = "sys_platform != 'emscripten'" },
-    { name = "pyparsing", marker = "sys_platform != 'emscripten'" },
-    { name = "python-dateutil", marker = "sys_platform != 'emscripten'" },
+    { name = "contourpy" },
+    { name = "cycler" },
+    { name = "fonttools" },
+    { name = "kiwisolver" },
+    { name = "numpy" },
+    { name = "packaging" },
+    { name = "pillow" },
+    { name = "pyparsing" },
+    { name = "python-dateutil" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/e7/c8/9aa712a0afb882649424dd8de8ad9aa6235e796e84c6052e8f6dc1598d0d/matplotlib-3.11.2.tar.gz", hash = "sha256:cec596316640f2b394b8f0daa0ea61a8eae82d017b620b9f202befb972a59ea4", size = 32660610, upload-time = "2026-09-11T19:05:31.214Z" }
 wheels = [
@@ -1592,7 +1592,7 @@ name = "matplotlib-inline"
 version = "0.2.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "traitlets", marker = "sys_platform != 'emscripten'" },
+    { name = "traitlets" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/bd/c0/9f7c9a46090390368a4d7bcb76bb87a4a36c421e4c0792cdb53486ffac7a/matplotlib_inline-0.2.2.tar.gz", hash = "sha256:72f3fe8fce36b70d4a5b612f899090cd0401deddc4ea90e1572b9f4bfb058c79", size = 8150, upload-time = "2026-05-08T17:33:33.49Z" }
 wheels = [
@@ -1643,9 +1643,9 @@ name = "mizani"
 version = "0.14.6"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", marker = "sys_platform != 'emscripten'" },
-    { name = "pandas", marker = "sys_platform != 'emscripten'" },
-    { name = "scipy", marker = "sys_platform != 'emscripten'" },
+    { name = "numpy" },
+    { name = "pandas" },
+    { name = "scipy" },
     { name = "tzdata", marker = "sys_platform == 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/df/74/e03c87e8884a486909f9f254a9d0d6b34395a7379e6bf2331bbc8453b1d4/mizani-0.14.6.tar.gz", hash = "sha256:5b37ec00adb30420f18272844688b91137297068c707f18d6fd32673aed58a23", size = 774581, upload-time = "2026-09-07T16:14:38.634Z" }
@@ -1658,19 +1658,19 @@ name = "mkdocs"
 version = "1.6.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "click", marker = "sys_platform != 'emscripten'" },
+    { name = "click" },
     { name = "colorama", marker = "sys_platform == 'win32'" },
-    { name = "ghp-import", marker = "sys_platform != 'emscripten'" },
-    { name = "jinja2", marker = "sys_platform != 'emscripten'" },
-    { name = "markdown", marker = "sys_platform != 'emscripten'" },
-    { name = "markupsafe", marker = "sys_platform != 'emscripten'" },
-    { name = "mergedeep", marker = "sys_platform != 'emscripten'" },
-    { name = "mkdocs-get-deps", marker = "sys_platform != 'emscripten'" },
-    { name = "packaging", marker = "sys_platform != 'emscripten'" },
-    { name = "pathspec", marker = "sys_platform != 'emscripten'" },
-    { name = "pyyaml", marker = "sys_platform != 'emscripten'" },
-    { name = "pyyaml-env-tag", marker = "sys_platform != 'emscripten'" },
-    { name = "watchdog", marker = "sys_platform != 'emscripten'" },
+    { name = "ghp-import" },
+    { name = "jinja2" },
+    { name = "markdown" },
+    { name = "markupsafe" },
+    { name = "mergedeep" },
+    { name = "mkdocs-get-deps" },
+    { name = "packaging" },
+    { name = "pathspec" },
+    { name = "pyyaml" },
+    { name = "pyyaml-env-tag" },
+    { name = "watchdog" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/bc/c6/bbd4f061bd16b378247f12953ffcb04786a618ce5e904b8c5a01a0309061/mkdocs-1.6.1.tar.gz", hash = "sha256:7b432f01d928c084353ab39c57282f29f92136665bdd6abf7c1ec8d822ef86f2", size = 3889159, upload-time = "2024-08-30T12:24:06.899Z" }
 wheels = [
@@ -1682,9 +1682,9 @@ name = "mkdocs-autorefs"
 version = "1.4.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "markdown", marker = "sys_platform != 'emscripten'" },
-    { name = "markupsafe", marker = "sys_platform != 'emscripten'" },
-    { name = "mkdocs", marker = "sys_platform != 'emscripten'" },
+    { name = "markdown" },
+    { name = "markupsafe" },
+    { name = "mkdocs" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/e0/e0/1e8ed4e8dabdcba8cba5dbf4b8ce49bb3b51e750177155247abb5345d48a/mkdocs_autorefs-1.4.5.tar.gz", hash = "sha256:856f75b327b7717923ce06267094650689a510a748c48657f5333965950c2788", size = 59736, upload-time = "2026-10-22T15:03:55.402Z" }
 wheels = [
@@ -1696,9 +1696,9 @@ name = "mkdocs-get-deps"
 version = "0.2.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "mergedeep", marker = "sys_platform != 'emscripten'" },
-    { name = "platformdirs", marker = "sys_platform != 'emscripten'" },
-    { name = "pyyaml", marker = "sys_platform != 'emscripten'" },
+    { name = "mergedeep" },
+    { name = "platformdirs" },
+    { name = "pyyaml" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/ce/25/b3cccb187655b9393572bde9b09261d267c3bf2f2cdabe347673be5976a6/mkdocs_get_deps-0.2.2.tar.gz", hash = "sha256:8ee8d5f316cdbbb2834bc1df6e69c08fe769a83e040060de26d3c19fad3599a1", size = 11047, upload-time = "2026-03-10T02:46:33.632Z" }
 wheels = [
@@ -1710,12 +1710,12 @@ name = "mkdocstrings"
 version = "1.0.8"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "jinja2", marker = "sys_platform != 'emscripten'" },
-    { name = "markdown", marker = "sys_platform != 'emscripten'" },
-    { name = "markupsafe", marker = "sys_platform != 'emscripten'" },
-    { name = "mkdocs", marker = "sys_platform != 'emscripten'" },
-    { name = "mkdocs-autorefs", marker = "sys_platform != 'emscripten'" },
-    { name = "pymdown-extensions", marker = "sys_platform != 'emscripten'" },
+    { name = "jinja2" },
+    { name = "markdown" },
+    { name = "markupsafe" },
+    { name = "mkdocs" },
+    { name = "mkdocs-autorefs" },
+    { name = "pymdown-extensions" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/27/cc/e3ed8b16851f5d664dffcf8f55fc60d0d3f736a3edca21d1508105d1255a/mkdocstrings-1.0.8.tar.gz", hash = "sha256:b50fc326230906425c82ee9ec59b80e5db00892b2b593d4d0b841a0d4acf537b", size = 107444, upload-time = "2026-10-19T15:43:02.157Z" }
 wheels = [
@@ -1724,7 +1724,7 @@ wheels = [
 
 [package.optional-dependencies]
 python = [
-    { name = "mkdocstrings-python", marker = "sys_platform != 'emscripten'" },
+    { name = "mkdocstrings-python" },
 ]
 
 [[package]]
@@ -1732,9 +1732,9 @@ name = "mkdocstrings-python"
 version = "2.0.10"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "griffelib", marker = "sys_platform != 'emscripten'" },
-    { name = "mkdocs-autorefs", marker = "sys_platform != 'emscripten'" },
-    { name = "mkdocstrings", marker = "sys_platform != 'emscripten'" },
+    { name = "griffelib" },
+    { name = "mkdocs-autorefs" },
+    { name = "mkdocstrings" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/fb/43/4783d5606de4f5e4bea10388c8741b0c40d03e7cb9527b94ad35966351f5/mkdocstrings_python-2.0.10.tar.gz", hash = "sha256:5e34ae56b2f20a57807ee479d603ddc5ec7cc6d2252c4c177754627ef2d3b833", size = 207682, upload-time = "2026-10-19T15:58:07.934Z" }
 wheels = [
@@ -1746,7 +1746,7 @@ name = "ml-dtypes"
 version = "0.6.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", marker = "sys_platform != 'emscripten'" },
+    { name = "numpy" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/12/72/307d7c4bd0600601c7133fba5cb78af7db968152951c1cd473abb1cda782/ml_dtypes-0.6.0.tar.gz", hash = "sha256:5e60251d32ced5598972e4d5e06a2f044341f9291402551a3f6f0ec44f9299b0", size = 3032327, upload-time = "2026-08-13T14:14:40.215Z" }
 wheels = [
@@ -1796,8 +1796,8 @@ name = "multimark"
 version = "0.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cffi", marker = "sys_platform != 'emscripten'" },
-    { name = "click", marker = "sys_platform != 'emscripten'" },
+    { name = "cffi" },
+    { name = "click" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/d9/17/cffecf6e6bcaa6453c4782e4bed80d0e06e5e0ba172b8cfc2ba57c6342e1/multimark-0.4.0.tar.gz", hash = "sha256:74522c5a91079343847f04d80d21b59f7ef05ffc9c6c2d0da1d3528630d702db", size = 1497219, upload-time = "2026-10-06T17:52:54.465Z" }
 wheels = [
@@ -1834,10 +1834,10 @@ name = "nbformat"
 version = "5.11.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "fastjsonschema", marker = "sys_platform != 'emscripten'" },
-    { name = "jsonschema", marker = "sys_platform != 'emscripten'" },
-    { name = "jupyter-core", marker = "sys_platform != 'emscripten'" },
-    { name = "traitlets", marker = "sys_platform != 'emscripten'" },
+    { name = "fastjsonschema" },
+    { name = "jsonschema" },
+    { name = "jupyter-core" },
+    { name = "traitlets" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/31/72/b3446efab8756e7df4b8ec587f8e611cb5a7249e4323db480802f1d3be04/nbformat-5.11.1.tar.gz", hash = "sha256:32d4521c68c6e7d5b29c76defaeed9f42ea733142b9b19f88277ce10390b9c4d", size = 147775, upload-time = "2026-08-17T08:10:51.942Z" }
 wheels = [
@@ -1846,17 +1846,17 @@ wheels = [
 
 [[package]]
 name = "nbqa"
-version = "1.9.1"
+version = "1.10.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "autopep8", marker = "sys_platform != 'emscripten'" },
-    { name = "ipython", marker = "sys_platform != 'emscripten'" },
-    { name = "tokenize-rt", marker = "sys_platform != 'emscripten'" },
-    { name = "tomli", marker = "sys_platform != 'emscripten'" },
+    { name = "autopep8" },
+    { name = "ipython" },
+    { name = "tokenize-rt" },
+    { name = "tomli" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/aa/76/62d2609924cf34445148cd6b5de694cf64c179cc416cac93182579620e57/nbqa-1.9.1.tar.gz", hash = "sha256:a1f4bcf587c597302fed295951001fc4e1be4ce0e77e1ab1b25ac2fbe3db0cdd", size = 38348, upload-time = "2024-11-10T12:21:58.333Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d2/d9/d6dd81a9d0180d4fd2f62ce5c73edc7ec4f2e2aab339f6a9d95a5bc7963f/nbqa-1.10.0.tar.gz", hash = "sha256:c39a6213ac98a3f2b298d81eef85337e6de7591b265d8f8585a52df5b09323a8", size = 39422, upload-time = "2026-11-07T10:51:18.825Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/28/88/4789719fbbe166d12d345b3ac66b96105f10001b16e00a9765ba29261a21/nbqa-1.9.1-py3-none-any.whl", hash = "sha256:95552d2f6c2c038136252a805aa78d85018aef922586270c3a074332737282e5", size = 35259, upload-time = "2024-11-10T12:21:56.731Z" },
+    { url = "https://files.pythonhosted.org/packages/01/5a/ab85a495529bd74f2cf618c4f25b1d635e7d0f874ee70fcab103a6158d50/nbqa-1.10.0-py3-none-any.whl", hash = "sha256:c0b028641f4c243abb038defa383fdd473c1b32e115fa447a64b58f461e027e7", size = 36044, upload-time = "2026-11-07T10:51:17.315Z" },
 ]
 
 [[package]]
@@ -1873,8 +1873,8 @@ name = "nokap"
 version = "0.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "click", marker = "sys_platform != 'emscripten'" },
-    { name = "websockets", marker = "sys_platform != 'emscripten'" },
+    { name = "click" },
+    { name = "websockets" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/b9/f7/a4f3d6f89773df40884bc10790977c80a9ea17ad526ea0b0cd35a703595c/nokap-0.1.0.tar.gz", hash = "sha256:63071cf5e7c4f0487532f6281c6ea85d90673d5cd835ffe5e64c913989742eb9", size = 77047, upload-time = "2026-06-08T23:19:17.959Z" }
 wheels = [
@@ -1959,7 +1959,7 @@ name = "nvidia-cublas"
 version = "13.4.1.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cuda-nvrtc", marker = "sys_platform != 'emscripten'" },
+    { name = "nvidia-cuda-nvrtc" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d0/a0/5cd9d4b08a8320f7ca150ee0d66c97e98092922e338336cb4b62da7500c3/nvidia_cublas-13.4.1.3-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:4eb1472bf92b741e7cf24da7978dde251b58ddec2092d9f6a04f3623eb4e9a15", size = 513048232, upload-time = "2026-07-16T09:45:07.751Z" },
@@ -2007,7 +2007,7 @@ name = "nvidia-cudnn-cu13"
 version = "9.26.0.51"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cublas", marker = "sys_platform != 'emscripten'" },
+    { name = "nvidia-cublas" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c5/1c/01e1dd3dec6ffe0baaff7e722b8946d867353d05a01301f128f1730fde0b/nvidia_cudnn_cu13-9.26.0.51-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:8e5b4f5eccff721416f70ecf4353172fc4d5cdd8ca869fe6f983a4a5b0147b20", size = 595329497, upload-time = "2026-09-10T16:45:39.945Z" },
@@ -2019,7 +2019,7 @@ name = "nvidia-cufft"
 version = "12.2.0.57"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-nvjitlink", marker = "sys_platform != 'emscripten'" },
+    { name = "nvidia-nvjitlink" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/07/8d/f650e6d527f9d22b5ded906c000eaebb037721c06d4ecd906df62f300979/nvidia_cufft-12.2.0.57-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:1ed438568ae1088ba2c25789d10205d4104b8b140b7bd942e39a787947a0fb74", size = 218244742, upload-time = "2026-07-16T09:47:08.76Z" },
@@ -2040,9 +2040,9 @@ name = "nvidia-cusolver"
 version = "12.2.0.11"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cublas", marker = "sys_platform != 'emscripten'" },
-    { name = "nvidia-cusparse", marker = "sys_platform != 'emscripten'" },
-    { name = "nvidia-nvjitlink", marker = "sys_platform != 'emscripten'" },
+    { name = "nvidia-cublas" },
+    { name = "nvidia-cusparse" },
+    { name = "nvidia-nvjitlink" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/60/df/9e6b603f1d64040ce3e076e9bce1b78e2d588d0aabc9783f351cecd861ab/nvidia_cusolver-12.2.0.11-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:8be097fca28de6be0990ab216ee9b804dd51077e1d1d83acf6c9850650bdc64d", size = 250383075, upload-time = "2026-07-16T09:50:16.355Z" },
@@ -2054,7 +2054,7 @@ name = "nvidia-cusparse"
 version = "12.7.10.12"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-nvjitlink", marker = "sys_platform != 'emscripten'" },
+    { name = "nvidia-nvjitlink" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/60/35/abbd278fb6d039fcfb5175efa10a21007a11878bec59920d84854b47d766/nvidia_cusparse-12.7.10.12-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:597eff2cd83e3ab1d1e3a0dce9c9c879d77cf64ec2659bfdb5af6a5d02e7aaa9", size = 169043093, upload-time = "2026-07-16T09:51:37.058Z" },
@@ -2093,7 +2093,7 @@ name = "nvidia-nvshmem-cu13"
 version = "3.7.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cuda-cccl", marker = "sys_platform != 'emscripten'" },
+    { name = "nvidia-cuda-cccl" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/81/11/1767ef120299972822a43aceffbc81ac813aad2089d817e36e4e12aa4c9c/nvidia_nvshmem_cu13-3.7.2-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:0e748308b9e0a8a8d81859353f3e6c98fbe85a85f652a915a2ba60149a0bd124", size = 135174619, upload-time = "2026-07-17T19:24:15.404Z" },
@@ -2114,10 +2114,10 @@ name = "onnx"
 version = "1.23.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "ml-dtypes", marker = "sys_platform != 'emscripten'" },
-    { name = "numpy", marker = "sys_platform != 'emscripten'" },
-    { name = "protobuf", marker = "sys_platform != 'emscripten'" },
-    { name = "typing-extensions", marker = "sys_platform != 'emscripten'" },
+    { name = "ml-dtypes" },
+    { name = "numpy" },
+    { name = "protobuf" },
+    { name = "typing-extensions" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/3f/62/bc2dfadb63ecf04cb2d65a6b17751863039d36c65de51d6a3128ab35f1e7/onnx-1.23.2.tar.gz", hash = "sha256:008cb0467b2bbee41448acc7da8b6f4e704624cb0d327a2d5adafc7ce19bc5b8", size = 6023090, upload-time = "2026-10-06T04:25:58.681Z" }
 wheels = [
@@ -2140,12 +2140,12 @@ name = "onnx-ir"
 version = "1.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "ml-dtypes", marker = "sys_platform != 'emscripten'" },
-    { name = "numpy", marker = "sys_platform != 'emscripten'" },
-    { name = "onnx", marker = "sys_platform != 'emscripten'" },
-    { name = "packaging", marker = "sys_platform != 'emscripten'" },
-    { name = "sympy", marker = "sys_platform != 'emscripten'" },
-    { name = "typing-extensions", marker = "sys_platform != 'emscripten'" },
+    { name = "ml-dtypes" },
+    { name = "numpy" },
+    { name = "onnx" },
+    { name = "packaging" },
+    { name = "sympy" },
+    { name = "typing-extensions" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/31/9c/19dee739ae9a7c647ab16fdb990da1b73abe9aa604c4e3c5c30138acc693/onnx_ir-1.1.0.tar.gz", hash = "sha256:b72176de575d820ec26864d17270d58ef886a7cf64db7649d15fcc3d5ae2a8ee", size = 169010, upload-time = "2026-10-20T19:40:42.215Z" }
 wheels = [
@@ -2157,10 +2157,10 @@ name = "onnxruntime"
 version = "1.31.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "flatbuffers", marker = "sys_platform != 'emscripten'" },
-    { name = "numpy", marker = "sys_platform != 'emscripten'" },
-    { name = "packaging", marker = "sys_platform != 'emscripten'" },
-    { name = "protobuf", marker = "sys_platform != 'emscripten'" },
+    { name = "flatbuffers" },
+    { name = "numpy" },
+    { name = "packaging" },
+    { name = "protobuf" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/0e/f7/cecc0efeeea83bff2f7789ae1b80f27fa0f0210d6d9d66d1f0031a6b5e47/onnxruntime-1.31.1-cp312-cp312-macosx_14_0_arm64.whl", hash = "sha256:96dd2564b10ea7153ad9c207e7cd8e5917cb3ba521e0e0a62ac03486fdc8d56c", size = 20882125, upload-time = "2026-10-26T19:26:16.256Z" },
@@ -2189,12 +2189,12 @@ name = "onnxscript"
 version = "0.7.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "ml-dtypes", marker = "sys_platform != 'emscripten'" },
-    { name = "numpy", marker = "sys_platform != 'emscripten'" },
-    { name = "onnx", marker = "sys_platform != 'emscripten'" },
-    { name = "onnx-ir", marker = "sys_platform != 'emscripten'" },
-    { name = "packaging", marker = "sys_platform != 'emscripten'" },
-    { name = "typing-extensions", marker = "sys_platform != 'emscripten'" },
+    { name = "ml-dtypes" },
+    { name = "numpy" },
+    { name = "onnx" },
+    { name = "onnx-ir" },
+    { name = "packaging" },
+    { name = "typing-extensions" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/0a/01/3e3fab8d643ca097ea4aa9e51246643699dfaaa0650589744fe44bc46651/onnxscript-0.7.2.tar.gz", hash = "sha256:2c664f6383d10f332a4d47b2876dcab16dba84909fe703656b19abc281fda165", size = 646719, upload-time = "2026-09-09T17:06:44.567Z" }
 wheels = [
@@ -2215,8 +2215,8 @@ name = "pandas"
 version = "3.1.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", marker = "sys_platform != 'emscripten'" },
-    { name = "python-dateutil", marker = "sys_platform != 'emscripten'" },
+    { name = "numpy" },
+    { name = "python-dateutil" },
     { name = "tzdata", marker = "sys_platform == 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/17/ca/24c6bc92aca3d366146358e47f1d374c0e1a50763ef226fc71eff20a63fb/pandas-3.1.1.tar.gz", hash = "sha256:05fed3e3b7c99b226f160e29d7d6cb7ef39638c758cbfe42b3f24ba34f04b859", size = 5936163, upload-time = "2026-11-04T15:08:01.994Z" }
@@ -2295,8 +2295,8 @@ name = "patsy"
 version = "1.0.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", marker = "sys_platform != 'emscripten'" },
-    { name = "packaging", marker = "sys_platform != 'emscripten'" },
+    { name = "numpy" },
+    { name = "packaging" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/08/e3/950e513affdfe1c1864397b4f40d6ed06ec1b54f608e462c27f151dd72df/patsy-1.0.3.tar.gz", hash = "sha256:79ebf4c93ff4d296e58a9d5be2b2ee31bd49d737cf11d70ffbd8a44b2de42e65", size = 399992, upload-time = "2026-08-29T21:35:32.258Z" }
 wheels = [
@@ -2308,7 +2308,7 @@ name = "pexpect"
 version = "4.9.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "ptyprocess", marker = "sys_platform != 'emscripten'" },
+    { name = "ptyprocess" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/42/92/cc564bf6381ff43ce1f4d06852fc19a2f11d180f23dc32d9588bee2f149d/pexpect-4.9.0.tar.gz", hash = "sha256:ee7d41123f3c9911050ea2c2dac107568dc43b2d3b0c7557a33212c398ead30f", size = 166450, upload-time = "2023-11-25T09:07:26.339Z" }
 wheels = [
@@ -2405,12 +2405,12 @@ name = "plotnine"
 version = "0.15.9"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "matplotlib", marker = "sys_platform != 'emscripten'" },
-    { name = "mizani", marker = "sys_platform != 'emscripten'" },
-    { name = "numpy", marker = "sys_platform != 'emscripten'" },
-    { name = "pandas", marker = "sys_platform != 'emscripten'" },
-    { name = "scipy", marker = "sys_platform != 'emscripten'" },
-    { name = "statsmodels", marker = "sys_platform != 'emscripten'" },
+    { name = "matplotlib" },
+    { name = "mizani" },
+    { name = "numpy" },
+    { name = "pandas" },
+    { name = "scipy" },
+    { name = "statsmodels" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/31/e9/3c74ec617de5799b458520f32be8af08a8d9b132b869860a596bc6e8c20e/plotnine-0.15.9.tar.gz", hash = "sha256:1e128aea448944e26130ec595b36fb3f8711215cc0a1b8d75612e4887566e0d2", size = 6863543, upload-time = "2026-11-03T12:09:38.749Z" }
 wheels = [
@@ -2431,7 +2431,7 @@ name = "polars"
 version = "2.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "polars-runtime-32", marker = "sys_platform != 'emscripten'" },
+    { name = "polars-runtime-32" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/b9/da/c27daf205a824f89f71172a75ad0098c5837a5a31ddeaac7f8737ea8574b/polars-2.1.0.tar.gz", hash = "sha256:9eee488d6e10773c028753dfc8dac647fd60a708108dcb818a733e85d33df253", size = 811508, upload-time = "2026-10-25T18:00:33.43Z" }
 wheels = [
@@ -2459,7 +2459,7 @@ name = "prompt-toolkit"
 version = "3.0.53"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "wcwidth", marker = "sys_platform != 'emscripten'" },
+    { name = "wcwidth" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/7d/ea/39b988c938f75cb75d7045b5c69f8bfed47ee2152c8837fb403de29d6fb8/prompt_toolkit-3.0.53.tar.gz", hash = "sha256:9ec8a0ad96d5c56148b3f914aa79c1564c3fde5d2e6b876e7bc327e353cf8fa6", size = 435492, upload-time = "2026-07-26T20:56:14.758Z" }
 wheels = [
@@ -2559,10 +2559,10 @@ name = "pydantic"
 version = "2.14.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "annotated-types", marker = "sys_platform != 'emscripten'" },
-    { name = "pydantic-core", marker = "sys_platform != 'emscripten'" },
-    { name = "typing-extensions", marker = "sys_platform != 'emscripten'" },
-    { name = "typing-inspection", marker = "sys_platform != 'emscripten'" },
+    { name = "annotated-types" },
+    { name = "pydantic-core" },
+    { name = "typing-extensions" },
+    { name = "typing-inspection" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/b4/fc/1203d011145c98ddce3cd2f505bb54375ef8d43223053df6bfcf3c746f46/pydantic-2.14.3.tar.gz", hash = "sha256:1054f237f4d4733e5a30e1e2333bd33a2004ab9ab1510bd053a9a31bb48e232d", size = 925636, upload-time = "2026-11-05T09:17:04.686Z" }
 wheels = [
@@ -2574,7 +2574,7 @@ name = "pydantic-core"
 version = "2.50.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "typing-extensions", marker = "sys_platform != 'emscripten'" },
+    { name = "typing-extensions" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/9c/0f/34f9ce4ba701dd0b815033ef94d99b56f66200e578ee6052aa3ac26f064e/pydantic_core-2.50.4.tar.gz", hash = "sha256:aead3b74b68396bf0feab5d57e050b730ded7df55853c1e048a87e00aaf033c6", size = 522249, upload-time = "2026-11-05T09:15:26.774Z" }
 wheels = [
@@ -2692,8 +2692,8 @@ name = "pymdown-extensions"
 version = "12.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "markdown", marker = "sys_platform != 'emscripten'" },
-    { name = "pyyaml", marker = "sys_platform != 'emscripten'" },
+    { name = "markdown" },
+    { name = "pyyaml" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/f3/fe/ac50ee24a80a1b344e643f6fb626063cc7041b978cd1dd9a7f9963ae1cd1/pymdown_extensions-12.3.tar.gz", hash = "sha256:a7f2a4e0bc60c6e6babfa7922cfb3b01cd640eb00fb208f3c582e12bae00ea67", size = 870532, upload-time = "2026-10-14T22:40:43.252Z" }
 wheels = [
@@ -2756,10 +2756,10 @@ version = "9.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "colorama", marker = "sys_platform == 'win32'" },
-    { name = "iniconfig", marker = "sys_platform != 'emscripten'" },
-    { name = "packaging", marker = "sys_platform != 'emscripten'" },
-    { name = "pluggy", marker = "sys_platform != 'emscripten'" },
-    { name = "pygments", marker = "sys_platform != 'emscripten'" },
+    { name = "iniconfig" },
+    { name = "packaging" },
+    { name = "pluggy" },
+    { name = "pygments" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/79/42/bb4641652e58dedeac2ec51abc1f8cae4fee4ec63899a0999016229a0f2a/pytest-9.2.0.tar.gz", hash = "sha256:97c4f3b1f3c7414aa36465e09b8220f1d03627993bd51b1282e193753c80557b", size = 1797555, upload-time = "2026-10-27T21:30:20.728Z" }
 wheels = [
@@ -2771,9 +2771,9 @@ name = "pytest-cov"
 version = "7.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "coverage", marker = "sys_platform != 'emscripten'" },
-    { name = "pluggy", marker = "sys_platform != 'emscripten'" },
-    { name = "pytest", marker = "sys_platform != 'emscripten'" },
+    { name = "coverage" },
+    { name = "pluggy" },
+    { name = "pytest" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/b1/51/a849f96e117386044471c8ec2bd6cfebacda285da9525c9106aeb28da671/pytest_cov-7.1.0.tar.gz", hash = "sha256:30674f2b5f6351aa09702a9c8c364f6a01c27aae0c1366ae8016160d1efc56b2", size = 55592, upload-time = "2026-03-21T20:11:16.284Z" }
 wheels = [
@@ -2785,7 +2785,7 @@ name = "pytest-timeout"
 version = "2.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pytest", marker = "sys_platform != 'emscripten'" },
+    { name = "pytest" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/ac/82/4c9ecabab13363e72d880f2fb504c5f750433b2b6f16e99f4ec21ada284c/pytest_timeout-2.4.0.tar.gz", hash = "sha256:7e68e90b01f9eff71332b25001f85c75495fc4e3a836701876183c4bcfd0540a", size = 17973, upload-time = "2025-05-05T19:44:34.99Z" }
 wheels = [
@@ -2797,8 +2797,8 @@ name = "pytest-xdist"
 version = "3.8.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "execnet", marker = "sys_platform != 'emscripten'" },
-    { name = "pytest", marker = "sys_platform != 'emscripten'" },
+    { name = "execnet" },
+    { name = "pytest" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/78/b4/439b179d1ff526791eb921115fca8e44e596a13efeda518b9d845a619450/pytest_xdist-3.8.0.tar.gz", hash = "sha256:7e578125ec9bc6050861aa93f2d59f1d8d085595d6551c2c90b6f4fad8d3a9f1", size = 88069, upload-time = "2025-07-01T13:30:59.346Z" }
 wheels = [
@@ -2810,7 +2810,7 @@ name = "python-dateutil"
 version = "4.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "tzdata", marker = "sys_platform != 'emscripten'" },
+    { name = "tzdata" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/18/39/b3927f3616f6223832f9b760e4208e8a7c7e1dea2b4d9ad7d32a5d214c3a/python_dateutil-4.0.0.tar.gz", hash = "sha256:d7295ff14fdc0f92f662100bfb6c551d160ca090f2939f1ec5b9794265c03f06", size = 250419, upload-time = "2026-11-01T07:02:42.426Z" }
 wheels = [
@@ -2897,7 +2897,7 @@ name = "pyyaml-env-tag"
 version = "1.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pyyaml", marker = "sys_platform != 'emscripten'" },
+    { name = "pyyaml" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/eb/2e/79c822141bfd05a853236b504869ebc6b70159afc570e1d5a20641782eaa/pyyaml_env_tag-1.1.tar.gz", hash = "sha256:2eb38b75a2d21ee0475d6d97ec19c63287a7e140231e4214969d0eac923cd7ff", size = 5737, upload-time = "2025-05-13T15:24:01.64Z" }
 wheels = [
@@ -2909,9 +2909,9 @@ name = "referencing"
 version = "0.37.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "attrs", marker = "sys_platform != 'emscripten'" },
-    { name = "rpds-py", marker = "sys_platform != 'emscripten'" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13' and sys_platform != 'emscripten'" },
+    { name = "attrs" },
+    { name = "rpds-py" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/22/f5/df4e9027acead3ecc63e50fe1e36aca1523e1719559c499951bb4b53188f/referencing-0.37.0.tar.gz", hash = "sha256:44aefc3142c5b842538163acb373e24cce6632bd54bdb01b21ad5863489f50d8", size = 78036, upload-time = "2025-10-13T15:30:48.871Z" }
 wheels = [
@@ -2923,10 +2923,10 @@ name = "requests"
 version = "2.34.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "certifi", marker = "sys_platform != 'emscripten'" },
-    { name = "charset-normalizer", marker = "sys_platform != 'emscripten'" },
-    { name = "idna", marker = "sys_platform != 'emscripten'" },
-    { name = "urllib3", marker = "sys_platform != 'emscripten'" },
+    { name = "certifi" },
+    { name = "charset-normalizer" },
+    { name = "idna" },
+    { name = "urllib3" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/ac/c3/e2a2b89f2d3e2179abd6d00ebd70bff6273f37fb3e0cc209f48b39d00cbf/requests-2.34.2.tar.gz", hash = "sha256:f288924cae4e29463698d6d60bc6a4da69c89185ad1e0bcc4104f584e960b9ed", size = 142856, upload-time = "2026-05-14T19:25:27.735Z" }
 wheels = [
@@ -2938,8 +2938,8 @@ name = "rich"
 version = "15.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "markdown-it-py", marker = "sys_platform != 'emscripten'" },
-    { name = "pygments", marker = "sys_platform != 'emscripten'" },
+    { name = "markdown-it-py" },
+    { name = "pygments" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/c0/8f/0722ca900cc807c13a6a0c696dacf35430f72e0ec571c4275d2371fca3e9/rich-15.0.0.tar.gz", hash = "sha256:edd07a4824c6b40189fb7ac9bc4c52536e9780fbbfbddf6f1e2502c31b068c36", size = 230680, upload-time = "2026-04-12T08:24:00.75Z" }
 wheels = [
@@ -2951,9 +2951,9 @@ name = "rich-click"
 version = "1.9.9"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "click", marker = "sys_platform != 'emscripten'" },
+    { name = "click" },
     { name = "colorama", marker = "sys_platform == 'win32'" },
-    { name = "rich", marker = "sys_platform != 'emscripten'" },
+    { name = "rich" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/96/3e/5688fdd83aea416de336582a274f2bc8236b5c261b04c11e17bc262786ad/rich_click-1.9.9.tar.gz", hash = "sha256:324cba7513cd4187ee92b2eef21f071714e45be062458c8b157bd7e0c81103e3", size = 75866, upload-time = "2026-09-05T19:20:14.799Z" }
 wheels = [
@@ -3098,11 +3098,11 @@ name = "scikit-learn"
 version = "1.9.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "joblib", marker = "sys_platform != 'emscripten'" },
-    { name = "narwhals", marker = "sys_platform != 'emscripten'" },
-    { name = "numpy", marker = "sys_platform != 'emscripten'" },
-    { name = "scipy", marker = "sys_platform != 'emscripten'" },
-    { name = "threadpoolctl", marker = "sys_platform != 'emscripten'" },
+    { name = "joblib" },
+    { name = "narwhals" },
+    { name = "numpy" },
+    { name = "scipy" },
+    { name = "threadpoolctl" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/d2/eb/eaf5e07fcc0da7149b0e084f24e54edd7441b9a89ce7e034032ae97fe3a0/scikit_learn-1.9.1.tar.gz", hash = "sha256:629cada3e33e2b9bf376cdc7614a47a4140b8aedc1d836579e359736fbd82977", size = 7786908, upload-time = "2026-09-10T18:34:04.679Z" }
 wheels = [
@@ -3149,7 +3149,7 @@ name = "scipy"
 version = "1.18.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", marker = "sys_platform != 'emscripten'" },
+    { name = "numpy" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/7e/74/66de6258867beb2ef08f35f9f2ac017a52cacd5081714d239ff1a442d458/scipy-1.18.1.tar.gz", hash = "sha256:52c4b7422442aba924d03ad4019852b08a92e64ea187b933135687bfe2747307", size = 30781235, upload-time = "2026-08-21T23:28:50.599Z" }
 wheels = [
@@ -3242,7 +3242,7 @@ name = "smart-open"
 version = "7.7.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "wrapt", marker = "sys_platform != 'emscripten'" },
+    { name = "wrapt" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/db/c6/22e7a2acd5d27941e85e0d7ede398da5abe2e4677d2265c924157247c32e/smart_open-7.7.1.tar.gz", hash = "sha256:9414ba5733e28309f29b28a303b0f1054ad23fe0275f1a1b600c80a724f4bd1a", size = 54952, upload-time = "2026-06-26T07:56:35.309Z" }
 wheels = [
@@ -3263,9 +3263,9 @@ name = "snakefmt"
 version = "2.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "black", marker = "sys_platform != 'emscripten'" },
-    { name = "click", marker = "sys_platform != 'emscripten'" },
-    { name = "shfmt-py", marker = "sys_platform != 'emscripten'" },
+    { name = "black" },
+    { name = "click" },
+    { name = "shfmt-py" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/13/d3/c414af23ff5377ee4203efb0a080c2954be232a121c8bb04b13ceaf46abe/snakefmt-2.1.0.tar.gz", hash = "sha256:6a6ce79ff5b0ee18888896cb1660eb888a41592dbc36dccfd2c4f2a161d6dd7f", size = 190061, upload-time = "2026-10-14T04:44:39.245Z" }
 wheels = [
@@ -3277,37 +3277,37 @@ name = "snakemake"
 version = "9.27.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "conda-inject", marker = "sys_platform != 'emscripten'" },
-    { name = "configargparse", marker = "sys_platform != 'emscripten'" },
-    { name = "connection-pool", marker = "sys_platform != 'emscripten'" },
-    { name = "docutils", marker = "sys_platform != 'emscripten'" },
-    { name = "dpath", marker = "sys_platform != 'emscripten'" },
-    { name = "gitpython", marker = "sys_platform != 'emscripten'" },
-    { name = "humanfriendly", marker = "sys_platform != 'emscripten'" },
-    { name = "immutables", marker = "sys_platform != 'emscripten'" },
-    { name = "jinja2", marker = "sys_platform != 'emscripten'" },
-    { name = "jsonschema", marker = "sys_platform != 'emscripten'" },
-    { name = "nbformat", marker = "sys_platform != 'emscripten'" },
-    { name = "packaging", marker = "sys_platform != 'emscripten'" },
-    { name = "platformdirs", marker = "sys_platform != 'emscripten'" },
-    { name = "psutil", marker = "sys_platform != 'emscripten'" },
-    { name = "pulp", marker = "sys_platform != 'emscripten'" },
-    { name = "pyyaml", marker = "sys_platform != 'emscripten'" },
-    { name = "referencing", marker = "sys_platform != 'emscripten'" },
-    { name = "requests", marker = "sys_platform != 'emscripten'" },
-    { name = "smart-open", marker = "sys_platform != 'emscripten'" },
-    { name = "snakemake-interface-common", marker = "sys_platform != 'emscripten'" },
-    { name = "snakemake-interface-executor-plugins", marker = "sys_platform != 'emscripten'" },
-    { name = "snakemake-interface-logger-plugins", marker = "sys_platform != 'emscripten'" },
-    { name = "snakemake-interface-report-plugins", marker = "sys_platform != 'emscripten'" },
-    { name = "snakemake-interface-scheduler-plugins", marker = "sys_platform != 'emscripten'" },
-    { name = "snakemake-interface-storage-plugins", marker = "sys_platform != 'emscripten'" },
-    { name = "sqlmodel", marker = "sys_platform != 'emscripten'" },
-    { name = "tabulate", marker = "sys_platform != 'emscripten'" },
-    { name = "tenacity", marker = "sys_platform != 'emscripten'" },
-    { name = "throttler", marker = "sys_platform != 'emscripten'" },
-    { name = "wrapt", marker = "sys_platform != 'emscripten'" },
-    { name = "yte", marker = "sys_platform != 'emscripten'" },
+    { name = "conda-inject" },
+    { name = "configargparse" },
+    { name = "connection-pool" },
+    { name = "docutils" },
+    { name = "dpath" },
+    { name = "gitpython" },
+    { name = "humanfriendly" },
+    { name = "immutables" },
+    { name = "jinja2" },
+    { name = "jsonschema" },
+    { name = "nbformat" },
+    { name = "packaging" },
+    { name = "platformdirs" },
+    { name = "psutil" },
+    { name = "pulp" },
+    { name = "pyyaml" },
+    { name = "referencing" },
+    { name = "requests" },
+    { name = "smart-open" },
+    { name = "snakemake-interface-common" },
+    { name = "snakemake-interface-executor-plugins" },
+    { name = "snakemake-interface-logger-plugins" },
+    { name = "snakemake-interface-report-plugins" },
+    { name = "snakemake-interface-scheduler-plugins" },
+    { name = "snakemake-interface-storage-plugins" },
+    { name = "sqlmodel" },
+    { name = "tabulate" },
+    { name = "tenacity" },
+    { name = "throttler" },
+    { name = "wrapt" },
+    { name = "yte" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/59/e5/61deb0378bcb5b974f3348292b9397fc2f5a28f8ccb22e1a756c8a3c78aa/snakemake-9.27.1.tar.gz", hash = "sha256:f772714bb4133f836f0b5c3124ed70ef954c223aa034d6fcaf0282a4bbb98a5e", size = 6819275, upload-time = "2026-10-21T08:53:20.462Z" }
 wheels = [
@@ -3319,10 +3319,10 @@ name = "snakemake-executor-plugin-lsf"
 version = "0.3.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "snakemake", marker = "sys_platform != 'emscripten'" },
-    { name = "snakemake-interface-common", marker = "sys_platform != 'emscripten'" },
-    { name = "snakemake-interface-executor-plugins", marker = "sys_platform != 'emscripten'" },
-    { name = "throttler", marker = "sys_platform != 'emscripten'" },
+    { name = "snakemake" },
+    { name = "snakemake-interface-common" },
+    { name = "snakemake-interface-executor-plugins" },
+    { name = "throttler" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/c9/cd/9966d1bdc34a9bcfce9ad83aeaf85935a25c793987ff1c3f3fe47ffa16f8/snakemake_executor_plugin_lsf-0.3.3.tar.gz", hash = "sha256:d1255907cc83e2709cde8f7e74c140091cbdf9e656ab77667a10526e2c045aa1", size = 14329, upload-time = "2026-05-07T21:02:01.034Z" }
 wheels = [
@@ -3334,13 +3334,13 @@ name = "snakemake-executor-plugin-slurm"
 version = "2.8.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", marker = "sys_platform != 'emscripten'" },
-    { name = "pandas", marker = "sys_platform != 'emscripten'" },
-    { name = "pyyaml", marker = "sys_platform != 'emscripten'" },
-    { name = "snakemake-executor-plugin-slurm-jobstep", marker = "sys_platform != 'emscripten'" },
-    { name = "snakemake-interface-common", marker = "sys_platform != 'emscripten'" },
-    { name = "snakemake-interface-executor-plugins", marker = "sys_platform != 'emscripten'" },
-    { name = "throttler", marker = "sys_platform != 'emscripten'" },
+    { name = "numpy" },
+    { name = "pandas" },
+    { name = "pyyaml" },
+    { name = "snakemake-executor-plugin-slurm-jobstep" },
+    { name = "snakemake-interface-common" },
+    { name = "snakemake-interface-executor-plugins" },
+    { name = "throttler" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/8c/74/56d92bf50d148b6bb3f39d096ad7bc4aa21509b917bee5921b94551c3a80/snakemake_executor_plugin_slurm-2.8.0.tar.gz", hash = "sha256:97d931284b1452b6a7afd2f1b6d2002c278ce7a5e8f6a982dc77688817d30399", size = 137886, upload-time = "2026-08-10T09:33:07.06Z" }
 wheels = [
@@ -3352,8 +3352,8 @@ name = "snakemake-executor-plugin-slurm-jobstep"
 version = "0.6.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "snakemake-interface-common", marker = "sys_platform != 'emscripten'" },
-    { name = "snakemake-interface-executor-plugins", marker = "sys_platform != 'emscripten'" },
+    { name = "snakemake-interface-common" },
+    { name = "snakemake-interface-executor-plugins" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/fc/ec/4d4e41125a29717b71610ae7962a3cde0552c6b0c72c995139b8a0adeb7b/snakemake_executor_plugin_slurm_jobstep-0.6.1.tar.gz", hash = "sha256:0ed2feaa88d1d64f35dc66b4990f131d3f151733edece90d5e952dec0e8f7feb", size = 7437, upload-time = "2026-05-27T12:14:28.522Z" }
 wheels = [
@@ -3365,9 +3365,9 @@ name = "snakemake-interface-common"
 version = "1.23.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "argparse-dataclass", marker = "sys_platform != 'emscripten'" },
-    { name = "configargparse", marker = "sys_platform != 'emscripten'" },
-    { name = "packaging", marker = "sys_platform != 'emscripten'" },
+    { name = "argparse-dataclass" },
+    { name = "configargparse" },
+    { name = "packaging" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/89/c3/592f832f6e5d2d31f749392e48e8401b7625dec668d3d365d8d28f2b6c30/snakemake_interface_common-1.23.0.tar.gz", hash = "sha256:6ed14531a461417659364a0dd0acc51b786af4e26fc15cc5e00ff3d9fcaffacc", size = 13960, upload-time = "2026-03-08T21:54:29.251Z" }
 wheels = [
@@ -3379,9 +3379,9 @@ name = "snakemake-interface-executor-plugins"
 version = "9.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "argparse-dataclass", marker = "sys_platform != 'emscripten'" },
-    { name = "snakemake-interface-common", marker = "sys_platform != 'emscripten'" },
-    { name = "throttler", marker = "sys_platform != 'emscripten'" },
+    { name = "argparse-dataclass" },
+    { name = "snakemake-interface-common" },
+    { name = "throttler" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/54/50/de06b284c45a8e94fb8e4a12d5235065e78b49b8f84329dc10fe39f4b7dd/snakemake_interface_executor_plugins-9.4.0.tar.gz", hash = "sha256:9d4138897beacbaadaedad94b63f948eaeb604b7fc78f9cf65ac57f090f2c066", size = 16549, upload-time = "2026-03-08T17:04:02.644Z" }
 wheels = [
@@ -3393,7 +3393,7 @@ name = "snakemake-interface-logger-plugins"
 version = "2.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "snakemake-interface-common", marker = "sys_platform != 'emscripten'" },
+    { name = "snakemake-interface-common" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/a7/0c/3fa5d592663c65669a867526604aadc6fbc235fb9284e94b49c0ef59aa41/snakemake_interface_logger_plugins-2.1.0.tar.gz", hash = "sha256:c89a00d2a398490cecd91b6dc6db8049cba93712d82e1d8f3000f3040bf3791c", size = 15917, upload-time = "2026-05-20T15:12:35.259Z" }
 wheels = [
@@ -3405,7 +3405,7 @@ name = "snakemake-interface-report-plugins"
 version = "1.3.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "snakemake-interface-common", marker = "sys_platform != 'emscripten'" },
+    { name = "snakemake-interface-common" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/18/d6/6160ed98de665d6871dd356597dbf726688cc786e88668359ca37b7d9f54/snakemake_interface_report_plugins-1.3.0.tar.gz", hash = "sha256:fc9495298bec4e69721ab8afe6d6d88a86966fda2eeb003db56b9a88b86d5934", size = 4283, upload-time = "2025-10-31T10:52:36.55Z" }
 wheels = [
@@ -3417,7 +3417,7 @@ name = "snakemake-interface-scheduler-plugins"
 version = "2.0.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "snakemake-interface-common", marker = "sys_platform != 'emscripten'" },
+    { name = "snakemake-interface-common" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/88/d9/d480807d2cfc2d132bc760d877d45ec8fbe620a24200ec4d2697c4a26031/snakemake_interface_scheduler_plugins-2.0.2.tar.gz", hash = "sha256:2797e8fa9019d983132c2b403f14d6fcd3c5ad4c8d8a66b984b4740a71cacc46", size = 8642, upload-time = "2025-10-20T13:58:12.988Z" }
 wheels = [
@@ -3429,11 +3429,11 @@ name = "snakemake-interface-storage-plugins"
 version = "4.4.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "humanfriendly", marker = "sys_platform != 'emscripten'" },
-    { name = "snakemake-interface-common", marker = "sys_platform != 'emscripten'" },
-    { name = "tenacity", marker = "sys_platform != 'emscripten'" },
-    { name = "throttler", marker = "sys_platform != 'emscripten'" },
-    { name = "wrapt", marker = "sys_platform != 'emscripten'" },
+    { name = "humanfriendly" },
+    { name = "snakemake-interface-common" },
+    { name = "tenacity" },
+    { name = "throttler" },
+    { name = "wrapt" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/93/6e/f3c5b2d621fd6a6b78d8cfc01fef6b926fe2c277f5ed77c5e4deeacb94eb/snakemake_interface_storage_plugins-4.4.1.tar.gz", hash = "sha256:b2b5bf05318af36955ebf2ce76c921c0fb06904ca98fb30e1657d88b7b7b6945", size = 14924, upload-time = "2026-03-16T11:16:01.075Z" }
 wheels = [
@@ -3445,8 +3445,8 @@ name = "sqlalchemy"
 version = "2.0.57"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "greenlet", marker = "(platform_machine == 'AMD64' and sys_platform != 'emscripten') or (platform_machine == 'WIN32' and sys_platform != 'emscripten') or (platform_machine == 'aarch64' and sys_platform != 'emscripten') or (platform_machine == 'amd64' and sys_platform != 'emscripten') or (platform_machine == 'ppc64le' and sys_platform != 'emscripten') or (platform_machine == 'win32' and sys_platform != 'emscripten') or (platform_machine == 'x86_64' and sys_platform != 'emscripten')" },
-    { name = "typing-extensions", marker = "sys_platform != 'emscripten'" },
+    { name = "greenlet", marker = "platform_machine == 'AMD64' or platform_machine == 'WIN32' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'ppc64le' or platform_machine == 'win32' or platform_machine == 'x86_64'" },
+    { name = "typing-extensions" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/19/df/7611a37edc4cfa118c364a7f5dec4889ad0e9f84638a789bbf864c5f7a63/sqlalchemy-2.0.57.tar.gz", hash = "sha256:892e0edd06b8ca2a8a3f9107611047914fd82ccd03735efd706d12aa4da1b773", size = 10018207, upload-time = "2026-11-04T00:58:47.151Z" }
 wheels = [
@@ -3486,8 +3486,8 @@ name = "sqlmodel"
 version = "0.0.37"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pydantic", marker = "sys_platform != 'emscripten'" },
-    { name = "sqlalchemy", marker = "sys_platform != 'emscripten'" },
+    { name = "pydantic" },
+    { name = "sqlalchemy" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/fb/26/1d2faa0fd5a765267f49751de533adac6b9ff9366c7c6e7692df4f32230f/sqlmodel-0.0.37.tar.gz", hash = "sha256:d2c19327175794faf50b1ee31cc966764f55b1dedefc046450bc5741a3d68352", size = 85527, upload-time = "2026-02-21T16:39:47.038Z" }
 wheels = [
@@ -3499,9 +3499,9 @@ name = "stack-data"
 version = "0.6.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "asttokens", marker = "sys_platform != 'emscripten'" },
-    { name = "executing", marker = "sys_platform != 'emscripten'" },
-    { name = "pure-eval", marker = "sys_platform != 'emscripten'" },
+    { name = "asttokens" },
+    { name = "executing" },
+    { name = "pure-eval" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/28/e3/55dcc2cfbc3ca9c29519eb6884dd1415ecb53b0e934862d3559ddcb7e20b/stack_data-0.6.3.tar.gz", hash = "sha256:836a778de4fec4dcd1dcd89ed8abff8a221f58308462e1c4aa2a3cf30148f0b9", size = 44707, upload-time = "2023-09-30T13:58:05.479Z" }
 wheels = [
@@ -3513,12 +3513,12 @@ name = "statsmodels"
 version = "0.15.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "formulaic", marker = "sys_platform != 'emscripten'" },
-    { name = "numpy", marker = "sys_platform != 'emscripten'" },
-    { name = "packaging", marker = "sys_platform != 'emscripten'" },
-    { name = "pandas", marker = "sys_platform != 'emscripten'" },
-    { name = "patsy", marker = "sys_platform != 'emscripten'" },
-    { name = "scipy", marker = "sys_platform != 'emscripten'" },
+    { name = "formulaic" },
+    { name = "numpy" },
+    { name = "packaging" },
+    { name = "pandas" },
+    { name = "patsy" },
+    { name = "scipy" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/a8/1f/a3cbf6ed7cf6286afec694bfef561f3e51483197716717fb8476f1f0c50e/statsmodels-0.15.0.tar.gz", hash = "sha256:5d257fe58d0772bc46a557880ca78e2a8e07fec7bfd9d11074aef8e33e1aecbc", size = 15736853, upload-time = "2026-08-27T10:45:21.988Z" }
 wheels = [
@@ -3571,7 +3571,7 @@ name = "sympy"
 version = "1.14.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "mpmath", marker = "sys_platform != 'emscripten'" },
+    { name = "mpmath" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/83/d3/803453b36afefb7c2bb238361cd4ae6125a569b4db67cd9e79846ba2d68c/sympy-1.14.0.tar.gz", hash = "sha256:d3d3fe8df1e5a0b42f0e7bdf50541697dbe7d23746e894990c030e2b05e72517", size = 7793921, upload-time = "2025-04-27T18:05:01.611Z" }
 wheels = [
@@ -3693,18 +3693,18 @@ source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cuda-bindings", marker = "python_full_version < '3.15' and sys_platform == 'linux'" },
     { name = "cuda-toolkit", extra = ["cublas", "cudart", "cufft", "cufile", "cupti", "cusolver", "cusparse", "nvjitlink", "nvrtc", "nvtx"], marker = "sys_platform == 'linux'" },
-    { name = "filelock", marker = "sys_platform != 'emscripten'" },
-    { name = "fsspec", marker = "sys_platform != 'emscripten'" },
-    { name = "jinja2", marker = "sys_platform != 'emscripten'" },
-    { name = "networkx", marker = "sys_platform != 'emscripten'" },
+    { name = "filelock" },
+    { name = "fsspec" },
+    { name = "jinja2" },
+    { name = "networkx" },
     { name = "nvidia-cudnn-cu13", marker = "sys_platform == 'linux'" },
     { name = "nvidia-cusparselt-cu13", marker = "sys_platform == 'linux'" },
     { name = "nvidia-nccl-cu13", marker = "sys_platform == 'linux'" },
     { name = "nvidia-nvshmem-cu13", marker = "sys_platform == 'linux'" },
-    { name = "setuptools", marker = "sys_platform != 'emscripten'" },
-    { name = "sympy", marker = "sys_platform != 'emscripten'" },
+    { name = "setuptools" },
+    { name = "sympy" },
     { name = "triton", marker = "python_full_version < '3.16' and sys_platform == 'linux'" },
-    { name = "typing-extensions", marker = "sys_platform != 'emscripten'" },
+    { name = "typing-extensions" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/17/24/7b9b755e8c4dd2395c6a94bab6a4ed8aded1735ff2538bc63cbba8abeddd/torch-2.15.0-cp312-cp312-macosx_14_0_arm64.whl", hash = "sha256:593e5fd0c204284890d1c3dff643be34e549e1d24523e13402510f960d4da438", size = 138558517, upload-time = "2026-10-28T15:16:35.918Z" },
@@ -3738,8 +3738,8 @@ name = "towncrier"
 version = "26.9.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "click", marker = "sys_platform != 'emscripten'" },
-    { name = "jinja2", marker = "sys_platform != 'emscripten'" },
+    { name = "click" },
+    { name = "jinja2" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/92/d4/e85ce614bf45b1a7fe13b82cc687819c2eaac5a1dd94b84834322095fd98/towncrier-26.9.0.tar.gz", hash = "sha256:ace9031631c718cc0709107b8755e6e31350eb8acdc877af43df3177addb9a55", size = 79338, upload-time = "2026-09-04T12:57:25.341Z" }
 wheels = [
@@ -3807,7 +3807,7 @@ name = "typing-inspection"
 version = "0.4.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "typing-extensions", marker = "sys_platform != 'emscripten'" },
+    { name = "typing-extensions" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/ff/50/0195198eb1d75bab716bb0a813abea4cc394bfa17a92a189f021a34859af/typing_inspection-0.4.5.tar.gz", hash = "sha256:7f16c411e7930dc79596d42ab44672a3fe5f60eb34b781a1647e7872363120c7", size = 81194, upload-time = "2026-11-04T14:13:23.774Z" }
 wheels = [
@@ -4138,9 +4138,9 @@ name = "yte"
 version = "1.9.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "argparse-dataclass", marker = "sys_platform != 'emscripten'" },
-    { name = "dpath", marker = "sys_platform != 'emscripten'" },
-    { name = "pyyaml", marker = "sys_platform != 'emscripten'" },
+    { name = "argparse-dataclass" },
+    { name = "dpath" },
+    { name = "pyyaml" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/44/f5/7e44620e6e077bfe624b9a17c329b8e0d0159e176e1f1a93c2790428ab2c/yte-1.9.4.tar.gz", hash = "sha256:86a47e6d722cec9419a7ac88be57d0d6c4ce28f02860393b71a66f2c674069f6", size = 8101, upload-time = "2025-11-27T12:55:00.85Z" }
 wheels = [
@@ -4152,15 +4152,15 @@ name = "zensical"
 version = "0.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "click", marker = "sys_platform != 'emscripten'" },
-    { name = "jinja2", marker = "sys_platform != 'emscripten'" },
-    { name = "markdown", marker = "sys_platform != 'emscripten'" },
-    { name = "pathspec", marker = "sys_platform != 'emscripten'" },
-    { name = "pygments", marker = "sys_platform != 'emscripten'" },
-    { name = "pymdown-extensions", marker = "sys_platform != 'emscripten'" },
-    { name = "pyyaml", marker = "sys_platform != 'emscripten'" },
-    { name = "tomli", marker = "sys_platform != 'emscripten'" },
-    { name = "zensical-ui", marker = "sys_platform != 'emscripten'" },
+    { name = "click" },
+    { name = "jinja2" },
+    { name = "markdown" },
+    { name = "pathspec" },
+    { name = "pygments" },
+    { name = "pymdown-extensions" },
+    { name = "pyyaml" },
+    { name = "tomli" },
+    { name = "zensical-ui" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/d0/35/173b9b5557ec92e151f1098dcbc482b37e52c43732a71606c1eb19b91e25/zensical-0.1.0.tar.gz", hash = "sha256:0715bae72a1acb0164eb06f489d6bb93bb3e0fbcf786fa8259daae5955611526", size = 517416, upload-time = "2026-11-05T15:32:53.217Z" }
 wheels = [
