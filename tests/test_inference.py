@@ -987,16 +987,28 @@ def _model_kwargs():
     return {k: v for k, v in _ARCH_CONFIG.items() if k not in _NON_MODEL_KEYS}
 
 
-def _create_multiclass_bundle(tmp_path, class_names):
-    """Create a multiclass bundle with a randomly initialized model."""
+def _create_multiclass_bundle(tmp_path, class_names, *, refine=False):
+    """Create a multiclass bundle with a randomly initialized model.
+
+    ``refine=True`` turns signal-map refinement on (so chunks carry a
+    ``signal_residual`` and 12 feature channels) while the model stays
+    1-channel: the issue #456 shape.
+    """
     from leech.models import get_model
 
     num_out = len(class_names)
-    model = get_model("ConvLSTMDwell", num_out=num_out, **_model_kwargs())
+    arch = dict(_ARCH_CONFIG)
+    if refine:
+        arch.update(refine_signal_map=True, num_features=12)
+    model = get_model(
+        "ConvLSTMDwell",
+        num_out=num_out,
+        **{k: v for k, v in arch.items() if k not in _NON_MODEL_KEYS},
+    )
 
     config = {
         "model_name": "ConvLSTMDwell",
-        **_ARCH_CONFIG,
+        **arch,
         "num_out": num_out,
         "motif": "CCAGGC",
         "motif_offset": 2,
@@ -1972,6 +1984,76 @@ class TestExtractionPathParity:
         sequential = json.loads((tmp_path / "w0.json").read_text())
         assert any("aa" in r for r in sequential)
         assert parallel == sequential
+
+    def test_one_channel_model_with_refinement_matches_sequential(self, tmp_path):
+        """Issue #456: a 1-channel model with a feature branch and refinement on.
+
+        Chunks carry a ``signal_residual`` here (features are computed), and
+        the worker path used to stack it regardless of ``signal_in_channels``,
+        so ``validate_inference_shapes`` rejected every read and the run
+        finished with 0 predictions and exit 0.
+        """
+        import json
+        import subprocess
+        import sys
+
+        bundle_path = _create_multiclass_bundle(tmp_path, self.CLASS_NAMES, refine=True)
+        subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                _WORKER_PATH_DRIVER,
+                str(bundle_path),
+                str(TRNA_POD5),
+                str(TRNA_BAM),
+                str(TRNA_REF),
+                str(tmp_path),
+            ],
+            check=True,
+            timeout=900,
+        )
+        parallel = json.loads((tmp_path / "w2.json").read_text())
+        sequential = json.loads((tmp_path / "w0.json").read_text())
+        assert any("aa" in r for r in sequential)
+        assert parallel == sequential
+
+
+class TestPrepareSignalChannels:
+    """``prepare_signal_channels`` stacks the residual because the model asks (#456)."""
+
+    @staticmethod
+    def _chunk(with_residual=True):
+        import numpy as np
+
+        chunk = {"signal": np.arange(10, dtype=np.float32)}
+        if with_residual:
+            chunk["signal_residual"] = np.ones(10, dtype=np.float32)
+        return chunk
+
+    def test_one_channel_model_ignores_a_residual_the_chunk_carries(self):
+        from leech.inference.helpers import prepare_signal_channels
+
+        assert prepare_signal_channels(self._chunk(), 10, 1).shape == (10,)
+
+    def test_two_channel_model_stacks_the_residual(self):
+        from leech.inference.helpers import prepare_signal_channels
+
+        assert prepare_signal_channels(self._chunk(), 12, 2).shape == (2, 12)
+
+    def test_two_channel_model_without_residual_raises_with_counts(self):
+        from leech.inference.helpers import InferenceConfigError, prepare_signal_channels
+
+        with pytest.raises(InferenceConfigError, match=r"signal_in_channels=2.*only 1 channel"):
+            prepare_signal_channels(self._chunk(with_residual=False), 10, 2)
+
+    def test_worker_re_raises_config_errors_instead_of_skipping_reads(self):
+        """A mismatch must abort the worker, not become one warning per read."""
+        import inspect
+
+        from leech.inference import single
+
+        src = inspect.getsource(single._inference_worker)
+        assert "except InferenceConfigError:" in src
 
 
 @pytest.mark.skipif(not TRNA_FIXTURES_AVAILABLE, reason="tRNA fixtures not available")

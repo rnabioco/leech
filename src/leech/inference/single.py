@@ -18,6 +18,7 @@ from leech.features import encode_signal_kmer_batch, extract_move_table, sequenc
 from leech.inference.helpers import (
     BatchAccumulator,
     GpuBatchRunner,
+    InferenceConfigError,
     InferenceDwellTemplate,
     InferenceSpec,
     _run_batch,
@@ -160,7 +161,7 @@ def _inference_worker(
                     continue
 
                 # Signal (with optional kmer residual channel)
-                sig = prepare_signal_channels(chunk, config.signal_len)
+                sig = prepare_signal_channels(chunk, config.signal_len, config.signal_in_channels)
 
                 # Sequence encoding. signal_kmer's own encoding is deferred to
                 # a single batched Rust call after the read loop (below);
@@ -225,6 +226,10 @@ def _inference_worker(
                         (len(results) - 1, pending_seq_ints, pending_seq_to_sig)
                     )
 
+        except InferenceConfigError:
+            # A model/extraction mismatch fails every read identically; swallowing
+            # it per read finishes "successfully" with no predictions (issue #456).
+            raise
         except Exception as e:
             logger.warning(f"Worker: skipping read {read_info.read_id}: {e}")
             continue
@@ -951,6 +956,7 @@ def run_inference(
                     kmer_len=kmer_len,
                     dwell_offset=dwell_offset,
                     wide_features=wide_features,
+                    signal_in_channels=signal_in_channels,
                     dwell_templates=dwell_templates_arr,
                     template_min_pos=dwell_template_min_pos,
                     dwell_row=dwell_row,
@@ -1389,4 +1395,11 @@ def run_inference(
     logger.info("Inference complete!")
     logger.info(f"Reads processed: {total_reads}")
     logger.info(f"Total predictions: {total_predictions}")
+    if total_reads > 0 and total_predictions == 0:
+        # One loud line, not only the per-read ones (issue #456). Zero is
+        # legitimate when no read carries the motif, so this warns, not raises.
+        logger.warning(
+            f"Processed {total_reads} reads but wrote 0 predictions. Check the motif, "
+            f"--anchor/--reference-fasta, and the per-read warnings above."
+        )
     logger.info(f"Output written to: {output_path}")
