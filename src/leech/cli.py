@@ -2066,6 +2066,12 @@ def test(
     help='Pairwise aggregation method: "naive" (sum votes), "weighted" (confidence-weighted), "tournament" (two-round elimination). Default: naive.',
 )
 @click.option(
+    "--positions-per-read",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Bundle predict only: cap on motif sites scored per read, lowest position first (default: all). The aa/ac/am/pn/pp tags describe the first site; reads with several also carry sp/sa/sc per-site arrays.",
+)
+@click.option(
     "--read-batch-size",
     type=int,
     default=10_000,
@@ -2113,6 +2119,7 @@ def predict(
     min_mapq,
     workers,
     aggregation,
+    positions_per_read,
     read_batch_size,
     backend,
     no_compile,
@@ -2183,6 +2190,7 @@ def predict(
         min_mapq=min_mapq,
         workers=workers,
         aggregation=aggregation,
+        positions_per_read=positions_per_read,
         read_batch_size=read_batch_size,
         backend=backend,
         no_compile=no_compile,

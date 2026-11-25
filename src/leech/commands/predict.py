@@ -63,6 +63,7 @@ def handle_predict(
     output_format: str = "bam",
     copy_tags: list[str] | None = None,
     parameter_sources: dict[str, bool] | None = None,
+    positions_per_read: int | None = None,
 ) -> None:
     """
     Handle the predict command logic.
@@ -88,6 +89,8 @@ def handle_predict(
         workers: Parallel chunk extraction workers
         min_confidence: Confidence threshold in 0-255 uint8 space
         read_batch_size: Reads per mega-batch for memory-bounded streaming
+        positions_per_read: Cap on motif sites scored per read for pairwise /
+            one-vs-all bundles (``None`` = all)
     """
     import torch
 
@@ -163,6 +166,7 @@ def handle_predict(
                 read_batch_size=read_batch_size,
                 backend=backend,
                 parameter_sources=parameter_sources,
+                positions_per_read=positions_per_read,
             )
     else:
         if output_format == "tsv":
