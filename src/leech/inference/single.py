@@ -12,6 +12,7 @@ import pysam
 import torch
 from rich.progress import Progress
 
+from leech._rust_accel import python_backend_if_requested
 from leech.configs import ChunkConfig, InferenceConfig, MotifConfig, SignalConfig
 from leech.constants import TORCH_COMPILE_MIN_SAMPLES
 from leech.features import encode_signal_kmer_batch, extract_move_table, sequence_to_int
@@ -253,6 +254,7 @@ def _inference_worker(
     return results
 
 
+@python_backend_if_requested
 def run_inference(
     model_and_config: tuple[torch.nn.Module | ModelInferenceWrapper | RemoraModelWrapper, dict]
     | None = None,
@@ -627,6 +629,26 @@ def run_inference(
             logger.warning(f"torch.compile failed, using eager mode: {e}")
     elif _has_repr_hook:
         logger.info("torch.compile skipped (repr capture hooks incompatible with CUDA graphs)")
+
+    # `--backend` is settled before `--workers` is looked at (issue #263): the
+    # mp.Pool below is the *Python* extraction path, so it may only run when
+    # Rust is not going to be used. A usable Rust backend runs the threaded
+    # sequential path instead -- as `run_bundle_inference` already does -- and
+    # `--backend rust` that cannot be honored raises here, not after the pool.
+    if num_workers > 0:
+        _rust_usable, *_ = check_rust_extraction_available(
+            backend,
+            norm_method,
+            spec.recover_softclip_signal,
+            signal_context_bases=spec.signal_context_bases,
+            mask_seq_side=spec.mask_seq_side,
+        )
+        if _rust_usable:
+            logger.info(
+                f"--workers {num_workers} ignored: the Rust backend extracts on its own "
+                "threads (use --backend python for the multiprocessing path)"
+            )
+            num_workers = 0
 
     if num_workers > 0:
         # ---- Parallel path (mega-batched) ----

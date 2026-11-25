@@ -38,6 +38,10 @@ _INT_FIELDS: tuple[tuple[str, str, bool], ...] = (
 #: npz member -> chunk field, for plain boolean columns.
 _BOOL_FIELDS: tuple[tuple[str, str], ...] = (("junction_mappeds", "junction_mapped"),)
 
+#: npz member -> chunk field, for float columns where NaN means "not scored"
+#: (``label_quality``, issue #398).
+_FLOAT_FIELDS: tuple[tuple[str, str], ...] = (("label_qualities", "label_quality"),)
+
 #: npz member -> (chunk field, does the empty string mean None)
 _TEXT_FIELDS: tuple[tuple[str, str, bool], ...] = (
     ("sequences", "sequence", False),
@@ -86,6 +90,26 @@ class _IntColumn(_Column):
 
     def take(self, rows: np.ndarray) -> "_IntColumn":
         return _IntColumn(self.values[rows], self.none_if_negative)
+
+    @property
+    def raw(self) -> np.ndarray:
+        return self.values
+
+
+class _FloatColumn(_Column):
+    """A float32 column where NaN means unscored and reads back as None."""
+
+    __slots__ = ("values",)
+
+    def __init__(self, values: np.ndarray):
+        self.values = values
+
+    def value(self, index: int):
+        number = float(self.values[index])
+        return None if number != number else number
+
+    def take(self, rows: np.ndarray) -> "_FloatColumn":
+        return _FloatColumn(self.values[rows])
 
     @property
     def raw(self) -> np.ndarray:
@@ -282,6 +306,11 @@ class ChunkTable(Sequence):
                     continue
                 columns[field] = _BoolColumn(data[member])
 
+            for member, field in _FLOAT_FIELDS:
+                if field in skip or member not in present:
+                    continue
+                columns[field] = _FloatColumn(data[member])
+
             # Old corpora carry dwell_margin_lefts instead of the signed window.
             if not has_feature_window and "dwell_margin_lefts" in present:
                 columns["dwell_margin_left"] = _IntColumn(
@@ -308,6 +337,11 @@ class ChunkTable(Sequence):
             columns["junction_indel"] = _ConstColumn(None)
         if "junction_mapped" not in columns and "junction_mapped" not in skip:
             columns["junction_mapped"] = _ConstColumn(None)
+
+        # A corpus written before label_quality (issue #398) is unscored, not
+        # missing the key: consumers read it unguarded, as with cl_value.
+        if "label_quality" not in columns and "label_quality" not in skip:
+            columns["label_quality"] = _ConstColumn(None)
 
         return cls(columns, n_chunks)
 

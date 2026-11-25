@@ -265,6 +265,25 @@ def test_auxiliary_heads_are_wrapped_for_gradient_sync(monkeypatch):
     assert wrapped == ["_StubModel", "AdversarialHead", "RegressionHead"]
 
 
+def test_cl_regression_warns_about_target_provenance(caplog):
+    """Issue #406: the CL target may be a previous classifier's output."""
+    with caplog.at_level("WARNING"):
+        Trainer(
+            model=_StubModel(),
+            model_type="Stub",
+            train_loader=[],
+            device="cpu",
+            cl_regression=True,
+        )
+    assert "distils that model" in caplog.text
+
+
+def test_no_cl_provenance_warning_without_cl_regression(caplog):
+    with caplog.at_level("WARNING"):
+        Trainer(model=_StubModel(), model_type="Stub", train_loader=[], device="cpu")
+    assert "distils that model" not in caplog.text
+
+
 # --------------------------------------------------------------------------
 # BatchNorm must reduce across ranks, not just its own shard (issue #273)
 # --------------------------------------------------------------------------

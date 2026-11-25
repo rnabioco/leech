@@ -7,6 +7,10 @@ to the pure Python/numpy implementations.
 
 import logging
 import re
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
+from functools import wraps
+from typing import Any
 
 logger = logging.getLogger("leech._rust_accel")
 
@@ -48,6 +52,50 @@ except ImportError:
     _rs_extract_inference_chunks = None
     _rs_extract_training_chunks = None
     _rs_preload_pod5_signals = None
+
+
+# `--backend python` means *no* Rust for the run: extraction, features and the
+# signal-level k-mer encoding alike (issue #263). It used to flip a flag on
+# `signal_refine` alone, so `compute_signal_features` / `encode_signal_kmer`
+# kept calling Rust, and the flag was never put back. One depth counter, read
+# through `python_only_active()`, is what every module-level `HAS_RUST` gate
+# in `features.py` now also consults.
+_python_only_depth = 0
+
+
+def python_only_active() -> bool:
+    """True while a ``python_backend()`` scope is open."""
+    return _python_only_depth > 0
+
+
+@contextmanager
+def python_backend() -> Generator[None]:
+    """Disable every Rust call for the duration of the ``with`` block."""
+    global _python_only_depth
+    _python_only_depth += 1
+    try:
+        yield
+    finally:
+        _python_only_depth -= 1
+
+
+def python_backend_if_requested[F: Callable[..., Any]](func: F) -> F:
+    """Run ``func`` inside ``python_backend()`` when its ``backend`` argument is
+    ``"python"``."""
+    import inspect
+
+    sig = inspect.signature(func)
+
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        bound = sig.bind_partial(*args, **kwargs)
+        backend = bound.arguments.get("backend", sig.parameters["backend"].default)
+        if backend == "python":
+            with python_backend():
+                return func(*args, **kwargs)
+        return func(*args, **kwargs)
+
+    return wrapper  # ty: ignore[invalid-explicit-return]
     logger.debug("Rust acceleration not available, using pure Python fallbacks")
 
 

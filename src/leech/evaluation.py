@@ -143,6 +143,46 @@ def _junction_stratified_multiclass_metrics(
     return strata
 
 
+def _label_noise_diagnostic(
+    test_data_path: Path,
+    labels: np.ndarray,
+    probs: np.ndarray,
+    supplied: dict[str, float] | None,
+) -> dict | None:
+    """Implied per-``source_group`` flip rates beside the supplied ones (issue #398).
+
+    Fits a two-component mixture to the held-out logits of each group; see
+    :func:`leech.label_noise.implied_flip_rates`. None when the test corpus has
+    no source groups. Same row-order contract as :func:`_read_junction_indels`.
+    """
+    from leech.label_noise import implied_flip_rates
+
+    try:
+        with np.load(test_data_path, allow_pickle=False) as data:
+            if "source_groups" not in data:
+                return None
+            groups = np.asarray(data["source_groups"]).astype(str)
+    except (OSError, ValueError) as exc:
+        logger.warning(f"Could not read source_groups from {test_data_path}: {exc}")
+        return None
+    if len(groups) != len(labels):
+        logger.warning(
+            f"Scored {len(labels)} chunks but {test_data_path} holds {len(groups)} "
+            "source_groups; skipping the label-noise diagnostic."
+        )
+        return None
+    p = np.clip(np.asarray(probs, dtype=np.float64), 1e-7, 1 - 1e-7)
+    logits = np.log(p / (1 - p))
+    result = implied_flip_rates(logits, np.asarray(labels), groups, supplied)
+    for name, entry in result.items():
+        if entry["implied_flip_rate"] is not None:
+            logger.info(
+                f"Label noise {name}: implied flip rate {entry['implied_flip_rate']:.3f} "
+                f"(supplied {entry['supplied_rate']})"
+            )
+    return result
+
+
 def _read_cross_run_mask(test_data_path: Path, n: int) -> np.ndarray | None:
     """Boolean per-chunk mask: True where the chunk's run never appeared in training.
 
@@ -625,6 +665,12 @@ def evaluate_model(
             cross_run, all_labels_arr, all_preds_arr, all_probs_arr
         )
         _log_run_strata(metrics["run_stratified"])
+
+    noise = _label_noise_diagnostic(
+        test_data_path, all_labels_arr, all_probs_arr, config.get("label_noise_rates")
+    )
+    if noise is not None:
+        metrics["label_noise_diagnostic"] = noise
 
     if emit_scores is not None:
         _save_scores(emit_scores, test_data_path, all_labels_arr, all_probs_arr)

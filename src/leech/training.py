@@ -803,6 +803,17 @@ class Trainer:
             self.cl_regression_head.to(device)
             self._cl_forward = self._wrap_ddp(self.cl_regression_head, device)
             logger.info(f"CL regression head enabled: repr_dim={repr_dim}, cl_lambda={cl_lambda}")
+            # Provenance (issue #406): the aa-tRNA-seq pipeline writes `cl` as
+            # round(P(charged) * 255) from its production classifier. A corpus
+            # prepared from a BAM it has scored makes this head a distillation
+            # of that model, and nothing in the corpus records which it is.
+            logger.warning(
+                "--cl-regression trains on the BAM `CL`/`cl` tag. If that BAM was scored by "
+                "a charging classifier (the aa-tRNA-seq pipeline's `cl` is "
+                "round(P(charged)*255)), the head distils that model rather than "
+                "learning an independent measurement. Confirm the tag's origin before "
+                "reporting this head as a result."
+            )
 
         # Setup optimizer (include adversarial + CL regression head params if present)
         all_params = list(model.parameters())
@@ -2295,6 +2306,7 @@ def train_model(
     balance_groups: bool = False,
     oversample_minority: bool = False,
     sample_weight_field: str | None = None,
+    min_label_quality: float | None = None,
     label_map: dict[str, int] | None = None,
     num_out: int = 1,
     adversarial_lambda: float = 0.0,
@@ -2443,6 +2455,7 @@ def train_model(
             balance_groups=balance_groups,
             oversample_minority=oversample_minority,
             sample_weight_field=sample_weight_field,
+            min_label_quality=min_label_quality,
             label_map=label_map,
             confound=confound,
             label_noise_rates=label_noise_rates,
@@ -2504,6 +2517,7 @@ def train_model(
     balance_groups = cfg.balance_groups
     oversample_minority = cfg.oversample_minority
     sample_weight_field = cfg.sample_weight_field
+    min_label_quality = cfg.min_label_quality
     label_map = cfg.label_map
     confound = cfg.confound
     label_noise_rates = cfg.label_noise_rates
@@ -2759,6 +2773,7 @@ def train_model(
         standardize_features=standardize_features,
         feature_channel_names=_train_feature_channels,
         selected_feature_channels=feature_channels,
+        min_label_quality=min_label_quality,
     )
 
     val_dataset = None
@@ -3255,6 +3270,7 @@ def train_model(
         "augment_time_stretch_max": augment_time_stretch[1],
         "balance_groups": balance_groups,
         "sample_weight_field": sample_weight_field,
+        "min_label_quality": min_label_quality,
         "label_map": label_map,
         "adversarial_lambda": adversarial_lambda,
         "adversarial_anneal_epochs": adversarial_anneal_epochs,

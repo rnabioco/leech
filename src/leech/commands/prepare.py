@@ -109,6 +109,7 @@ def handle_prepare(
     mask_seq_side: str | None = None,
     feature_channels: list[str] | None = None,
     spill_dir: Path | None = None,
+    label_quality_table: Path | None = None,
 ) -> dict[str, Any]:
     """
     Handle the prepare command logic.
@@ -121,6 +122,9 @@ def handle_prepare(
             ``output_dir``). Created if missing; the final .npz still lands in
             ``output_dir``. Node-local ``$TMPDIR`` is a good choice when the
             node has room for the corpus.
+        label_quality_table: TSV/CSV/Parquet of ``read_id``, ``label_quality``.
+            Each chunk gets its read's score (None when absent). A number, not
+            a keep flag: ``model train --min-label-quality`` gates it (#398).
         motif: Sequence motif to extract (e.g., "CCAGGC")
         motif_offset: Offset within motif for focus base
         motif_reference: Where to search for motif ("fasta" or "bam")
@@ -372,6 +376,20 @@ def handle_prepare(
     spool_dir = Path(spill_dir) if spill_dir is not None else output_dir
     spool_dir.mkdir(parents=True, exist_ok=True)
     _check_spill_space(spool_dir)
+    quality_lookup = None
+    quality_counts = [0, 0]  # scored, total
+    if label_quality_table is not None:
+        from leech.label_quality import apply_label_quality, load_quality_table
+
+        quality_lookup = load_quality_table(label_quality_table)
+        logger.info(f"Loaded {len(quality_lookup)} label_quality scores from {label_quality_table}")
+
+    def _sink(batch):
+        if quality_lookup is not None:
+            quality_counts[0] += apply_label_quality(batch, quality_lookup)
+            quality_counts[1] += len(batch)
+        spool.append(batch)
+
     with ChunkSpool(spool_dir, compressed=compress) as spool:
         _chunks, stats = prepare_training_data_parallel(
             bam_path=bam,
@@ -379,10 +397,21 @@ def handle_prepare(
             num_workers=workers,
             chunk_size=chunk_size,
             min_mapq=min_mapq,
-            chunk_sink=spool.append,
+            chunk_sink=_sink,
             backend_choice=backend,
         )
         n_chunks = stats["total_chunks"]
+        if quality_lookup is not None and quality_counts[1]:
+            coverage = quality_counts[0] / quality_counts[1]
+            logger.info(
+                f"label_quality coverage: {quality_counts[0]} of {quality_counts[1]} chunks "
+                f"({100 * coverage:.1f}%) scored"
+            )
+            if coverage < 1.0:
+                logger.warning(
+                    "label_quality is partially scored; 'model train --min-label-quality' "
+                    "will refuse this corpus. Score every read or none."
+                )
 
         # Per-class read attrition (issue #395) is only known once extraction
         # has run, so it is appended to the sidecar written before it.

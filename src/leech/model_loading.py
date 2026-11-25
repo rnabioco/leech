@@ -196,6 +196,7 @@ _TRAINING_PARAMS = {
     "augment_time_stretch_max",
     "balance_groups",
     "oversample_minority",
+    "min_label_quality",
     "adversarial_lambda",
     "adversarial_anneal_epochs",
     "confound",
