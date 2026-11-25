@@ -69,12 +69,21 @@ try:
         _rs_compute_signal_stats,
         _rs_encode_signal_kmer,
         _rs_encode_signal_kmer_batch,
+        python_only_active,
     )
 except ImportError:
     HAS_RUST = False
     _rs_compute_signal_stats = None
     _rs_encode_signal_kmer = None
     _rs_encode_signal_kmer_batch = None
+
+    def python_only_active() -> bool:
+        return False
+
+
+def _rust_on() -> bool:
+    """Rust is built, and no ``--backend python`` scope is open (issue #263)."""
+    return HAS_RUST and not python_only_active()
 
 
 @dataclass
@@ -251,7 +260,7 @@ def compute_signal_levels(
     """
     # Rust fast path: compute all 6 stats at once, return requested one
     stat_to_idx = {"mean": 0, "median": 1, "std": 2}
-    if HAS_RUST and stat in stat_to_idx:
+    if _rust_on() and stat in stat_to_idx:
         assert _rs_compute_signal_stats is not None
         sig = signal.astype(np.float32, copy=False)
         s2s = seq_to_sig_map.astype(np.int64, copy=False)
@@ -532,7 +541,7 @@ def encode_signal_kmer(
     """
     kmer_before, kmer_after = kmer_context
 
-    if HAS_RUST:
+    if _rust_on():
         assert _rs_encode_signal_kmer is not None
         return np.asarray(
             _rs_encode_signal_kmer(
@@ -601,7 +610,7 @@ def encode_signal_kmer_batch(
     """
     kmer_before, kmer_after = kmer_context
 
-    if HAS_RUST:
+    if _rust_on():
         assert _rs_encode_signal_kmer_batch is not None
         return np.asarray(
             _rs_encode_signal_kmer_batch(
@@ -840,7 +849,7 @@ def compute_signal_features(
         ``--feature-channels`` list (see `chunking.merge_feature_channels`).
     """
     # Rust fast path: compute all 6 stats in one call (avoids Python dispatch overhead)
-    if HAS_RUST:
+    if _rust_on():
         assert _rs_compute_signal_stats is not None
         sig = signal.astype(np.float32, copy=False)
         s2s = seq_to_sig_map.astype(np.int64, copy=False)

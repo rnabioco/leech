@@ -2432,6 +2432,122 @@ print("OK")
         )
 
 
+class TestPythonBackendScope:
+    """Issue #263: ``--backend python`` must switch off *every* Rust call for
+    the run (not only ``signal_refine``'s) and put the switch back afterwards."""
+
+    @staticmethod
+    def _fake_rust(monkeypatch):
+        import numpy as np
+
+        import leech.features as features_mod
+
+        calls = []
+
+        def fake_stats(sig, s2s):
+            calls.append(1)
+            n = len(s2s) - 1
+            z = np.zeros(n, dtype=np.float32)
+            return z, z, z, z, z, z
+
+        monkeypatch.setattr(features_mod, "HAS_RUST", True)
+        monkeypatch.setattr(features_mod, "_rs_compute_signal_stats", fake_stats)
+        return calls
+
+    def test_python_backend_disables_rust_feature_calls_and_restores(self, monkeypatch):
+        import numpy as np
+
+        from leech._rust_accel import python_backend
+        from leech.features import compute_signal_features
+
+        calls = self._fake_rust(monkeypatch)
+        sig = np.arange(10, dtype=np.float32)
+        s2s = np.array([0, 5, 10], dtype=np.int64)
+
+        with python_backend():
+            compute_signal_features(sig, s2s)
+        assert calls == []
+
+        compute_signal_features(sig, s2s)
+        assert calls == [1], "Rust must be back on after the context exits"
+
+    def test_python_backend_restores_on_exception(self, monkeypatch):
+        import numpy as np
+
+        from leech._rust_accel import python_backend
+        from leech.features import compute_signal_features
+
+        calls = self._fake_rust(monkeypatch)
+        with pytest.raises(ZeroDivisionError):
+            with python_backend():
+                raise ZeroDivisionError
+        compute_signal_features(np.arange(10, dtype=np.float32), np.array([0, 5, 10]))
+        assert calls == [1]
+
+    def test_run_inference_python_backend_is_scoped_to_the_call(self, monkeypatch):
+        """The decorator on ``run_inference`` enters the scope only for
+        ``backend='python'`` and leaves nothing behind when the call raises."""
+        from pathlib import Path
+
+        import leech._rust_accel as accel
+        from leech.inference import run_inference
+
+        seen = {}
+
+        def probe(*a, **k):
+            seen["during"] = accel.python_only_active()
+            raise RuntimeError("stop")
+
+        monkeypatch.setattr("leech.inference.single.load_model_auto", probe)
+        with pytest.raises(RuntimeError, match="stop"):
+            run_inference(model_path=Path("x"), backend="python")
+        assert seen["during"] is True
+        assert accel.python_only_active() is False
+
+
+@pytest.mark.skipif(not TRNA_FIXTURES_AVAILABLE, reason="tRNA fixtures not available")
+class TestWorkersRespectBackend:
+    """Issue #263: ``--workers N`` used to branch into the Python ``mp.Pool``
+    before ``--backend`` was looked at."""
+
+    CLASS_NAMES = ["Ala", "Gly", "Met"]
+
+    def _run(self, tmp_path, monkeypatch, *, backend):
+        from leech.bundling import load_model_from_multiclass_bundle
+        from leech.inference import run_inference, single
+
+        def no_pool(*a, **k):
+            raise AssertionError("mp.Pool used")
+
+        monkeypatch.setattr(single.mp, "Pool", no_pool)
+        bundle_path = _create_multiclass_bundle(tmp_path, self.CLASS_NAMES)
+        model, config = load_model_from_multiclass_bundle(bundle_path, device="cpu")
+        run_inference(
+            model_and_config=(model, config),
+            pod5_path=TRNA_POD5,
+            bam_path=TRNA_BAM,
+            output_path=tmp_path / "out.bam",
+            device="cpu",
+            batch_size=8,
+            reverse_signal=True,
+            reference_fasta=TRNA_REF,
+            num_workers=2,
+            backend=backend,
+        )
+
+    def test_workers_with_unavailable_rust_backend_raises(self, tmp_path, monkeypatch):
+        import leech._rust_accel as accel
+
+        monkeypatch.setattr(accel, "HAS_RUST", False)
+        with pytest.raises(RuntimeError, match="--backend rust"):
+            self._run(tmp_path, monkeypatch, backend="rust")
+
+    def test_workers_with_rust_backend_runs_the_rust_path(self, tmp_path, monkeypatch):
+        pytest.importorskip("leech_core")
+        self._run(tmp_path, monkeypatch, backend="rust")
+        assert (tmp_path / "out.bam").exists()
+
+
 class TestMultiSiteTagWriters:
     """Issue #141: a read with several motif sites keeps every call."""
 
