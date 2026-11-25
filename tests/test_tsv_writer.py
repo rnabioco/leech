@@ -34,7 +34,7 @@ class TestTsvPredictionWriterInit:
             assert w.output_path == path
         header = path.read_text().strip()
         assert header == (
-            "read_name\tref_name\tprob_Ala\tprob_Gly\tprob_Ser\tpredicted_aa\tconfidence\tmargin"
+            "read_name\tref_name\tposition\tprob_Ala\tprob_Gly\tprob_Ser\tpredicted_aa\tconfidence\tmargin"
             "\tjunction_indel\tjunction_mapped"
         )
 
@@ -72,9 +72,9 @@ class TestWritePredictions:
         fields = lines[1].split("\t")
         assert fields[0] == "read_001"
         assert fields[1] == "tRNA-Ala-AGC-1"
-        assert fields[5] == "Ala"  # predicted_aa
-        assert float(fields[6]) == pytest.approx(0.95)  # confidence
-        assert float(fields[7]) == pytest.approx(0.95 - 0.03)  # margin
+        assert fields[6] == "Ala"  # predicted_aa
+        assert float(fields[7]) == pytest.approx(0.95)  # confidence
+        assert float(fields[8]) == pytest.approx(0.95 - 0.03)  # margin
 
     def test_no_matching_predictions(self, tmp_path, class_names, int_to_label):
         path = tmp_path / "out.tsv"
@@ -94,10 +94,30 @@ class TestWritePredictions:
             n = w.write_predictions([aln], pending, int_to_label)
         assert n == 1
         fields = path.read_text().strip().split("\n")[1].split("\t")
-        assert fields[5] == "Gly"
+        assert fields[6] == "Gly"
         assert float(fields[-3]) == pytest.approx(3.14)  # predicted_cl
         assert fields[-2] == ""  # junction_indel: not measured for a 5-tuple
         assert fields[-1] == "False"  # junction_mapped
+
+
+class TestMultiSite:
+    """Issue #141: one row per motif site, with the site's position."""
+
+    def test_one_row_per_site_ascending(self, tmp_path, class_names, int_to_label):
+        path = tmp_path / "out.tsv"
+        aln = _make_alignment("read_001")
+        pending = {
+            "read_001": [
+                (30, 1, 0.9, [0.05, 0.9, 0.05]),
+                (10, 0, 0.8, [0.8, 0.1, 0.1]),
+            ]
+        }
+        with TsvPredictionWriter(path, class_names, has_cl=False) as w:
+            n = w.write_predictions([aln], pending, int_to_label)
+        assert n == 1  # reads, not rows
+        rows = [ln.split("\t") for ln in path.read_text().strip().split("\n")[1:]]
+        assert [r[2] for r in rows] == ["10", "30"]
+        assert [r[6] for r in rows] == ["Ala", "Gly"]
 
 
 class TestEdgeCases:
@@ -155,7 +175,7 @@ class TestJunctionIndelColumn:
         ) as w:
             w.write_predictions([aln], pending, int_to_label)
         fields = path.read_text().strip().split("\n")[1].split("\t")
-        assert fields[4] == "unc"  # predicted_aa (2 classes: no prob_Ser column)
+        assert fields[5] == "unc"  # predicted_aa (2 classes: no prob_Ser column)
         assert fields[-2] == "1"  # junction_indel still recorded, unaltered
 
     def test_abstain_on_junction_indel_leaves_intact_junction_alone(
@@ -170,7 +190,7 @@ class TestJunctionIndelColumn:
         ) as w:
             w.write_predictions([aln], pending, int_to_label)
         fields = path.read_text().strip().split("\n")[1].split("\t")
-        assert fields[4] == "Ala"  # predicted_aa (2 classes: no prob_Ser column)
+        assert fields[5] == "Ala"  # predicted_aa (2 classes: no prob_Ser column)
 
     def test_without_the_flag_junction_indel_never_triggers_unc(
         self, tmp_path, class_names, int_to_label
@@ -182,7 +202,7 @@ class TestJunctionIndelColumn:
         with TsvPredictionWriter(path, ["Ala", "Gly"], has_cl=False, min_margin=128) as w:
             w.write_predictions([aln], pending, int_to_label)
         fields = path.read_text().strip().split("\n")[1].split("\t")
-        assert fields[4] == "Ala"  # predicted_aa (2 classes: no prob_Ser column)
+        assert fields[5] == "Ala"  # predicted_aa (2 classes: no prob_Ser column)
 
 
 class TestContextManager:

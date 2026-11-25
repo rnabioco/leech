@@ -60,6 +60,64 @@ def is_multiclass(config: Mapping) -> bool:
     return config.get("num_out", 1) > 1
 
 
+def _passes_thresholds(
+    conf: float,
+    probs: list[float],
+    min_confidence: int,
+    min_margin: int,
+    junction_indel: int | None = None,
+    junction_mapped: bool = False,
+    abstain_on_junction_indel: bool = False,
+) -> bool:
+    """Whether one call clears ``min_confidence`` and ``min_margin``.
+
+    The single definition shared by the scalar tags (:func:`_write_prediction_tags`)
+    and the per-site arrays (:func:`_write_multisite_tags`), so a site's gated
+    label can never disagree with what its own scalar call would have been.
+    """
+    sorted_probs = sorted(probs, reverse=True)
+    margin = sorted_probs[0] - sorted_probs[1] if len(sorted_probs) > 1 else 1.0
+    margin_uint8 = int(min(255, max(0, round(margin * 255))))
+    ac_uint8 = int(min(255, max(0, round(conf * 255))))
+    if abstain_on_junction_indel:
+        disrupted = not junction_mapped or (junction_indel is not None and junction_indel != 0)
+        passed_margin = (margin_uint8 >= min_margin) if disrupted else True
+    else:
+        passed_margin = margin_uint8 >= min_margin
+    return ac_uint8 >= min_confidence and passed_margin
+
+
+def _write_multisite_tags(
+    aln: pysam.AlignedSegment,
+    positions: list[int],
+    labels: list[str],
+    confs: list[float],
+    raw: bool,
+) -> None:
+    """Write one call per motif site for a read with more than one site (issue #141).
+
+    The scalar ``aa``/``ac``/``am``/``pn``/``pp`` tags always describe the
+    first (lowest-position) site, exactly as they did when everything after it
+    was discarded; these array tags carry *every* site, parallel and in
+    ascending position order:
+
+    - ``sp:B:i`` -- focus-base index of each site (same coordinate system as
+      the binary path's ``MP``)
+    - ``sa:Z`` -- comma-joined call per site (``unc`` where the site failed
+      the thresholds)
+    - ``sc:B:C`` (compact) or ``sc:B:f`` (raw) -- winning-class probability
+    """
+    aln.set_tag("sp", array.array("i", [int(p) for p in positions]))
+    aln.set_tag("sa", ",".join(labels))
+    if raw:
+        aln.set_tag("sc", array.array("f", confs))
+    else:
+        aln.set_tag(
+            "sc",
+            array.array("B", [int(min(255, max(0, round(c * 255)))) for c in confs]),
+        )
+
+
 def _write_prediction_tags(
     aln: pysam.AlignedSegment,
     predicted_aa: str,
@@ -105,12 +163,15 @@ def _write_prediction_tags(
     margin_uint8 = int(min(255, max(0, round(margin * 255))))
     ac_uint8 = int(min(255, max(0, round(conf * 255))))
 
-    if abstain_on_junction_indel:
-        disrupted = not junction_mapped or (junction_indel is not None and junction_indel != 0)
-        passed_margin = (margin_uint8 >= min_margin) if disrupted else True
-    else:
-        passed_margin = margin_uint8 >= min_margin
-    passed_threshold = ac_uint8 >= min_confidence and passed_margin
+    passed_threshold = _passes_thresholds(
+        conf,
+        probs,
+        min_confidence,
+        min_margin,
+        junction_indel,
+        junction_mapped,
+        abstain_on_junction_indel,
+    )
 
     # `ac` always carries the winning class probability, whether or not the call
     # passed. Reporting 1-conf for filtered reads only makes sense when there are
@@ -1170,27 +1231,51 @@ def _write_mega_batch_predictions(
         for aln in aln_batch:
             preds = pending.get(aln.query_name)
             if preds:
-                _, cls_idx, conf, all_probs, cl_pred, junction_indel, junction_mapped = (
-                    _unpack_multiclass_pred(preds[0])
-                )
-                if int_to_label:
-                    predicted_aa = int_to_label.get(cls_idx, str(cls_idx))
-                else:
-                    predicted_aa = str(cls_idx)
-                _write_prediction_tags(
-                    aln,
-                    predicted_aa,
-                    conf,
-                    class_names_str,
-                    all_probs,
-                    raw,
-                    min_confidence,
-                    min_margin,
-                    predicted_cl=cl_pred,
-                    junction_indel=junction_indel,
-                    junction_mapped=junction_mapped,
-                    abstain_on_junction_indel=abstain_on_junction_indel,
-                )
+                # Every motif site is reported (issue #141); the scalar tags
+                # describe the first, the array tags carry them all.
+                sites = sorted((_unpack_multiclass_pred(p) for p in preds), key=lambda t: t[0])
+                labels: list[str] = []
+                for i, (_base_idx, cls_idx, conf, all_probs, cl_pred, ji, jm) in enumerate(sites):
+                    if int_to_label:
+                        predicted_aa = int_to_label.get(cls_idx, str(cls_idx))
+                    else:
+                        predicted_aa = str(cls_idx)
+                    labels.append(
+                        predicted_aa
+                        if _passes_thresholds(
+                            conf,
+                            all_probs,
+                            min_confidence,
+                            min_margin,
+                            ji,
+                            jm,
+                            abstain_on_junction_indel,
+                        )
+                        else BELOW_THRESHOLD_LABEL
+                    )
+                    if i == 0:
+                        _write_prediction_tags(
+                            aln,
+                            predicted_aa,
+                            conf,
+                            class_names_str,
+                            all_probs,
+                            raw,
+                            min_confidence,
+                            min_margin,
+                            predicted_cl=cl_pred,
+                            junction_indel=ji,
+                            junction_mapped=jm,
+                            abstain_on_junction_indel=abstain_on_junction_indel,
+                        )
+                if len(sites) > 1:
+                    _write_multisite_tags(
+                        aln,
+                        [int(s_[0]) for s_ in sites],
+                        labels,
+                        [s_[2] for s_ in sites],
+                        raw,
+                    )
                 n_preds += 1
             bam_out.write(aln)
     else:
@@ -1823,8 +1908,8 @@ def collect_bam_metadata_for_rust(
         anchor: "reference" or "basecall".
         reference_sequences: Per-reference sequence dict; required for
             ``anchor == "reference"``.
-        max_positions_per_read: Cap on motif positions emitted per read.
-            Bundle inference passes 1 to force one-chunk-per-read.
+        max_positions_per_read: Cap on motif positions emitted per read,
+            lowest position first. ``None`` keeps every site.
 
     Returns:
         Ten parallel lists: (rids, seqs, strides, moves, num_samples,
@@ -1893,7 +1978,7 @@ def collect_bam_metadata_for_rust(
                 m.position + motif_offset: (m.junction_indel, m.junction_mapped) for m in matches
             }
             if max_positions_per_read is not None:
-                positions = positions[:max_positions_per_read]
+                positions = sorted(positions)[:max_positions_per_read]
 
             rs_rids.append(aln.query_name)
             rs_seqs.append(aln.query_sequence)
