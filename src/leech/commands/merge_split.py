@@ -53,14 +53,27 @@ def _propagate_prepare_config(input_paths: list[Path], output_dir: Path) -> None
     many chunks came from the other input(s).
     """
     configs: list[dict] = []
+    # One entry per input: a missing sidecar (old data) is an undeclared input
+    # for the label-divergence check, though it contributes no config below.
+    divergence_blocks: list[dict | None] = []
     for p in input_paths:
         sidecar = p.parent / "prepare_config.json"
         if sidecar.exists():
             with open(sidecar) as f:
                 configs.append(json.load(f))
+            divergence_blocks.append(configs[-1].get("label_divergence"))
+        else:
+            divergence_blocks.append(None)
 
     if not configs:
         return
+
+    # Label-divergence declarations (issue #402): a merged corpus has one or
+    # none. Mixed or disagreeing declarations raise rather than warn -- the
+    # guard would otherwise cover only the inputs that happened to declare.
+    from leech.leakage import merge_blocks
+
+    merged_divergence = merge_blocks(divergence_blocks)
 
     # A sidecar predating issue #358 carries no `feature_channels` key at
     # all -- that means the historical twelve, the same fallback pattern as
@@ -113,6 +126,9 @@ def _propagate_prepare_config(input_paths: list[Path], output_dir: Path) -> None
                 )
 
     output_dir.mkdir(parents=True, exist_ok=True)
+    first = dict(first)
+    if merged_divergence is not None:
+        first["label_divergence"] = merged_divergence
     with open(output_dir / "prepare_config.json", "w") as f:
         json.dump(first, f, indent=2)
     logger.info(f"Propagated prepare_config.json to {output_dir}")

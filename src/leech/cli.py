@@ -259,7 +259,14 @@ data.command_order = ("prepare", "merge")
     "--feature-end",
     type=int,
     default=None,
-    help="Feature window end as signed offset from focus base (inclusive). Default: kmer_context (5). E.g., --feature-start 0 --feature-end 20 for right-only.",
+    help=(
+        "Feature window end as signed offset from focus base (inclusive). Default: "
+        "kmer_context (5). E.g., --feature-start 0 --feature-end 20 for right-only. "
+        "CAUTION: where the classes differ by library chemistry (adapters that diverge "
+        "downstream of the focus base), a long window stores the divergent sequence and "
+        "lets a model read the label from it; declare the divergence with "
+        "--label-divergence-position and leech refuses such a window."
+    ),
 )
 @click.option(
     "--no-reverse-signal",
@@ -400,6 +407,32 @@ data.command_order = ("prepare", "merge")
         "honor it. Unknown names are refused before any read is touched."
     ),
 )
+@click.option(
+    "--label-divergence-position",
+    type=click.IntRange(min=0),
+    default=None,
+    help=(
+        "0-based position, counted from the first base of --motif, where the "
+        "label-defining sequence starts (e.g. where two adapters stop sharing a common "
+        "arm). Leech derives the focus-relative D = P - --motif-offset and refuses a "
+        "window in which any stored input (features, k-mer feature channels, raw "
+        "signal, signal residual, sequence) can carry the identity of a base at +D or "
+        "beyond. Requires --motif; not valid with --focus-tsv. Recorded in "
+        "prepare_config.json as `label_divergence`. Sample-defined signal windows are "
+        "bounded assuming a read no faster than 24 samples/base; "
+        "--signal-context-bases is exact."
+    ),
+)
+@click.option(
+    "--allow-window-past-divergence",
+    is_flag=True,
+    default=False,
+    help=(
+        "Proceed although the window reaches --label-divergence-position. The corpus "
+        "is recorded with status 'override', which every downstream metrics table "
+        "reports."
+    ),
+)
 def prepare(
     pod5,
     bam,
@@ -439,6 +472,8 @@ def prepare(
     recover_softclip_signal,
     mask_seq_side,
     feature_channels,
+    label_divergence_position,
+    allow_window_past_divergence,
 ):
     """Prepare training data from POD5 and BAM files."""
     from leech.commands import handle_prepare
@@ -459,6 +494,15 @@ def prepare(
             f"--signal-context-bases L R must both be >= 0, got {signal_context_bases}. "
             f"A negative value indexes past either end of a read's base-to-signal map."
         )
+    if label_divergence_position is not None:
+        if focus_tsv is not None:
+            raise click.UsageError(
+                "--label-divergence-position cannot be combined with --focus-tsv"
+            )
+        if not motif:
+            raise click.UsageError(
+                "--label-divergence-position is counted from --motif; pass --motif"
+            )
     if refine_signal_map and kmer_table is None:
         from leech.data import get_kmer_table
 
@@ -507,6 +551,8 @@ def prepare(
         recover_softclip_signal=recover_softclip_signal,
         mask_seq_side=mask_seq_side,
         feature_channels=parsed_feature_channels,
+        label_divergence_position=label_divergence_position,
+        allow_window_past_divergence=allow_window_past_divergence,
     )
 
 

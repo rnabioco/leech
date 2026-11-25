@@ -36,3 +36,9 @@ __exit__  # noqa: vulture
 
 # Rust helpers imported only by the test suite (vulture scans src/ only)
 _rs_test_process_read  # noqa: vulture
+
+# Label-divergence helpers called only from pipeline/workflow/rules/common.smk
+# (vulture scans src/ only; the Snakefile imports them at parse time)
+pipeline_divergence_arg  # noqa: vulture
+preflight  # noqa: vulture
+STATUS_UNDECLARED  # noqa: vulture

@@ -102,6 +102,7 @@ rule reprepare_chunks_optimized_pairwise:
         label_arg=lambda wildcards: build_label_arg(wildcards),
         feature_channels_arg=build_feature_channels_arg(),
         spill_dir_arg=build_spill_dir_arg(),
+        divergence_arg=build_divergence_arg(),
     shell:
         """
         LEFT=$(uv run python -c "import json; print(json.load(open('{input.best_params}'))['left_context'])")
@@ -126,6 +127,7 @@ rule reprepare_chunks_optimized_pairwise:
             {params.label_arg} \
             {params.feature_channels_arg} \
             {params.spill_dir_arg} \
+            {params.divergence_arg} \
             --workers {params.workers} \
             --chunk-size {params.chunk_size} \
             --signal-context "$LEFT" "$RIGHT" \

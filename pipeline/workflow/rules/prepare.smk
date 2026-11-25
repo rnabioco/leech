@@ -40,6 +40,7 @@ rule prepare_chunks:
         signal_context_arg=build_signal_context_arg(),
         feature_channels_arg=build_feature_channels_arg(),
         spill_dir_arg=build_spill_dir_arg(),
+        divergence_arg=build_divergence_arg(),
         slurm_extra="",  # No GPU needed for data preparation
     shell:
         """
@@ -56,6 +57,7 @@ rule prepare_chunks:
             {params.signal_context_arg} \
             {params.feature_channels_arg} \
             {params.spill_dir_arg} \
+            {params.divergence_arg} \
             --workers {params.workers} \
             --chunk-size {params.chunk_size} \
             --no-split \

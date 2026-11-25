@@ -70,6 +70,26 @@ def flatten_junction_strata(data):
     return data
 
 
+def flatten_leakage(data):
+    """Lift the label-divergence verdict of one metrics dict into flat columns (#402).
+
+    ``leech eval test`` writes ``leakage: {status, position, focus_offset}``
+    when the model was trained on a corpus that declared where its label-defining
+    sequence starts. ``leakage_status`` is ``clear``, ``override`` (the window
+    reached that point and was allowed through) or ``undeclared``, and is never
+    blank: a metrics file without the block is ``undeclared`` explicitly, so an
+    unguarded run cannot pass for a guarded one in a table.
+    """
+    leakage = data.pop("leakage", None)
+    if isinstance(leakage, dict) and leakage:
+        data["leakage_status"] = leakage.get("status") or "undeclared"
+        data["leakage_focus_offset"] = leakage.get("focus_offset")
+    else:
+        data["leakage_status"] = "undeclared"
+        data["leakage_focus_offset"] = None
+    return data
+
+
 def load_metrics(metrics_dir):
     """
     Load all metrics JSON files from a directory tree.
@@ -109,7 +129,7 @@ def load_metrics(metrics_dir):
                     sample = json_file.stem.replace("_metrics", "")
                     data["sample"] = sample
 
-                metrics_list.append(flatten_junction_strata(data))
+                metrics_list.append(flatten_leakage(flatten_junction_strata(data)))
 
             except Exception as e:
                 print(f"Warning: Could not load {json_file}: {e}", file=sys.stderr)
@@ -172,6 +192,8 @@ def main():
                 for col in df.columns:
                     if col not in ["pair", "model", "sample"]:
                         placeholder[col] = float("nan")
+                # A failed job has no verdict; it is not a guarded run.
+                placeholder["leakage_status"] = "undeclared"
                 missing_rows.append(placeholder)
 
             # Append missing rows to dataframe

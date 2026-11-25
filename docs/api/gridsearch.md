@@ -16,7 +16,7 @@ The gridsearch module provides utilities for optimizing chunk context parameters
       show_root_heading: true
       show_source: true
 
-::: leech.gridsearch.parse_context_grid
+::: leech.context_grid.parse_context_grid
     options:
       show_root_heading: true
       show_source: true

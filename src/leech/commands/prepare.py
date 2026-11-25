@@ -109,6 +109,8 @@ def handle_prepare(
     mask_seq_side: str | None = None,
     feature_channels: list[str] | None = None,
     spill_dir: Path | None = None,
+    label_divergence_position: int | None = None,
+    allow_window_past_divergence: bool = False,
 ) -> dict[str, Any]:
     """
     Handle the prepare command logic.
@@ -160,6 +162,16 @@ def handle_prepare(
             the checkpoint's ``config.json`` and `leech predict` extracts
             exactly that list. Unknown names are refused here, before any
             read is touched.
+        label_divergence_position: 0-based position, counted from the first
+            base of ``motif``, where the label-defining sequence starts (issue
+            #402). Requires ``motif``; refused with ``focus_tsv``. The window
+            this run would store is checked against it before any read is
+            touched, and a window in which any present input can carry the
+            identity of a base at or past that point raises ``ValueError`` --
+            see :mod:`leech.leakage` for the reach table. ``None`` (default)
+            declares nothing and checks nothing.
+        allow_window_past_divergence: Proceed anyway; the corpus is recorded
+            with ``label_divergence.status == "override"``.
 
     Returns:
         Dictionary with extraction statistics
@@ -229,6 +241,45 @@ def handle_prepare(
                 if signal_len is None
                 else " (explicit --signal-len)"
             )
+        )
+
+    # Label-divergence guard (issue #402). Runs here, beside the guards above and
+    # before the reference is loaded or any read is opened, so callers that
+    # bypass click (Snakemake rules, notebooks) get the same refusal.
+    label_divergence_block: dict | None = None
+    if label_divergence_position is not None:
+        from leech import leakage
+
+        lookahead: int | None = None
+        if refine_signal_map:
+            from leech.data import get_kmer_table
+
+            lookahead = leakage.refiner_lookahead(
+                leakage.table_kmer_len(kmer_table if kmer_table is not None else get_kmer_table())
+            )
+        label_divergence_block = leakage.evaluate(
+            label_divergence_position,
+            motif=motif,
+            motif_offset=motif_offset,
+            allow_override=allow_window_past_divergence,
+            focus_tsv=focus_tsv,
+            feature_start=feature_start,
+            feature_end=feature_end,
+            base_justify=base_justify,
+            signal_context=tuple(signal_context) if signal_context else DEFAULT_SIGNAL_CONTEXT,
+            signal_context_bases=signal_context_bases,
+            lookahead=lookahead,
+            feature_channels=resolved_feature_channels,
+            mask_seq_side=mask_seq_side,
+        )
+        logger.info(
+            f"Label divergence at motif position {label_divergence_position} "
+            f"(focus-relative +{label_divergence_block['focus_offset']}): "
+            f"status {label_divergence_block['status']}, reach {label_divergence_block['reach']}"
+        )
+    elif allow_window_past_divergence:
+        raise ValueError(
+            "--allow-window-past-divergence has no effect without --label-divergence-position"
         )
 
     logger.info(f"Preparing data from {pod5} and {bam}")
@@ -341,6 +392,7 @@ def handle_prepare(
             focus_map=focus_map,
         ),
         reference_fasta=reference_fasta,
+        label_divergence=label_divergence_block,
     )
 
     # Write preparation config sidecar for downstream provenance

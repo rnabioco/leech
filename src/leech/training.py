@@ -3339,6 +3339,10 @@ def train_model(
         # it never saw in training. No `model train` CLI flag: it is baked
         # into the corpus at `data prepare` time, not chosen at train time.
         "mask_seq_side": prepare_metadata.get("mask_seq_side"),
+        # The label-divergence declaration and its verdict (leech#402), carried
+        # from the prepare sidecar so a checkpoint states whether the window
+        # it trained on reached the label-defining sequence. null = undeclared.
+        "label_divergence": prepare_metadata.get("label_divergence"),
         # The recorded feature-channel list (issue #358), auto-carried from
         # the prepare sidecar so `leech predict` extracts exactly the rows
         # this checkpoint was trained on. A config lacking the key (a

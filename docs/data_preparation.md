@@ -238,6 +238,59 @@ window through the shared `resolve_signal_context_bases`
 Rust path for a model trained this way just like any other. The resolved
 window is logged and recorded in `prepare_config.json`.
 
+## Declaring where the labels diverge
+
+In a library whose classes differ by chemistry -- say a charged and an uncharged
+adapter that share a common arm and then diverge -- the sequence past the
+divergence *is* the label. Any input whose window reaches it lets a model read
+the class off the reference slice, and the score then measures the adapter.
+
+Declare it once, as a position counted from the first base of `--motif`
+(0-based):
+
+```bash
+leech data prepare --motif CCAGGC --motif-offset 2 \
+    --label-divergence-position 20 \
+    --feature-start 0 --feature-end 12 --signal-context-bases 0 13 ...
+```
+
+Leech derives the focus-relative `D = P - --motif-offset` (here `+18`, the first
+label-defining base in the same coordinates as `--feature-end`) and refuses,
+before the reference or any read is opened, a window in which any stored input
+can carry the identity of a base at `+D` or beyond. Declare the position
+relative to the motif, not the focus base: it stays correct if you change
+`--motif-offset`. `P` is a property of your library and is never defaulted;
+the guard needs `--motif` and cannot be combined with `--focus-tsv`.
+
+What each input can reach (`L` is the k-mer lookahead of the level table, 4 for
+the bundled 9-mer table, read from the table and never assumed):
+
+| Input | Reach |
+|---|---|
+| `features`, other than the k-mer channels | `feature_end` as resolved |
+| `kmer_expected`, `kmer_residual`, `kmer_residual_abs` | `feature_end + L` (stored when refinement is on) |
+| raw `signal` | exactly `R` for `--signal-context-bases L R`; `ceil(theta + R / s) - 1` for `--signal-context`, with `s = 24` samples/base (a read no faster than that) and `theta` 0, 0.5, 1 for `--base-justify start`, `center`, `end` |
+| `signal_residual` | signal reach `+ L` (refinement on) |
+| `sequence` | `kmer_context` (0 under `--mask-seq-side right`) |
+| `sequence_with_kmer_context` | signal reach `+ 4` (0 under `--mask-seq-side right`) |
+
+The boundary is exclusive: an input reaching `D - 1` passes. The refusal names
+each offending input and its reach. Prefer `--signal-context-bases`: a
+sample-defined window can only be bounded by the rate floor, which is
+conservative. `--mask-seq-side right` discounts only the two sequence branches;
+the k-mer feature channels and the residual are computed from the same slice and
+keep their reach. Physical pore footprint is not counted.
+
+`--allow-window-past-divergence` proceeds anyway. The verdict is recorded in
+`prepare_config.json["label_divergence"]` (`null` when undeclared; otherwise
+`position`, `focus_offset`, `motif`, `motif_offset`, `rate_floor`, per-input
+`reach`, and `status` of `clear` or `override`), copied into the model's
+`config.json`, and reported by `eval test` as `metrics["leakage"]`. `data merge`
+raises if its inputs disagree on the declaration, or if some declare and others
+do not -- re-prepare the named inputs.
+
+This guards what `prepare` stores. It does not audit a corpus prepared earlier.
+
 ## Masking sequence-branch bases
 
 A feature+signal model's sequence branch (`sequence` / `sequence_with_kmer_context`)

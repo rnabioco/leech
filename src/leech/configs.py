@@ -182,6 +182,10 @@ class PrepareConfig:
     chunk: ChunkConfig = field(default_factory=ChunkConfig)
     labeling: LabelConfig = field(default_factory=LabelConfig)
     reference_fasta: Path | None = None
+    #: The label-divergence guard's block (`leech.leakage.evaluate`), or None
+    #: when no divergence was declared (issue #402). Recorded verbatim in
+    #: prepare_config.json["label_divergence"].
+    label_divergence: dict | None = None
 
     def to_dict(self) -> dict:
         """Serialize to a JSON-safe dict (excludes non-serializable fields)."""
@@ -236,6 +240,9 @@ class PrepareConfig:
             "feature_channels": list(self.signal.feature_channels),
             "label": self.labeling.label,
             "reference_fasta": str(self.reference_fasta) if self.reference_fasta else None,
+            # Where the label-defining sequence starts and whether the window
+            # reaches it (leech#402); null when undeclared.
+            "label_divergence": self.label_divergence,
         }
 
 

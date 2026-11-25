@@ -16,6 +16,17 @@
 #   etc.
 project_name: "synthetic-trna"
 
+# ============================================================================
+# Label divergence (rnabioco/leech#402) -- REQUIRED
+# ============================================================================
+# Where the label-defining sequence starts, counted from the first base of
+# `motif` (0-based); see the key's documentation in config/config.yaml. The
+# synthetic-trna panel's classes are amino-acid labels on a single construct,
+# not two adapters that diverge, so there is no divergence to declare here.
+# Set this to the divergence position (and revisit `chunk_context`) when
+# pointing the pipeline at a library whose classes differ by adapter chemistry.
+label_divergence_position: null
+
 samples:
   # Uncharged sample
   uncharged_synthetic:

@@ -235,6 +235,26 @@ def _log_run_strata(strata: dict) -> None:
             )
 
 
+def _attach_leakage(metrics: dict, config: dict) -> None:
+    """Record the model's label-divergence verdict in ``metrics["leakage"]`` (#402).
+
+    Absent when the model's config carries no declaration, so an undeclared
+    run's metrics are unchanged; the pipeline's summary tables turn the absence
+    into an explicit ``undeclared`` column.
+    """
+    from leech.leakage import leakage_summary
+
+    summary = leakage_summary(config.get("label_divergence"))
+    if summary is not None:
+        metrics["leakage"] = summary
+        if summary["status"] == "override":
+            logger.warning(
+                "This model's training window reached the declared label-divergence point "
+                f"(+{summary['focus_offset']}); its scores may reflect the adapter, not the "
+                "chemistry (status: override)."
+            )
+
+
 def evaluate_model(
     model_path: Path,
     test_data_path: Path,
@@ -510,6 +530,8 @@ def evaluate_model(
             )
             _log_run_strata(metrics["run_stratified"])
 
+        _attach_leakage(metrics, config)
+
         # Add metadata
         metrics["model_path"] = str(model_path)
         metrics["test_data_path"] = str(test_data_path)
@@ -592,6 +614,8 @@ def evaluate_model(
         all_probs_arr,
         checkpoint_metric=config.get("checkpoint_metric"),
     )
+
+    _attach_leakage(metrics, config)
 
     # Add metadata
     metrics["model_path"] = str(model_path)

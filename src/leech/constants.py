@@ -40,6 +40,13 @@ DEFAULT_DWELL_MARGIN = 15  # Extra bases on each side for dwell_offset tuning (s
 # and gets zero-padded (the conservative default) rather than centre-cropped.
 DEFAULT_MAX_SAMPLES_PER_BASE = 36
 
+# Fast-read translocation rate floor (samples/base), the documented "fast"
+# end (~24 samples/base). The label-divergence guard (`leech.leakage`) bounds
+# how many bases a sample-defined signal window can reach by assuming a read
+# no faster than this; a faster read reaches further. `--signal-context-bases`
+# is exact and needs no floor.
+DEFAULT_MIN_SAMPLES_PER_BASE = 24.0
+
 # Model architecture defaults
 DEFAULT_CONV_CHANNELS = [4, 16, 256]  # Channel sizes for conv layers
 DEFAULT_SIGNAL_KERNEL = 5  # Kernel size for signal branch convolutions

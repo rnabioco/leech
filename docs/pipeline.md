@@ -58,6 +58,33 @@ samples:
     amino_acid: "Ala"
 ```
 
+### Label divergence
+
+`label_divergence_position` is a **required** key (rnabioco/leech#402): where the
+label-defining sequence starts, counted from the first base of `motif`
+(0-based), or `null` when the labels in this experiment are not defined by
+library chemistry. Leaving it out is a `WorkflowError`, because a pipeline that
+never asks the question is the one that ships the leak.
+
+```yaml
+motif: "CCAGGC"
+motif_offset: 2
+label_divergence_position: 20   # or null
+allow_window_past_divergence: false
+```
+
+With a position declared, the DAG build evaluates the same guard `leech data
+prepare` applies (see [Declaring where the labels
+diverge](data_preparation.md#declaring-where-the-labels-diverge)) over what the
+prepare rules will forward -- `chunk_context` and, with `use_grid_search`, the
+widest right context in the grid -- and refuses before any job is submitted.
+Every rule that runs `leech data prepare` (`prepare_chunks`, both grid-search
+re-prepare rules, `ablation_prepare_chunks`) forwards the flags, so the window
+each one ends up with is checked again. `allow_window_past_divergence: true`
+proceeds; `summarize_metrics.py` and `compare_architectures.py` then show
+`leakage_status` (`clear`, `override`, or `undeclared`, never blank) and
+`leakage_focus_offset` as columns.
+
 ### Model and training settings
 
 ```yaml

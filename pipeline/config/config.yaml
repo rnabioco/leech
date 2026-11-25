@@ -137,6 +137,24 @@ reference_fasta: "pipeline/resources/references/synthetic-trna.fa"  # External r
 #                                    CIGAR; needs anchor=reference, the default)
 skip_motif_indels: false
 require_query_mapping: false
+# Label divergence (rnabioco/leech#402) -- REQUIRED, deliberately not set here.
+# Where the label-defining sequence starts, counted from the first base of
+# `motif` (0-based). Set it in your own config / samples file:
+#   label_divergence_position: 20     # e.g. two adapters sharing a common arm that
+#                                     # first disagree 20 bases into the motif
+#   label_divergence_position: null   # labels are not defined by library chemistry
+# Leech derives D = position - motif_offset (focus-relative) and the DAG build
+# refuses -- before any job is submitted -- a `chunk_context` (and, with
+# `use_grid_search`, a grid right context) whose stored inputs can reach +D:
+# the sequence past the divergence IS the label, and a model that sees it
+# scores the adapter, not the chemistry. Absent is a WorkflowError.
+# `data prepare` re-checks every window each rule passes it. Sample-defined
+# windows are bounded assuming a read no faster than 24 samples/base.
+#   allow_window_past_divergence: false   # true proceeds anyway; every metrics
+#                                         # table then reports leakage_status
+#                                         # "override"
+allow_window_past_divergence: false
+
 # Signal context (left, right) in raw samples, passed to
 # `leech data prepare --signal-context LEFT RIGHT` by prepare_chunks and the
 # grid-search re-prepare rules. Set to match the leech CLI's own default,

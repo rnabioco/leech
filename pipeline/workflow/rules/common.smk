@@ -359,6 +359,44 @@ def build_spill_dir_arg():
     return f"--spill-dir {spill}" if spill else ""
 
 
+def build_divergence_arg():
+    """Render the label-divergence flags from config, or "" when it is null.
+
+    `label_divergence_position` is REQUIRED (rnabioco/leech#402): where the
+    label-defining sequence starts, counted from the first base of `motif`
+    (0-based), or null when the labels in this experiment are not defined by
+    library chemistry. Absent is an error rather than a default, because a
+    pipeline that never asks the question is the one that ships the leak.
+    `allow_window_past_divergence: true` adds the override flag.
+
+    Shared by every rule that runs `leech data prepare` (prepare_chunks, both
+    grid-search re-prepare rules, ablation_prepare_chunks), so `data prepare`
+    itself re-checks whatever window each rule ends up passing.
+    """
+    from leech.leakage import pipeline_divergence_arg
+
+    try:
+        return pipeline_divergence_arg(config)
+    except ValueError as exc:
+        raise WorkflowError(str(exc))
+
+
+def check_label_divergence_config():
+    """DAG-build pre-flight: refuse a window past the divergence before any job.
+
+    Evaluates `leech.leakage.preflight` over what the prepare rules will
+    forward -- `chunk_context` and, with `use_grid_search`, the widest right
+    context the grid can select -- so a refusal surfaces at `snakemake -n`
+    rather than after a grid search has already run.
+    """
+    from leech.leakage import preflight
+
+    try:
+        return preflight(config)
+    except ValueError as exc:
+        raise WorkflowError(str(exc))
+
+
 def get_grid_search_setting(key, default):
     """Read a key from the `grid_search:` config block, falling back to default."""
     grid = config.get("grid_search") or {}
@@ -390,3 +428,7 @@ def require_config(key):
             f"Add it to your config file or pass --config {key}=<value>."
         )
     return config[key]
+
+
+# Evaluated at DAG build, before any job is submitted (rnabioco/leech#402).
+check_label_divergence_config()

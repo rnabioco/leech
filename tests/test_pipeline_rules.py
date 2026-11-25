@@ -251,3 +251,48 @@ def test_leech_invocations_pass_required_flags(path: Path):
                 f"required option(s) {sorted(missing)}"
             )
     assert not problems, "\n".join(problems)
+
+
+# ---------------------------------------------------------------------------
+# Label divergence (issue #402): flags the shared `build_divergence_arg()`
+# helper renders are invisible to the literal-flag scan above, so check them
+# separately.
+# ---------------------------------------------------------------------------
+
+_DIVERGENCE_PLACEHOLDER = "{params.divergence_arg}"
+
+
+def _prepare_rules() -> list[tuple[str, str]]:
+    """(rule name, block text) for every rule that runs `leech data prepare`."""
+    out = []
+    for path in SMK_FILES:
+        for rule_name, block in _iter_rule_blocks(path.read_text()):
+            if any(t == ("data", "prepare") for t in _shell_invocations(block)):
+                out.append((rule_name, block))
+    return out
+
+
+def test_every_prepare_invocation_forwards_the_divergence_flags():
+    rules = _prepare_rules()
+    names = {name for name, _ in rules}
+    assert {
+        "prepare_chunks",
+        "reprepare_chunks_optimized_pairwise",
+        "reprepare_chunks_optimized_architecture",
+        "ablation_prepare_chunks",
+    } <= names
+    for name, block in rules:
+        assert _DIVERGENCE_PLACEHOLDER in block, f"{name} does not forward the divergence flags"
+        assert "divergence_arg=build_divergence_arg()" in block, name
+
+
+def test_helper_rendered_divergence_flags_are_declared_prepare_options():
+    from leech import leakage
+
+    rendered = leakage.pipeline_divergence_arg(
+        {"label_divergence_position": 20, "allow_window_past_divergence": True}
+    )
+    flags = set(_FLAG.findall(rendered))
+    assert flags == {"--label-divergence-position", "--allow-window-past-divergence"}
+    declared = _declared_flags(_resolve_command(("data", "prepare")))
+    assert flags <= declared

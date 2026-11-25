@@ -204,3 +204,86 @@ def test_pipeline_default_split_gives_chance_cross_run_auroc(corpora, tmp_path):
 def test_pipeline_default_is_run_holdout():
     config = yaml.safe_load((PIPELINE / "config" / "config.yaml").read_text())
     assert config["split_mode"] == "run_holdout"
+
+
+# ---------------------------------------------------------------------------
+# Label divergence (issue #402): a corpus whose classes differ only at focus-
+# relative offsets >= D. No model is trained; the scorer is the simplest one
+# that can read the divergent region.
+# ---------------------------------------------------------------------------
+
+DIVERGENCE_P = 20  # from the start of the motif
+DIVERGENCE_MOTIF_OFFSET = 2
+DIVERGENCE_D = DIVERGENCE_P - DIVERGENCE_MOTIF_OFFSET  # 18
+
+
+def _divergent_features(feature_end: int, n_per_class: int = 30) -> tuple[np.ndarray, np.ndarray]:
+    """Feature rows over offsets 0..feature_end, class signal only at offsets >= D."""
+    rng = np.random.default_rng(402)
+    width = feature_end + 1
+    labels = np.repeat([0, 1], n_per_class)
+    feats = rng.standard_normal((len(labels), width))
+    divergent = np.arange(width) >= DIVERGENCE_D
+    feats[:, divergent] += np.where(labels[:, None] == 1, 5.0, -5.0)
+    return feats, labels
+
+
+def _score_divergent_region(feats: np.ndarray) -> np.ndarray:
+    """Mean over the stored offsets >= D; an uninformative 0.5 when none are stored."""
+    divergent = np.arange(feats.shape[1]) >= DIVERGENCE_D
+    if not divergent.any():
+        return np.full(len(feats), 0.5)
+    return feats[:, divergent].mean(axis=1)
+
+
+def _prepare_window(tmp_path, monkeypatch, feature_end: int) -> None:
+    """Run `handle_prepare` (extraction faked) with the divergence declared."""
+    from test_chunk_writer import make_chunks
+
+    from leech.commands.prepare import handle_prepare
+
+    def fake_parallel(*, chunk_sink, **_):
+        chunk_sink(make_chunks(6))
+        return [], {
+            "total_reads": 6,
+            "reads_with_motif": 6,
+            "reads_without_motif": 0,
+            "total_chunks": 6,
+            "failed_reads": 0,
+            "failed_batches": 0,
+        }
+
+    monkeypatch.setattr("leech.preparation.prepare_training_data_parallel", fake_parallel)
+    handle_prepare(
+        pod5=tmp_path / "x.pod5",
+        bam=tmp_path / "x.bam",
+        output_dir=tmp_path / f"out_{feature_end}",
+        motif="CCAGGC",
+        motif_offset=DIVERGENCE_MOTIF_OFFSET,
+        motif_reference="bam",
+        refine_signal_map=False,
+        workers=1,
+        no_split=True,
+        feature_start=0,
+        feature_end=feature_end,
+        signal_context=(90, 200),
+        base_justify="center",
+        label_divergence_position=DIVERGENCE_P,
+    )
+
+
+def test_divergent_region_is_a_perfect_label_predictor_when_stored():
+    stored, labels = _divergent_features(feature_end=20)
+    assert roc_auc_score(labels, _score_divergent_region(stored)) == 1.0
+
+    clipped, labels = _divergent_features(feature_end=DIVERGENCE_D - 1)
+    assert roc_auc_score(labels, _score_divergent_region(clipped)) == pytest.approx(0.5)
+
+
+def test_guard_refuses_the_window_that_stores_the_divergent_region(tmp_path, monkeypatch):
+    # The window the scorer wins on is refused ...
+    with pytest.raises(ValueError, match="label-divergence"):
+        _prepare_window(tmp_path, monkeypatch, feature_end=20)
+    # ... and the one it is blind on is accepted.
+    _prepare_window(tmp_path, monkeypatch, feature_end=DIVERGENCE_D - 1)
+    assert (tmp_path / f"out_{DIVERGENCE_D - 1}" / "all.npz").exists()

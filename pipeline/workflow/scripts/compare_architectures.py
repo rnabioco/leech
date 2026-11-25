@@ -14,7 +14,27 @@ import numpy as np
 import pandas as pd
 
 # Snakemake injects the 'snakemake' object at runtime
-snakemake = snakemake  # type: ignore # noqa: F821
+snakemake = globals().get("snakemake")  # type: ignore # injected by Snakemake at runtime
+
+
+def flatten_leakage(data):
+    """Lift the label-divergence verdict of one metrics dict into flat columns (#402).
+
+    ``leech eval test`` writes ``leakage: {status, position, focus_offset}``
+    when the model was trained on a corpus that declared where its label-defining
+    sequence starts. ``leakage_status`` is ``clear``, ``override`` (the window
+    reached that point and was allowed through) or ``undeclared``, and is never
+    blank: a metrics file without the block is ``undeclared`` explicitly, so an
+    unguarded run cannot pass for a guarded one in a table.
+    """
+    leakage = data.pop("leakage", None)
+    if isinstance(leakage, dict) and leakage:
+        data["leakage_status"] = leakage.get("status") or "undeclared"
+        data["leakage_focus_offset"] = leakage.get("focus_offset")
+    else:
+        data["leakage_status"] = "undeclared"
+        data["leakage_focus_offset"] = None
+    return data
 
 
 def load_architecture_metrics(metrics_dir, architectures):
@@ -47,7 +67,7 @@ def load_architecture_metrics(metrics_dir, architectures):
                 data["architecture"] = arch
                 data["sample"] = json_file.stem.replace("_metrics", "")
 
-                all_metrics.append(data)
+                all_metrics.append(flatten_leakage(data))
 
             except Exception as e:
                 print(f"Warning: Could not load {json_file}: {e}")
@@ -66,7 +86,7 @@ def aggregate_metrics(df):
         DataFrame with aggregated statistics per architecture
     """
     # Identify numeric metric columns (exclude metadata)
-    meta_cols = ["architecture", "sample"]
+    meta_cols = ["architecture", "sample", "leakage_status", "leakage_focus_offset"]
     metric_cols = [
         c for c in df.columns if c not in meta_cols and pd.api.types.is_numeric_dtype(df[c])
     ]
@@ -77,12 +97,37 @@ def aggregate_metrics(df):
 
     aggregated = df.groupby("architecture").agg(agg_funcs)
 
+    # Divergence verdict per architecture, never blank (#402): one row can be
+    # an override and another undeclared, and the worst one is what a reader
+    # of the table needs to see.
+    leak = (
+        df.groupby("architecture")["leakage_status"].agg(summarize_leakage_status)
+        if "leakage_status" in df.columns
+        else None
+    )
+    focus = (
+        df.groupby("architecture")["leakage_focus_offset"].min()
+        if "leakage_focus_offset" in df.columns
+        else None
+    )
+
     # Flatten column names
     aggregated.columns = [
         f"{col}_{stat}" if stat != "count" else "n_samples" for col, stat in aggregated.columns
     ]
 
+    aggregated["leakage_status"] = leak if leak is not None else "undeclared"
+    aggregated["leakage_focus_offset"] = focus
     return aggregated.reset_index()
+
+
+def summarize_leakage_status(statuses):
+    """Worst status across an architecture's rows: override > undeclared > clear."""
+    values = set(statuses)
+    for worst in ("override", "undeclared"):
+        if worst in values:
+            return worst
+    return "clear"
 
 
 def create_comparison_table(df_agg):
@@ -106,10 +151,15 @@ def create_comparison_table(df_agg):
 
     if not key_metrics:
         print("Warning: No standard metrics found, using all columns")
-        key_metrics = [c for c in df_agg.columns if c != "architecture"]
+        key_metrics = [
+            c
+            for c in df_agg.columns
+            if c not in ("architecture", "n_samples", "leakage_status", "leakage_focus_offset")
+        ]
 
     # Create comparison table
-    comparison = df_agg[["architecture", "n_samples"] + key_metrics].copy()
+    leak_cols = [c for c in ("leakage_status", "leakage_focus_offset") if c in df_agg.columns]
+    comparison = df_agg[["architecture", "n_samples"] + key_metrics + leak_cols].copy()
 
     # Round numeric columns
     numeric_cols = comparison.select_dtypes(include=[np.number]).columns

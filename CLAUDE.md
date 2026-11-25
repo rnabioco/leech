@@ -1020,6 +1020,46 @@ float32 eps of 1.19e-07; the production classifier arms measured 4.77e-07 and
 default affinity call fails inside any cgroup-restricted allocation and floods
 stderr.
 
+### The label-divergence guard (issue #402)
+
+Where two classes differ by library chemistry (adapters that share a common arm,
+then diverge), the sequence past the divergence is the label. `--label-divergence-position`
+(`leech.leakage`) makes `data prepare` refuse a window that stores it. Rules that
+do not announce themselves:
+
+- **The declaration is motif-start-relative, never focus-relative, and never
+  hardcoded.** `P` is 0-based from the first base of `--motif`; leech derives
+  `D = P - motif_offset`. A focus-relative number silently shifts by one base
+  between offset 2 and 3. `P` is a property of the library, declared per
+  experiment -- no default, none in the shipped config, none in code.
+- **Reach is a table, and the boundary is exclusive.** `features` = resolved
+  `feature_end` (always via `resolve_feature_window`, never the raw flag);
+  `kmer_*` channels = `feature_end + L`; raw signal = `R` exactly for
+  `--signal-context-bases`, `ceil(theta + R / s) - 1` for sample windows;
+  `signal_residual` = signal `+ L`; `sequence` = `kmer_context`;
+  `sequence_with_kmer_context` = signal `+ 4`. A present input reaching `D`
+  refuses; `D - 1` passes. `tests/test_label_divergence.py` iterates the pinned
+  examples.
+- **`L` is read from the refiner's k-mer table (`kmer_len - 1 - center_idx`),
+  never hardcoded.** The expected level at a base is a function of the 9-mer
+  around it, so those channels carry identity `L` bases past the base they
+  describe. Without a refiner there are no `kmer_*` channels and no residual.
+- **`--mask-seq-side right` discounts only the sequence branches.** The k-mer
+  feature channels and the residual are computed from the same reference slice
+  and keep their reach.
+- **The check lives in `handle_prepare`, before reference loading**, next to the
+  negative-`signal_context_bases` guard, so Snakemake and notebook callers that
+  bypass click get it. `leech.leakage` must stay torch-free: the Snakefile imports
+  it at parse time and runs the same function as a DAG-build pre-flight
+  (`check_label_divergence_config`), which is why the context-grid parser moved to
+  `leech.context_grid` (`leech.gridsearch` imports torch).
+- **The verdict travels as data.** `prepare_config.json["label_divergence"]` ->
+  `data merge` (`merge_blocks`: disagreement or declared-with-undeclared raises)
+  -> `config.json` -> `metrics["leakage"]`. Absent means `undeclared`, and the
+  summary tables say so explicitly rather than leaving a blank.
+- Guards what `prepare` stores only; it does not audit an existing corpus, and
+  sample windows are bounded by a rate floor (24 samples/base), not measured per chunk.
+
 ### Key Classes and Functions
 
 **`MoveTable` (features.py)**
@@ -1108,6 +1148,8 @@ src/leech/           # Main package source
 │   ├── release_model.py  # model release/list/fetch handlers
 │   └── train_crf.py # CTC-CRF train-crf handler
 ├── confounds.py     # Confound mappings for adversarial training
+├── leakage.py       # Label-divergence guard: reach table, prepare check, pipeline pre-flight (torch-free)
+├── context_grid.py  # Context-grid parsing shared with gridsearch (torch-free)
 ├── io/              # Input/output operations
 │   ├── bam_reader.py    # BAM file reading
 │   ├── pod5_reader.py   # POD5 signal reading

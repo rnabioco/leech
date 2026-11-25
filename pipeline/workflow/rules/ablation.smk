@@ -115,6 +115,7 @@ rule ablation_prepare_chunks:
         skip_indels_arg=build_skip_indels_arg(),
         label_arg=lambda wildcards: build_label_arg(wildcards),
         signal_context_arg=build_signal_context_arg(),
+        divergence_arg=build_divergence_arg(),
     shell:
         """
         uv run leech data prepare \
@@ -128,6 +129,7 @@ rule ablation_prepare_chunks:
             {params.skip_indels_arg} \
             {params.label_arg} \
             {params.signal_context_arg} \
+            {params.divergence_arg} \
             --feature-channels all \
             --workers {params.workers} \
             --chunk-size {params.chunk_size} \
