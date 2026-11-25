@@ -217,7 +217,7 @@ no-matching-overload = "ignore"
 too-many-positional-arguments = "ignore"
 missing-argument = "ignore"
 # pysam get_tag returns object; ty can't narrow to indexable
-call-non-callable = "ignore"
+not-callable = "ignore"
 # Stale `ty: ignore` comments that newer ty no longer needs. The rule was
 # renamed unused-type-ignore-comment -> unused-ignore-comment; keep both so
 # the pinned dev ty and CI's `uvx ty` (latest) both honor it.
