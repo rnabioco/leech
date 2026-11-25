@@ -11,7 +11,9 @@ import pysam
 import torch
 from rich.progress import Progress
 
+from leech._rust_accel import python_backend_if_requested
 from leech.configs import ChunkConfig, InferenceConfig, MotifConfig, SignalConfig
+from leech.constants import BELOW_THRESHOLD_LABEL
 from leech.features import extract_move_table
 from leech.inference.aggregation import (
     aggregate_one_vs_all,
@@ -23,6 +25,8 @@ from leech.inference.helpers import (
     BatchAccumulator,
     GpuBatchRunner,
     InferenceSpec,
+    _passes_thresholds,
+    _write_multisite_tags,
     _write_prediction_tags,
     build_rust_extraction_kwargs,
     cap_rayon_threads_for_slurm,
@@ -46,7 +50,7 @@ logger = logging.getLogger("leech.inference")
 
 def _write_bundle_mega_batch(
     aln_batch: list[pysam.AlignedSegment],
-    read_probs: dict[str, np.ndarray],
+    read_probs: dict[str, dict[int, np.ndarray]],
     pairs: list,
     pair_to_idx: dict,
     aggregate_fn,
@@ -55,8 +59,16 @@ def _write_bundle_mega_batch(
     raw: bool,
     min_confidence: int,
     min_margin: int,
+    positions_per_read: int | None = None,
 ) -> int:
-    """Aggregate per-read probabilities and write one mega-batch of alignments.
+    """Aggregate per-site probabilities and write one mega-batch of alignments.
+
+    ``read_probs[read_id][base_idx]`` is one motif site's ``(n_pairs,)``
+    probability vector. The scalar tags describe the first (lowest-position)
+    site; a read with more than one site additionally carries the per-site
+    array tags (issue #141). ``positions_per_read`` keeps only that many
+    lowest-position sites (``None`` = all); applying it here, not at
+    extraction, is what makes it deterministic on the unordered worker pool.
 
     Every alignment is written, tagged or not; the return value is how many
     carried a prediction. All three extraction paths below shared a verbatim
@@ -64,24 +76,40 @@ def _write_bundle_mega_batch(
     """
     n_written = 0
     for aln in aln_batch:
-        prob_vec = read_probs.get(aln.query_name)
-        if prob_vec is None:
+        site_probs = read_probs.get(aln.query_name)
+        if not site_probs:
             bam_out.write(aln)
             continue
 
-        probs = [float(prob_vec[pair_to_idx[pair]]) for pair in pairs]
-        predicted_aa, confidence, _ = aggregate_fn(pairs, probs)
+        sites = sorted(site_probs)
+        if positions_per_read is not None:
+            sites = sites[:positions_per_read]
 
-        _write_prediction_tags(
-            aln,
-            predicted_aa,
-            confidence,
-            pair_names_str,
-            probs,
-            raw,
-            min_confidence,
-            min_margin,
-        )
+        labels: list[str] = []
+        confs: list[float] = []
+        for i, base_idx in enumerate(sites):
+            prob_vec = site_probs[base_idx]
+            probs = [float(prob_vec[pair_to_idx[pair]]) for pair in pairs]
+            predicted_aa, confidence, _ = aggregate_fn(pairs, probs)
+            labels.append(
+                predicted_aa
+                if _passes_thresholds(confidence, probs, min_confidence, min_margin)
+                else BELOW_THRESHOLD_LABEL
+            )
+            confs.append(confidence)
+            if i == 0:
+                _write_prediction_tags(
+                    aln,
+                    predicted_aa,
+                    confidence,
+                    pair_names_str,
+                    probs,
+                    raw,
+                    min_confidence,
+                    min_margin,
+                )
+        if len(sites) > 1:
+            _write_multisite_tags(aln, sites, labels, confs, raw)
         bam_out.write(aln)
         n_written += 1
     return n_written
@@ -131,8 +159,9 @@ class BundleScorer:
         self.n_batches_done = 0
 
     def score(self, sigs: list, seqs: list, feats: list, rids: list, *, read_probs: dict) -> None:
-        """Score one batch, writing each read's ``(n_pairs,)`` probability
-        vector into ``read_probs``. Matches :class:`GpuBatchRunner`'s
+        """Score one batch, writing each site's ``(n_pairs,)`` probability
+        vector into ``read_probs[read_id][base_idx]``; ``rids`` carries
+        ``(read_id, base_idx)`` pairs (issue #141). Matches :class:`GpuBatchRunner`'s
         ``score_fn(signals, sequences, features, meta)`` shape via
         ``functools.partial(scorer.score, read_probs=read_probs)``."""
         sig_t = torch.stack(sigs).to(self.device)
@@ -170,12 +199,13 @@ class BundleScorer:
                         logits = a * logits + b
                     all_p[self.pair_to_idx[pair]] = torch.sigmoid(logits).cpu().numpy().flatten()
 
-        for i, rid in enumerate(rids):
-            read_probs[rid] = all_p[:, i]
+        for i, (rid, base_idx) in enumerate(rids):
+            read_probs.setdefault(rid, {})[int(base_idx)] = all_p[:, i]
 
         self.n_batches_done += 1
 
 
+@python_backend_if_requested
 def run_bundle_inference(
     bundle_path: Path,
     pod5_path: Path,
@@ -198,6 +228,7 @@ def run_bundle_inference(
     read_batch_size: int = 10_000,
     backend: str = "auto",
     parameter_sources: dict[str, bool] | None = None,
+    positions_per_read: int | None = None,
 ) -> None:
     """
     Run all models from a bundle on each read, aggregate to a single AA prediction.
@@ -222,6 +253,10 @@ def run_bundle_inference(
         raw: If True, also write per-pair probabilities (pn/pp tags)
         anchor: "basecall" or "reference" for reference-anchored mode
         reference_fasta: Path to reference FASTA (for reference-anchored mode)
+        positions_per_read: Cap on motif sites scored per read, lowest position
+            first; ``None`` (default) scores every site. The scalar tags always
+            describe the first site; reads with several carry ``sp``/``sa``/``sc``
+            arrays (issue #141).
     """
     logger.info(f"Extraction backend: {backend}")
 
@@ -468,7 +503,7 @@ def run_bundle_inference(
     pair_to_idx = {pair: i for i, pair in enumerate(pairs)}
     n_pairs = len(pairs)
 
-    read_probs: dict[str, np.ndarray] = {}  # read_id -> shape (n_pairs,)
+    read_probs: dict[str, dict[int, np.ndarray]] = {}  # read_id -> base_idx -> (n_pairs,)
     _shape_validated = False
     n_chunks = 0
 
@@ -653,9 +688,7 @@ def run_bundle_inference(
                     motif_searcher=motif_searcher,
                     anchor=anchor,
                     reference_sequences=reference_sequences,
-                    # Bundle semantics: one chunk per read (matches the serial
-                    # path's positions[0] behavior)
-                    max_positions_per_read=1,
+                    max_positions_per_read=positions_per_read,
                 )
                 rs_read_ids = rs_meta[0]
 
@@ -681,10 +714,10 @@ def run_bundle_inference(
                         **_rs_kwargs,
                     )
 
-                    # Consume rust chunks into batch buffers. Rust emits at most
-                    # one chunk per read (we truncated motif positions above),
-                    # so no dedupe is needed.
-                    for sig, seq_arr, feat, read_id, _base_idx in chunks:
+                    # Consume rust chunks into batch buffers: one per motif
+                    # site (capped by `positions_per_read` above), keyed by
+                    # `(read_id, base_idx)`.
+                    for sig, seq_arr, feat, read_id, base_idx in chunks:
                         if bundle_signal_in_channels > 1 and sig.ndim == 1:
                             sig = sig.reshape(bundle_signal_in_channels, -1)
 
@@ -715,7 +748,7 @@ def run_bundle_inference(
                             torch.from_numpy(sig),
                             torch.from_numpy(seq_arr),
                             torch.from_numpy(feat) if needs_features and feat is not None else None,
-                            read_id,
+                            (read_id, int(base_idx)),
                         )
 
                 # Flush remaining chunks for this mega-batch
@@ -734,6 +767,7 @@ def run_bundle_inference(
                     raw,
                     min_confidence,
                     min_margin,
+                    positions_per_read,
                 )
                 n_predicted += batch_preds
 
@@ -768,10 +802,10 @@ def run_bundle_inference(
             #
             # Each worker opens its own escapepod Reader, extracts chunks for a
             # sub-batch of ReadInfo objects, and returns (read_id, base_idx, sig,
-            # enc_seq, feat) tuples. The main process collects results, dedupes
-            # to one chunk per read (matching the serial path's positions[0]
-            # behavior), batches, and runs the multi-model GPU forward via the
-            # shared batch accumulator.
+            # enc_seq, feat) tuples. The main process collects results,
+            # batches them, and runs the multi-model GPU forward via the
+            # shared batch accumulator. `positions_per_read` is applied when
+            # writing, since results arrive unordered.
             from leech.inference.single import _inference_worker
 
             assert inf_config is not None  # constructed above
@@ -821,23 +855,16 @@ def run_bundle_inference(
                     ]
                     worker_args = [(wb, inf_config, dwell_template) for wb in worker_batches]
 
-                    # Dedupe: bundle uses only the first chunk per read
-                    seen_in_batch: set[str] = set()
-
                     for worker_results in pool.imap_unordered(_inference_worker, worker_args):
                         for (
                             read_id,
-                            _base_idx,
+                            base_idx,
                             sig,
                             enc_seq,
                             feat,
                             _junction_indel,
                             _junction_mapped,
                         ) in worker_results:
-                            if read_id in seen_in_batch:
-                                continue
-                            seen_in_batch.add(read_id)
-
                             # The template, if any, is already applied inside
                             # the worker -- before it narrowed the feature
                             # window to the model's k-mer width, the same
@@ -853,7 +880,7 @@ def run_bundle_inference(
                                 torch.from_numpy(feat)
                                 if needs_features and feat is not None
                                 else None,
-                                read_id,
+                                (read_id, int(base_idx)),
                             )
 
                     # Flush remaining chunks for this mega-batch
@@ -872,6 +899,7 @@ def run_bundle_inference(
                         raw,
                         min_confidence,
                         min_margin,
+                        positions_per_read,
                     )
                     n_predicted += batch_preds
 
@@ -975,13 +1003,12 @@ def run_bundle_inference(
                     if not positions:
                         continue
 
-                    # Bundle semantics: one chunk per read (the first motif
-                    # position), unlike single-model predict's all-positions
-                    # loop -- see chunks_for_read's own note on why read
-                    # construction and position-finding stay with the caller.
-                    for sig, seq_arr, feat, _base_idx in chunks_for_read(
+                    # Every motif site up to `positions_per_read` (issue #141);
+                    # see chunks_for_read's own note on why read construction
+                    # and position-finding stay with the caller.
+                    for sig, seq_arr, feat, base_idx in chunks_for_read(
                         leech_read,
-                        positions[:1],
+                        sorted(positions)[:positions_per_read],
                         chunk_config=bundle_chunk_config,
                         signal_len=signal_len,
                         seq_encoding=seq_encoding,
@@ -1004,7 +1031,9 @@ def run_bundle_inference(
                             validate_inference_shapes(sig, feat, config)
                             _shape_validated = True
 
-                        accumulator.add(signal_t, seq_t, feat_t, leech_read.read_id)
+                        accumulator.add(
+                            signal_t, seq_t, feat_t, (leech_read.read_id, int(base_idx))
+                        )
 
                 # Flush remaining chunks for this mega-batch
                 accumulator.flush()
@@ -1022,6 +1051,7 @@ def run_bundle_inference(
                     raw,
                     min_confidence,
                     min_margin,
+                    positions_per_read,
                 )
                 n_predicted += batch_preds
 

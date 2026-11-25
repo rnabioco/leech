@@ -803,6 +803,17 @@ class Trainer:
             self.cl_regression_head.to(device)
             self._cl_forward = self._wrap_ddp(self.cl_regression_head, device)
             logger.info(f"CL regression head enabled: repr_dim={repr_dim}, cl_lambda={cl_lambda}")
+            # Provenance (issue #406): the aa-tRNA-seq pipeline writes `cl` as
+            # round(P(charged) * 255) from its production classifier. A corpus
+            # prepared from a BAM it has scored makes this head a distillation
+            # of that model, and nothing in the corpus records which it is.
+            logger.warning(
+                "--cl-regression trains on the BAM `CL`/`cl` tag. If that BAM was scored by "
+                "a charging classifier (the aa-tRNA-seq pipeline's `cl` is "
+                "round(P(charged)*255)), the head distils that model rather than "
+                "learning an independent measurement. Confirm the tag's origin before "
+                "reporting this head as a result."
+            )
 
         # Setup optimizer (include adversarial + CL regression head params if present)
         all_params = list(model.parameters())

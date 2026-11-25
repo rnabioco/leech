@@ -1032,7 +1032,7 @@ def _create_multiclass_bundle(tmp_path, class_names, *, refine=False):
     return bundle_path
 
 
-def _create_pairwise_bundle(tmp_path, pair_names):
+def _create_pairwise_bundle(tmp_path, pair_names, motif="CCAGGC", motif_offset=2):
     """Create a pairwise bundle with randomly initialized models."""
     import json
 
@@ -1043,8 +1043,8 @@ def _create_pairwise_bundle(tmp_path, pair_names):
     config = {
         "model_name": "ConvLSTMDwell",
         **_ARCH_CONFIG,
-        "motif": "CCAGGC",
-        "motif_offset": 2,
+        "motif": motif,
+        "motif_offset": motif_offset,
     }
     for pair in pair_names:
         pair_dir = tmp_path / "pw_models" / pair
@@ -2430,3 +2430,263 @@ print("OK")
             "an executor in the sequential teardown shuts down with wait=False; "
             "the mp.Pool fork in the parallel path will inherit its held locks"
         )
+
+
+class TestPythonBackendScope:
+    """Issue #263: ``--backend python`` must switch off *every* Rust call for
+    the run (not only ``signal_refine``'s) and put the switch back afterwards."""
+
+    @staticmethod
+    def _fake_rust(monkeypatch):
+        import numpy as np
+
+        import leech.features as features_mod
+
+        calls = []
+
+        def fake_stats(sig, s2s):
+            calls.append(1)
+            n = len(s2s) - 1
+            z = np.zeros(n, dtype=np.float32)
+            return z, z, z, z, z, z
+
+        monkeypatch.setattr(features_mod, "HAS_RUST", True)
+        monkeypatch.setattr(features_mod, "_rs_compute_signal_stats", fake_stats)
+        return calls
+
+    def test_python_backend_disables_rust_feature_calls_and_restores(self, monkeypatch):
+        import numpy as np
+
+        from leech._rust_accel import python_backend
+        from leech.features import compute_signal_features
+
+        calls = self._fake_rust(monkeypatch)
+        sig = np.arange(10, dtype=np.float32)
+        s2s = np.array([0, 5, 10], dtype=np.int64)
+
+        with python_backend():
+            compute_signal_features(sig, s2s)
+        assert calls == []
+
+        compute_signal_features(sig, s2s)
+        assert calls == [1], "Rust must be back on after the context exits"
+
+    def test_python_backend_restores_on_exception(self, monkeypatch):
+        import numpy as np
+
+        from leech._rust_accel import python_backend
+        from leech.features import compute_signal_features
+
+        calls = self._fake_rust(monkeypatch)
+        with pytest.raises(ZeroDivisionError):
+            with python_backend():
+                raise ZeroDivisionError
+        compute_signal_features(np.arange(10, dtype=np.float32), np.array([0, 5, 10]))
+        assert calls == [1]
+
+    def test_run_inference_python_backend_is_scoped_to_the_call(self, monkeypatch):
+        """The decorator on ``run_inference`` enters the scope only for
+        ``backend='python'`` and leaves nothing behind when the call raises."""
+        from pathlib import Path
+
+        import leech._rust_accel as accel
+        from leech.inference import run_inference
+
+        seen = {}
+
+        def probe(*a, **k):
+            seen["during"] = accel.python_only_active()
+            raise RuntimeError("stop")
+
+        monkeypatch.setattr("leech.inference.single.load_model_auto", probe)
+        with pytest.raises(RuntimeError, match="stop"):
+            run_inference(model_path=Path("x"), backend="python")
+        assert seen["during"] is True
+        assert accel.python_only_active() is False
+
+
+@pytest.mark.skipif(not TRNA_FIXTURES_AVAILABLE, reason="tRNA fixtures not available")
+class TestWorkersRespectBackend:
+    """Issue #263: ``--workers N`` used to branch into the Python ``mp.Pool``
+    before ``--backend`` was looked at."""
+
+    CLASS_NAMES = ["Ala", "Gly", "Met"]
+
+    def _run(self, tmp_path, monkeypatch, *, backend):
+        from leech.bundling import load_model_from_multiclass_bundle
+        from leech.inference import run_inference, single
+
+        def no_pool(*a, **k):
+            raise AssertionError("mp.Pool used")
+
+        monkeypatch.setattr(single.mp, "Pool", no_pool)
+        bundle_path = _create_multiclass_bundle(tmp_path, self.CLASS_NAMES)
+        model, config = load_model_from_multiclass_bundle(bundle_path, device="cpu")
+        run_inference(
+            model_and_config=(model, config),
+            pod5_path=TRNA_POD5,
+            bam_path=TRNA_BAM,
+            output_path=tmp_path / "out.bam",
+            device="cpu",
+            batch_size=8,
+            reverse_signal=True,
+            reference_fasta=TRNA_REF,
+            num_workers=2,
+            backend=backend,
+        )
+
+    def test_workers_with_unavailable_rust_backend_raises(self, tmp_path, monkeypatch):
+        import leech._rust_accel as accel
+
+        monkeypatch.setattr(accel, "HAS_RUST", False)
+        with pytest.raises(RuntimeError, match="--backend rust"):
+            self._run(tmp_path, monkeypatch, backend="rust")
+
+    def test_workers_with_rust_backend_runs_the_rust_path(self, tmp_path, monkeypatch):
+        pytest.importorskip("leech_core")
+        self._run(tmp_path, monkeypatch, backend="rust")
+        assert (tmp_path / "out.bam").exists()
+
+
+class TestMultiSiteTagWriters:
+    """Issue #141: a read with several motif sites keeps every call."""
+
+    def test_multiclass_bam_keeps_every_site(self, tmp_path):
+        from leech.inference.helpers import _write_mega_batch_predictions
+
+        aln = _make_bare_alignment()
+        aln.query_name = "r1"
+        out = tmp_path / "o.bam"
+        header = _BAM_HEADER
+        with pysam.AlignmentFile(str(out), "wb", header=header) as bam_out:
+            # Arrival order is arbitrary; site 30 first, 10 must win the scalar tags.
+            pending = {
+                "r1": [
+                    (30, 1, 0.9, [0.05, 0.9, 0.05], None, 0, True),
+                    (10, 0, 0.8, [0.8, 0.1, 0.1], None, 0, True),
+                ]
+            }
+            n = _write_mega_batch_predictions(
+                [aln],
+                pending,
+                bam_out,
+                True,
+                {0: "Ala", 1: "Gly", 2: "Ser"},
+                "Ala,Gly,Ser",
+                False,
+                0,
+                0,
+            )
+        assert n == 1
+        assert aln.get_tag("aa") == "Ala"
+        assert list(aln.get_tag("sp")) == [10, 30]
+        assert aln.get_tag("sa") == "Ala,Gly"
+        assert list(aln.get_tag("sc")) == [round(0.8 * 255), round(0.9 * 255)]
+
+    def test_multiclass_bam_single_site_has_no_array_tags(self, tmp_path):
+        from leech.inference.helpers import _write_mega_batch_predictions
+
+        aln = _make_bare_alignment()
+        aln.query_name = "r1"
+        header = _BAM_HEADER
+        with pysam.AlignmentFile(str(tmp_path / "o.bam"), "wb", header=header) as bam_out:
+            _write_mega_batch_predictions(
+                [aln],
+                {"r1": [(10, 0, 0.8, [0.8, 0.1, 0.1])]},
+                bam_out,
+                True,
+                {0: "Ala"},
+                "Ala,Gly,Ser",
+                False,
+                0,
+                0,
+            )
+        assert not aln.has_tag("sp")
+
+    def test_site_gated_to_unc_independently(self, tmp_path):
+        from leech.inference.helpers import _write_mega_batch_predictions
+
+        aln = _make_bare_alignment()
+        aln.query_name = "r1"
+        header = _BAM_HEADER
+        with pysam.AlignmentFile(str(tmp_path / "o.bam"), "wb", header=header) as bam_out:
+            pending = {
+                "r1": [
+                    (10, 0, 0.9, [0.9, 0.05, 0.05]),
+                    (20, 1, 0.4, [0.3, 0.4, 0.3]),
+                ]
+            }
+            _write_mega_batch_predictions(
+                [aln],
+                pending,
+                bam_out,
+                True,
+                {0: "Ala", 1: "Gly"},
+                "Ala,Gly,Ser",
+                False,
+                round(0.5 * 255),
+                0,
+            )
+        assert aln.get_tag("sa") == "Ala,unc"
+
+
+@pytest.mark.skipif(not TRNA_FIXTURES_AVAILABLE, reason="tRNA fixtures not available")
+class TestBundleMultiSite:
+    """Issue #141: ``run_bundle_inference`` scored only the first motif site of
+    each read (``max_positions_per_read=1`` / ``positions[:1]`` / a per-read
+    dedupe). A repeating motif now yields one call per site."""
+
+    PAIR_NAMES = ["Ala_Gly", "Ala_Met", "Gly_Met"]
+    MOTIF = "CC"  # occurs many times in a tRNA
+
+    def _predict(self, tmp_path, name, *, backend, positions_per_read=None):
+        from leech.inference import run_bundle_inference
+
+        (tmp_path / name).mkdir()
+        bundle_path = _create_pairwise_bundle(
+            tmp_path / name, self.PAIR_NAMES, motif=self.MOTIF, motif_offset=0
+        )
+        out = tmp_path / f"{name}.bam"
+        run_bundle_inference(
+            bundle_path=bundle_path,
+            pod5_path=TRNA_POD5,
+            bam_path=TRNA_BAM,
+            output_path=out,
+            device="cpu",
+            batch_size=8,
+            reverse_signal=True,
+            reference_fasta=TRNA_REF,
+            backend=backend,
+            positions_per_read=positions_per_read,
+        )
+        with pysam.AlignmentFile(str(out), "rb") as bam:
+            return {
+                r.query_name: (
+                    r.get_tag("aa"),
+                    list(r.get_tag("sp")) if r.has_tag("sp") else None,
+                    r.get_tag("sa") if r.has_tag("sa") else None,
+                )
+                for r in bam
+                if r.has_tag("aa")
+            }
+
+    def test_every_site_is_reported(self, tmp_path):
+        calls = self._predict(tmp_path, "all", backend="python")
+        multi = {k: v for k, v in calls.items() if v[1] is not None}
+        assert multi, "fixture reads should contain the repeating motif more than once"
+        for _aa, sp, sa in multi.values():
+            assert sp == sorted(sp) and len(set(sp)) == len(sp) > 1
+            assert len(sa.split(",")) == len(sp)
+
+    def test_positions_per_read_caps(self, tmp_path):
+        one = self._predict(tmp_path, "one", backend="python", positions_per_read=1)
+        assert one
+        assert all(v[1] is None for v in one.values())
+        two = self._predict(tmp_path, "two", backend="python", positions_per_read=2)
+        assert all(v[1] is None or len(v[1]) == 2 for v in two.values())
+
+    def test_rust_matches_python(self, tmp_path):
+        pytest.importorskip("leech_core")
+        py = self._predict(tmp_path, "py", backend="python")
+        rs = self._predict(tmp_path, "rs", backend="rust")
+        assert {k: v[1] for k, v in py.items()} == {k: v[1] for k, v in rs.items()}
