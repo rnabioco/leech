@@ -183,7 +183,9 @@ def assert_npz_identical(expected_path, actual_path):
             for u, v in zip(want.ravel(), got.ravel(), strict=True):
                 assert np.array_equal(u, v), f"{name}: ragged row differs"
         else:
-            assert np.array_equal(got, want), f"{name}: values differ"
+            assert np.array_equal(got, want, equal_nan=want.dtype.kind == "f"), (
+                f"{name}: values differ"
+            )
 
 
 CASES = {

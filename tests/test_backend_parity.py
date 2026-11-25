@@ -91,6 +91,10 @@ EXACT_FIELDS = {
     # POD5 run identity (issue #394): strings, so exact.
     "run_ids",
     "flow_cell_ids",
+    # Label quality (issue #398) is supplied by an external table after
+    # extraction, so both backends write the same all-NaN column; NaN == NaN
+    # under assert_array_equal.
+    "label_qualities",
 }
 
 #: Absolute/relative tolerance for float fields. Comfortably above float32

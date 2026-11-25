@@ -63,6 +63,7 @@ from leech.constants import (
     select_feature_channels,
 )
 from leech.features import encode_signal_kmer, encode_signal_kmer_batch, sequence_to_int
+from leech.label_quality import gate_mask
 from leech.models import requires_features, wide_features
 
 if TYPE_CHECKING:
@@ -855,6 +856,7 @@ class LeechDataset(Dataset):
         standardize_features: bool = False,
         feature_channel_names: Sequence[str] | None = None,
         selected_feature_channels: Sequence[str] | None = None,
+        min_label_quality: float | None = None,
     ):
         """
         Initialize dataset.
@@ -983,8 +985,15 @@ class LeechDataset(Dataset):
                 byte-identical. Raises ``ValueError`` naming any requested
                 channel absent from the corpus's actual data (see
                 :func:`~leech.constants.select_feature_channels`).
+            min_label_quality: Drop chunks whose ``label_quality`` is below this
+                (issue #398). Applied here, at load, so the threshold stays a
+                sweepable training-time choice rather than an extraction-time
+                boolean. Raises if the corpus has no scores or only some chunks
+                are scored (see :func:`leech.label_quality.gate_mask`). ``None``
+                (default) keeps every chunk.
         """
         self.chunk_path = chunk_path
+        self._min_label_quality = min_label_quality
         self.signal_len = signal_len
         self.kmer_len = kmer_len
         self.model_type = model_type
@@ -1093,6 +1102,20 @@ class LeechDataset(Dataset):
         # the wrong labels silently.
         if not isinstance(self.chunks, ChunkTable):
             self.chunks = [c for c in self.chunks if c["label_int"] is not None]
+            if min_label_quality is not None:
+                scores = np.array(
+                    [
+                        np.nan if c.get("label_quality") is None else c["label_quality"]
+                        for c in self.chunks
+                    ],
+                    dtype=np.float64,
+                )
+                gate = gate_mask(scores, min_label_quality)
+                logger.info(
+                    f"--min-label-quality {min_label_quality}: kept {int(gate.sum())} of "
+                    f"{len(gate)} chunks"
+                )
+                self.chunks = [c for c, ok in zip(self.chunks, gate, strict=True) if ok]
 
         if len(self.chunks) == 0:
             raise ValueError(f"No valid chunks found{f' in {chunk_path}' if chunk_path else ''}")
@@ -2166,6 +2189,16 @@ class LeechDataset(Dataset):
         table = ChunkTable.from_npz(chunk_path, skip=skip)
 
         keep = table.require_values("label_int") >= 0
+        if self._min_label_quality is not None:
+            scores = table.values("label_quality")
+            rows = np.nonzero(keep)[0]
+            gate = gate_mask(None if scores is None else scores[rows], self._min_label_quality)
+            logger.info(
+                f"--min-label-quality {self._min_label_quality}: kept {int(gate.sum())} of "
+                f"{len(gate)} chunks"
+            )
+            keep = keep.copy()
+            keep[rows[~gate]] = False
         stream.keep = keep
         self._array_stream = stream
         self.chunks = table if keep.all() else table.select(keep)

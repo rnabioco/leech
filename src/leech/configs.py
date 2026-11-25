@@ -356,6 +356,9 @@ class TrainConfig:
     #: (issue #282) or "source_group" (equivalent to balance_groups). Any
     #: field ChunkTable/a chunk dict exposes is valid.
     sample_weight_field: str | None = None
+    #: Drop training chunks whose ``label_quality`` is below this (issue #398).
+    #: Train set only, so validation stays comparable across a sweep.
+    min_label_quality: float | None = None
     label_map: dict[str, int] | None = None
 
     # Confound / adversarial provenance token (parsed in train_model)
