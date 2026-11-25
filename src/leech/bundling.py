@@ -655,6 +655,73 @@ def load_model_from_bundle(
     return model, config
 
 
+class LogitAverageEnsemble(nn.Module):
+    """Mean of the members' raw outputs (logits), same call signature as one member."""
+
+    def __init__(self, members: list[nn.Module]):
+        super().__init__()
+        if not members:
+            raise ValueError("an ensemble needs at least one member")
+        self.members = nn.ModuleList(members)
+
+    def forward(self, *args, **kwargs) -> torch.Tensor:
+        return torch.stack([m(*args, **kwargs) for m in self.members]).mean(dim=0)
+
+
+def _seed_member_name(index: int) -> str:
+    return f"seed{index:04d}"
+
+
+def create_seed_ensemble_bundle(
+    model_dirs: list[Path],
+    output_path: Path,
+    version: str,
+) -> Path:
+    """Bundle N same-task models trained with different seeds (#405).
+
+    Members must share the architecture config (checked by ``create_bundle``)
+    and the same ``label_map``, i.e. the same task and class orientation:
+    averaging logits of models that disagree on which class is 1 is silently
+    wrong. Per-member Platt files are carried but not applied; calibrate the
+    ensemble's averaged logit instead. Written as a regular ``create_bundle``
+    bundle with ``comparison_type="seed_ensemble"``.
+    """
+    model_dirs = [Path(d) for d in model_dirs]
+    if len(model_dirs) < 2:
+        raise ValueError("a seed ensemble needs at least 2 model directories")
+    label_maps = []
+    for d in model_dirs:
+        full, _ = _load_config(d)
+        label_maps.append(full.get("label_map"))
+    if any(lm != label_maps[0] for lm in label_maps[1:]):
+        raise ValueError(
+            f"seed-ensemble members must be the same task; label_maps differ: {label_maps}"
+        )
+    named = {_seed_member_name(i): d for i, d in enumerate(model_dirs)}
+    return create_bundle(named, output_path, "seed_ensemble", version)
+
+
+def load_seed_ensemble(
+    bundle_path: Path, device: str = "cuda"
+) -> tuple[LogitAverageEnsemble, dict]:
+    """Load a ``seed_ensemble`` bundle as one logit-averaging module.
+
+    Returns ``(ensemble, config_dict)``.
+    """
+    meta = list_bundle_models(bundle_path)
+    if meta.get("comparison_type") != "seed_ensemble":
+        raise ValueError(
+            f"{bundle_path} is a '{meta.get('comparison_type')}' bundle, not a seed_ensemble"
+        )
+    members, config = [], {}
+    for name in meta["pairs"]:
+        model, config = load_model_from_bundle(bundle_path, name, device=device)
+        members.append(model)
+    ensemble = LogitAverageEnsemble(members).to(device)
+    ensemble.eval()
+    return ensemble, config
+
+
 def list_bundle_models(bundle_path: Path) -> dict:
     """
     List metadata from a bundle file.

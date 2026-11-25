@@ -163,7 +163,7 @@ ablation:
     - [level_skew, level_kurtosis]
   custom: {}       # free-form name -> channel list, e.g.:
     # motif_only: [dwell, dwell_log, level_mean, level_std]
-  seeds: [1, 2, 3]
+  seeds: [1, 2, 3, 4, 5, 6]
 ```
 
 ```bash
@@ -198,6 +198,18 @@ the pair's `baseline` arm (`<metric>_mean`, `<metric>_sd`,
 human-readable version, arms ranked by f1 (or accuracy, if f1 is absent) per
 pair -- the same primary-metric convention `compare_architectures.py` uses
 for architecture comparison.
+
+Each non-baseline `(pair, arm)` row also carries the **paired-seed**
+difference: `<metric>_paired_diff_mean` and `<metric>_paired_diff_sd` are the
+mean and sample SD across seeds of `arm - baseline` taken at the *same*
+`--seed`, and `n_paired_seeds` counts the seeds both arms have (SD is blank
+below two). Six seeds are the default. Prefer this pair to the delta above.
+
+**Seed ensembles.** `leech.bundling.create_seed_ensemble_bundle(model_dirs,
+out, version)` bundles N same-task, same-architecture models (same
+`label_map`) and `load_seed_ensemble(bundle)` returns one module whose output
+is the mean of the members' logits. Per-member Platt files are not applied;
+calibrate the averaged logit.
 
 **Reading the table:** a `<metric>_delta_vs_baseline` smaller in magnitude
 than that arm's own `<metric>_sd` is **not evidence** the channel changed the

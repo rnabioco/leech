@@ -78,7 +78,7 @@ def _build_ablation_arms():
 
 ABLATION_ARMS = _build_ablation_arms()
 ABLATION_ARM_NAMES = list(ABLATION_ARMS.keys())
-ABLATION_SEEDS = (config.get("ablation") or {}).get("seeds", [1, 2, 3])
+ABLATION_SEEDS = (config.get("ablation") or {}).get("seeds", [1, 2, 3, 4, 5, 6])
 ABLATION_BASELINE_ARM = "baseline"
 
 
