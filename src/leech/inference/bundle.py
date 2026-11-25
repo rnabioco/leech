@@ -11,6 +11,7 @@ import pysam
 import torch
 from rich.progress import Progress
 
+from leech._rust_accel import python_backend_if_requested
 from leech.configs import ChunkConfig, InferenceConfig, MotifConfig, SignalConfig
 from leech.features import extract_move_table
 from leech.inference.aggregation import (
@@ -176,6 +177,7 @@ class BundleScorer:
         self.n_batches_done += 1
 
 
+@python_backend_if_requested
 def run_bundle_inference(
     bundle_path: Path,
     pod5_path: Path,
