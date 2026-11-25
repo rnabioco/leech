@@ -441,6 +441,7 @@ def iter_chunk_columns(chunks: list[dict]) -> Iterator[tuple[str, np.ndarray | l
     junction_mappeds = []
     run_ids = []
     flow_cell_ids = []
+    label_qualities = []
     has_signal_residual = "signal_residual" in chunks[0]
     has_focus_signal_pos = "focus_signal_pos" in chunks[0]
 
@@ -463,6 +464,10 @@ def iter_chunk_columns(chunks: list[dict]) -> Iterator[tuple[str, np.ndarray | l
         # string "None" -- a run called "None" would be a real split group.
         run_ids.append(_text(chunk.get("run_id")))
         flow_cell_ids.append(_text(chunk.get("flow_cell_id")))
+        # Label quality (issue #398): NaN = unscored. `is not None`, not
+        # `.get(field, nan)`: load_chunks sets the key to None when unscored.
+        quality = chunk.get("label_quality")
+        label_qualities.append(float(quality) if quality is not None else float("nan"))
         # Charging level: sentinel -1 for missing
         cl_val = chunk.get("cl_value")
         cl_values.append(cl_val if cl_val is not None else -1)
@@ -534,6 +539,8 @@ def iter_chunk_columns(chunks: list[dict]) -> Iterator[tuple[str, np.ndarray | l
     del run_ids
     yield "flow_cell_ids", np.array(flow_cell_ids, dtype=str)
     del flow_cell_ids
+    yield "label_qualities", np.array(label_qualities, dtype=np.float32)
+    del label_qualities
 
     if has_focus_signal_pos:
         yield "focus_signal_pos", np.array(focus_signal_pos_list, dtype=np.int64)
@@ -1177,6 +1184,11 @@ def load_chunks(input_path: Path, *, defer: Collection[str] = ()) -> list[dict]:
         if has_cl_values:
             cl_values_loaded = data["cl_values"]
 
+        # Label quality (backward compatible -- absent before issue #398)
+        has_label_quality = "label_qualities" in data
+        if has_label_quality:
+            label_qualities_loaded = data["label_qualities"]
+
         # Junction disruption (backward compatible -- absent before issue #282)
         has_junction = "junction_indels" in data
         if has_junction:
@@ -1240,6 +1252,11 @@ def load_chunks(input_path: Path, *, defer: Collection[str] = ()) -> list[dict]:
                 chunk["cl_value"] = cl_val if cl_val >= 0 else None
             else:
                 chunk["cl_value"] = None
+            if has_label_quality:
+                quality = float(label_qualities_loaded[i])
+                chunk["label_quality"] = quality if quality == quality else None
+            else:
+                chunk["label_quality"] = None
             if has_junction:
                 chunk["junction_indel"] = int(junction_indels_loaded[i])
                 chunk["junction_mapped"] = bool(junction_mappeds_loaded[i])

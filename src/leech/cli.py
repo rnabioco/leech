@@ -400,6 +400,18 @@ data.command_order = ("prepare", "merge")
         "honor it. Unknown names are refused before any read is touched."
     ),
 )
+@click.option(
+    "--label-quality-table",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help=(
+        "TSV/CSV (optionally .gz) or Parquet with read_id and label_quality columns. "
+        "Stamps a numeric label_quality on every chunk of each read (higher = better; "
+        "leech does not estimate it). Recorded as a number, never a keep flag, so "
+        "'model train --min-label-quality' can sweep the gate (issue #398). Reads the "
+        "table does not carry are unscored; coverage is logged."
+    ),
+)
 def prepare(
     pod5,
     bam,
@@ -439,6 +451,7 @@ def prepare(
     recover_softclip_signal,
     mask_seq_side,
     feature_channels,
+    label_quality_table,
 ):
     """Prepare training data from POD5 and BAM files."""
     from leech.commands import handle_prepare
@@ -507,6 +520,7 @@ def prepare(
         recover_softclip_signal=recover_softclip_signal,
         mask_seq_side=mask_seq_side,
         feature_channels=parsed_feature_channels,
+        label_quality_table=label_quality_table,
     )
 
 
@@ -890,6 +904,14 @@ def merge(
     "indel (issue #282).",
 )
 @click.option(
+    "--min-label-quality",
+    type=float,
+    default=None,
+    help="Drop TRAIN chunks whose label_quality (from 'data prepare --label-quality-table') "
+    "is below this. Sweepable: the threshold is applied here, never at extraction. Raises if "
+    "the corpus is unscored or only partly scored (issue #398).",
+)
+@click.option(
     "--num-out",
     type=int,
     default=1,
@@ -1055,6 +1077,7 @@ def train(
     balance_groups,
     oversample_minority,
     sample_weight_field,
+    min_label_quality,
     num_out,
     adversarial_lambda,
     adversarial_anneal_epochs,
@@ -1140,6 +1163,7 @@ def train(
         balance_groups=balance_groups,
         oversample_minority=oversample_minority,
         sample_weight_field=sample_weight_field,
+        min_label_quality=min_label_quality,
         num_out=num_out,
         adversarial_lambda=adversarial_lambda,
         adversarial_anneal_epochs=adversarial_anneal_epochs,
