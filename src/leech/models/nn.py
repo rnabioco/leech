@@ -193,7 +193,7 @@ class BiLSTM(nn.LSTM):
     ``<attr>.weight_ih_l0`` instead of ``<attr>.lstm.weight_ih_l0``.
     """
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:  # ty: ignore[invalid-return-type]
+    def forward(self, x: torch.Tensor) -> torch.Tensor:  # ty: ignore[invalid-explicit-return]
         out, _ = super().forward(x)
         return out
 
@@ -217,7 +217,7 @@ class CrossAttention(nn.MultiheadAttention):
     ``need_weights=False`` enables the fused SDPA kernel.
     """
 
-    def forward(  # ty: ignore[invalid-return-type]
+    def forward(  # ty: ignore[invalid-explicit-return]
         self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor
     ) -> torch.Tensor:
         out, _ = super().forward(query, key, value, need_weights=False)

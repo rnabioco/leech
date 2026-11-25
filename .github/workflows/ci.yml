@@ -31,18 +31,20 @@ jobs:
           python-version-file: "pyproject.toml"
 
       - name: Install linting tools only
-        # Pin to the ruff resolved in uv.lock so CI checks the same formatting
-        # `uv run ruff` applies locally. Unpinned, any ruff release can fail
-        # lint on unrelated PRs -- 0.16.0 started formatting Python code blocks
-        # inside Markdown, which reformats 11 docs/ and dev-notes/ files.
+        # Pin ruff and ty to the versions resolved in uv.lock, so dependabot's
+        # lockfile bump is what moves them and CI checks what `uv run` applies
+        # locally. Unpinned, any release can fail lint on unrelated PRs: ruff
+        # 0.16.0 started formatting Markdown code blocks, and a ty release
+        # renamed rules and turned every open PR red.
         run: |
-          RUFF_VERSION=$(python -c "
+          pins=$(python -c "
           import tomllib
           lock = tomllib.load(open('uv.lock', 'rb'))
-          print(next(p['version'] for p in lock['package'] if p['name'] == 'ruff'))
+          v = {p['name']: p.get('version') for p in lock['package']}
+          print(f\"ruff=={v['ruff']} ty=={v['ty']}\")
           ")
-          echo "Pinning ruff==${RUFF_VERSION} (from uv.lock)"
-          uv pip install --system "ruff==${RUFF_VERSION}"
+          echo "Pinning ${pins} (from uv.lock)"
+          uv pip install --system ${pins}
 
       - name: Run ruff format check
         run: ruff format --check --exclude vulture_whitelist.py .
@@ -51,7 +53,7 @@ jobs:
         run: ruff check --exclude vulture_whitelist.py .
 
       - name: Run type check
-        run: uvx ty check src/leech/
+        run: ty check src/leech/
 
   rust-lint:
     name: Rust lint + test (fmt + clippy + cargo test)
