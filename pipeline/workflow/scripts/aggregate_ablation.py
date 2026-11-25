@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from leech.seed_stats import paired_seed_differences
+
 # Snakemake injects the 'snakemake' object at runtime
 snakemake = snakemake  # type: ignore # noqa: F821
 
@@ -77,6 +79,13 @@ def add_arm_stats(df, baseline_arm):
 
         grouped[delta_col] = grouped.apply(_delta, axis=1)
 
+    # Paired-seed difference vs. baseline (same --seed in both arms), with SD:
+    # the quantity to judge an effect by; the mean-of-means delta above
+    # discards the pairing.
+    paired = pd.DataFrame(paired_seed_differences(df.to_dict("records"), baseline_arm, metric_cols))
+    if not paired.empty:
+        grouped = grouped.merge(paired, on=["pair", "arm"], how="left")
+
     merged = df.merge(grouped, on=["pair", "arm"], how="left")
     return merged, grouped
 
@@ -118,7 +127,13 @@ def create_summary_text(grouped, metric_cols, baseline_arm):
                     continue
                 sd_v = 0.0 if pd.isna(sd_v) else sd_v
                 delta_v = 0.0 if pd.isna(delta_v) else delta_v
-                parts.append(f"{metric}={mean_v:.4f}±{sd_v:.4f} (delta {delta_v:+.4f})")
+                part = f"{metric}={mean_v:.4f}±{sd_v:.4f} (delta {delta_v:+.4f}"
+                pd_mean = row.get(f"{metric}_paired_diff_mean")
+                pd_sd = row.get(f"{metric}_paired_diff_sd")
+                if pd_mean is not None and not pd.isna(pd_mean):
+                    sd_txt = "n/a" if pd_sd is None or pd.isna(pd_sd) else f"{pd_sd:.4f}"
+                    part += f"; paired {pd_mean:+.4f}±{sd_txt}"
+                parts.append(part + ")")
             lines.append("  " + " ".join(parts))
         lines.append("")
 
